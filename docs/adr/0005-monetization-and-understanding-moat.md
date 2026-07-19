@@ -1,6 +1,6 @@
 # ADR 0005: Monetization and Understanding Moat
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-07-19
 
 ## Context
@@ -9,7 +9,7 @@ Jurvio must grow through free public discovery while creating early revenue, dif
 
 ## Decision
 
-Subject to Gate 7.5 and Gate 8 approval:
+Gate 7.5 and Gate 8A approve the following:
 
 - Keep core legal information and explanation free.
 - Monetize monitoring, readable change intelligence, advanced research, reports, collaboration and governed APIs.
@@ -35,4 +35,4 @@ Jurvio gains a coherent acquisition funnel and differentiated intelligence layer
 
 ## Approval
 
-This ADR becomes Accepted only after explicit approval of Gate 7.5 and Gate 8A.
+Accepted by explicit approval of Gate 7.5 and Gate 8A on 2026-07-19.
