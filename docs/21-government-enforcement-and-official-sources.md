@@ -1,6 +1,6 @@
 # Jurvio Gate 8C: Government Enforcement and Official-Source Intelligence
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved ingestion, evidence, entity, neutrality and publication foundations
 
