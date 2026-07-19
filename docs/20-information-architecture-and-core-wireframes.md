@@ -340,7 +340,13 @@ Template:
 
 These pages support humans, search engines and AI retrieval without mass-producing thin variants.
 
-## 14. Conversion architecture
+## 14. Government Enforcement and Official Sources
+
+Add a Government Enforcement hub and normalized enforcement-matter pages sourced from official agencies. Follow the source registry, lifecycle, evidence-language and neutrality rules in Gate 8C.
+
+The experience connects announcements to filed documents, dockets, companies, public officials, agencies and later outcomes. It distinguishes investigation, allegation, charge, indictment, settlement, finding, conviction, dismissal, acquittal, sentence, appeal and closure.
+
+## 15. Conversion architecture
 
 Contextual calls to action:
 
@@ -354,7 +360,7 @@ Contextual calls to action:
 
 Do not interrupt first-page comprehension with modal paywalls. Ask for registration at the moment a user creates persistent value. Show paid upgrade only when a free limit or paid-speed/workflow capability is relevant.
 
-## 15. Trust and provenance UI
+## 16. Trust and provenance UI
 
 Every generated explanation exposes:
 
@@ -368,7 +374,7 @@ Every generated explanation exposes:
 
 A global disclaimer never replaces local evidence labeling.
 
-## 16. Analytics requirements
+## 17. Analytics requirements
 
 Capture privacy-safe events for:
 
@@ -385,7 +391,7 @@ Capture privacy-safe events for:
 
 Use these signals to prioritize enrichment and product work, not to change facts or neutrality.
 
-## 17. Initial wireframe acceptance criteria
+## 18. Initial wireframe acceptance criteria
 
 - A non-lawyer can state what the case is about, its current status and next likely procedural step.
 - An attorney can reach the source docket/document without friction.
@@ -396,11 +402,12 @@ Use these signals to prioritize enrichment and product work, not to change facts
 - Page structure remains crawlable without client-side interaction.
 - No module requires unsupported AI output to render the canonical facts.
 
-## 18. Decisions requested
+## 19. Decisions requested
 
 1. Approve the global navigation and universal-search hierarchy.
 2. Approve the case-page content order and narrative-first layout.
 3. Approve party pages as cautious identity-aware SEO entry points.
 4. Approve the news, government and Supreme Court page relationships.
 5. Approve contextual conversion rather than disruptive paywalls.
-6. Approve the trust/provenance UI and wireframe acceptance criteria.
+6. Approve the Government Enforcement hub and connection to Gate 8C.
+7. Approve the trust/provenance UI and wireframe acceptance criteria.
