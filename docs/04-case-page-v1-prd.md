@@ -1,6 +1,6 @@
 # Jurvio Gate 2B: Case Page v1 Product Requirements
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gate 1 strategy and Gate 2A corpus specification
 
@@ -304,4 +304,3 @@ Do not optimize for pageviews alone. The leading product signal is whether users
 4. Approve fully free core case explanations without account walls.
 5. Approve party-search conversion only after the visitor receives substantive value.
 6. Approve deferring open-ended AI research, analytics, and professional citator features.
-
