@@ -39,7 +39,7 @@ The architecture provides a small-team operating model, managed core data servic
 - App Platform or Managed OpenSearch costs materially exceed equivalent managed alternatives.
 - Hetzner, AWS, Render or another platform proves a meaningful full-lifecycle advantage after migration costs are included.
 - Identity-provider pricing, portability or security fails procurement review.
-- Analytics volume or latency makes S3/SQL aggregates insufficient.
+- Analytics volume or latency makes R2/SQL aggregates insufficient.
 - Team/service scale justifies Kubernetes or service extraction.
 
 ## Approval
