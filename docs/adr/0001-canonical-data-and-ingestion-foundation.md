@@ -1,6 +1,6 @@
 # ADR 0001: Canonical Data and Ingestion Foundation
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-07-19
 
 ## Context
