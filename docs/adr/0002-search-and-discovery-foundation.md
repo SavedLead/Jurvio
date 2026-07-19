@@ -15,11 +15,13 @@ Jurvio requires legal-identifier lookup, entity disambiguation, full-text search
 - Require a relevance judgment set before hybrid search.
 - Control external indexation through registered templates and deterministic quality gates.
 - Use canonical server-rendered HTML, synchronized structured data and versioned JSON endpoints.
-- Permit OAI-SearchBot on eligible public pages; decide GPTBot policy separately.
+- Use a vendor-neutral AI discovery representation and a maintained crawler registry.
+- Permit verified search/retrieval crawlers on eligible public pages across Google/Gemini, Bing/Copilot, OpenAI/ChatGPT, Anthropic/Claude, Perplexity and future systems.
+- Decide model-training access separately and consistently across providers.
 
 ## Consequences
 
-Benefits include strong legal search behavior, scalable full text/facets, zero-downtime index rebuilds, measurable relevance and controlled crawl quality. Costs include operating a managed search cluster, projection consistency work and ongoing relevance evaluation.
+Benefits include strong legal search behavior, scalable full text/facets, zero-downtime index rebuilds, measurable relevance, controlled crawl quality and reduced dependency on any one AI vendor. Costs include operating a managed search cluster, projection consistency work, ongoing relevance evaluation and quarterly crawler-policy maintenance.
 
 ## Alternatives
 
