@@ -53,6 +53,51 @@ This is not a generic press-release archive. Jurvio creates a normalized lifecyc
 
 The source registry records owner, jurisdiction, authority type, feed/API/RSS/sitemap method, terms, robots policy, cadence, archive coverage, stable IDs, update behavior and health.
 
+
+### 2.1 Component separation registry
+
+A component receives its own normalized source identity when it has one or more of the following: an independent feed or archive, stable matter identifiers, separate enforcement authority, a separate adjudicative body, materially different legal stages or terminology, distinct entity-resolution requirements, or enough user demand to justify direct search and alerts. Components may still appear visually under their parent department.
+
+Priority separations:
+
+| Parent | Separately modeled components |
+|---|---|
+| Department of Justice | Each U.S. Attorney office; Antitrust, Civil Rights, Criminal, Tax, Environment and Natural Resources, and National Security divisions; FBI; DEA; ATF; U.S. Marshals Service |
+| Department of Labor | OSHA; OSHRC; MSHA; FMSHRC; Wage and Hour Division; Employee Benefits Security Administration; OFCCP |
+| Treasury | OFAC; FinCEN; IRS Criminal Investigation; OCC |
+| Health and Human Services | FDA; HHS OIG; Office for Civil Rights; CMS; Departmental Appeals Board |
+| Transportation | FAA; NHTSA; FMCSA; FRA; PHMSA; FTA; MARAD; DOT OIG |
+| Homeland Security | ICE; HSI; CBP; USCIS; Secret Service; Coast Guard; CISA; DHS OIG |
+| Commerce | Bureau of Industry and Security; NOAA enforcement; USPTO; PTAB; TTAB; Commerce OIG |
+| Agriculture | FSIS; APHIS; Packers and Stockyards Division; Agriculture OIG |
+| Education | Office for Civil Rights; Federal Student Aid enforcement; Education OIG |
+| Housing and Urban Development | FHEO; HUD OIG; HUD administrative proceedings |
+| Interior | Fish and Wildlife Service; BSEE; BLM; Office of Surface Mining; Interior OIG |
+
+Independent agencies also require internal separation where legal meaning changes:
+
+- SEC civil litigation, administrative proceedings, Commission orders/opinions, enforcement releases and EDGAR disclosures;
+- FTC consumer-protection and competition matters, federal litigation, administrative adjudication, orders and closing letters;
+- NLRB General Counsel/regional action, administrative-law-judge decisions, Board decisions and appellate review;
+- FCC notices of apparent liability, forfeiture orders, consent decrees and final enforcement outcomes.
+
+### 2.2 Issuer-versus-reviewing-body rule
+
+Jurvio must never collapse the enforcement issuer and reviewing/adjudicative body into one actor. Examples include OSHA versus OSHRC, MSHA versus FMSHRC, NLRB General Counsel versus the Board, SEC enforcement staff versus the Commission, HHS operating agencies versus the Departmental Appeals Board, and USPTO examination versus PTAB/TTAB review.
+
+Each actor keeps its own source, authority, event type, terminology and procedural stage. The public matter page connects them into one understandable lifecycle without implying that an allegation, citation or proposed action is already final.
+
+### 2.3 Expansion order after OSHA
+
+1. U.S. Attorney offices and major DOJ litigating divisions;
+2. OFAC, FinCEN and IRS Criminal Investigation;
+3. HHS OIG and FDA;
+4. Bureau of Industry and Security;
+5. NHTSA, FAA, FMCSA and PHMSA;
+6. Wage and Hour Division and EBSA;
+7. administrative review bodies paired with their enforcement issuers;
+8. state attorneys general.
+
 ## 3. Source hierarchy
 
 Prefer in this order:
