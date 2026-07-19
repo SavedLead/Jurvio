@@ -21,6 +21,8 @@ This is not a generic press-release archive. Jurvio creates a normalized lifecyc
 - Consumer Financial Protection Bureau enforcement actions;
 - Equal Employment Opportunity Commission litigation releases;
 - Department of Labor enforcement/news and agency subdivisions;
+- Occupational Safety and Health Administration inspections, citations, proposed penalties, severe-injury/fatality releases, settlements and enforcement actions;
+- Occupational Safety and Health Review Commission contested-citation proceedings, decisions and final orders;
 - Environmental Protection Agency enforcement;
 - Federal Communications Commission enforcement bureau;
 - Food and Drug Administration enforcement, warning letters and DOJ-linked matters.
@@ -36,6 +38,7 @@ This is not a generic press-release archive. Jurvio creates a normalized lifecyc
 - National Labor Relations Board decisions and cases;
 - Department of Education enforcement/civil-rights matters;
 - Department of Housing and Urban Development enforcement;
+- Mine Safety and Health Administration and Federal Mine Safety and Health Review Commission when coverage expands;
 - Federal Energy Regulatory Commission;
 - Office of the Comptroller of the Currency, Federal Reserve and FDIC enforcement;
 - inspectors general and special counsel offices;
@@ -86,7 +89,7 @@ Core fields:
 - correction/supersession history;
 - provenance and confidence.
 
-Stages include investigation announced, complaint filed, charged/indicted, arrested, initial appearance, pleaded, tried, found liable/convicted, dismissed/acquitted, settled, sentenced, ordered, appealed, closed and investigation closed without action.
+Stages include investigation/inspection announced, citation or proposed penalty issued, citation contested, complaint filed, charged/indicted, arrested, initial appearance, pleaded, tried/heard, found liable/convicted, citation affirmed/vacated/modified, dismissed/acquitted, settled, sentenced, final order issued, appealed, closed and investigation closed without action.
 
 ## 5. Evidence-language rules
 
@@ -98,6 +101,8 @@ Jurvio uses legally accurate verbs:
 - “the defendant pleaded guilty” only after sourced plea;
 - “a jury convicted” or “the court found liable” only after sourced adjudication;
 - “agreed to settle without admitting or denying” when applicable;
+- “OSHA issued a citation and proposed penalty” before contest/finality;
+- “the citation became a final order,” “was modified,” or “was vacated” only when supported by the agency or OSHRC record;
 - “the investigation closed without action” when sourced.
 
 Criminal pages display the presumption of innocence until conviction. Settlements are not automatically admissions. Administrative allegations are not judicial findings.
@@ -122,6 +127,7 @@ Deduplicate syndicated announcements across DOJ headquarters, divisions, U.S. At
 ### Government Enforcement hub
 
 - latest actions;
+- workplace-safety inspections, citations and contested outcomes;
 - criminal charges;
 - civil enforcement;
 - administrative actions;
