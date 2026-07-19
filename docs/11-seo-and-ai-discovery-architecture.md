@@ -1,6 +1,6 @@
 # Jurvio Gate 5B: SEO and AI Discovery Architecture
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved URL/entity architecture and Gate 5A search design
 
