@@ -1,6 +1,6 @@
 # ADR 0002: Search and Discovery Foundation
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-07-19
 
 ## Context
