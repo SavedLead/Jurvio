@@ -35,7 +35,7 @@ Internal administrative and worker operations use separately authenticated route
 
 ## 2. Authentication decision
 
-Use a managed OIDC identity provider. Recommend WorkOS AuthKit as the initial choice, subject to a procurement/security/exit benchmark against Auth0, Clerk and Amazon Cognito before implementation.
+Use a managed OIDC identity provider. Recommend WorkOS AuthKit as the initial choice, subject to a procurement/security/exit benchmark against Auth0 and Clerk before implementation.
 
 Reasons:
 
