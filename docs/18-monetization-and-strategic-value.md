@@ -1,6 +1,6 @@
 # Jurvio Gate 7.5: Monetization and Strategic Value
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gates 1–7
 
@@ -136,11 +136,11 @@ Every major roadmap item is evaluated on:
 5. Repeatable acquisition channel and positive contribution margin.
 6. Strategic partnerships or inbound interest without compromising independence.
 
-## 12. Decisions requested
+## 12. Approved decisions
 
-1. Approve the free-information/paid-workflow boundary.
-2. Approve the initial $29/$99/$299 pricing ladder for testing.
-3. Approve one-time litigation reports subject to legal review.
-4. Approve monitoring and readable change intelligence as the first paid workflow.
-5. Approve the strategic-asset framework and acquisition-value metrics.
-6. Approve revenue-linked infrastructure and AI/OCR spending controls.
+1. Use the free-information/paid-workflow boundary.
+2. Test the initial $29/$99/$299 pricing ladder.
+3. Permit one-time litigation reports subject to legal review.
+4. Make monitoring and readable change intelligence the first paid workflow.
+5. Apply the strategic-asset framework and acquisition-value metrics.
+6. Enforce revenue-linked infrastructure and AI/OCR spending controls.
