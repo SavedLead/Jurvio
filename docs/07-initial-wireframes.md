@@ -1,6 +1,6 @@
 # Jurvio Gate 3C: Initial Wireframes and Page Descriptions
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19
 
 These are structural wireframes, not visual design. They define hierarchy and behavior before colors, typography, brand, or component implementation.
