@@ -1,6 +1,6 @@
 # Jurvio Gate 5A: Search and Indexing Architecture
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gates 1–4
 
