@@ -116,7 +116,7 @@ Migrate behind the queue adapter to a managed queue when measured throughput, da
 - Restrict it through private networking and least-privilege credentials.
 - Use encryption, least-privilege roles, audit logging and versioned aliases.
 - Benchmark shard count, passage volume, facets, refresh interval and hybrid-search requirements.
-- Maintain full rebuild capability from PostgreSQL/S3.
+- Maintain full rebuild capability from PostgreSQL/R2.
 - Do not use the same cluster as the sole observability log store.
 
 
