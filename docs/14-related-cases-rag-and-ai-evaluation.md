@@ -1,6 +1,6 @@
 # Jurvio Gate 6B: Related Cases, RAG, and AI Evaluation
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Gate 6A AI enrichment architecture
 
