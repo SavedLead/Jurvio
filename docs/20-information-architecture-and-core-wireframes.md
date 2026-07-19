@@ -1,6 +1,6 @@
 # Jurvio Gate 8B: Information Architecture and Core Experience Wireframes
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gates 1–8A
 
