@@ -1,14 +1,14 @@
 # Jurvio Gate 7A: Platform, Infrastructure, and Deployment Architecture
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gates 1–6
 
 ## 1. Decision summary
 
-Use AWS as Jurvio's primary cloud and Cloudflare as its public edge. Run the application and workers as portable containers on Amazon ECS with Fargate. Use managed AWS data services for PostgreSQL, object storage, queues and OpenSearch.
+Use DigitalOcean as Jurvio's primary application and managed-data cloud, with Cloudflare as the public edge and object-storage layer. Run the application and workers as portable OCI containers on DigitalOcean App Platform. Use DigitalOcean Managed PostgreSQL and Managed OpenSearch, Cloudflare R2, and an initially PostgreSQL-backed durable job queue.
 
-This is a modular monolith with independently scalable process types, not microservices and not a single all-in-one web process.
+AWS remains a future migration option, not a launch dependency. This is a modular monolith with independently scalable process types, not microservices and not a single all-in-one web process.
 
 ## 2. Approved technology direction
 
@@ -18,19 +18,19 @@ This is a modular monolith with independently scalable process types, not micros
 | Styling/UI | Tailwind CSS with Jurvio-owned design tokens/components | Fast implementation without surrendering design control |
 | Runtime | Current supported Node.js LTS | Stable production support; pin and upgrade deliberately |
 | Packaging | OCI/Docker containers | Portability across local, CI and cloud environments |
-| Compute | Amazon ECS on Fargate | Scalable containers without Kubernetes/EC2 cluster management |
-| Canonical database | Amazon RDS for PostgreSQL | Managed backups, failover and operational maturity |
-| Object storage | Amazon S3 | Raw artifacts, PDFs, extracted text, exports and analytics events |
-| Queue | Amazon SQS + dead-letter queues | Durable at-least-once work delivery and simple operations |
-| Search | Amazon OpenSearch Service | Managed implementation of the approved search architecture |
+| Compute | DigitalOcean App Platform | Managed web services, workers, jobs, scaling and OS patching without Kubernetes |
+| Canonical database | DigitalOcean Managed PostgreSQL | Managed backups, failover and simpler predictable operations |
+| Object storage | Cloudflare R2 | S3-compatible storage with no ordinary internet-egress charge; suited to document delivery |
+| Queue | PostgreSQL-backed durable job queue initially | Transactional outbox, leases, retries and DLQ behavior without another launch dependency |
+| Search | DigitalOcean Managed OpenSearch | Managed implementation of the approved search architecture |
 | Edge | Cloudflare DNS/CDN/WAF/rate limiting/bot controls | Performance, protection and verified-crawler policy |
 | Email | Transactional email provider selected by benchmark | Keep provider behind an adapter; separate transactional and marketing consent |
 | SMS | Deferred; provider adapter later | Costly and regulated; not required for initial alerts |
 | Payments | Stripe Billing/Checkout/Customer Portal | Avoid storing card data and building billing UI |
 | Infrastructure | Terraform | Reviewable, repeatable cloud configuration without console drift |
-| CI/CD | GitHub Actions + Amazon ECR/ECS deployment | Fits the repository and container architecture |
+| CI/CD | GitHub Actions + DigitalOcean Container Registry/App Platform | Fits the repository and portable container architecture |
 
-AWS documents Fargate as running ECS containers without managing EC2 servers or clusters ([AWS Fargate](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html)).
+DigitalOcean App Platform supports container deployments, workers, jobs, scaling, patching, metrics and log forwarding ([App Platform](https://docs.digitalocean.com/products/app-platform/)). Cloudflare R2 exposes an S3-compatible API and does not charge ordinary internet egress ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
 
 ## 3. Runtime topology
 
@@ -39,48 +39,42 @@ Internet and verified crawlers
         ↓
 Cloudflare DNS / CDN / WAF / rate controls
         ↓
-AWS Application Load Balancer
-        ↓
-ECS Fargate services
+DigitalOcean App Platform
   ├─ web: Next.js public pages and account UI
   ├─ api: public/internal REST endpoints
-  ├─ worker-ingest
-  ├─ worker-normalize
-  ├─ worker-enrich
-  ├─ worker-index
+  ├─ worker-ingest / normalize / enrich / index
   └─ scheduler/control process
         ↓
-RDS PostgreSQL · S3 · SQS · OpenSearch
+Managed PostgreSQL · Managed OpenSearch · Cloudflare R2
 ```
 
-The initial implementation may package web and API from one codebase. Separate ECS services/process commands allow scaling and security policies without creating separate product repositories.
+The initial implementation may package web and API from one codebase. Separate App Platform components/process commands allow scaling and security policies without creating separate product repositories.
 
 ## 4. Network architecture
 
-- One AWS organization with separate production and non-production accounts.
-- VPC per environment across at least two Availability Zones.
-- Public subnets contain only load balancers/NAT where necessary.
-- ECS tasks, RDS and OpenSearch use private subnets.
-- RDS and OpenSearch have no public endpoint.
-- Security groups allow only required service-to-service paths.
-- Use VPC endpoints for high-volume AWS services when cost/traffic supports them.
-- Administrative access uses audited identity-aware AWS access, not shared SSH keys or bastion passwords.
+- Separate DigitalOcean projects for production and non-production.
+- Private VPC connectivity for application components, PostgreSQL and OpenSearch where supported.
+- PostgreSQL and OpenSearch allow only required application and administrative paths.
+- Cloudflare is the only intended public ingress for production web traffic; origin-bypass paths are restricted.
+- Administrative access uses named, MFA-protected accounts and audited role-based access, never shared credentials.
+- Dedicated egress IPs are added only for providers that require allowlisting.
+- Terraform manages DigitalOcean and Cloudflare configuration to prevent console drift.
+- Cross-provider traffic and egress are measured explicitly.
 
 ## 5. Database availability
 
 - Development may use a smaller single-AZ database.
-- Public beta production uses RDS PostgreSQL Multi-AZ.
+- Public beta production uses a high-availability DigitalOcean Managed PostgreSQL configuration.
 - Enable encrypted automated backups and point-in-time recovery.
 - Apply connection pooling; workers cannot open unbounded connections.
 - Read replicas are introduced only after measured read pressure.
 - Schema changes use backward-compatible expand/migrate/contract deployments.
 - Search and analytics workloads do not run expensive scans against the canonical production database.
 
-AWS Multi-AZ provides standby/failover options, while some configurations can also serve read traffic ([RDS Multi-AZ](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html)).
 
 ## 6. Object-storage architecture
 
-S3 buckets are separated by purpose and environment:
+Cloudflare R2 buckets are separated by purpose and environment:
 
 - immutable source artifacts;
 - processed text/layout/passages;
@@ -102,31 +96,29 @@ Requirements:
 
 ## 7. Queue and worker architecture
 
-Use SQS queues by workload class rather than one global queue:
+Start with a PostgreSQL-backed durable job system using the approved transactional outbox pattern. It uses explicit workload classes for acquisition, OCR, normalization, enrichment, indexing, invalidation, alerts and analytics.
 
-- acquisition;
-- parsing/OCR;
-- normalization/resolution;
-- AI enrichment;
-- search projection;
-- sitemap/cache invalidation;
-- alerts/notifications;
-- analytics processing.
+Requirements:
 
-Each queue has idempotent consumers, visibility-timeout/heartbeat policy, bounded retries, DLQ, alarm and controlled redrive. AWS recommends DLQs to isolate messages that repeatedly fail processing ([SQS dead-letter queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)).
+- `FOR UPDATE SKIP LOCKED` or equivalent safe claims;
+- leases, heartbeats and abandoned-job recovery;
+- idempotency keys and at-least-once processing semantics;
+- bounded retries, dead-letter tables, alarms and controlled redrive;
+- separate concurrency and budget limits by workload;
+- short operational retention so queue history does not become an analytics store;
+- metrics for age, depth, throughput, failure and saturation.
 
-Do not add Kafka, Kubernetes, a service mesh or workflow orchestrator at launch. Reconsider a workflow engine only when multi-day dependencies and manual recovery become operationally costly.
+Migrate behind the queue adapter to a managed queue when measured throughput, database contention or recovery needs justify it. Do not add Kafka, Kubernetes, Redis or a workflow orchestrator at launch.
 
 ## 8. OpenSearch deployment
 
-- Use a managed OpenSearch domain or Serverless collection after workload/cost benchmarking.
-- Keep it inside private network controls.
+- Use DigitalOcean Managed OpenSearch after workload and cost benchmarking.
+- Restrict it through private networking and least-privilege credentials.
 - Use encryption, least-privilege roles, audit logging and versioned aliases.
 - Benchmark shard count, passage volume, facets, refresh interval and hybrid-search requirements.
 - Maintain full rebuild capability from PostgreSQL/S3.
 - Do not use the same cluster as the sole observability log store.
 
-Amazon OpenSearch Service is managed for deployment, operation and scaling; AWS still recommends continuous workload-specific testing and tuning ([service overview](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/what-is.html), [operational guidance](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/bp.html)).
 
 ## 9. CDN and cache strategy
 
@@ -146,7 +138,7 @@ Amazon OpenSearch Service is managed for deployment, operation and scaling; AWS 
 - shared non-production/staging;
 - production.
 
-Production uses a separate AWS account, secrets, data and identity configuration. No production data is copied into development without an approved sanitization process.
+Production uses a separate DigitalOcean project and separate Cloudflare resources, secrets, data and identity configuration. No production data is copied into development without an approved sanitization process.
 
 ### Delivery pipeline
 
@@ -154,7 +146,7 @@ Production uses a separate AWS account, secrets, data and identity configuration
 2. dependency/security scan;
 3. unit, integration, contract, accessibility and selected end-to-end tests;
 4. reproducible container build with immutable digest/SBOM;
-5. push to ECR;
+5. push to DigitalOcean Container Registry;
 6. deploy database-compatible release to staging;
 7. smoke/synthetic checks;
 8. production deployment with health gates;
@@ -174,25 +166,26 @@ Production uses a separate AWS account, secrets, data and identity configuration
 - Precompute public projections instead of joining the knowledge graph on every page view.
 - Cache high-demand public pages at the edge.
 - Add read replicas, table partitioning and specialized services only after measured bottlenecks.
-- Preserve an escape path from Fargate to ECS on EC2 or another container platform if compute economics require it.
+- Preserve an escape path from App Platform to DigitalOcean Droplets, Hetzner batch compute or another OCI-compatible platform if compute economics require it.
 
 ## 12. Alternatives considered
 
 | Alternative | Why not recommended now | Reconsider when |
 |---|---|---|
-| Vercel web + multiple backend clouds | Excellent developer experience but splits operations, networking and cost controls | Benchmark shows large delivery advantage without harmful fragmentation |
-| Kubernetes/EKS | Too much operational surface for the initial team | Service count/team/platform needs justify it |
-| Serverless functions for all processing | Poor fit for long document/OCR/enrichment jobs and connection control | Small event-driven endpoints only |
-| Self-managed EC2 | More patching/capacity work | Sustained Fargate cost makes EC2 clearly cheaper |
-| Supabase as production platform | Useful product, but Jurvio's scale/security architecture benefits from one AWS foundation | Reassess for noncritical internal tools |
+| AWS | Broad and mature, but greater billing, networking and operational complexity than Jurvio needs at launch | Enterprise requirements or measured scale justify migration |
+| Hetzner as primary platform | Excellent compute economics but would force more self-management or vendor fragmentation for PostgreSQL and OpenSearch | Stateless batch workloads dominate cost or the team can operate the data plane safely |
+| Render/Railway | Strong developer experience but no first-party managed OpenSearch and less attractive document/search economics | Product scope remains much smaller than projected |
+| Kubernetes | Too much operational surface for the initial team | Service count/team/platform needs justify it |
+| Serverless functions for all processing | Poor fit for long document/OCR/enrichment jobs | Small event-driven endpoints only |
 | Microservices | Premature contracts, deployment and distributed-data overhead | Clear team/domain/scaling boundaries emerge |
 
-## 13. Gate 7A decisions requested
+## 13. Gate 7A approved decisions
 
-1. Approve AWS as primary cloud and Cloudflare as public edge.
-2. Approve containerized Next.js/API/workers on ECS Fargate.
-3. Approve RDS PostgreSQL, S3, SQS and managed OpenSearch.
-4. Approve modular-monolith codebase with independently scalable process types.
-5. Approve Terraform and GitHub Actions with immutable container deployments.
-6. Approve no Kubernetes, Kafka, Redis or microservices until measured triggers exist.
+1. DigitalOcean is the primary application and managed-data cloud; Cloudflare is the public edge and object-storage layer.
+2. Next.js/API/workers run as portable containers on DigitalOcean App Platform.
+3. Use DigitalOcean Managed PostgreSQL, DigitalOcean Managed OpenSearch and Cloudflare R2.
+4. Use a PostgreSQL-backed durable job queue initially behind a provider-neutral adapter.
+5. Keep the modular monolith with independently scalable process types.
+6. Use Terraform and GitHub Actions with immutable container deployments.
+7. Do not adopt Kubernetes, Kafka, Redis or microservices until measured triggers exist.
 
