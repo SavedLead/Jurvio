@@ -1,6 +1,6 @@
 # Jurvio Gate 2A: Launch Corpus Specification
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gate 1 strategy
 
@@ -277,4 +277,3 @@ The corpus is ready for a public beta only when:
 4. Approve opinions and substantive orders as v1’s primary documents.
 5. Approve selected complaints/motions only when necessary for case understanding or an approved monitored category.
 6. Approve measured court/source coverage rather than an “all cases” claim.
-
