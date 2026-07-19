@@ -109,7 +109,7 @@ Server/edge/search/API events
 
 ### Reconsideration trigger
 
-Adopt ClickHouse Cloud, a product-analytics platform or another warehouse when event volume, interactive analysis or team needs make S3/Athena/aggregates operationally inadequate. Procurement must preserve raw first-party export and metric ownership.
+Adopt ClickHouse Cloud, a product-analytics platform or another warehouse when event volume, interactive analysis or team needs make R2/portable-SQL aggregates operationally inadequate. Procurement must preserve raw first-party export and metric ownership.
 
 ## 7. Backup and recovery
 
