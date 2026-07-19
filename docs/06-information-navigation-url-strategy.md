@@ -1,6 +1,6 @@
 # Jurvio Gate 3B: Information, Navigation, and URL Strategy
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19
 
 ## 1. Information architecture
