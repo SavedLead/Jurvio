@@ -1,6 +1,6 @@
 # Jurvio Gate 8A: Understanding, Procedure, News, Policy, and Citation Experience
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved product, data, AI, SEO and platform foundations
 
@@ -218,12 +218,12 @@ Next:
 - Prediction language reflects evidence and uncertainty.
 - Neutrality and correction audits pass.
 
-## 16. Decisions requested
+## 16. Approved decisions
 
-1. Approve the layered fifth-grade-first explanation model.
-2. Approve Understanding and Legal Procedure Intelligence as core products.
-3. Approve jurisdiction, court context, policy status and next-step requirements.
-4. Approve Supreme Court, Explained and Cases in the News as connected public products.
-5. Approve the Citation Context Layer and evidence-based treatment model.
-6. Approve the neutrality, forecasting and evidence-status safeguards.
-7. Approve the stated launch priority and phased expansion.
+1. Use the layered fifth-grade-first explanation model.
+2. Treat Understanding and Legal Procedure Intelligence as core products.
+3. Implement jurisdiction, court context, policy status and next-step requirements.
+4. Build Supreme Court, Explained and Cases in the News as connected public products.
+5. Build the Citation Context Layer with evidence-based treatment.
+6. Enforce the neutrality, forecasting and evidence-status safeguards.
+7. Follow the stated launch priority and phased expansion.
