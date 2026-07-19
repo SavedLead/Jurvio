@@ -1,6 +1,6 @@
 # Jurvio Gate 3A: Entity and Identity Architecture
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19
 
 ## 1. Principle
