@@ -1,6 +1,6 @@
 # ADR 0003: AI Intelligence Foundation
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-07-19
 
 ## Context
