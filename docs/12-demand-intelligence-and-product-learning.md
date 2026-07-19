@@ -1,6 +1,6 @@
 # Jurvio Gate 6 Foundation: Demand Intelligence and Product Learning
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gates 1–5
 
