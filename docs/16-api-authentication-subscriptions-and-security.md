@@ -1,6 +1,6 @@
 # Jurvio Gate 7B: API, Authentication, Subscriptions, and Security
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Gate 7A platform architecture
 
@@ -142,16 +142,16 @@ Stripe recommends webhook-based handling for subscription/payment state changes 
 
 ### Identity and access
 
-- AWS IAM Identity Center/federated staff access.
-- No shared accounts or long-lived human access keys.
-- Least-privilege task roles per process type.
-- Separate production and non-production identities.
+- DigitalOcean Teams and Cloudflare role-based access with mandatory staff MFA.
+- No shared accounts, shared API tokens or long-lived human credentials.
+- Least-privilege application credentials per process type.
+- Separate production and non-production projects, resources and identities.
 - Quarterly access reviews and immediate offboarding.
 
 ### Secrets and encryption
 
-- AWS Secrets Manager/SSM for secrets; no secrets in GitHub, images or logs.
-- KMS-backed encryption for RDS, S3, queues, backups and sensitive exports.
+- DigitalOcean App Platform encrypted secrets plus narrowly scoped Cloudflare and database credentials; no secrets in GitHub, images or logs.
+- Provider-managed encryption for Managed PostgreSQL, Managed OpenSearch, R2, backups and sensitive exports.
 - TLS externally and internally where service support provides it.
 - Key rotation and break-glass procedures.
 
@@ -220,12 +220,12 @@ Before public beta:
 9. incident response and contact tree documented;
 10. independent penetration test or scoped expert review completed before paid/API expansion.
 
-## 10. Gate 7B decisions requested
+## 10. Gate 7B approved decisions
 
-1. Approve REST/JSON `/api/v1`, OpenAPI contracts and cursor pagination.
-2. Approve managed OIDC authentication, with WorkOS AuthKit as benchmark-leading candidate.
-3. Approve Jurvio-owned roles, permissions and entitlements rather than provider-only authorization.
-4. Approve free public reading and configurable future feature entitlements.
-5. Approve Stripe for billing with an internal webhook-derived entitlement projection.
-6. Approve the security, privacy and audit boundaries described above.
+1. Use REST/JSON `/api/v1`, OpenAPI contracts and cursor pagination.
+2. Use managed OIDC authentication, with WorkOS AuthKit as the benchmark-leading candidate.
+3. Jurvio owns roles, permissions and entitlements rather than delegating authorization solely to a provider.
+4. Preserve free public reading and configurable future feature entitlements.
+5. Use Stripe for billing with an internal webhook-derived entitlement projection.
+6. Apply the security, privacy and audit boundaries described above.
 
