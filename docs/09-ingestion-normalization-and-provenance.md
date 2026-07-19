@@ -1,6 +1,6 @@
 # Jurvio Gate 4B: Ingestion, Normalization, and Provenance Architecture
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Gate 4A canonical model
 
