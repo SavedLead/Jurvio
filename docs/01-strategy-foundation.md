@@ -166,3 +166,72 @@ Because the initial product is free, first-release success will be measured thro
 - What correction and identity-dispute process is required before public indexing?
 - Which usage signal should trigger on-demand enrichment?
 - When should Jurvio begin monetization experiments?
+
+
+## Refined party-page publication model
+
+Jurvio will not require nationwide identity resolution before publishing useful case-party pages.
+
+### Case-party page
+
+Every party appearance may have a page scoped to that specific case. It presents only what the record and other reliable sources support:
+
+- Name exactly as it appears in the case
+- Role in the case
+- Case, court, jurisdiction, and dates
+- Attorneys and firms of record
+- Procedural status and disposition
+- Location, employer, title, company affiliation, or other identifying context only when reliably supported
+- Clear source citations and update timestamps
+
+The page must not imply that it represents every person in the country with that name.
+
+### Name disambiguation page
+
+When multiple case-party records share a name, Jurvio may provide a neutral selection page similar to a people-search directory. It can help users distinguish records using supported context such as:
+
+- Court and state
+- Case name and number
+- Party role
+- Filing year
+- Supported company or professional affiliation
+- Supported city or state
+
+The page must explicitly state that records with the same name may involve different people.
+
+### Canonical person or organization profile
+
+Several case-party pages may be consolidated only when evidence sufficiently supports that they describe the same entity. Consolidation is not required for launch.
+
+### Addresses and social profiles
+
+Possible addresses, LinkedIn profiles, social accounts, or other enrichment matches may be stored as private verification candidates. They should not be published as belonging to a party until the association is verified to an appropriate confidence standard and publication is lawful and necessary.
+
+### Disclaimer limitation
+
+Jurvio will display clear notices that:
+
+- Court filings may contain unproven allegations.
+- Inclusion in a case does not imply wrongdoing.
+- People with the same name may be different individuals.
+- Users should consult the underlying record.
+
+Disclaimers supplement accurate product design; they do not excuse false identity merges, misleading summaries, or unsupported associations.
+
+## Editorial role
+
+Jurvio is an explainer and structured reader of the public record, not the originator of the parties' allegations.
+
+Jurvio may produce summaries when they:
+
+- Identify the source document
+- Distinguish allegations, arguments, findings, orders, and outcomes
+- Use neutral language
+- Link to the underlying record
+- Display generation and update provenance
+- Avoid adding unsupported facts or conclusions
+- Can be corrected and regenerated with an audit history
+
+The preferred product language is:
+
+> Jurvio explains what the public court record says and shows the sources supporting that explanation.
