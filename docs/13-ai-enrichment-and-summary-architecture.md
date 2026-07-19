@@ -1,6 +1,6 @@
 # Jurvio Gate 6A: AI Enrichment and Summary Architecture
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gates 1–5 and the Gate 6 Demand Intelligence foundation
 
