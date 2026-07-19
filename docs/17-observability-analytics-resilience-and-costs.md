@@ -1,12 +1,12 @@
 # Jurvio Gate 7C: Observability, Analytics, Resilience, and Cost Operations
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Demand Intelligence and Gate 7A–7B
 
 ## 1. Observability decision
 
-Instrument Jurvio with OpenTelemetry so traces, metrics and logs remain portable. Use AWS CloudWatch/X-Ray-compatible services initially, with Sentry or another focused error tool only if its measured workflow value justifies the added vendor.
+Instrument Jurvio with OpenTelemetry so traces, metrics and logs remain portable. Use DigitalOcean platform metrics/log forwarding and Cloudflare analytics initially, with Sentry or another focused error tool only if its measured workflow value justifies the added vendor.
 
 OpenTelemetry is a vendor-neutral framework for traces, metrics and logs, which preserves backend choice ([OpenTelemetry documentation](https://opentelemetry.io/docs/what-is-opentelemetry/)).
 
@@ -93,8 +93,8 @@ Ticket/working-hours alerts for isolated jobs, ordinary DLQ growth, individual p
 Server/edge/search/API events
   → validated event collector
   → durable queue/buffer
-  → encrypted S3 event lake (partitioned, columnar)
-  → scheduled SQL/Athena analysis
+  → encrypted Cloudflare R2 event lake (partitioned, columnar)
+  → scheduled portable SQL analysis
   → small aggregate/recommendation tables
   → internal dashboards and weekly recommendations
 ```
@@ -113,9 +113,9 @@ Adopt ClickHouse Cloud, a product-analytics platform or another warehouse when e
 
 ## 7. Backup and recovery
 
-- RDS Multi-AZ plus encrypted automated backups and point-in-time recovery.
-- Scheduled snapshots and policy-driven cross-region copy/export.
-- S3 versioning/lifecycle and replication for irreplaceable approved artifacts as required.
+- DigitalOcean Managed PostgreSQL high availability, encrypted automated backups and point-in-time recovery where supported by the selected plan.
+- Scheduled logical exports to a separate recovery location in addition to provider-managed backups.
+- R2 lifecycle controls, retention protections and replicated/exported recovery copies for irreplaceable approved artifacts as required.
 - Terraform and deployment configuration in version control.
 - OpenSearch is rebuilt from canonical data; snapshots may shorten recovery but are not sole backup.
 - Queue/event idempotency enables replay.
@@ -148,12 +148,12 @@ These are internal design targets and require restoration tests before being tre
 
 Tag and allocate costs by environment, service and workload. Maintain dashboards for:
 
-- RDS storage/IO/compute;
-- Fargate CPU/memory/task hours;
-- OpenSearch capacity/storage;
-- S3 storage, requests and egress;
-- Cloudflare/CDN traffic;
-- SQS requests/queue age;
+- Managed PostgreSQL storage/compute/connections;
+- App Platform CPU/memory/container hours and bandwidth;
+- Managed OpenSearch capacity/storage;
+- R2 storage, operations and retrieval classes;
+- Cloudflare/CDN traffic and security usage;
+- PostgreSQL job-queue age, depth and database impact;
 - OCR, AI and embeddings;
 - email/SMS;
 - source/PACER/licensing;
@@ -164,25 +164,28 @@ Controls:
 - budgets and anomaly alerts;
 - per-task/provider circuit breakers;
 - non-production schedules and retention limits;
-- S3 lifecycle policies;
+- R2 lifecycle and retention policies;
 - CDN caching and compressed derivatives;
 - autoscaling minimum/maximum bounds;
 - cost-per-entity and cost-per-engaged-page reporting;
-- quarterly reserved-capacity/Savings Plans review after stable baselines;
+- quarterly comparison of App Platform, Droplets, Hetzner batch compute and managed alternatives after stable baselines;
 - no automatic expensive acquisition/enrichment based only on bot traffic.
 
 ## 10. Initial cost envelope
 
-Before measured sizing, maintain the previously approved directional target of approximately **$1,000–$5,000 per month** for early production infrastructure excluding payroll, legal review, major licensing/PACER acquisition and exceptional OCR/AI campaigns.
+Before measured sizing, target approximately **$400–$1,500 per month** for initial public beta hosting and **$1,000–$3,000 per month** for redundant early production hosting, excluding payroll, legal review, major licensing/PACER acquisition and exceptional campaigns.
 
-The lower end may require single-AZ/non-production compromises and careful OpenSearch sizing; public-beta production Multi-AZ, managed search and growing document traffic will move toward or beyond the upper end. A pre-build load/storage model must replace this directional range before procurement.
+Set a hard **$500 per month combined AI/OCR launch ceiling** until measured traffic or revenue supports an increase. Court-document purchasing and enrichment must be demand-driven: free/public sources first, then selective acquisition based on user demand, legal importance or strategic SEO value. Bot traffic alone cannot authorize expensive acquisition or enrichment.
 
-## 11. Gate 7C decisions requested
+A pre-build load, storage, document-acquisition and enrichment model must replace these directional ranges before procurement.
 
-1. Approve OpenTelemetry with an initially AWS-centered observability backend.
-2. Approve separate audit, application, security and product-analytics streams.
-3. Approve S3/columnar event lake + SQL aggregates as the first Demand Intelligence implementation.
-4. Approve internal SLOs, runbooks, severity rules and restoration testing.
-5. Approve the initial RPO/RTO targets as design goals subject to testing.
-6. Approve cost allocation, budgets, anomaly detection and workload circuit breakers.
+## 11. Gate 7C approved decisions
+
+1. Use OpenTelemetry with DigitalOcean/Cloudflare operational signals and a portable backend boundary.
+2. Separate audit, application, security and product-analytics streams.
+3. Use an R2/columnar event lake plus portable SQL aggregates for the first Demand Intelligence implementation.
+4. Adopt the internal SLOs, runbooks, severity rules and restoration testing described above.
+5. Treat the initial RPO/RTO targets as design goals subject to testing.
+6. Enforce cost allocation, budgets, anomaly detection and workload circuit breakers.
+7. Enforce the $500 monthly AI/OCR launch ceiling and demand-driven document acquisition.
 
