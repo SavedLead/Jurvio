@@ -1,6 +1,6 @@
 # Jurvio Gate 4A: Canonical Data Model and ERD
 
-**Status:** Decision draft  
+**Status:** Approved  
 **Date:** 2026-07-19  
 **Depends on:** Approved Gates 1–3
 
