@@ -339,6 +339,40 @@ Recommended route pattern:
 
 Subpages are server-rendered, internally linked and indexable only when they contain substantial unique public value. Thin or unavailable subpages remain navigable for users but use appropriate noindex/canonical handling to avoid SEO duplication. All routes preserve the same case identifier, caption, status and breadcrumb context.
 
+### 7.10 Case-hub SEO and discovery rules
+
+A case is a content cluster with the overview as its hub. Every qualified subpage targets a distinct user intent rather than repeating the overview.
+
+| Route | Primary search intent | Required unique value |
+|---|---|---|
+| Overview | understand the case and current status | summary, posture, key events and entity relationships |
+| Docket | case docket and latest filings | complete normalized entries, filters and filing context |
+| Documents | complaints, orders, opinions and filings | readable HTML, document metadata and source provenance |
+| Parties | who is involved | complete roles, aliases, participation dates and representation |
+| Attorneys | who represents whom | appearances, withdrawals, clients and firms |
+| Timeline | what happened and when | normalized procedural milestones and status changes |
+| Citations | authorities used in the case | cited authorities, treatment, propositions and pinpoint context |
+| News & Analysis | reporting and professional analysis | attributed coverage, official releases and source diversity |
+| Related | connected litigation | relationship type and evidence for the connection |
+
+Each indexable page receives:
+
+- a unique title, H1 and description aligned to its intent;
+- a self-canonical URL and stable case identifier;
+- the persistent current-status module;
+- case and breadcrumb structured data plus page-specific machine-readable fields;
+- crawlable server-rendered primary content;
+- links to the overview, sibling subpages and relevant entity pages;
+- source, last-updated and last-verified information;
+- useful pagination with crawl controls for very large dockets;
+- an XML-sitemap entry only after the quality threshold passes.
+
+Navigation uses real links rather than JavaScript-only tabs. Desktop may visually present these as tabs; mobile uses a scrollable section navigation or menu. A visitor landing from search on any subpage immediately sees what Jurvio is, which case they reached, the current status, and how to explore the complete case.
+
+Indexing is quality-gated. A route is not indexed merely because it exists. Duplicate captions, empty tabs, low-confidence identities, parameter combinations, search/filter states and near-identical paginated views do not become indexable pages. This protects crawl budget, topical authority and long-term search quality.
+
+For large dockets, the first docket page provides the canonical overview and recent/important entries. Older entries remain accessible through stable pagination or date ranges, while query parameters for arbitrary sorting and filters are non-indexable. Important documents can have their own indexable document pages when rights, OCR quality and unique content requirements are satisfied.
+
 ## 8. Accessibility requirements
 
 Target WCAG 2.2 AA.
