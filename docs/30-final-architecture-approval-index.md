@@ -1,6 +1,6 @@
 # Jurvio Final Architecture Approval Index
 
-**Status:** Awaiting owner approval  
+**Status:** Approved for Milestones M0 and M1  
 **Date:** 2026-07-19  
 **Branch:** `planning/foundation-blueprint`
 
