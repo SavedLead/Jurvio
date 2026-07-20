@@ -32,6 +32,10 @@ Set `COURTLISTENER_TOKEN` when required, then run `pnpm ingest:docket <courtlist
 
 The adapter stores the unmodified response, records its hash and provenance, normalizes only supported fields, and emits a transactional `case.changed` outbox event.
 
+## Internal publication console
+
+`/internal/publication` is protected by Cloudflare Access JWT validation and Jurvio role-based authorization. Bootstrap authorized staff with `pnpm internal:user <email> <role>` after applying migrations. See `docs/32-internal-access-runbook.md` for setup and verification.
+
 ## Architectural invariants
 
 - PostgreSQL is canonical; search and AI outputs are rebuildable projections.
