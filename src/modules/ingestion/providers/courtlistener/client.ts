@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { env } from "@/lib/config/env";
 import {
   courtListenerDocketSchema,
+  courtListenerDocketEntryPageSchema,
   courtListenerPageSchema,
   courtListenerPartyPageSchema,
   type CourtListenerDocket,
+  type CourtListenerDocketEntry,
   type CourtListenerParty,
 } from "./schema";
 
@@ -114,4 +116,36 @@ export async function fetchDocketParties(
   }
 
   throw new Error(`CourtListener party pagination exceeded ${maximumPages} pages`);
+}
+
+export async function fetchDocketEntries(
+  docketId: number,
+  maximumPages = 500,
+): Promise<RetrievedRecord<CourtListenerDocketEntry>[]> {
+  const records: RetrievedRecord<CourtListenerDocketEntry>[] = [];
+  let next: string | null = null;
+
+  for (let pageNumber = 0; pageNumber < maximumPages; pageNumber += 1) {
+    const url = next
+      ? new URL(next)
+      : new URL("docket-entries/", `${env().COURTLISTENER_API_BASE_URL}/`);
+
+    if (!next) {
+      url.searchParams.set("docket", String(docketId));
+      url.searchParams.set("order_by", "date_filed,id");
+    }
+
+    const { response, body } = await retrieve(url);
+    const page = courtListenerDocketEntryPageSchema.parse(JSON.parse(body));
+    records.push(
+      ...page.results.map((record) =>
+        wrap(record, record.resource_uri, JSON.stringify(record), response),
+      ),
+    );
+
+    next = page.next;
+    if (!next) return records;
+  }
+
+  throw new Error(`CourtListener docket-entry pagination exceeded ${maximumPages} pages`);
 }
