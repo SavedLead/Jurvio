@@ -40,7 +40,7 @@ export async function ingestCourtListenerDocket(
         ${retrieved.contentHash}, ${stored.objectKey}, 'application/json',
         ${retrieved.retrievedAt}, ${tx.json(retrieved.responseMetadata)}
       )
-      ON CONFLICT (provider_id, content_hash)
+      ON CONFLICT (provider_id, source_uri, content_hash)
       DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
       RETURNING id
     `;
