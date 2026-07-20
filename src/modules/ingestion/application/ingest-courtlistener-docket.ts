@@ -4,6 +4,7 @@ import { fetchDocket } from "../providers/courtlistener/client";
 import { normalizeCourtListenerDocket } from "../normalize/courtlistener";
 import type { ArtifactStore } from "./artifact-store";
 import { ingestCourtListenerParties } from "./ingest-courtlistener-parties";
+import { ingestCourtListenerDocketEntries } from "./ingest-courtlistener-docket-entries";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -125,10 +126,17 @@ export async function ingestCourtListenerDocket(
     docketId,
   });
 
+  const docketEntries = await ingestCourtListenerDocketEntries(sql, artifactStore, {
+    providerId: caseResult.providerId,
+    caseId: caseResult.internalCaseId,
+    docketId,
+  });
+
   return {
     caseId: caseResult.caseId,
     sourceCaseId: caseResult.sourceCaseId,
     rawArtifactId: caseResult.rawArtifactId,
     parties,
+    docketEntries,
   };
 }
