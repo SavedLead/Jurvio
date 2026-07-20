@@ -1,0 +1,94 @@
+import type postgres from "postgres";
+
+type Sql = ReturnType<typeof postgres>;
+
+export interface PublicDocketEntry {
+  publicId: string;
+  entryNumber: string | null;
+  filedOn: string | null;
+  description: string;
+  importance: string;
+}
+export interface PublicParty {
+  publicId: string;
+  displayName: string;
+  role: string;
+  nameAsFiled: string;
+}
+export interface PublicDocument {
+  publicId: string;
+  title: string;
+  documentType: string;
+  filedOn: string | null;
+  extractionConfidence: string | null;
+}
+
+export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = 250) {
+  return sql<PublicDocketEntry[]>`
+    SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
+      entry.filed_on::text AS "filedOn", entry.description, entry.importance
+    FROM docket_entry entry
+    JOIN legal_case legal_case ON legal_case.id = entry.case_id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND EXISTS (
+        SELECT 1 FROM publication_decision decision
+        WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
+          AND decision.displayable
+      )
+      AND EXISTS (
+        SELECT 1 FROM publication_decision decision
+        WHERE decision.object_type = 'docket_entry' AND decision.object_id = entry.id
+          AND decision.displayable
+      )
+    ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST
+    LIMIT ${limit}
+  `;
+}
+
+export async function listPublicParties(sql: Sql, casePublicId: string) {
+  return sql<PublicParty[]>`
+    SELECT entity.public_id AS "publicId", entity.display_name AS "displayName",
+      appearance.role, appearance.party_name_as_filed AS "nameAsFiled"
+    FROM party_appearance appearance
+    JOIN legal_case legal_case ON legal_case.id = appearance.case_id
+    JOIN entity ON entity.id = appearance.entity_id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND EXISTS (
+        SELECT 1 FROM publication_decision decision
+        WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
+          AND decision.displayable
+      )
+      AND EXISTS (
+        SELECT 1 FROM publication_decision decision
+        WHERE decision.object_type = 'entity' AND decision.object_id = entity.id
+          AND decision.displayable
+      )
+    ORDER BY appearance.role, entity.normalized_name
+  `;
+}
+
+export async function listPublicDocuments(sql: Sql, casePublicId: string) {
+  return sql<PublicDocument[]>`
+    SELECT document.public_id AS "publicId", document.title,
+      document.document_type AS "documentType", document.filed_on::text AS "filedOn",
+      document.extraction_confidence::text AS "extractionConfidence"
+    FROM document
+    JOIN legal_case legal_case ON legal_case.id = document.case_id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND document.publication = 'published'
+      AND EXISTS (
+        SELECT 1 FROM publication_decision decision
+        WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
+          AND decision.displayable
+      )
+      AND EXISTS (
+        SELECT 1 FROM publication_decision decision
+        WHERE decision.object_type = 'document' AND decision.object_id = document.id
+          AND decision.displayable
+      )
+    ORDER BY document.filed_on DESC NULLS LAST, document.title
+  `;
+}
