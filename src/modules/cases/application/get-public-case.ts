@@ -13,6 +13,7 @@ export interface PublicCase {
   dispositionScope: string;
   judgmentState: string;
   appealState: string;
+  verification: string;
   statusExplanation: string | null;
   statusRuleVersion: string | null;
 }
@@ -20,16 +21,11 @@ export interface PublicCase {
 export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicCase | null> {
   const [record] = await sql<PublicCase[]>`
     SELECT
-      c.public_id AS "publicId",
-      c.caption,
-      c.docket_number AS "docketNumber",
-      c.filed_on::text AS "filedOn",
-      court.name AS "courtName",
-      c.activity_state AS "activityState",
-      c.procedural_phase AS "proceduralPhase",
-      c.disposition_scope AS "dispositionScope",
-      c.judgment_state AS "judgmentState",
-      c.appeal_state AS "appealState",
+      c.public_id AS "publicId", c.caption, c.docket_number AS "docketNumber",
+      c.filed_on::text AS "filedOn", court.name AS "courtName",
+      c.activity_state AS "activityState", c.procedural_phase AS "proceduralPhase",
+      c.disposition_scope AS "dispositionScope", c.judgment_state AS "judgmentState",
+      c.appeal_state AS "appealState", c.verification::text AS verification,
       c.status_explanation AS "statusExplanation",
       c.status_rule_version AS "statusRuleVersion"
     FROM legal_case c
@@ -37,13 +33,10 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
     WHERE c.public_id = ${publicId}
       AND c.publication = 'published'
       AND EXISTS (
-        SELECT 1
-        FROM publication_decision decision
-        WHERE decision.object_type = 'legal_case'
-          AND decision.object_id = c.id
+        SELECT 1 FROM publication_decision decision
+        WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
           AND decision.displayable
-        ORDER BY decision.decided_at DESC
-        LIMIT 1
+        ORDER BY decision.decided_at DESC LIMIT 1
       )
     LIMIT 1
   `;
