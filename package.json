@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:migrate": "tsx scripts/migrate.ts"
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "ingest:docket": "tsx scripts/ingest-courtlistener-docket.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
