@@ -118,5 +118,15 @@ export async function completePublicationReview(
         ${tx.json({ decision: input.decision, reviewId: input.reviewId })}
       )
     `;
+
+    await tx`
+      INSERT INTO internal_audit_event (
+        actor_internal_user_id, action, target_type, target_id, metadata
+      ) VALUES (
+        ${input.reviewerId}, 'publication_review.' || ${input.decision},
+        ${review.object_type}, ${review.object_id},
+        ${tx.json({ reviewId: input.reviewId, notesProvided: Boolean(input.notes) })}
+      )
+    `;
   });
 }
