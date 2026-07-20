@@ -20,8 +20,9 @@ jobs:
     timeout-minutes: 15
     env:
       DATABASE_URL: postgresql://jurvio:jurvio@localhost:5432/jurvio
-      COURTLISTENER_BASE_URL: https://www.courtlistener.com/api/rest/v3
+      COURTLISTENER_API_BASE_URL: https://www.courtlistener.com/api/rest/v4
       JURVIO_ARTIFACT_ROOT: .data/artifacts
+      INGESTION_USER_AGENT: Jurvio-CI/0.1
     services:
       postgres:
         image: postgres:16-alpine
