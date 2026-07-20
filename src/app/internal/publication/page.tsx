@@ -30,14 +30,16 @@ async function decidePublication(formData: FormData) {
 }
 
 export default async function PublicationReviewPage() {
+  let principal;
   try {
-    await requireInternalPrincipal(db(), await headers(), [
+    principal = await requireInternalPrincipal(db(), await headers(), [
       "viewer", "reviewer", "administrator",
     ]);
   } catch {
     notFound();
   }
 
+  const canDecide = principal.role === "reviewer" || principal.role === "administrator";
   const queue = await listPublicationReviewQueue(db());
   return (
     <main className="shell">
@@ -55,15 +57,17 @@ export default async function PublicationReviewPage() {
                 <summary>Evidence</summary>
                 <pre>{JSON.stringify(item.evidence, null, 2)}</pre>
               </details>
-              <form action={decidePublication}>
-                <input type="hidden" name="reviewId" value={item.id} />
-                <label>Review notes<textarea name="notes" maxLength={4000} /></label>
-                <div>
-                  <button name="decision" value="approved">Approve</button>
-                  <button name="decision" value="needs_changes">Needs changes</button>
-                  <button name="decision" value="rejected">Reject</button>
-                </div>
-              </form>
+              {canDecide ? (
+                <form action={decidePublication}>
+                  <input type="hidden" name="reviewId" value={item.id} />
+                  <label>Review notes<textarea name="notes" maxLength={4000} /></label>
+                  <div>
+                    <button name="decision" value="approved">Approve</button>
+                    <button name="decision" value="needs_changes">Needs changes</button>
+                    <button name="decision" value="rejected">Reject</button>
+                  </div>
+                </form>
+              ) : <p>Read-only access</p>}
             </article>
           ))}
         </div>
