@@ -110,19 +110,40 @@ Google guidance supports removing the original and publishing a corrected docume
 - https://developers.google.com/search/docs/crawling-indexing/keep-redacted-information-out
 - https://developers.google.com/search/docs/crawling-indexing/remove-information
 
-## 9. Privacy-safe URLs
+## 9. Approved canonical URL and opaque-ID architecture
 
-Launch with identity-independent IDs:
+**Decision status:** Approved 2026-07-19.
 
-- `/case/jvcase-{id}/{caption-slug}`
-- `/document/jvdoc-{id}/{document-slug}`
-- `/party/jvparty-{id}/{name-slug}`
+Case captions and person/company names are excluded from canonical URLs from launch. Permanent identity comes from non-sequential random opaque IDs.
 
-Ordinary correction: corrected slug plus permanent redirect.
+Canonical examples:
 
-Privacy-sensitive suppression: neutral slug, purge old named URL from links/sitemaps, normally 410/noindex plus Search Console removal, and no automatic redirect when it would preserve the sensitive name-to-case association. Purge the name from metadata, schema, snippets, autocomplete and machine endpoints.
+- `/case/jv-7glk9q2m`
+- `/case/jv-7glk9q2m/docket`
+- `/case/jv-7glk9q2m/parties`
+- `/case/jv-7glk9q2m/attorneys`
+- `/case/jv-7glk9q2m/timeline`
+- `/case/jv-7glk9q2m/citations`
+- `/case/jv-7glk9q2m/news`
+- `/case/jv-7glk9q2m/documents/jd-4km8px7r/final-judgment`
 
-This may sacrifice link equity; privacy takes priority. Redirect only when policy/counsel permits preserving the association.
+Rules:
+
+- use 8–10 random characters with a cryptographically secure generator and uniqueness constraint;
+- use a human-safe alphabet that avoids easily confused characters where practical;
+- use lowercase in canonical URLs even when IDs display uppercase;
+- never encode sequence, ingestion time, provider, jurisdiction or record volume;
+- case routes never contain the case caption;
+- document routes may have a replaceable descriptive slug after the permanent document ID;
+- route resolution uses the opaque ID, never the slug;
+- every indexable object has exactly one self-canonical URL;
+- use that canonical consistently in links, sitemaps, structured data and public APIs;
+- redirect alternate casing, legacy forms and incorrect document slugs;
+- never recycle IDs.
+
+Permitted case names remain in titles, headings, breadcrumbs, summaries, structured relationships and link text. Because the URL contains no party identity, approved name suppression does not change the URL or sacrifice its link equity. The privacy directive updates every content and discovery surface instead.
+
+Document URLs inherit the stable case ID but not its caption, preventing one caption correction or privacy decision from changing every document URL.
 
 ## 10. Decisions requested
 
