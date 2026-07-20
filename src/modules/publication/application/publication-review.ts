@@ -15,7 +15,7 @@ export async function queuePublicationReview(
     candidate: PublicationCandidate;
     requestedByType: "system" | "agent" | "user";
     requestedById?: string;
-    evidence: unknown[];
+    evidence: readonly postgres.JSONValue[];
   },
 ): Promise<{ reviewId: string; recommendation: "reject" | "manual_review" }> {
   const preflight = evaluatePublicationCandidate(input.candidate);
