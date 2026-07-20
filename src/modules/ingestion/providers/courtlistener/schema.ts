@@ -23,9 +23,36 @@ export const courtListenerDocketSchema = z.object({
 
 export type CourtListenerDocket = z.infer<typeof courtListenerDocketSchema>;
 
+export const courtListenerPartyTypeSchema = z.object({
+  docket_id: z.number().int().positive(),
+  name: z.string(),
+  date_terminated: z.string().nullable().optional(),
+  extra_info: z.string().nullable().optional(),
+}).passthrough();
+
+export const courtListenerPartySchema = z.object({
+  id: z.number().int().positive(),
+  resource_uri: z.string(),
+  name: z.string(),
+  extra_info: z.string().nullable().optional(),
+  party_types: z.array(courtListenerPartyTypeSchema).default([]),
+  attorneys: z.array(z.unknown()).default([]),
+  date_created: z.string().optional(),
+  date_modified: z.string().optional(),
+}).passthrough();
+
+export type CourtListenerParty = z.infer<typeof courtListenerPartySchema>;
+
 export const courtListenerPageSchema = z.object({
-  count: z.number().int().nonnegative(),
+  count: z.number().int().nonnegative().optional(),
   next: z.string().nullable(),
   previous: z.string().nullable(),
   results: z.array(courtListenerDocketSchema),
+});
+
+export const courtListenerPartyPageSchema = z.object({
+  count: z.number().int().nonnegative().optional(),
+  next: z.string().nullable(),
+  previous: z.string().nullable(),
+  results: z.array(courtListenerPartySchema),
 });
