@@ -23,6 +23,34 @@ export const courtListenerDocketSchema = z.object({
 
 export type CourtListenerDocket = z.infer<typeof courtListenerDocketSchema>;
 
+
+export const courtListenerRecapDocumentSchema = z.object({
+  id: z.number().int().positive(),
+  resource_uri: z.string(),
+  document_number: z.string().nullable().optional(),
+  attachment_number: z.number().int().nonnegative().nullable().optional(),
+  pacer_doc_id: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  document_type: z.string().nullable().optional(),
+  page_count: z.number().int().nonnegative().nullable().optional(),
+  is_available: z.boolean().default(false),
+  filepath_local: z.string().nullable().optional(),
+  ocr_status: z.unknown().optional(),
+}).passthrough();
+
+export const courtListenerDocketEntrySchema = z.object({
+  id: z.number().int().positive(),
+  resource_uri: z.string(),
+  docket: z.string(),
+  docket_id: z.number().int().positive().optional(),
+  date_filed: z.string().nullable().optional(),
+  entry_number: z.number().int().nonnegative().nullable().optional(),
+  description: z.string().catch(""),
+  recap_documents: z.array(courtListenerRecapDocumentSchema).default([]),
+}).passthrough();
+
+export type CourtListenerDocketEntry = z.infer<typeof courtListenerDocketEntrySchema>;
+
 export const courtListenerPartyTypeSchema = z.object({
   docket_id: z.number().int().positive(),
   name: z.string(),
@@ -55,4 +83,11 @@ export const courtListenerPartyPageSchema = z.object({
   next: z.string().nullable(),
   previous: z.string().nullable(),
   results: z.array(courtListenerPartySchema),
+});
+
+export const courtListenerDocketEntryPageSchema = z.object({
+  count: z.number().int().nonnegative().optional(),
+  next: z.string().nullable(),
+  previous: z.string().nullable(),
+  results: z.array(courtListenerDocketEntrySchema),
 });
