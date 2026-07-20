@@ -3,6 +3,7 @@ import { createPublicId } from "@/lib/ids/public-id";
 import { fetchDocket } from "../providers/courtlistener/client";
 import { normalizeCourtListenerDocket } from "../normalize/courtlistener";
 import type { ArtifactStore } from "./artifact-store";
+import { ingestCourtListenerParties } from "./ingest-courtlistener-parties";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -25,7 +26,7 @@ export async function ingestCourtListenerDocket(
     contentHash: retrieved.contentHash,
   });
 
-  return sql.begin(async (tx) => {
+  const caseResult = await sql.begin(async (tx) => {
     const [provider] = await tx<{ id: string }[]>`
       SELECT id FROM provider WHERE code = 'courtlistener'
     `;
@@ -111,8 +112,23 @@ export async function ingestCourtListenerDocket(
 
     return {
       caseId: legalCase.public_id,
+      internalCaseId: legalCase.id,
+      providerId: provider.id,
       sourceCaseId: normalized.sourceCaseId,
       rawArtifactId: artifact.id,
     };
   });
+
+  const parties = await ingestCourtListenerParties(sql, artifactStore, {
+    providerId: caseResult.providerId,
+    caseId: caseResult.internalCaseId,
+    docketId,
+  });
+
+  return {
+    caseId: caseResult.caseId,
+    sourceCaseId: caseResult.sourceCaseId,
+    rawArtifactId: caseResult.rawArtifactId,
+    parties,
+  };
 }
