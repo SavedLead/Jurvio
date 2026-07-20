@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { env } from "@/lib/config/env";
-import { courtListenerDocketSchema, courtListenerPageSchema, type CourtListenerDocket } from "./schema";
+import {
+  courtListenerDocketSchema,
+  courtListenerPageSchema,
+  courtListenerPartyPageSchema,
+  type CourtListenerDocket,
+  type CourtListenerParty,
+} from "./schema";
 
 export interface RetrievedRecord<T> {
   record: T;
@@ -71,7 +77,41 @@ export async function fetchModifiedDockets(
   const { response, body } = await retrieve(url);
   const page = courtListenerPageSchema.parse(JSON.parse(body));
   return {
-    records: page.results.map((record) => wrap(record, url.toString(), JSON.stringify(record), response)),
+    records: page.results.map((record) =>
+      wrap(record, record.resource_uri, JSON.stringify(record), response),
+    ),
     next: page.next,
   };
+}
+
+export async function fetchDocketParties(
+  docketId: number,
+  maximumPages = 100,
+): Promise<RetrievedRecord<CourtListenerParty>[]> {
+  const records: RetrievedRecord<CourtListenerParty>[] = [];
+  let next: string | null = null;
+
+  for (let pageNumber = 0; pageNumber < maximumPages; pageNumber += 1) {
+    const url = next
+      ? new URL(next)
+      : new URL("parties/", `${env().COURTLISTENER_API_BASE_URL}/`);
+
+    if (!next) {
+      url.searchParams.set("docket", String(docketId));
+      url.searchParams.set("filter_nested_results", "true");
+    }
+
+    const { response, body } = await retrieve(url);
+    const page = courtListenerPartyPageSchema.parse(JSON.parse(body));
+    records.push(
+      ...page.results.map((record) =>
+        wrap(record, record.resource_uri, JSON.stringify(record), response),
+      ),
+    );
+
+    next = page.next;
+    if (!next) return records;
+  }
+
+  throw new Error(`CourtListener party pagination exceeded ${maximumPages} pages`);
 }
