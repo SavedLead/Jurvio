@@ -26,6 +26,8 @@ Ingested records remain **draft**. Ingestion never makes a record public automat
 
 Run all checks with `pnpm verify`.
 
+The production container is defined in `Dockerfile`. Deployment sequencing, readiness checks, backups, rollback, and cost gates are documented in `docs/33-staging-deployment-runbook.md`.
+
 ## CourtListener ingestion
 
 Set `COURTLISTENER_TOKEN` when required, then run `pnpm ingest:docket <courtlistener-docket-id>`.
