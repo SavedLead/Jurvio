@@ -15,7 +15,8 @@
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "db:migrate": "tsx scripts/migrate.ts",
     "internal:user": "tsx scripts/create-internal-user.ts",
-    "ingest:docket": "tsx scripts/ingest-courtlistener-docket.ts"
+    "ingest:docket": "tsx scripts/ingest-courtlistener-docket.ts",
+    "ingest:updates": "tsx scripts/ingest-courtlistener-updates.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
