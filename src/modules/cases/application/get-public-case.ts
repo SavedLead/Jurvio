@@ -6,7 +6,7 @@ export interface PublicCase {
   publicId: string;
   caption: string;
   docketNumber: string;
-  filedOn: string | null;
+  filedOn: string | null;\n  terminatedOn: string | null;\n  natureOfSuitCode: string | null;\n  causeOfAction: string | null;
   courtName: string;
   activityState: string;
   proceduralPhase: string;
@@ -22,7 +22,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
   const [record] = await sql<PublicCase[]>`
     SELECT
       c.public_id AS "publicId", c.caption, c.docket_number AS "docketNumber",
-      c.filed_on::text AS "filedOn", court.name AS "courtName",
+      c.filed_on::text AS "filedOn", c.terminated_on::text AS "terminatedOn",\n      c.nature_of_suit_code AS "natureOfSuitCode", c.cause_of_action AS "causeOfAction",\n      court.name AS "courtName",
       c.activity_state AS "activityState", c.procedural_phase AS "proceduralPhase",
       c.disposition_scope AS "dispositionScope", c.judgment_state AS "judgmentState",
       c.appeal_state AS "appealState", c.verification::text AS verification,
