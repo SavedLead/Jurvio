@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/db/client";
 import { getPublicCase } from "@/modules/cases/application/get-public-case";
 import { listPublicDocketEntries } from "@/modules/cases/application/list-public-case-sections";
-import { CaseNav } from "@/modules/cases/ui/case-nav";
+import { CaseHeader } from "@/modules/cases/ui/case-header";
 
 export const dynamic = "force-dynamic";
 
@@ -15,20 +15,29 @@ export default async function DocketPage({ params }: {
   const records = await listPublicDocketEntries(db(), caseId);
 
   return (
-    <main className="shell">
-      <p className="eyebrow">{legalCase.courtName}</p>
-      <h1>{legalCase.caption}</h1>
-      <CaseNav caseId={caseId} />
-      <section>
+    <main className="shell caseShell">
+      <CaseHeader
+        caseId={caseId}
+        caption={legalCase.caption}
+        courtName={legalCase.courtName}
+        docketNumber={legalCase.docketNumber}
+        filedOn={legalCase.filedOn}
+      />
+      <section className="contentSection">
+        <p className="sectionKicker">Official activity</p>
         <h2>Full docket</h2>
-        {records.length === 0 ? <p>No docket entries are approved for publication.</p> : (
-          <ol>{records.map((entry) => (
-            <li key={entry.publicId}>
-              <strong>{entry.entryNumber ? "Entry " + entry.entryNumber : "Docket entry"}</strong>
-              {entry.filedOn ? " · " + entry.filedOn : ""}
-              <p>{entry.description}</p>
-            </li>
-          ))}</ol>
+        {records.length === 0 ? (
+          <p className="emptyState">No docket entries are approved for publication.</p>
+        ) : (
+          <ol className="recordList">
+            {records.map((entry) => (
+              <li key={entry.publicId}>
+                <strong>{entry.entryNumber ? "Entry " + entry.entryNumber : "Docket entry"}</strong>
+                {entry.filedOn ? " · " + entry.filedOn : ""}
+                <p>{entry.description}</p>
+              </li>
+            ))}
+          </ol>
         )}
       </section>
     </main>
