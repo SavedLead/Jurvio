@@ -56,6 +56,11 @@ button:hover { background: var(--brand-dark); }
 
 
 /* Public case experience */
+.previewBanner {
+  margin-bottom: 24px; padding: 10px 14px; border: 1px solid #b8c9e8;
+  border-radius: 9px; background: #eef4ff; color: #284a82;
+  font-size: 13px; font-weight: 700; text-align: center;
+}
 .caseShell { padding-top: 40px; }
 .breadcrumb {
   display: flex; gap: 8px; align-items: center; margin-bottom: 40px;
