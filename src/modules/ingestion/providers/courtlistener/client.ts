@@ -33,15 +33,58 @@ function headers(): HeadersInit {
   };
 }
 
-async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
-  const response = await fetch(url, {
-    headers: headers(),
-    signal: AbortSignal.timeout(30_000),
+let requestGate: Promise<void> = Promise.resolve();
+let lastRequestStartedAt = 0;
+
+function sleep(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForRequestSlot() {
+  const minimumInterval = env().COURTLISTENER_MIN_REQUEST_INTERVAL_MS;
+  const waitFor = Math.max(0, lastRequestStartedAt + minimumInterval - Date.now());
+  if (waitFor > 0) await sleep(waitFor);
+  lastRequestStartedAt = Date.now();
+}
+
+async function inRequestSlot<T>(work: () => Promise<T>): Promise<T> {
+  const previous = requestGate;
+  let release = () => {};
+  requestGate = new Promise<void>((resolve) => {
+    release = resolve;
   });
-  if (!response.ok) {
+  await previous;
+  try {
+    await waitForRequestSlot();
+    return await work();
+  } finally {
+    release();
+  }
+}
+
+function retryDelay(response: Response, attempt: number) {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter && /^\d+$/.test(retryAfter)) return Number(retryAfter) * 1000;
+  return Math.min(60_000, 2 ** attempt * 2_000);
+}
+
+async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const response = await inRequestSlot(() =>
+      fetch(url, {
+        headers: headers(),
+        signal: AbortSignal.timeout(30_000),
+      }),
+    );
+    if (response.ok) return { response, body: await response.text() };
+
+    if ((response.status === 429 || response.status >= 500) && attempt < 3) {
+      await sleep(retryDelay(response, attempt));
+      continue;
+    }
     throw new Error(`CourtListener request failed: ${response.status} ${response.statusText}`);
   }
-  return { response, body: await response.text() };
+  throw new Error("CourtListener request failed after retries");
 }
 
 function wrap<T>(record: T, sourceUri: string, body: string, response: Response): RetrievedRecord<T> {
