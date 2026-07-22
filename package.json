@@ -16,7 +16,9 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "internal:user": "tsx scripts/create-internal-user.ts",
     "ingest:docket": "tsx scripts/ingest-courtlistener-docket.ts",
-    "ingest:updates": "tsx scripts/ingest-courtlistener-updates.ts"
+    "ingest:updates": "tsx scripts/ingest-courtlistener-updates.ts",
+    "ingest:bulk:courts": "tsx scripts/ingest-courtlistener-bulk-courts.ts",
+    "validate:bulk:courts": "tsx scripts/validate-courtlistener-bulk-courts.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
