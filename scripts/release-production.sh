@@ -21,12 +21,27 @@ fi
 export JURVIO_IMAGE="$NEW_IMAGE"
 docker compose -f "$COMPOSE" pull app
 docker compose -f "$COMPOSE" up -d postgres
+
+DATABASE_READY=0
+for attempt in $(seq 1 30); do
+  if docker compose -f "$COMPOSE" exec -T postgres pg_isready -U jurvio -d jurvio >/dev/null 2>&1; then
+    DATABASE_READY=1
+    break
+  fi
+  sleep 2
+done
+
+if [ "$DATABASE_READY" -ne 1 ]; then
+  printf 'Database readiness failed before migration\n' >&2
+  exit 1
+fi
+
 docker compose -f "$COMPOSE" run --rm --no-deps app node scripts/migrate.mjs
 docker compose -f "$COMPOSE" up -d app
 
 READY=0
 for attempt in $(seq 1 30); do
-  if wget -qO- http://127.0.0.1:3000/api/ready >/dev/null 2>&1; then
+  if curl -fsS http://127.0.0.1:3000/api/ready >/dev/null 2>&1; then
     READY=1
     break
   fi
