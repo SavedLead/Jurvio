@@ -7,8 +7,9 @@ export async function startIngestionRun(
   input: { providerCode: string; runType: string; selection: postgres.JSONValue; selectedCount: number },
 ): Promise<string> {
   const [run] = await sql<{ id: string }[]>`
-    INSERT INTO ingestion_run (provider_code, run_type, status, selection, selected_count)
-    VALUES (${input.providerCode}, ${input.runType}, 'running', ${sql.json(input.selection)}, ${input.selectedCount})
+    INSERT INTO ingestion_run (provider_id, run_type, status, selection, selected_count)
+    SELECT provider.id, ${input.runType}, 'running', ${sql.json(input.selection)}, ${input.selectedCount}
+    FROM provider WHERE provider.code = ${input.providerCode}
     RETURNING id
   `;
   if (!run) throw new Error("Ingestion run could not be created");
@@ -49,7 +50,8 @@ export async function finishIngestionRun(sql: Sql, runId: string, fatalError?: s
         WHEN counts.failed > 0 THEN 'completed_with_errors'
         ELSE 'completed'
       END,
-      error_message = ${fatalError?.slice(0, 4000) ?? null}, completed_at = now()
+      error = ${fatalError ? sql.json({ message: fatalError.slice(0, 4000) }) : null},
+      completed_at = now()
     FROM (
       SELECT count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
         count(*) FILTER (WHERE status = 'failed')::int AS failed
