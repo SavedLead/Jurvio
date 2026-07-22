@@ -39,7 +39,8 @@ Set `COURTLISTENER_API_TOKEN` when required, then run:
 
 - `pnpm ingest:docket <courtlistener-docket-id>` for a complete docket slice;
 - `pnpm ingest:opinion-cluster <courtlistener-cluster-id>` for one opinion cluster;
-- `pnpm ingest:opinions --court scotus --since 2022-01-01 --limit 25` for a targeted, rate-friendly opinion batch.
+- `pnpm ingest:opinions --court scotus --since 2025-01-01 --limit 10 --order newest` for a small, rate-friendly first batch;
+- add `--order cited` to prioritize the most-cited opinions in the selected court and date window.
 
 The adapter stores each unmodified response, records its hash and provenance, and normalizes only supported fields. Opinion HTML is deterministically sanitized before it can reach the reader. New records stay draft until the publication policy approves them.
 

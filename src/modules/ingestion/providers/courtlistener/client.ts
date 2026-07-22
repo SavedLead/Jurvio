@@ -27,6 +27,19 @@ export interface RetrievedRecord<T> {
   };
 }
 
+export type CourtListenerOpinionOrder = "newest" | "cited";
+
+export function courtListenerOpinionOrderBy(order: CourtListenerOpinionOrder): string {
+  return order === "cited" ? "-citation_count,-date_filed" : "-date_filed";
+}
+
+export function courtListenerRetryDelayMs(retryAfter: string | null, attempt: number): number {
+  const retryAfterSeconds = Number(retryAfter);
+  return Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? Math.min(retryAfterSeconds * 1_000, 60_000)
+    : 1_000 * (2 ** (attempt - 1));
+}
+
 function headers(): HeadersInit {
   const config = env();
   return {
@@ -39,14 +52,23 @@ function headers(): HeadersInit {
 }
 
 async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
-  const response = await fetch(url, {
-    headers: headers(),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) {
-    throw new Error(`CourtListener request failed: ${response.status} ${response.statusText}`);
+  const maximumAttempts = 4;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    const response = await fetch(url, {
+      headers: headers(),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (response.ok) return { response, body: await response.text() };
+
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable || attempt === maximumAttempts) {
+      throw new Error(`CourtListener request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const delayMs = courtListenerRetryDelayMs(response.headers.get("retry-after"), attempt);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  return { response, body: await response.text() };
+  throw new Error("CourtListener request retry loop exited unexpectedly");
 }
 
 function wrap<T>(record: T, sourceUri: string, body: string, response: Response): RetrievedRecord<T> {
@@ -92,6 +114,7 @@ export async function fetchOpinionClusterIds(input: {
   courtCode: string;
   filedAfter: string;
   limit: number;
+  order: CourtListenerOpinionOrder;
 }): Promise<number[]> {
   const ids: number[] = [];
   let next: string | null = null;
@@ -103,7 +126,7 @@ export async function fetchOpinionClusterIds(input: {
     if (!next) {
       url.searchParams.set("docket__court", input.courtCode);
       url.searchParams.set("date_filed__gte", input.filedAfter);
-      url.searchParams.set("order_by", "-date_filed");
+      url.searchParams.set("order_by", courtListenerOpinionOrderBy(input.order));
     }
     const { body } = await retrieve(url);
     const page = courtListenerOpinionClusterPageSchema.parse(JSON.parse(body));
