@@ -3,6 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.SITE_URL ?? "https://jurvio.com"),
   title: {
     default: "Jurvio | Public Legal Intelligence",
     template: "%s | Jurvio",

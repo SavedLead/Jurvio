@@ -10,6 +10,7 @@ import type { RetrievedRecord } from "../providers/courtlistener/client";
 import type { CourtListenerOpinion } from "../providers/courtlistener/schema";
 import type { ArtifactStore } from "./artifact-store";
 import { persistCourtListenerCase } from "./persist-courtlistener-case";
+import { queuePublicationReview } from "@/modules/publication/application/publication-review";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -104,7 +105,7 @@ export async function ingestCourtListenerOpinionCluster(
     `;
     if (!cluster) throw new Error("Opinion cluster was not persisted");
 
-    const documents: Array<{ publicId: string; sourceOpinionId: string }> = [];
+    const documents: Array<{ id: string; publicId: string; sourceOpinionId: string }> = [];
     for (let index = 0; index < normalizedOpinions.length; index += 1) {
       const opinion = normalizedOpinions[index];
       const retrieved = opinionRecords[index];
@@ -233,16 +234,60 @@ export async function ingestCourtListenerOpinionCluster(
           updated_at = now()
       `;
 
-      documents.push({ publicId: documentPublicId, sourceOpinionId: opinion.sourceOpinionId });
+      documents.push({ id: documentId, publicId: documentPublicId, sourceOpinionId: opinion.sourceOpinionId });
     }
 
     return { clusterPublicId: cluster.public_id, documents };
   });
 
+  await queuePublicationReview(sql, {
+    objectType: "legal_case",
+    objectId: caseResult.internalCaseId,
+    candidate: {
+      hasCanonicalSource: true,
+      hasStableIdentity: true,
+      hasMeaningfulContent: true,
+      isBlockedOrSealed: false,
+      verification: "not_verified",
+      containsUnresolvedSensitiveData: true,
+    },
+    requestedByType: "system",
+    evidence: [{
+      provider: "courtlistener",
+      docketId: caseResult.sourceCaseId,
+      clusterId: normalizedCluster.sourceClusterId,
+      sourceHash: retrievedCluster.contentHash,
+    }],
+  });
+  for (const document of result.documents) {
+    await queuePublicationReview(sql, {
+      objectType: "document",
+      objectId: document.id,
+      candidate: {
+        hasCanonicalSource: true,
+        hasStableIdentity: true,
+        hasMeaningfulContent: true,
+        isBlockedOrSealed: false,
+        verification: "not_verified",
+        containsUnresolvedSensitiveData: true,
+      },
+      requestedByType: "system",
+      evidence: [{
+        provider: "courtlistener",
+        opinionId: document.sourceOpinionId,
+        clusterId: normalizedCluster.sourceClusterId,
+      }],
+    });
+  }
+
   return {
     caseId: caseResult.caseId,
     sourceClusterId: normalizedCluster.sourceClusterId,
     ...result,
+    documents: result.documents.map((document) => ({
+      publicId: document.publicId,
+      sourceOpinionId: document.sourceOpinionId,
+    })),
     skippedOpinions,
   };
 }

@@ -6,6 +6,8 @@ import { db } from "@/db/client";
 import { requireInternalPrincipal } from "@/modules/identity/cloudflare-access";
 import { listPublicationReviewQueue } from "@/modules/publication/application/list-publication-review-queue";
 import { completePublicationReview } from "@/modules/publication/application/publication-review";
+import Link from "next/link";
+import type { Route } from "next";
 
 export const dynamic = "force-dynamic";
 
@@ -45,13 +47,15 @@ export default async function PublicationReviewPage() {
     <main className="shell">
       <p className="eyebrow">Internal controls</p>
       <h1>Publication review</h1>
+      <p><Link href={"/internal/analytics" as Route}>Demand analytics</Link></p>
       <p>{queue.length} records require review.</p>
       {queue.length === 0 ? <p>The review queue is clear.</p> : (
         <div className="reviewQueue">
           {queue.map((item) => (
             <article key={item.id}>
-              <h2>{item.objectType}</h2>
-              <p><code>{item.objectId}</code></p>
+              <p className="eyebrow">{item.objectType}</p>
+              <h2>{item.label}</h2>
+              <p><code>{item.publicId ?? item.objectId}</code></p>
               <p>Risk flags: {JSON.stringify(item.riskFlags)}</p>
               <details>
                 <summary>Evidence</summary>

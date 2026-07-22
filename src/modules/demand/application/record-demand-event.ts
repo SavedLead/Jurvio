@@ -39,7 +39,11 @@ export async function recordDemandEvent(sql: Sql, input: DemandEventInput): Prom
       SELECT
         ${input.eventType}::demand_event_type,
         ${visitor.visitorClass}::visitor_class,
-        CASE WHEN ${input.targetType ?? null} = 'case' THEN legal_case.id ELSE NULL END,
+        CASE
+          WHEN ${input.targetType ?? null} = 'case' THEN legal_case.id
+          WHEN ${input.targetType ?? null} = 'document' THEN document.case_id
+          ELSE NULL
+        END,
         CASE WHEN ${input.targetType ?? null} = 'document' THEN document.id ELSE NULL END,
         ${referrerHost(input.referrer)}, ${visitor.botFamily ?? null}, NULL,
         ${sql.json({

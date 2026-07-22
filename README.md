@@ -31,6 +31,8 @@ Run all checks with `pnpm verify`.
 
 The production container is defined in `Dockerfile`. Deployment sequencing, readiness checks, backups, rollback, and cost gates are documented in `docs/33-staging-deployment-runbook.md`.
 
+The pre-DigitalOcean production package is in `docker-compose.production.yml`, `.github/workflows/deploy-production.yml`, and `docs/38-production-readiness-checklist.md`. Production secrets belong only in GitHub's protected `production` environment or `/opt/jurvio/.env.production`; they must never be committed.
+
 ## CourtListener ingestion
 
 Set `COURTLISTENER_API_TOKEN` when required, then run:
