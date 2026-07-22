@@ -1,0 +1,51 @@
+name: jurvio
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      POSTGRES_DB: jurvio
+      POSTGRES_USER: jurvio
+    volumes:
+      - jurvio_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jurvio -d jurvio"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [private]
+
+  app:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks: [private]
+
+volumes:
+  jurvio_postgres:
+  jurvio_artifacts:
+
+networks:
+  private:
+    driver: bridge

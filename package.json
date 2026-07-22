@@ -1,0 +1,49 @@
+{
+  "name": "jurvio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.13.1",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:jobs": "esbuild scripts/ingest-courtlistener-opinions.ts scripts/ingest-courtlistener-opinion-cluster.ts --bundle --platform=node --format=esm --packages=bundle --outdir=dist/jobs --out-extension:.js=.mjs",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:jobs && pnpm build",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "internal:user": "tsx scripts/create-internal-user.ts",
+    "ingest:docket": "tsx scripts/ingest-courtlistener-docket.ts",
+    "ingest:opinion-cluster": "tsx scripts/ingest-courtlistener-opinion-cluster.ts",
+    "ingest:opinions": "tsx scripts/ingest-courtlistener-opinions.ts",
+    "ingest:bulk:courts": "tsx scripts/ingest-courtlistener-bulk-courts.ts",
+    "validate:bulk:courts": "tsx scripts/validate-courtlistener-bulk-courts.ts"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@paralleldrive/cuid2": "^2.2.2",
+    "jose": "^6.2.3",
+    "next": "^15.4.2",
+    "postgres": "^3.4.7",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "sanitize-html": "^2.17.6",
+    "zod": "^4.0.5"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
+    "@types/node": "^24.0.1",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@types/sanitize-html": "^2.16.1",
+    "esbuild": "^0.28.1",
+    "eslint": "^9.31.0",
+    "eslint-config-next": "^15.4.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
