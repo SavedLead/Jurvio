@@ -57,8 +57,13 @@ Start with a bounded batch:
 ```bash
 docker compose -f docker-compose.production.yml run --rm app \
   node jobs/ingest-courtlistener-opinions.mjs \
-  --court scotus --since 2022-01-01 --limit 25
+  --court scotus --since 2025-01-01 --limit 10 --order newest
 ```
+
+This first run deliberately imports metadata and readable primary-opinion text only. It does not
+invoke an LLM or publish records. After verifying the run ledger, artifacts, and draft records,
+run a second bounded batch with `--order cited` to prioritize high-interest authority without
+paying for AI enrichment.
 
 The production image contains pre-bundled ingestion jobs but no compiler or developer toolchain. Run jobs as short-lived containers; do not install ad-hoc packages into the running web container. A continuously scheduled worker is deferred until measured ingestion volume requires it.
 
