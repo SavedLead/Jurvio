@@ -111,9 +111,9 @@ Jurvio will publish its own neutral, cited court-system guide rather than relyin
 
 Each concept has a short fifth-grade-level explanation and an expandable professional explanation, with primary sources, last-reviewed date, and jurisdiction warnings.
 
-## Three-branch government graph
+## Deferred three-branch government graph
 
-The architecture will support a first-class `/government` hub:
+The architecture preserves stable relationships needed for a future first-class `/government` hub, but the three-branch product, congressional member pages, vote histories, scorecards, and general bill ingestion are explicitly deferred until the CaseText-style research product establishes adoption:
 
 - `/government/executive`: administrations, presidents, agencies, executive orders, rules, memoranda, proclamations, and implementation actions;
 - `/government/legislative`: Congresses, chambers, members, committees, bills, amendments, votes, sponsors, enacted public laws, and codification;
@@ -123,7 +123,7 @@ Canonical relationships include:
 
 `bill -> enacted public law -> U.S. Code section -> regulation or executive implementation -> litigation -> ruling -> appeal`
 
-At launch, Jurvio may ingest structured metadata for all bills in the current Congress, but it will proactively explain enacted laws, high-interest pending bills, and legislation connected to active litigation. This prevents the legal-intelligence product from becoming an unfocused general-news site before demand is established.
+Jurvio will not ingest or explain every bill at launch. A law, vote, legislator, or executive action may be represented earlier only when necessary to understand a selected case or controlling legal authority. When the government product is activated later, official vote records must support member pages navigable by Congress, year, state, chamber, district, party, term, bill, sponsorship, co-sponsorship, committee, and vote.
 
 ## Day-one analytics and demand intelligence
 
