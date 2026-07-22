@@ -21,6 +21,7 @@ export interface PublicDocument {
   documentType: string;
   filedOn: string | null;
   extractionConfidence: string | null;
+  hasReadableContent: boolean;
 }
 
 export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = 250) {
@@ -31,16 +32,16 @@ export async function listPublicDocketEntries(sql: Sql, casePublicId: string, li
     JOIN legal_case legal_case ON legal_case.id = entry.case_id
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
-      AND EXISTS (
-        SELECT 1 FROM publication_decision decision
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
         WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
-          AND decision.displayable
-      )
-      AND EXISTS (
-        SELECT 1 FROM publication_decision decision
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
         WHERE decision.object_type = 'docket_entry' AND decision.object_id = entry.id
-          AND decision.displayable
-      )
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
     ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST
     LIMIT ${limit}
   `;
@@ -55,16 +56,16 @@ export async function listPublicParties(sql: Sql, casePublicId: string) {
     JOIN entity ON entity.id = appearance.entity_id
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
-      AND EXISTS (
-        SELECT 1 FROM publication_decision decision
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
         WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
-          AND decision.displayable
-      )
-      AND EXISTS (
-        SELECT 1 FROM publication_decision decision
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
         WHERE decision.object_type = 'entity' AND decision.object_id = entity.id
-          AND decision.displayable
-      )
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
     ORDER BY appearance.role, entity.normalized_name
   `;
 }
@@ -73,22 +74,24 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
   return sql<PublicDocument[]>`
     SELECT document.public_id AS "publicId", document.title,
       document.document_type AS "documentType", document.filed_on::text AS "filedOn",
-      document.extraction_confidence::text AS "extractionConfidence"
+      document.extraction_confidence::text AS "extractionConfidence",
+      content.document_id IS NOT NULL AS "hasReadableContent"
     FROM document
     JOIN legal_case legal_case ON legal_case.id = document.case_id
+    LEFT JOIN document_content content ON content.document_id = document.id
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
       AND document.publication = 'published'
-      AND EXISTS (
-        SELECT 1 FROM publication_decision decision
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
         WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
-          AND decision.displayable
-      )
-      AND EXISTS (
-        SELECT 1 FROM publication_decision decision
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
         WHERE decision.object_type = 'document' AND decision.object_id = document.id
-          AND decision.displayable
-      )
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
     ORDER BY document.filed_on DESC NULLS LAST, document.title
   `;
 }

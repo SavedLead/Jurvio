@@ -3,10 +3,15 @@ import { env } from "@/lib/config/env";
 import {
   courtListenerDocketSchema,
   courtListenerDocketEntryPageSchema,
+  courtListenerOpinionClusterSchema,
+  courtListenerOpinionClusterPageSchema,
+  courtListenerOpinionSchema,
   courtListenerPageSchema,
   courtListenerPartyPageSchema,
   type CourtListenerDocket,
   type CourtListenerDocketEntry,
+  type CourtListenerOpinion,
+  type CourtListenerOpinionCluster,
   type CourtListenerParty,
 } from "./schema";
 
@@ -33,58 +38,15 @@ function headers(): HeadersInit {
   };
 }
 
-let requestGate: Promise<void> = Promise.resolve();
-let lastRequestStartedAt = 0;
-
-function sleep(milliseconds: number) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function waitForRequestSlot() {
-  const minimumInterval = env().COURTLISTENER_MIN_REQUEST_INTERVAL_MS;
-  const waitFor = Math.max(0, lastRequestStartedAt + minimumInterval - Date.now());
-  if (waitFor > 0) await sleep(waitFor);
-  lastRequestStartedAt = Date.now();
-}
-
-async function inRequestSlot<T>(work: () => Promise<T>): Promise<T> {
-  const previous = requestGate;
-  let release = () => {};
-  requestGate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous;
-  try {
-    await waitForRequestSlot();
-    return await work();
-  } finally {
-    release();
-  }
-}
-
-function retryDelay(response: Response, attempt: number) {
-  const retryAfter = response.headers.get("retry-after");
-  if (retryAfter && /^\d+$/.test(retryAfter)) return Number(retryAfter) * 1000;
-  return Math.min(60_000, 2 ** attempt * 2_000);
-}
-
 async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const response = await inRequestSlot(() =>
-      fetch(url, {
-        headers: headers(),
-        signal: AbortSignal.timeout(30_000),
-      }),
-    );
-    if (response.ok) return { response, body: await response.text() };
-
-    if ((response.status === 429 || response.status >= 500) && attempt < 3) {
-      await sleep(retryDelay(response, attempt));
-      continue;
-    }
+  const response = await fetch(url, {
+    headers: headers(),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
     throw new Error(`CourtListener request failed: ${response.status} ${response.statusText}`);
   }
-  throw new Error("CourtListener request failed after retries");
+  return { response, body: await response.text() };
 }
 
 function wrap<T>(record: T, sourceUri: string, body: string, response: Response): RetrievedRecord<T> {
@@ -105,6 +67,52 @@ export async function fetchDocket(id: number): Promise<RetrievedRecord<CourtList
   const url = new URL(`dockets/${id}/`, `${env().COURTLISTENER_API_BASE_URL}/`);
   const { response, body } = await retrieve(url);
   return wrap(courtListenerDocketSchema.parse(JSON.parse(body)), url.toString(), body, response);
+}
+
+export async function fetchOpinionCluster(
+  id: number,
+): Promise<RetrievedRecord<CourtListenerOpinionCluster>> {
+  const url = new URL(`clusters/${id}/`, `${env().COURTLISTENER_API_BASE_URL}/`);
+  const { response, body } = await retrieve(url);
+  return wrap(
+    courtListenerOpinionClusterSchema.parse(JSON.parse(body)),
+    url.toString(),
+    body,
+    response,
+  );
+}
+
+export async function fetchOpinion(id: number): Promise<RetrievedRecord<CourtListenerOpinion>> {
+  const url = new URL(`opinions/${id}/`, `${env().COURTLISTENER_API_BASE_URL}/`);
+  const { response, body } = await retrieve(url);
+  return wrap(courtListenerOpinionSchema.parse(JSON.parse(body)), url.toString(), body, response);
+}
+
+export async function fetchOpinionClusterIds(input: {
+  courtCode: string;
+  filedAfter: string;
+  limit: number;
+}): Promise<number[]> {
+  const ids: number[] = [];
+  let next: string | null = null;
+
+  while (ids.length < input.limit) {
+    const url = next
+      ? new URL(next)
+      : new URL("clusters/", `${env().COURTLISTENER_API_BASE_URL}/`);
+    if (!next) {
+      url.searchParams.set("docket__court", input.courtCode);
+      url.searchParams.set("date_filed__gte", input.filedAfter);
+      url.searchParams.set("order_by", "-date_filed");
+    }
+    const { body } = await retrieve(url);
+    const page = courtListenerOpinionClusterPageSchema.parse(JSON.parse(body));
+    ids.push(...page.results.map((cluster) => cluster.id));
+    next = page.next;
+    if (!next) break;
+  }
+
+  return ids.slice(0, input.limit);
 }
 
 export async function fetchModifiedDockets(

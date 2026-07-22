@@ -4,13 +4,16 @@ Jurvio makes public litigation searchable, understandable, and connected.
 
 ## Current scope
 
-This branch implements approved Milestones M0 and M1:
+This branch implements the approved foundation and first opinion-research slice:
 
 - typed Next.js modular-monolith foundation;
 - PostgreSQL canonical schema and migrations;
 - deterministic, versioned case-status engine;
 - immutable source-artifact storage contract;
 - CourtListener/RECAP docket ingestion vertical slice;
+- CourtListener opinion-cluster ingestion with sanitized, citation-linked HTML;
+- readable opinion pages and source-grounded PostgreSQL full-text search;
+- privacy-safe human, search-crawler, AI-bot, and agent demand measurement;
 - publication controls, outbox events, health endpoint, and CI.
 
 Ingested records remain **draft**. Ingestion never makes a record public automatically.
@@ -30,9 +33,13 @@ The production container is defined in `Dockerfile`. Deployment sequencing, read
 
 ## CourtListener ingestion
 
-Set `COURTLISTENER_TOKEN` when required, then run `pnpm ingest:docket <courtlistener-docket-id>`.
+Set `COURTLISTENER_API_TOKEN` when required, then run:
 
-The adapter stores the unmodified response, records its hash and provenance, normalizes only supported fields, and emits a transactional `case.changed` outbox event.
+- `pnpm ingest:docket <courtlistener-docket-id>` for a complete docket slice;
+- `pnpm ingest:opinion-cluster <courtlistener-cluster-id>` for one opinion cluster;
+- `pnpm ingest:opinions --court scotus --since 2022-01-01 --limit 25` for a targeted, rate-friendly opinion batch.
+
+The adapter stores each unmodified response, records its hash and provenance, and normalizes only supported fields. Opinion HTML is deterministically sanitized before it can reach the reader. New records stay draft until the publication policy approves them.
 
 ## Internal publication console
 

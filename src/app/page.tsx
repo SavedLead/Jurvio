@@ -9,9 +9,9 @@ export default function HomePage() {
           with source-backed explanations.
         </p>
         <form action="/search" role="search" className="searchBox">
-          <label htmlFor="q">Search cases, people, companies, courts, and documents</label>
+          <label htmlFor="q">Search opinions by name, citation, legal issue, or plain-English description</label>
           <div>
-            <input id="q" name="q" placeholder="Name, docket number, case, or keyword" />
+            <input id="q" name="q" placeholder="Example: employer retaliation after reporting fraud" />
             <button type="submit">Search</button>
           </div>
         </form>

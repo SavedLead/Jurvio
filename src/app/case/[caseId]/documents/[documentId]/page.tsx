@@ -1,88 +1,93 @@
-import type { Metadata } from "next";
+import type { Metadata, Route } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import { db } from "@/db/client";
-import { isPublicId } from "@/lib/ids/public-id";
-import { getPublicCase } from "@/modules/cases/application/get-public-case";
-import { getPublicDocument } from "@/modules/cases/application/get-public-document";
-import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
+import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
 export const dynamic = "force-dynamic";
 
-interface DocumentPageProps {
+interface OpinionPageProps {
   params: Promise<{ caseId: string; documentId: string }>;
 }
 
-export async function generateMetadata({ params }: DocumentPageProps): Promise<Metadata> {
+async function load(params: OpinionPageProps["params"]) {
   const { caseId, documentId } = await params;
-  if (!isPublicId("case", caseId) || !isPublicId("document", documentId)) return {};
-  const document = await getPublicDocument(db(), caseId, documentId);
-  if (!document) return {};
+  if (!/^jv-[a-z0-9]{8,10}$/.test(caseId) || !/^jd-[a-z0-9]{8,10}$/.test(documentId)) {
+    return null;
+  }
+  return getPublicOpinion(db(), caseId, documentId);
+}
 
+export async function generateMetadata({ params }: OpinionPageProps): Promise<Metadata> {
+  const opinion = await load(params);
+  if (!opinion) return { title: "Opinion not found" };
+  const description = opinion.contentText.slice(0, 155);
   return {
-    title: document.title,
-    description: "Read filing details and procedural context for " + document.title + ".",
-    alternates: { canonical: "/case/" + caseId + "/documents/" + documentId },
+    title: `${opinion.caseCaption} — Judicial Opinion`,
+    description,
+    alternates: {
+      canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`,
+    },
+    robots: opinion.indexable ? { index: true, follow: true } : { index: false, follow: true },
   };
 }
 
-export default async function DocumentPage({ params }: DocumentPageProps) {
-  const { caseId, documentId } = await params;
-  if (!isPublicId("case", caseId) || !isPublicId("document", documentId)) notFound();
+export default async function OpinionPage({ params }: OpinionPageProps) {
+  const opinion = await load(params);
+  if (!opinion) notFound();
 
-  const [legalCase, document] = await Promise.all([
-    getPublicCase(db(), caseId),
-    getPublicDocument(db(), caseId, documentId),
-  ]);
-  if (!legalCase || !document) notFound();
+  const canonicalPath = `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`;
+  const requestHeaders = await headers();
+  await recordDemandEvent(db(), {
+    eventType: "document_view",
+    userAgent: requestHeaders.get("user-agent"),
+    referrer: requestHeaders.get("referer"),
+    path: canonicalPath,
+    targetType: "document",
+    targetPublicId: opinion.documentPublicId,
+  });
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "DigitalDocument",
+    name: opinion.title,
+    headline: opinion.caseCaption,
+    datePublished: opinion.filedOn ?? undefined,
+    pagination: `${opinion.wordCount} words`,
+    isPartOf: { "@type": "CreativeWork", name: opinion.caseCaption },
+    provider: { "@type": "Organization", name: "Jurvio" },
+  };
 
   return (
-    <main className="shell caseShell">
-      <CaseHeader
-        caseId={caseId}
-        caption={legalCase.caption}
-        courtName={legalCase.courtName}
-        docketNumber={legalCase.docketNumber}
-        filedOn={legalCase.filedOn}
+    <main className="readerShell">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }}
       />
-
-      <article className="documentPage">
-        <nav aria-label="Document breadcrumb" className="breadcrumb">
-          <a href={"/case/" + caseId + "/documents"}>Documents</a>
-          <span aria-hidden="true">/</span>
-          <span>{document.publicId}</span>
-        </nav>
-
-        <p className="eyebrow">{document.documentType}</p>
-        <h2>{document.title}</h2>
-        <dl className="factList">
-          <div><dt>Filed</dt><dd>{document.filedOn ?? "Date unavailable"}</dd></div>
-          <div><dt>Docket entry</dt><dd>{document.docketEntryNumber ?? "Not linked"}</dd></div>
-          <div><dt>Jurvio document ID</dt><dd>{document.publicId}</dd></div>
-          <div><dt>Text confidence</dt><dd>{document.extractionConfidence ?? "Not available"}</dd></div>
-        </dl>
-
-        <section className="contentSection" aria-labelledby="filing-context">
-          <p className="sectionKicker">Court record</p>
-          <h2 id="filing-context">What this filing says</h2>
-          {document.docketDescription ? (
-            <p>{document.docketDescription}</p>
-          ) : (
-            <p className="emptyState">
-              A source-backed description is not available for this filing. Jurvio will not
-              invent or infer one.
-            </p>
-          )}
-        </section>
-
-        <section className="contentSection" aria-labelledby="plain-explanation">
-          <p className="sectionKicker">Plain English</p>
-          <h2 id="plain-explanation">Explanation status</h2>
-          <p className="emptyState">
-            This filing has not been summarized. On-demand explanations will be generated only
-            after source text is available and the result passes Jurvio&apos;s review rules.
-          </p>
-        </section>
+      <nav className="breadcrumbs" aria-label="Breadcrumb">
+        <Link href="/cases">Cases</Link> / <Link href={`/case/${opinion.casePublicId}`}>{opinion.caseCaption}</Link> / Opinion
+      </nav>
+      <article className="opinionLayout">
+        <header className="opinionHeader">
+          <p className="eyebrow">{opinion.courtName}</p>
+          <h1>{opinion.caseCaption}</h1>
+          <p className="lede">{opinion.title}</p>
+          <dl className="metadataGrid">
+            <div><dt>Filed</dt><dd>{opinion.filedOn ?? "Date unavailable"}</dd></div>
+            <div><dt>Docket</dt><dd>{opinion.docketNumber}</dd></div>
+            <div><dt>Opinion</dt><dd>{opinion.opinionType.replaceAll("-", " ")}</dd></div>
+            <div><dt>Status</dt><dd>{opinion.precedentialStatus ?? "Not specified"}</dd></div>
+            {opinion.authorName ? <div><dt>Author</dt><dd>{opinion.authorName}</dd></div> : null}
+          </dl>
+          <aside className="sourceNotice">
+            <strong>Source-backed court text.</strong> Jurvio reformats the published opinion for readability; it does not change the court&apos;s words.
+            {opinion.sourceDownloadUrl ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View source file</a>.</> : null}
+          </aside>
+        </header>
+        <div className="opinionBody" dangerouslySetInnerHTML={{ __html: opinion.contentHtml }} />
       </article>
+      <p className="permalink">Permanent Jurvio record: <Link href={canonicalPath as Route}>{opinion.documentPublicId}</Link></p>
     </main>
   );
 }

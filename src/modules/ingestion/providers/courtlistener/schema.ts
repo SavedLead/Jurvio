@@ -23,6 +23,65 @@ export const courtListenerDocketSchema = z.object({
 
 export type CourtListenerDocket = z.infer<typeof courtListenerDocketSchema>;
 
+const courtListenerResourceReferenceSchema = z.union([
+  z.string(),
+  z.number().int().positive(),
+]);
+
+export const courtListenerOpinionClusterSchema = z.object({
+  id: z.number().int().positive(),
+  resource_uri: z.string(),
+  absolute_url: z.string(),
+  docket: courtListenerResourceReferenceSchema,
+  docket_id: z.number().int().positive().optional(),
+  sub_opinions: z.array(courtListenerResourceReferenceSchema).default([]),
+  case_name: z.string().catch(""),
+  case_name_short: z.string().nullable().optional(),
+  case_name_full: z.string().nullable().optional(),
+  date_filed: z.string().nullable().optional(),
+  date_modified: z.string().optional(),
+  precedential_status: z.string().nullable().optional(),
+  citation_count: z.number().int().nonnegative().catch(0),
+  citations: z.array(z.unknown()).default([]),
+  judges: z.string().nullable().optional(),
+  syllabus: z.string().nullable().optional(),
+  procedural_history: z.string().nullable().optional(),
+}).passthrough();
+
+export type CourtListenerOpinionCluster = z.infer<typeof courtListenerOpinionClusterSchema>;
+
+export const courtListenerOpinionClusterPageSchema = z.object({
+  count: z.number().int().nonnegative().optional(),
+  next: z.string().nullable(),
+  previous: z.string().nullable(),
+  results: z.array(courtListenerOpinionClusterSchema),
+});
+
+export const courtListenerOpinionSchema = z.object({
+  id: z.number().int().positive(),
+  resource_uri: z.string(),
+  absolute_url: z.string().optional(),
+  cluster: courtListenerResourceReferenceSchema,
+  cluster_id: z.number().int().positive().optional(),
+  type: z.string().catch("unknown"),
+  author: courtListenerResourceReferenceSchema.nullable().optional(),
+  author_str: z.string().nullable().optional(),
+  per_curiam: z.boolean().catch(false),
+  download_url: z.string().nullable().optional(),
+  local_path: z.string().nullable().optional(),
+  html_with_citations: z.string().catch(""),
+  html: z.string().catch(""),
+  html_lawbox: z.string().catch(""),
+  html_columbia: z.string().catch(""),
+  html_anon_2020: z.string().catch(""),
+  xml_harvard: z.string().catch(""),
+  plain_text: z.string().catch(""),
+  opinions_cited: z.array(courtListenerResourceReferenceSchema).default([]),
+  date_modified: z.string().optional(),
+}).passthrough();
+
+export type CourtListenerOpinion = z.infer<typeof courtListenerOpinionSchema>;
+
 
 export const courtListenerRecapDocumentSchema = z.object({
   id: z.number().int().positive(),
