@@ -13,7 +13,7 @@ const sections = [
 
 export type CaseSection = typeof sections[number][1];
 
-export function CaseNav({ caseId, active }: { caseId: string; active: CaseSection }) {
+export function CaseNav({ caseId, active }: { caseId: string; active?: CaseSection }) {
   return (
     <nav aria-label="Case sections" className="caseNav">
       {sections.map(([label, suffix]) => (
