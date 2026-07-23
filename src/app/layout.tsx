@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import Link from "next/link";
 import "./globals.css";
 
@@ -9,6 +10,11 @@ export const metadata: Metadata = {
     template: "%s | Jurvio",
   },
   description: "Public litigation made searchable, understandable, and connected.",
+  icons: {
+    icon: "/brand/jurvio-icon-light.svg",
+    shortcut: "/brand/jurvio-icon-light.svg",
+    apple: "/brand/jurvio-icon-light.svg",
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -17,8 +23,14 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <header className="siteHeader">
           <Link className="brand" href="/" aria-label="Jurvio home">
-            <span className="brandMark" aria-hidden="true">J</span>
-            <span>Jurvio</span>
+            <Image
+              className="brandWordmark"
+              src="/brand/jurvio-wordmark-light.svg"
+              width={333}
+              height={112}
+              priority
+              alt="Jurvio"
+            />
           </Link>
           <nav aria-label="Primary">
             <Link href="/cases">Cases</Link>
@@ -34,13 +46,19 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <footer className="siteFooter">
           <div>
             <Link className="brand footerBrand" href="/" aria-label="Jurvio home">
-              <span className="brandMark" aria-hidden="true">J</span><span>Jurvio</span>
+              <Image
+                className="brandWordmark"
+                src="/brand/jurvio-wordmark-light.svg"
+                width={333}
+                height={112}
+                alt="Jurvio"
+              />
             </Link>
             <p>Public legal intelligence that makes litigation understandable.</p>
           </div>
           <nav aria-label="Footer">
             <Link href="/cases">Cases</Link><Link href="/search">Search</Link>
-            <Link href="/llms.txt">AI access</Link><Link href="/sitemap.xml">Sitemap</Link>
+            <Link href="/sitemap.xml">Sitemap</Link>
           </nav>
         </footer>
       </body>
