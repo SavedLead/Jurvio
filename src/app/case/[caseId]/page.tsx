@@ -24,6 +24,7 @@ export default async function CasePage({ params }: CasePageProps) {
     userAgent: requestHeaders.get("user-agent"),
     referrer: requestHeaders.get("referer"),
     path: `/case/${caseId}`,
+    contentKind: "case",
     targetType: "case",
     targetPublicId: caseId,
   });
