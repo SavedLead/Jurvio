@@ -5,6 +5,8 @@ import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
+import { extractCitationLabels, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
+import { AnnotatedLegalText } from "@/modules/legal-context/ui/annotated-legal-text";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +51,10 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     targetType: "document",
     targetPublicId: opinion.documentPublicId,
   });
+  const citationLinks = extractCitationLabels(opinion.citations).map((citation) => ({
+    citation,
+    href: `/search?q=${encodeURIComponent(citation)}`,
+  }));
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "DigitalDocument",
@@ -86,7 +92,12 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
             {opinion.sourceDownloadUrl ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View source file</a>.</> : null}
           </aside>
         </header>
-        <div className="opinionBody" dangerouslySetInnerHTML={{ __html: opinion.contentHtml }} />
+        <AnnotatedLegalText
+          className="opinionBody"
+          html={opinion.contentHtml}
+          terms={inlineLegalTerms}
+          citations={citationLinks}
+        />
       </article>
       <p className="permalink">Permanent Jurvio record: <Link href={canonicalPath as Route}>{opinion.documentPublicId}</Link></p>
     </main>
