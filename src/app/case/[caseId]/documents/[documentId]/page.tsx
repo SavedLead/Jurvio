@@ -45,6 +45,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     userAgent: requestHeaders.get("user-agent"),
     referrer: requestHeaders.get("referer"),
     path: canonicalPath,
+    contentKind: "document",
     targetType: "document",
     targetPublicId: opinion.documentPublicId,
   });
