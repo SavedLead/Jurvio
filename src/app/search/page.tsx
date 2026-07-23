@@ -22,7 +22,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       userAgent: requestHeaders.get("user-agent"),
       referrer: requestHeaders.get("referer"),
       path: "/search",
+      contentKind: "search",
       rawSearchQuery: query,
+      resultCount: results.length,
     });
   }
   return (
