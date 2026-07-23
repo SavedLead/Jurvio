@@ -1,8 +1,8 @@
-import { notFound } from "next/navigation";
+import { notFound } from "next/navigation";\nimport { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicCase } from "@/modules/cases/application/get-public-case";
 import { listPublicParties } from "@/modules/cases/application/list-public-case-sections";
-import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { CaseHeader } from "@/modules/cases/ui/case-header";\nimport { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +13,16 @@ export default async function PartiesPage({ params }: {
   const legalCase = await getPublicCase(db(), caseId);
   if (!legalCase) notFound();
   const records = await listPublicParties(db(), caseId);
+  const requestHeaders = await headers();
+  await recordDemandEvent(db(), {
+    eventType: "page_view",
+    userAgent: requestHeaders.get("user-agent"),
+    referrer: requestHeaders.get("referer"),
+    path: `/case/${caseId}/parties`,
+    contentKind: "case",
+    targetType: "case",
+    targetPublicId: caseId,
+  });
 
   return (
     <main className="shell caseShell">
