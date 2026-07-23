@@ -15,6 +15,7 @@ on:
         required: true
 
 permissions:
+  checks: read
   contents: read
   packages: write
 
@@ -74,7 +75,7 @@ jobs:
           DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$DO_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
