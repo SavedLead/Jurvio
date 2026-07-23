@@ -1,0 +1,85 @@
+name: Ingest production opinions
+
+on:
+  workflow_dispatch:
+    inputs:
+      court:
+        description: Court to ingest
+        required: true
+        type: choice
+        default: scotus
+        options:
+          - scotus
+      since:
+        description: Earliest filing date (YYYY-MM-DD)
+        required: true
+        default: "2025-10-01"
+      limit:
+        description: Maximum opinion clusters (1-100)
+        required: true
+        default: "10"
+      order:
+        description: Selection priority
+        required: true
+        type: choice
+        default: newest
+        options:
+          - newest
+          - cited
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production-ingestion
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: Validate bounded batch
+        env:
+          COURT: ${{ inputs.court }}
+          SINCE: ${{ inputs.since }}
+          LIMIT: ${{ inputs.limit }}
+          ORDER: ${{ inputs.order }}
+        run: |
+          test "$COURT" = "scotus"
+          printf '%s' "$SINCE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          test "$LIMIT" -ge 1
+          test "$LIMIT" -le 100
+          case "$ORDER" in newest|cited) ;; *) exit 1 ;; esac
+
+      - name: Configure SSH
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DO_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Ingest bounded CourtListener batch
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          COURT: ${{ inputs.court }}
+          SINCE: ${{ inputs.since }}
+          LIMIT: ${{ inputs.limit }}
+          ORDER: ${{ inputs.order }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-opinions.mjs --court '$COURT' --since '$SINCE' --limit '$LIMIT' --order '$ORDER' --delay-ms 1000"
+
+      - name: Report corpus and review queue
+        if: always()
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('cases', (SELECT count(*) FROM legal_case), 'opinions', (SELECT count(*) FROM judicial_opinion), 'documents', (SELECT count(*) FROM document), 'pending_reviews', (SELECT count(*) FROM publication_review WHERE status = 'pending'));\""
