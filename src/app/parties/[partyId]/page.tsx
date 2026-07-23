@@ -1,11 +1,9 @@
 import type { Metadata, Route } from "next";
 import Link from "next/link";
-import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { db } from "@/db/client";
 import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicEntity } from "@/modules/directory/application/public-directory";
-import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import styles from "@/modules/directory/ui/directory.module.css";
 
 export const dynamic = "force-dynamic";
@@ -30,10 +28,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function PartyPage({ params }: Props) {
   const party = await load(params);
   if (!party) notFound();
-  const requestHeaders = await headers();
-  await recordDemandEvent(db(), { eventType: "page_view", userAgent: requestHeaders.get("user-agent"),
-    referrer: requestHeaders.get("referer"), path: `/party/${party.publicId}`, contentKind: "entity",
-    targetType: "entity", targetPublicId: party.publicId });
   const jsonLd = { "@context": "https://schema.org", "@type": "Thing", name: party.displayName,
     identifier: party.publicId, url: `https://jurvio.com/parties/${party.publicId}` };
   return <main className={styles.page}>
