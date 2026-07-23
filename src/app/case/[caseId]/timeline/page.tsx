@@ -1,8 +1,10 @@
-import { notFound } from "next/navigation";\nimport { headers } from "next/headers";
+import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicCase } from "@/modules/cases/application/get-public-case";
 import { listPublicDocketEntries } from "@/modules/cases/application/list-public-case-sections";
-import { CaseHeader } from "@/modules/cases/ui/case-header";\nimport { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
+import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
 export const dynamic = "force-dynamic";
 
