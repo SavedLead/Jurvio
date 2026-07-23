@@ -10,6 +10,7 @@ const prefixes = {
   firm: "jf",
   court: "jc",
   cluster: "jo",
+  governmentLead: "jg",
 } as const;
 
 export type PublicIdKind = keyof typeof prefixes;
