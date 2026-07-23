@@ -1,11 +1,9 @@
 import type { Metadata, Route } from "next";
 import Link from "next/link";
-import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { db } from "@/db/client";
 import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicEntity } from "@/modules/directory/application/public-directory";
-import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import styles from "@/modules/directory/ui/directory.module.css";
 
 export const dynamic = "force-dynamic";
@@ -25,10 +23,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 export default async function LawFirmPage({ params }: Props) {
   const firm = await load(params); if (!firm) notFound();
-  const requestHeaders = await headers();
-  await recordDemandEvent(db(), { eventType: "page_view", userAgent: requestHeaders.get("user-agent"),
-    referrer: requestHeaders.get("referer"), path: `/law-firm/${firm.publicId}`, contentKind: "entity",
-    targetType: "entity", targetPublicId: firm.publicId });
   const jsonLd = { "@context": "https://schema.org", "@type": "Organization", name: firm.displayName,
     identifier: firm.publicId, url: `https://jurvio.com/law-firms/${firm.publicId}` };
   return <main className={styles.page}><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }} />
