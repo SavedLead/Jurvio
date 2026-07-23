@@ -144,12 +144,13 @@ export async function listPublicCourts(sql: Sql, limit = 100): Promise<CourtDire
       court.jurisdiction, count(legal_case.id)::int AS "caseCount",
       max(legal_case.filed_on)::text AS "latestCaseDate"
     FROM court JOIN legal_case ON legal_case.court_id = court.id
-    WHERE ${sql.unsafe(displayableCase)}
+    WHERE court.verification = 'verified' AND court.source_url IS NOT NULL
+      AND ${sql.unsafe(displayableCase)}
       AND COALESCE((
         SELECT decision.displayable FROM publication_decision decision
         WHERE decision.object_type = 'court' AND decision.object_id = court.id
         ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), true)
+      ), false)
     GROUP BY court.id
     ORDER BY count(legal_case.id) DESC, court.name
     LIMIT ${safeLimit}
