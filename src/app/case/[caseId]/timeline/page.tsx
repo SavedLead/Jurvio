@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicCase } from "@/modules/cases/application/get-public-case";
 import { listPublicDocketEntries } from "@/modules/cases/application/list-public-case-sections";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +15,16 @@ export default async function TimelinePage({ params }: {
   const legalCase = await getPublicCase(db(), caseId);
   if (!legalCase) notFound();
   const records = await listPublicDocketEntries(db(), caseId);
+  const requestHeaders = await headers();
+  await recordDemandEvent(db(), {
+    eventType: "page_view",
+    userAgent: requestHeaders.get("user-agent"),
+    referrer: requestHeaders.get("referer"),
+    path: `/case/${caseId}/timeline`,
+    contentKind: "case",
+    targetType: "case",
+    targetPublicId: caseId,
+  });
 
   return (
     <main className="shell caseShell">
