@@ -38,7 +38,7 @@ export default function ExplainersPage() {
     <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(definedTermSet).replace(/</g, "\\u003c") }} />
     <section className={styles.hero}><div className={styles.inner}>
       <p className={styles.eyebrow}>Legal language, made clear</p>
-      <h1>Understand the words and the process<span>.</span></h1>
+      <h1>Understand the words and the <span className="brandHeadlineEnd">process<span className="signatureDot" aria-hidden="true">.</span></span></h1>
       <p className={styles.lede}>Search the legal dictionary, follow the usual path through a court, agency, bankruptcy, or arbitration matter, or read a deeper neutral explainer with examples and official sources.</p>
       <aside className={styles.notice}>General educational information only, not legal advice. Rules and outcomes differ by court, jurisdiction, and case.</aside>
       <nav className={styles.jump} aria-label="Explainer page sections"><a href="#popular">Popular terms</a><a href="#deep-explainers">Deep explainers</a><a href="#glossary-title">Full dictionary</a></nav>
