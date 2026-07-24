@@ -11,7 +11,14 @@ export function generateStaticParams() { return legalExplainers.map(({ slug }) =
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const item = getExplainer((await params).slug);
   if (!item) return {};
-  return { title: `${item.term}, explained simply`, description: item.oneLine, alternates: { canonical: `/explainers/${item.slug}` } };
+  return {
+    title: `${item.term}, explained simply`,
+    description: item.oneLine,
+    alternates: {
+      canonical: `/explainers/${item.slug}`,
+      types: { "application/json": `/explainers/${item.slug}/ai.json` },
+    },
+  };
 }
 
 export default async function ExplainerPage({ params }: Props) {

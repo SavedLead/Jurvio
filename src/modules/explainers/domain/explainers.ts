@@ -24,6 +24,8 @@ export interface LegalExplainer {
 
 const rules = "https://www.law.cornell.edu/rules/frcp";
 const judiciary = "https://www.uscourts.gov/about-federal-courts/court-role-and-structure";
+const appellateRules = "https://www.law.cornell.edu/rules/frap";
+const supremeCourtRules = "https://www.supremecourt.gov/ctrules/2019RulesoftheCourt.pdf";
 
 export const legalExplainers: readonly LegalExplainer[] = [
   {
@@ -47,6 +49,31 @@ export const legalExplainers: readonly LegalExplainer[] = [
     example: "If a contract was negotiated and performed in one district, that district may have a strong connection to the dispute.",
     related: ["jurisdiction", "remand"], reviewedOn: "2026-07-23",
     sources: [{ label: "28 U.S.C. § 1391", url: "https://www.law.cornell.edu/uscode/text/28/1391", note: "General federal venue statute." }],
+  },
+  {
+    slug: "removal-to-federal-court", term: "Removal to federal court", aliases: ["removal", "notice of removal", "removed case"], category: "starting a case",
+    oneLine: "A procedure that may let a defendant move a qualifying case from state court to federal court.",
+    plainEnglish: "Removal does not start the dispute over. It changes the court system handling it. A defendant must identify a federal legal basis, follow strict filing steps, and usually act within a short deadline.",
+    whyItMatters: "Removal changes the judge, procedural rules, and path of any appeal. If the federal court lacks authority or the procedure was defective, the case may be sent back to state court.",
+    whatHappensNext: ["The defendant files a notice in federal court and gives notice to the state court and other parties.", "A party may ask the federal judge to send the case back.", "The federal court keeps the case or enters a remand order returning it to state court."],
+    commonMistake: "A defendant cannot remove a case merely because federal court seems more favorable. Federal law must permit removal, and statutory limits and deadlines apply.",
+    example: "A defendant may remove a state-court complaint that asserts a federal statutory claim, then the plaintiff may challenge whether removal was proper.",
+    related: ["jurisdiction", "remand", "venue"], reviewedOn: "2026-07-23",
+    sources: [
+      { label: "28 U.S.C. § 1441", url: "https://www.law.cornell.edu/uscode/text/28/1441", note: "Federal statute describing which civil actions may be removed." },
+      { label: "28 U.S.C. § 1446", url: "https://www.law.cornell.edu/uscode/text/28/1446", note: "Federal statute governing removal procedure." },
+    ],
+  },
+  {
+    slug: "service-of-process", term: "Service of process", aliases: ["service", "served", "summons"], category: "starting a case",
+    oneLine: "The formal delivery of court papers that gives a party notice and brings that party into the case.",
+    plainEnglish: "Filing a complaint is not always enough. The plaintiff generally must deliver a summons and complaint in an approved way. The rules differ for people, companies, governments, and parties outside the United States.",
+    whyItMatters: "Proper service helps protect a person's right to notice and a chance to respond. Defective service can delay a case or support dismissal, but courts may allow the problem to be corrected.",
+    whatHappensNext: ["The clerk issues a summons after the complaint is filed.", "A qualified person delivers the required papers using an allowed method.", "Proof of service is filed, and the served party's response deadline begins under the applicable rule."],
+    commonMistake: "Seeing a lawsuit online or receiving an informal copy is not necessarily valid service. The governing rule and the exact method matter.",
+    example: "A process server may personally deliver a summons and complaint to an individual and then file a signed proof describing when and where delivery occurred.",
+    related: ["jurisdiction", "motion-to-dismiss", "venue"], reviewedOn: "2026-07-23",
+    sources: [{ label: "Federal Rule of Civil Procedure 4", url: `${rules}/rule_4`, note: "Federal rule governing summonses and service of process." }],
   },
   {
     slug: "standing", term: "Standing", aliases: ["Article III standing", "injury in fact"], category: "starting a case",
@@ -82,6 +109,20 @@ export const legalExplainers: readonly LegalExplainer[] = [
     sources: [{ label: "Federal Rule of Civil Procedure 12", url: `${rules}/rule_12`, note: "Federal rule governing defenses and motions attacking pleadings." }],
   },
   {
+    slug: "discovery", term: "Discovery", aliases: ["document requests", "interrogatories", "deposition", "requests for admission"], category: "deciding a case",
+    oneLine: "The pretrial process for exchanging relevant information and gathering evidence from parties and other people.",
+    plainEnglish: "Discovery lets each side request documents, ask written questions, take sworn testimony, and seek admissions. It is not unlimited: requests generally must be relevant, proportional, and consistent with privileges and court orders.",
+    whyItMatters: "Discovery builds the evidence used in settlement talks, motions, and trial. Disputes can affect cost and timing, and judges may order compliance or impose consequences for rule violations.",
+    whatHappensNext: ["The parties discuss a discovery plan and make required disclosures.", "They exchange requests, responses, documents, and testimony.", "They try to resolve disputes before asking the judge to compel an answer or protect information."],
+    commonMistake: "Discovery is not a public free-for-all. Some information is protected, some requests are too broad, and material exchanged in discovery may never appear on the public docket.",
+    example: "In a contract case, a party may request emails about the agreement and take a deposition where a witness answers questions under oath.",
+    related: ["summary-judgment", "trial", "motion-to-dismiss"], reviewedOn: "2026-07-23",
+    sources: [
+      { label: "Federal Rule of Civil Procedure 26", url: `${rules}/rule_26`, note: "Federal rule governing discovery scope, planning, disclosures, and protective orders." },
+      { label: "Federal Rules of Civil Procedure 27–37", url: `${rules}`, note: "Federal rules addressing major discovery methods and enforcement." },
+    ],
+  },
+  {
     slug: "summary-judgment", term: "Summary judgment", aliases: ["Rule 56", "partial summary judgment"], category: "deciding a case",
     oneLine: "A decision without a trial when no genuine dispute over a material fact requires a factfinder.",
     plainEnglish: "After the parties gather evidence, one side may argue that the important facts are not genuinely disputed and the law requires a particular result. The judge does not simply choose which witness seems nicer.",
@@ -112,7 +153,18 @@ export const legalExplainers: readonly LegalExplainer[] = [
     commonMistake: "Filing an appeal does not always pause enforcement of the judgment. A separate stay may be required.",
     example: "A party may argue that the trial judge applied the wrong legal test, while the other side argues the ruling should remain in place.",
     related: ["remand", "trial", "summary-judgment"], reviewedOn: "2026-07-23",
-    sources: [{ label: "U.S. Courts: Appeals", url: "https://www.uscourts.gov/about-federal-courts/types-cases/appeals", note: "Official overview of federal appeals." }, { label: "Federal Rules of Appellate Procedure", url: "https://www.law.cornell.edu/rules/frap", note: "Rules governing appeals in federal courts of appeals." }],
+    sources: [{ label: "U.S. Courts: Appeals", url: "https://www.uscourts.gov/about-federal-courts/types-cases/appeals", note: "Official overview of federal appeals." }, { label: "Federal Rules of Appellate Procedure", url: appellateRules, note: "Rules governing appeals in federal courts of appeals." }],
+  },
+  {
+    slug: "appellate-mandate", term: "Appellate mandate", aliases: ["mandate", "issuance of mandate", "recall the mandate"], category: "ending or pausing a case",
+    oneLine: "The formal document that returns authority to the lower court after an appeal and makes the appellate court's judgment effective there.",
+    plainEnglish: "An appellate opinion explains the decision. The mandate formally sends the result back. It usually includes a certified copy of the judgment and any direction about costs, and it may issue after time for rehearing has passed.",
+    whyItMatters: "The lower court generally acts under the mandate. Its next work may include entering judgment, holding more proceedings, or following specific appellate instructions.",
+    whatHappensNext: ["The appellate court enters judgment and allows time for permitted post-decision requests.", "The clerk issues the mandate under the applicable timing rule unless the court changes the schedule.", "The lower court receives the mandate and carries out the appellate decision."],
+    commonMistake: "An appellate opinion and a mandate are related but not identical. The opinion gives reasons; the mandate formally transfers the result back to the lower court.",
+    example: "After reversing a dismissal, a court of appeals may issue its mandate so the trial court can reopen the case and continue under the appellate instructions.",
+    related: ["appeal", "remand", "stay"], reviewedOn: "2026-07-23",
+    sources: [{ label: "Federal Rule of Appellate Procedure 41", url: `${appellateRules}/rule_41`, note: "Federal rule governing the contents, timing, effective date, and stay of an appellate mandate." }],
   },
   {
     slug: "remand", term: "Remand", aliases: ["remanded", "remand order"], category: "ending or pausing a case",
@@ -135,6 +187,49 @@ export const legalExplainers: readonly LegalExplainer[] = [
     example: "A court might temporarily block a challenged rule from taking effect while it considers whether the rule is lawful.",
     related: ["trial", "appeal", "settlement"], reviewedOn: "2026-07-23",
     sources: [{ label: "Federal Rule of Civil Procedure 65", url: `${rules}/rule_65`, note: "Federal rule governing injunctions and restraining orders." }],
+  },
+  {
+    slug: "stay", term: "Stay", aliases: ["stay pending appeal", "administrative stay", "stay order"], category: "ending or pausing a case",
+    oneLine: "An order that temporarily pauses a proceeding, a court ruling, or enforcement while another issue is considered.",
+    plainEnglish: "A stay is a pause, not a final decision. It may halt an entire case or only one ruling. A party often must ask the issuing court first, explain why a pause is justified, and show what could happen without one.",
+    whyItMatters: "A stay can preserve the current situation while a court reviews an appeal or emergency request. Without a stay, a judgment or order may remain enforceable even while review is pending.",
+    whatHappensNext: ["A party files a motion identifying exactly what should pause and for how long.", "The other side responds, sometimes on an accelerated schedule.", "The court grants, denies, narrows, conditions, or later dissolves the stay."],
+    commonMistake: "Filing an appeal or emergency application does not automatically stay every order. The governing rule or a separate court order determines what pauses.",
+    example: "A party appealing an injunction may request a stay so the injunction does not take effect until the appellate court considers the appeal.",
+    related: ["appeal", "appellate-mandate", "emergency-docket"], reviewedOn: "2026-07-23",
+    sources: [
+      { label: "Federal Rule of Appellate Procedure 8", url: `${appellateRules}/rule_8`, note: "Federal rule governing stays or injunctions pending appeal." },
+      { label: "Supreme Court Rule 23", url: supremeCourtRules, note: "Official Supreme Court rule governing stays." },
+    ],
+  },
+  {
+    slug: "certiorari", term: "Certiorari", aliases: ["writ of certiorari", "cert petition", "petition for certiorari", "cert denied"], category: "ending or pausing a case",
+    oneLine: "The main discretionary process for asking the U.S. Supreme Court to review a lower-court decision.",
+    plainEnglish: "A party files a petition explaining why the Supreme Court should take the case. Review is not automatic. At least four Justices must vote to grant certiorari. A denial leaves the lower-court result in place but does not say the Supreme Court agrees with it.",
+    whyItMatters: "The Court accepts only a small share of petitions. It generally looks for important federal questions, conflicts among courts, or other compelling reasons rather than simply correcting every claimed error.",
+    whatHappensNext: ["A party files a petition and the opposing party may respond.", "The Justices consider whether to grant review.", "If granted, the case proceeds to merits briefing and usually argument; if denied, the lower-court judgment remains in place."],
+    commonMistake: "A denial of certiorari is not a ruling on the merits and does not create Supreme Court precedent approving the lower court's reasoning.",
+    example: "When federal appeals courts use conflicting legal rules, a party may ask the Supreme Court to grant certiorari and resolve the conflict.",
+    related: ["appeal", "stay", "emergency-docket"], reviewedOn: "2026-07-23",
+    sources: [
+      { label: "Supreme Court Rule 10", url: supremeCourtRules, note: "Official rule describing considerations governing review on certiorari." },
+      { label: "Supreme Court: Guide for prospective indigent petitioners", url: "https://www.supremecourt.gov/casehand/guideforIFPcases2019.pdf", note: "Official practical guide explaining the certiorari process and effect of denial." },
+    ],
+  },
+  {
+    slug: "emergency-docket", term: "Emergency docket", aliases: ["shadow docket", "emergency application", "emergency order"], category: "ending or pausing a case",
+    oneLine: "The Supreme Court's handling of time-sensitive applications and orders outside its regular merits schedule.",
+    plainEnglish: "The phrase shadow docket is an unofficial label often used for this work. Emergency matters can ask the Court to pause a lower-court ruling, allow an action to proceed, or grant other short-term relief while litigation continues.",
+    whyItMatters: "Emergency orders can have immediate practical effects. They often arrive on a faster schedule and may contain less explanation than a full merits opinion, so the exact order and procedural posture matter.",
+    whatHappensNext: ["An applicant ordinarily seeks relief in the lower courts before asking the Supreme Court.", "The assigned Circuit Justice or the full Court requests a response or acts on the application.", "The Court grants, denies, narrows, or otherwise disposes of the request; the underlying litigation may continue."],
+    commonMistake: "Emergency relief is not always a final decision about who should win the full case. A short order also should not be given reasons that the Court did not state.",
+    example: "A party facing an imminent enforcement date may ask the Court to stay a lower-court judgment while a petition for certiorari is prepared and considered.",
+    related: ["stay", "certiorari", "injunction-and-tro"], reviewedOn: "2026-07-23",
+    sources: [
+      { label: "Supreme Court: Orders and proceedings", url: "https://www.supremecourt.gov/orders/ordersofthecourt.aspx", note: "Official source for Court orders and links to orders by term." },
+      { label: "Supreme Court Rule 22 and Rule 23", url: supremeCourtRules, note: "Official rules governing applications to individual Justices and stays." },
+      { label: "Congressional Research Service: The Supreme Court's emergency docket", url: "https://crsreports.congress.gov/product/pdf/LSB/LSB10575", note: "Nonpartisan congressional legal overview of emergency applications and orders." },
+    ],
   },
   {
     slug: "settlement", term: "Settlement", aliases: ["settlement agreement", "consent judgment"], category: "ending or pausing a case",

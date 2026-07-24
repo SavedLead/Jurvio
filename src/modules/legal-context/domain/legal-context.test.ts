@@ -16,6 +16,13 @@ describe("legal context", () => {
       "standing",
       "venue",
       "appeal",
+      "removal-to-federal-court",
+      "service-of-process",
+      "discovery",
+      "appellate-mandate",
+      "stay",
+      "certiorari",
+      "emergency-docket",
     ]));
     expect(inlineLegalTerms.every((term) => term.definition.length > 0)).toBe(true);
   });
@@ -38,4 +45,3 @@ describe("legal context", () => {
     ])).toEqual(["410 U.S. 113", "347 U.S. 483"]);
   });
 });
-
