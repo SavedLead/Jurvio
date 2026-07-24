@@ -27,6 +27,13 @@ const inlineExplainerSlugs = new Set([
   "standing",
   "venue",
   "appeal",
+  "removal-to-federal-court",
+  "service-of-process",
+  "discovery",
+  "appellate-mandate",
+  "stay",
+  "certiorari",
+  "emergency-docket",
 ]);
 
 export const inlineLegalTerms: readonly LegalTermContext[] = legalExplainers
@@ -69,4 +76,3 @@ export function extractCitationLabels(value: unknown): string[] {
   visit(value);
   return [...labels];
 }
-
