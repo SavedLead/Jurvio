@@ -9,13 +9,39 @@ export type GlossaryStage =
   | "appeal"
   | "case status";
 
-export type GlossaryTrack = "general" | "federal" | "state" | "scotus";
+export type GlossaryJurisdiction =
+  | "general"
+  | "federal"
+  | "state"
+  | "scotus"
+  | "administrative"
+  | "tribal"
+  | "international";
+
+export type GlossaryDomain =
+  | "civil"
+  | "criminal"
+  | "appellate"
+  | "constitutional"
+  | "administrative"
+  | "bankruptcy"
+  | "business"
+  | "employment"
+  | "family"
+  | "immigration"
+  | "international"
+  | "intellectual property"
+  | "probate"
+  | "real estate"
+  | "tax"
+  | "arbitration";
 
 export interface GlossaryTerm {
   term: string;
   definition: string;
   stage: GlossaryStage;
-  track: GlossaryTrack;
+  jurisdiction: GlossaryJurisdiction;
+  domains: readonly GlossaryDomain[];
   popularity: 1 | 2 | 3 | 4 | 5;
   aliases?: string[];
   explainerSlug?: string;
@@ -26,10 +52,11 @@ const t = (
   definition: string,
   stage: GlossaryStage,
   popularity: GlossaryTerm["popularity"],
-  track: GlossaryTrack = "general",
+  jurisdiction: GlossaryJurisdiction = "general",
   aliases?: string[],
   explainerSlug?: string,
-): GlossaryTerm => ({ term, definition, stage, popularity, track, aliases, explainerSlug });
+  domains: readonly GlossaryDomain[] = ["civil"],
+): GlossaryTerm => ({ term, definition, stage, popularity, jurisdiction, aliases, explainerSlug, domains });
 
 export const glossaryTerms: readonly GlossaryTerm[] = [
   t("Lawsuit", "A dispute formally brought before a court.", "starting a case", 5),
@@ -167,6 +194,60 @@ export const glossaryTerms: readonly GlossaryTerm[] = [
   t("Writ", "A formal court command directing an act or review, with meaning depending on the particular writ.", "appeal", 3),
   t("Habeas corpus", "A proceeding challenging the legality of a person's detention.", "appeal", 4, "federal"),
   t("Mandamus", "Extraordinary relief ordering a public official or lower court to perform a required duty.", "appeal", 3),
+  t("Arraignment", "A criminal proceeding where charges are formally presented and the accused enters a plea.", "pleadings and response", 5, "state", undefined, undefined, ["criminal"]),
+  t("Indictment", "A formal criminal charge issued by a grand jury.", "starting a case", 5, "federal", undefined, undefined, ["criminal"]),
+  t("Information", "A formal criminal charge filed by a prosecutor without a grand-jury indictment.", "starting a case", 3, "general", ["criminal information"], undefined, ["criminal"]),
+  t("Bail", "Release conditions, which may include money or security, intended to ensure a person's return to court.", "starting a case", 5, "general", ["bond"], undefined, ["criminal"]),
+  t("Plea bargain", "An agreement in which a defendant pleads guilty under negotiated terms.", "judgment and remedies", 5, "general", ["plea agreement"], undefined, ["criminal"]),
+  t("Probable cause", "A facts-based legal standard used for arrests, searches, and some charging decisions.", "before filing", 5, "general", undefined, undefined, ["criminal", "constitutional"]),
+  t("Search warrant", "A court order authorizing a search for specified evidence based on the required showing.", "before filing", 5, "general", undefined, undefined, ["criminal", "constitutional"]),
+  t("Suppression motion", "A request to exclude evidence obtained in violation of law.", "motions", 4, "general", ["motion to suppress"], undefined, ["criminal", "constitutional"]),
+  t("Sentencing", "The proceeding where punishment is imposed after a criminal conviction.", "judgment and remedies", 5, "general", undefined, undefined, ["criminal"]),
+  t("Probation", "Court-supervised release in the community subject to conditions.", "judgment and remedies", 4, "general", undefined, undefined, ["criminal"]),
+  t("Parole", "Conditional release from incarceration under supervision where the governing system permits it.", "judgment and remedies", 4, "state", undefined, undefined, ["criminal"]),
+  t("Chapter 7", "A bankruptcy process generally involving liquidation of nonexempt assets and potential discharge of eligible debts.", "starting a case", 5, "federal", ["liquidation bankruptcy"], undefined, ["bankruptcy"]),
+  t("Chapter 11", "A bankruptcy process commonly used to reorganize a business or complex financial affairs.", "starting a case", 5, "federal", ["reorganization"], undefined, ["bankruptcy", "business"]),
+  t("Chapter 13", "A bankruptcy process allowing an eligible individual with regular income to propose a repayment plan.", "starting a case", 4, "federal", ["wage earner plan"], undefined, ["bankruptcy"]),
+  t("Automatic stay", "A bankruptcy protection that generally pauses many collection actions after a case is filed.", "starting a case", 5, "federal", undefined, undefined, ["bankruptcy"]),
+  t("Proof of claim", "A creditor's filing stating the basis and amount of a claimed bankruptcy debt.", "pleadings and response", 4, "federal", undefined, undefined, ["bankruptcy"]),
+  t("Discharge", "A bankruptcy order releasing a debtor from personal liability for eligible debts.", "judgment and remedies", 5, "federal", undefined, undefined, ["bankruptcy"]),
+  t("Administrative law judge", "An adjudicator who conducts hearings for an administrative agency.", "trial", 4, "administrative", ["ALJ"], undefined, ["administrative"]),
+  t("Agency rulemaking", "The process by which an administrative agency proposes, receives comment on, and adopts regulations.", "before filing", 4, "administrative", ["notice-and-comment rulemaking"], undefined, ["administrative"]),
+  t("Exhaustion of administrative remedies", "A requirement to complete available agency procedures before seeking judicial review in some matters.", "before filing", 3, "administrative", ["exhaustion"], undefined, ["administrative"]),
+  t("Judicial review", "Court review of an agency action or another tribunal's decision under the governing standard.", "appeal", 4, "administrative", undefined, undefined, ["administrative", "appellate"]),
+  t("Notice to appear", "The charging document that ordinarily begins removal proceedings in U.S. immigration court.", "starting a case", 4, "administrative", ["NTA"], undefined, ["immigration"]),
+  t("Removal proceedings", "Administrative proceedings determining whether a noncitizen may remain in the United States.", "trial", 5, "administrative", ["deportation proceedings"], undefined, ["immigration"]),
+  t("Asylum", "Protection that may be granted to a qualifying person who meets the statutory requirements based on persecution.", "judgment and remedies", 5, "administrative", undefined, undefined, ["immigration"]),
+  t("Cancellation of removal", "Discretionary immigration relief available to certain qualifying noncitizens in removal proceedings.", "judgment and remedies", 3, "administrative", undefined, undefined, ["immigration"]),
+  t("Patent", "A federal right that may exclude others from making, using, selling, or importing a claimed invention for a limited period.", "before filing", 5, "federal", undefined, undefined, ["intellectual property", "business"]),
+  t("Trademark", "A word, name, symbol, or other indicator that identifies the source of goods or services.", "before filing", 5, "federal", undefined, undefined, ["intellectual property", "business"]),
+  t("Copyright", "Legal protection for qualifying original works of authorship fixed in a tangible medium.", "before filing", 5, "federal", undefined, undefined, ["intellectual property"]),
+  t("Trade secret", "Commercially valuable information kept secret through reasonable protective measures.", "before filing", 4, "general", undefined, undefined, ["intellectual property", "business", "employment"]),
+  t("Claim construction", "A court's interpretation of patent claim language.", "motions", 3, "federal", ["Markman hearing"], undefined, ["intellectual property"]),
+  t("Probate", "The court-supervised process for administering a deceased person's estate.", "starting a case", 5, "state", undefined, undefined, ["probate"]),
+  t("Executor", "A person appointed to administer an estate under a will, subject to local terminology and court authority.", "case status", 4, "state", ["personal representative"], undefined, ["probate"]),
+  t("Intestate", "Dying without a valid will governing the distribution of property.", "before filing", 4, "state", ["intestacy"], undefined, ["probate"]),
+  t("Guardianship", "A legal arrangement authorizing a person to make specified decisions for another person.", "starting a case", 4, "state", undefined, undefined, ["probate", "family"]),
+  t("Divorce decree", "The court's final order ending a marriage and resolving specified related issues.", "judgment and remedies", 5, "state", ["judgment of divorce"], undefined, ["family"]),
+  t("Child custody", "Legal and practical responsibility for a child's care and decision-making.", "judgment and remedies", 5, "state", undefined, undefined, ["family"]),
+  t("Best interests of the child", "A family-law standard used to decide issues affecting a child's welfare.", "trial", 5, "state", ["best interests standard"], undefined, ["family"]),
+  t("Restraining order", "An order limiting contact or conduct, with scope and terminology varying by jurisdiction.", "judgment and remedies", 5, "state", ["protective order"], undefined, ["family", "civil"]),
+  t("Foreclosure", "A legal process used to enforce a security interest in real property after default.", "starting a case", 5, "state", undefined, undefined, ["real estate"]),
+  t("Ejectment", "An action seeking possession of real property from a person alleged to occupy it wrongfully.", "starting a case", 3, "state", undefined, undefined, ["real estate"]),
+  t("Quiet title", "An action asking a court to determine competing claims to ownership of real property.", "starting a case", 3, "state", undefined, undefined, ["real estate"]),
+  t("Mechanic's lien", "A statutory claim against property for qualifying unpaid labor or materials.", "before filing", 4, "state", ["construction lien"], undefined, ["real estate", "business"]),
+  t("Wrongful termination", "A claim that an employment relationship ended for an unlawful reason.", "starting a case", 5, "general", undefined, undefined, ["employment"]),
+  t("Discrimination", "Unlawful unequal treatment based on a protected characteristic under applicable law.", "starting a case", 5, "general", undefined, undefined, ["employment", "civil"]),
+  t("Retaliation", "Adverse action allegedly taken because a person engaged in legally protected activity.", "starting a case", 5, "general", undefined, undefined, ["employment", "civil"]),
+  t("Right-to-sue letter", "An agency notice that may permit a person to file certain employment-discrimination claims in court.", "before filing", 4, "administrative", undefined, undefined, ["employment", "administrative"]),
+  t("Derivative action", "A lawsuit brought on behalf of an organization, commonly by a shareholder, to address harm to the organization.", "starting a case", 3, "state", ["shareholder derivative suit"], undefined, ["business"]),
+  t("Fiduciary duty", "A heightened legal duty of loyalty, care, or good faith arising from a relationship of trust.", "before filing", 5, "general", undefined, undefined, ["business", "probate"]),
+  t("Arbitration award", "The arbitrator's decision resolving issues submitted to arbitration.", "judgment and remedies", 4, "general", undefined, undefined, ["arbitration", "business"]),
+  t("Motion to compel arbitration", "A request asking a court to require arbitration under an asserted agreement.", "motions", 4, "general", undefined, undefined, ["arbitration", "business"]),
+  t("Confirmation of award", "A court proceeding seeking to convert an arbitration award into an enforceable judgment.", "judgment and remedies", 3, "general", undefined, undefined, ["arbitration"]),
+  t("Treaty", "A binding international agreement governed by international law and domestic constitutional processes.", "before filing", 4, "international", undefined, undefined, ["international"]),
+  t("Extradition", "A process for surrendering a person from one jurisdiction to another for prosecution or punishment.", "before filing", 4, "international", undefined, undefined, ["criminal"]),
+  t("Tribal court", "A court exercising the judicial authority of a federally recognized tribal nation.", "starting a case", 4, "tribal", undefined, undefined, ["civil", "criminal"]),
 ] as const;
 
 export const glossaryStages: readonly GlossaryStage[] = [
@@ -190,7 +271,48 @@ export const procedureTracks = [
     label: "U.S. Supreme Court",
     steps: ["Petition for certiorari", "Cert-stage briefing", "Grant or denial", "Merits briefing", "Oral argument", "Opinion or order"],
   },
+  {
+    id: "criminal",
+    label: "Criminal case",
+    steps: ["Investigation or arrest", "Charging and first appearance", "Plea and pretrial motions", "Trial or plea", "Sentencing", "Appeal or post-conviction review"],
+  },
+  {
+    id: "administrative",
+    label: "Agency proceeding",
+    steps: ["Agency filing or action", "Administrative record", "Agency hearing", "Initial or final decision", "Administrative appeal", "Judicial review"],
+  },
+  {
+    id: "bankruptcy",
+    label: "Bankruptcy case",
+    steps: ["Petition and automatic stay", "Schedules and creditor notice", "Claims and trustee review", "Plan, sale, or liquidation", "Discharge or dismissal", "Bankruptcy appeal"],
+  },
+  {
+    id: "family",
+    label: "Family court",
+    steps: ["Petition", "Notice and temporary orders", "Financial and factual disclosure", "Mediation or hearing", "Final order", "Modification or appeal"],
+  },
+  {
+    id: "arbitration",
+    label: "Arbitration",
+    steps: ["Arbitration demand", "Arbitrator selection", "Information exchange", "Hearing or written submission", "Award", "Confirmation, challenge, or enforcement"],
+  },
 ] as const;
+
+export const glossaryJurisdictions: readonly { id: GlossaryJurisdiction; label: string }[] = [
+  { id: "general", label: "Cross-jurisdiction" },
+  { id: "federal", label: "Federal courts" },
+  { id: "state", label: "State courts" },
+  { id: "scotus", label: "U.S. Supreme Court" },
+  { id: "administrative", label: "Agencies and tribunals" },
+  { id: "tribal", label: "Tribal courts" },
+  { id: "international", label: "International" },
+];
+
+export const glossaryDomains: readonly { id: GlossaryDomain; label: string }[] = [
+  "civil", "criminal", "appellate", "constitutional", "administrative", "bankruptcy", "business",
+  "employment", "family", "immigration", "intellectual property", "international", "probate",
+  "real estate", "tax", "arbitration",
+].map((id) => ({ id, label: id.replace(/\b\w/g, (letter) => letter.toUpperCase()) })) as readonly { id: GlossaryDomain; label: string }[];
 
 export function popularGlossaryTerms(limit = 24) {
   return [...glossaryTerms]
