@@ -10,6 +10,7 @@ const primaryNavigation = [
   ["Parties", "/parties"],
   ["Professionals", "/attorneys"],
   ["Judges & Courts", "/judges"],
+  ["Supreme Court", "/supreme-court"],
   ["Explainers", "/explainers"],
   ["News & Trackers", "/government-litigation"],
 ] as const;
