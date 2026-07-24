@@ -11,7 +11,7 @@ describe("legal glossary", () => {
   it("keeps popularity ranking deterministic", () => {
     const popular = popularGlossaryTerms();
     expect(popular).toHaveLength(24);
-    expect(popular.every((item, index) => !popular[index - 1] || popular[index - 1].popularity >= item.popularity)).toBe(true);
+    expect(popular.every((item, index) => index === 0 || popular[index - 1]!.popularity >= item.popularity)).toBe(true);
   });
 
   it("separates federal, state, and Supreme Court procedure", () => {
