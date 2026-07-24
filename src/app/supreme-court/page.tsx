@@ -50,7 +50,7 @@ export default async function SupremeCourtPage() {
     <header className={styles.hero}>
       <nav className={styles.breadcrumb} aria-label="Breadcrumb"><Link href="/">Jurvio</Link><span>/</span>Supreme Court</nav>
       <div className={styles.termStatus}><span aria-hidden="true" /> October Term 2025</div>
-      <h1>The Supreme Court, organized and explained.</h1>
+      <h1>The Supreme Court, organized and <span className="brandHeadlineEnd">explained<span className="signatureDot" aria-hidden="true">.</span></span></h1>
       <p className={styles.lede}>Follow cases from petition to decision. Explore the Justices, calendar, orders, opinions, history, and the public record behind the Court.</p>
       <div className={styles.actions}>
         <a href="#recent-opinions">Browse recent opinions</a>
