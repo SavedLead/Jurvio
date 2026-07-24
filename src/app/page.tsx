@@ -14,7 +14,7 @@ export default function HomePage() {
     <main>
       <section className="hero shell">
         <p className="eyebrow"><span aria-hidden="true" /> Public legal intelligence</p>
-        <h1>Understand litigation<span className="signatureDot">.</span></h1>
+        <h1>Understand litigation<span className="signatureDot" aria-label=".">.</span></h1>
         <p className="lede">
           Search public court records, understand what happened, and discover how every case,
           party, attorney, judge, court, and legal issue connects.
