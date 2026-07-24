@@ -14,7 +14,7 @@ export default function SupremeCourtTimelinePage() {
   return <main className={styles.page}>
     <header className={styles.hero}>
       <nav aria-label="Breadcrumb"><Link href="/">Jurvio</Link><span>/</span><Link href="/supreme-court">Supreme Court</Link><span>/</span>Timeline</nav>
-      <p>1789 to today</p><h1>The Supreme Court timeline</h1>
+      <p>1789 to today</p><h1>The Supreme Court <span className="brandHeadlineEnd">timeline<span className="signatureDot" aria-hidden="true">.</span></span></h1>
       <div>Explore the laws, cases, membership changes, and publication milestones that shaped the Court. Filters separate defining events from useful historical context.</div>
     </header>
     <section className={styles.body}><TimelineFilter events={courtMilestones} /></section>
