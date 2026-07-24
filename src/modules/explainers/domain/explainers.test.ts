@@ -12,7 +12,18 @@ describe("legal explainers", () => {
   });
 
   it("exposes a compact reusable glossary", () => {
-    expect(explainerGlossary()).toHaveLength(11);
+    expect(explainerGlossary()).toHaveLength(18);
     expect(getExplainer("summary-judgment")?.term).toBe("Summary judgment");
+    expect(getExplainer("emergency-docket")?.aliases).toContain("shadow docket");
+  });
+
+  it("keeps every plain-language entry substantive and source-backed", () => {
+    for (const item of legalExplainers) {
+      expect(item.oneLine.length).toBeGreaterThan(35);
+      expect(item.plainEnglish.length).toBeGreaterThan(80);
+      expect(item.commonMistake.length).toBeGreaterThan(50);
+      expect(item.whatHappensNext).toHaveLength(3);
+      expect(item.sources.every((source) => source.url.startsWith("https://"))).toBe(true);
+    }
   });
 });
