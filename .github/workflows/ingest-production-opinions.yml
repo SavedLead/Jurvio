@@ -81,6 +81,35 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Resolve active production image
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            container_ids="$(docker ps \
+              --filter "label=com.docker.compose.project=jurvio" \
+              --filter "label=com.docker.compose.service=app" \
+              --format "{{.ID}}")"
+            set -- $container_ids
+            if [ "$#" -eq 0 ]; then
+              echo "No running Jurvio app container found" >&2
+              exit 1
+            fi
+            if [ "$#" -ne 1 ]; then
+              echo "Multiple running Jurvio app containers found; refusing ambiguous ingestion target" >&2
+              exit 1
+            fi
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ')"
+          test -n "$JURVIO_IMAGE" || { echo "::error::Running Jurvio app container has no configured image"; exit 1; }
+          case "$JURVIO_IMAGE" in
+            *[!A-Za-z0-9._/@:-]*) echo "::error::Resolved Jurvio image contains unexpected characters"; exit 1 ;;
+          esac
+          printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
+          echo "Resolved the image from the running Jurvio app container."
+
       - name: Ingest bounded CourtListener batch
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
@@ -90,7 +119,7 @@ jobs:
           LIMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.limit || '10' }}
           ORDER: ${{ github.event_name == 'workflow_dispatch' && inputs.order || 'newest' }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-opinions.mjs --court '$COURT' --since '$SINCE' --limit '$LIMIT' --order '$ORDER' --delay-ms 1000"
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-opinions.mjs --court '$COURT' --since '$SINCE' --limit '$LIMIT' --order '$ORDER' --delay-ms 1000"
 
       - name: Report corpus and review queue
         if: always()
@@ -98,4 +127,8 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('cases', (SELECT count(*) FROM legal_case), 'opinions', (SELECT count(*) FROM judicial_opinion), 'documents', (SELECT count(*) FROM document), 'pending_reviews', (SELECT count(*) FROM publication_review WHERE status = 'pending'));\""
+          if [ -z "${JURVIO_IMAGE:-}" ]; then
+            echo "::warning::Skipping corpus report because the active production image could not be resolved"
+            exit 0
+          fi
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('cases', (SELECT count(*) FROM legal_case), 'opinions', (SELECT count(*) FROM judicial_opinion), 'documents', (SELECT count(*) FROM document), 'pending_reviews', (SELECT count(*) FROM publication_review WHERE status = 'pending'));\""
