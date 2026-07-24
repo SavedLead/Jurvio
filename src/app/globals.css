@@ -25,9 +25,25 @@ a:hover { text-decoration: underline; }
 .brand { display: inline-flex; align-items: center; color: var(--ink); }
 .brand:hover { text-decoration: none; }
 .brandWordmark { display: block; width: 132px; height: auto; }
-.siteHeader nav { display: flex; align-items: center; gap: clamp(14px, 2vw, 28px); font-size: 14px; font-weight: 650; }
-.siteHeader nav a { color: #303a4e; }
-.navSearch { padding: 9px 15px; border: 1px solid var(--border); border-radius: 8px; }
+.desktopNavigation { display: flex; align-items: center; gap: clamp(10px, 1.35vw, 20px); font-size: 13px; font-weight: 650; }
+.desktopNavigation a { color: #303a4e; white-space: nowrap; }
+.mobileNavigation { display: none; position: relative; }
+.mobileNavigation summary {
+  display: grid; grid-template-columns: 18px auto; grid-template-rows: repeat(3, 2px);
+  align-items: center; column-gap: 8px; row-gap: 4px; padding: 11px 12px;
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; list-style: none;
+  color: var(--ink); font-size: 13px; font-weight: 750;
+}
+.mobileNavigation summary::-webkit-details-marker { display: none; }
+.mobileNavigation summary > span:not(.menuLabel) { width: 18px; height: 2px; border-radius: 2px; background: currentColor; }
+.mobileNavigation .menuLabel { grid-column: 2; grid-row: 1 / 4; }
+.mobileNavigation nav {
+  position: absolute; top: calc(100% + 10px); right: 0; display: grid; min-width: min(320px, calc(100vw - 40px));
+  padding: 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+  box-shadow: 0 18px 48px rgba(11,23,48,.14);
+}
+.mobileNavigation nav a { padding: 11px 12px; border-radius: 7px; color: #303a4e; font-size: 14px; font-weight: 650; }
+.mobileNavigation nav a:hover { background: #eef3fc; text-decoration: none; }
 .shell { max-width: 1180px; margin: 0 auto; padding: 80px 32px; }
 .hero { max-width: 1180px; padding-top: 108px; padding-bottom: 100px; }
 .hero > * { max-width: 900px; }
@@ -35,7 +51,11 @@ a:hover { text-decoration: underline; }
 .eyebrow > span { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--accent); }
 h1 { margin: 8px 0 16px; font-size: clamp(42px, 7vw, 76px); line-height: 1; letter-spacing: -0.05em; }
 h2 { letter-spacing: -0.035em; }
-.signatureDot { color: var(--accent); }
+.signatureDot {
+  display: inline-block; width: .16em; height: .16em; margin-left: .08em;
+  overflow: hidden; border-radius: 50%; background: var(--accent); color: transparent;
+  vertical-align: .06em;
+}
 .lede { max-width: 800px; color: var(--muted); font-size: clamp(19px, 2vw, 23px); line-height: 1.52; }
 .caseNav {
   display: flex; gap: 8px; overflow-x: auto; margin: 32px 0;
@@ -122,10 +142,12 @@ button:hover { background: var(--brand-dark); }
 .siteFooter p { max-width: 440px; color: var(--muted); }
 .siteFooter nav { display: grid; grid-template-columns: 1fr 1fr; align-content: start; gap: 14px 36px; }
 .footerBrand .brandWordmark { width: 118px; }
+@media (max-width: 1120px) {
+  .desktopNavigation { display: none; }
+  .mobileNavigation { display: block; }
+}
 @media (max-width: 720px) {
   .siteHeader { padding: 0 20px; }
-  .siteHeader nav a:not(.navSearch):not(:first-child) { display: none; }
-  .siteHeader nav { gap: 10px; }
   .shell { padding: 48px 20px; }
   .hero { padding-top: 72px; padding-bottom: 64px; }
   .searchBox div { display: grid; }
