@@ -7,7 +7,7 @@ import styles from "./explainers.module.css";
 export const metadata: Metadata = {
   title: "Legal procedure explained in plain English",
   description: "Understand jurisdiction, motions, dismissal, summary judgment, trial, appeal, injunctions, settlement, and other court procedures.",
-  alternates: { canonical: "/explainers" },
+  alternates: { canonical: "/explainers", types: { "application/json": "/explainers/glossary.json" } },
 };
 
 const categories: ExplainerCategory[] = ["starting a case", "deciding a case", "ending or pausing a case"];
