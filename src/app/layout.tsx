@@ -3,6 +3,19 @@ import Image from "next/image";
 import Link from "next/link";
 import "./globals.css";
 
+const primaryNavigation = [
+  ["Cases", "/cases"],
+  ["Search", "/search"],
+  ["Explainers", "/explainers"],
+  ["Supreme Court", "/supreme-court"],
+  ["Parties", "/parties"],
+  ["Attorneys", "/attorneys"],
+  ["Judges", "/judges"],
+  ["Law Firms", "/law-firms"],
+  ["Courts", "/courts"],
+  ["Government Litigation", "/government-litigation"],
+] as const;
+
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.SITE_URL ?? "https://jurvio.com"),
   title: {
@@ -32,15 +45,24 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               alt="Jurvio"
             />
           </Link>
-          <nav aria-label="Primary">
-            <Link href="/cases">Cases</Link>
-            <Link href="/search?q=parties">Parties</Link>
-            <Link href="/search?q=attorneys">Attorneys</Link>
-            <Link href="/search?q=judges">Judges</Link>
-            <Link href="/search?q=courts">Courts</Link>
-            <Link href="/#explainers">Explainers</Link>
-            <Link className="navSearch" href="/search" aria-label="Search Jurvio">Search</Link>
+          <nav className="desktopNavigation" aria-label="Primary">
+            {primaryNavigation.map(([label, href]) => (
+              <Link href={href} key={href}>{label}</Link>
+            ))}
           </nav>
+          <details className="mobileNavigation">
+            <summary aria-label="Open navigation">
+              <span aria-hidden="true" />
+              <span aria-hidden="true" />
+              <span aria-hidden="true" />
+              <span className="menuLabel">Menu</span>
+            </summary>
+            <nav aria-label="Mobile">
+              {primaryNavigation.map(([label, href]) => (
+                <Link href={href} key={href}>{label}</Link>
+              ))}
+            </nav>
+          </details>
         </header>
         {children}
         <footer className="siteFooter">
@@ -57,7 +79,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
             <p>Public legal intelligence that makes litigation understandable.</p>
           </div>
           <nav aria-label="Footer">
-            <Link href="/cases">Cases</Link><Link href="/search">Search</Link>
+            {primaryNavigation.map(([label, href]) => (
+              <Link href={href} key={href}>{label}</Link>
+            ))}
             <Link href="/sitemap.xml">Sitemap</Link>
           </nav>
         </footer>
