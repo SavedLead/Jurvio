@@ -71,6 +71,7 @@ a:hover { text-decoration: underline; }
 .eyebrow > span { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--accent); }
 h1 { margin: 8px 0 16px; font-size: clamp(42px, 7vw, 76px); line-height: 1; letter-spacing: -0.05em; }
 h2 { letter-spacing: -0.035em; }
+.brandHeadlineEnd { white-space: nowrap; }
 .signatureDot {
   display: inline-block; width: .16em; height: .16em; margin-left: .08em;
   overflow: hidden; border-radius: 50%; background: var(--accent); color: transparent;

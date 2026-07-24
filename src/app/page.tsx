@@ -45,7 +45,7 @@ export default function HomePage() {
         <div className="shell heroGrid">
           <div className="heroCopy">
             <p className="eyebrow"><span aria-hidden="true" /> Public legal intelligence</p>
-            <h1>Understand litigation<span className="signatureDot" aria-label=".">.</span></h1>
+            <h1>Understand <span className="brandHeadlineEnd">litigation<span className="signatureDot" aria-hidden="true">.</span></span></h1>
             <p className="lede">
               Search the public record. See where a case stands. Understand what happened,
               who is involved, and what may come next.
