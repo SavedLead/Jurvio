@@ -10,6 +10,7 @@ const primaryNavigation = [
   ["Parties", "/parties"],
   ["Professionals", "/attorneys"],
   ["Judges & Courts", "/judges"],
+  ["Supreme Court", "/supreme-court"],
   ["Explainers", "/explainers"],
   ["News & Trackers", "/government-litigation"],
 ] as const;
@@ -107,7 +108,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           </div>
           <div className="footerLegal">
             <span>© {new Date().getFullYear()} Jurvio. Public legal intelligence.</span>
-            <span>Source-backed. Neutral. Built for understanding.</span>
+            <span>Source-backed. Neutral. Built for <span className="brandHeadlineEnd">understanding<span className="signatureDot" aria-hidden="true">.</span></span></span>
           </div>
         </footer>
       </body>
