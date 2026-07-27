@@ -1,7 +1,7 @@
 export interface ArtifactWrite {
   key: string;
   mediaType: string;
-  body: string;
+  body: string | Uint8Array;
   contentHash: string;
 }
 

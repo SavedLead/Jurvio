@@ -1,0 +1,113 @@
+name: Ingest official Supreme Court opinions
+
+on:
+  workflow_dispatch:
+    inputs:
+      term:
+        description: Supreme Court term (two-digit year)
+        required: true
+        default: "25"
+      limit:
+        description: Maximum official opinions (1-100)
+        required: true
+        default: "10"
+      resume:
+        description: Resume after the last successful official-source checkpoint
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production-scotus-official-ingestion
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: Validate bounded batch
+        env:
+          TERM_YEAR: ${{ inputs.term }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          printf '%s' "$TERM_YEAR" | grep -Eq '^[0-9]{2}$'
+          test "$LIMIT" -ge 1
+          test "$LIMIT" -le 100
+
+      - name: Configure SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          test -n "$DO_SSH_KEY_B64" || { echo "::error::DO_SSH_KEY_B64 is empty"; exit 1; }
+          case "$DO_SSH_KEY_B64" in *[!A-Za-z0-9+/=]*) echo "::error::DO_SSH_KEY_B64 is not one-line base64"; exit 1;; esac
+          if ! printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519; then
+            rm -f ~/.ssh/id_ed25519
+            echo "::error::DO_SSH_KEY_B64 could not be decoded"
+            exit 1
+          fi
+          chmod 600 ~/.ssh/id_ed25519
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1; then
+            rm -f ~/.ssh/id_ed25519
+            echo "::error::Decoded SSH private key is invalid or passphrase-protected"
+            exit 1
+          fi
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Resolve active production image
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            container_ids="$(docker ps \
+              --filter "label=com.docker.compose.project=jurvio" \
+              --filter "label=com.docker.compose.service=app" \
+              --format "{{.ID}}")"
+            set -- $container_ids
+            if [ "$#" -eq 0 ]; then
+              echo "No running Jurvio app container found" >&2
+              exit 1
+            fi
+            if [ "$#" -ne 1 ]; then
+              echo "Multiple running Jurvio app containers found; refusing ambiguous ingestion target" >&2
+              exit 1
+            fi
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ')"
+          test -n "$JURVIO_IMAGE" || { echo "::error::Running Jurvio app container has no configured image"; exit 1; }
+          case "$JURVIO_IMAGE" in
+            *[!A-Za-z0-9._/@:-]*) echo "::error::Resolved Jurvio image contains unexpected characters"; exit 1 ;;
+          esac
+          printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
+          echo "Resolved the image from the running Jurvio app container."
+
+      - name: Ingest bounded official-source batch
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          TERM_YEAR: ${{ inputs.term }}
+          LIMIT: ${{ inputs.limit }}
+          RESUME: ${{ inputs.resume }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'"
+
+      - name: Report official-source staging queue
+        if: always()
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          if [ -z "${JURVIO_IMAGE:-}" ]; then
+            echo "::warning::Skipping staging report because the active production image could not be resolved"
+            exit 0
+          fi
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\""
