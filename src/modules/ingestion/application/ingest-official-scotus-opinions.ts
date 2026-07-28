@@ -75,10 +75,20 @@ export async function ingestOfficialScotusOpinions(
 
     let succeeded = 0;
     let failed = 0;
+    let cachedPdf: Awaited<ReturnType<typeof fetchOfficialOpinionPdf>> | null = null;
+    let cachedPdfSource: string | null = null;
     for (const record of selected) {
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
       try {
-        const pdf = await fetchOfficialOpinionPdf(record.pdfUrl);
+        const sourceWithoutFragment = new URL(record.pdfUrl);
+        sourceWithoutFragment.hash = "";
+        const pdfSource = sourceWithoutFragment.toString();
+        const retrievedPdf = cachedPdf && cachedPdfSource === pdfSource
+          ? { ...cachedPdf, sourceUri: record.pdfUrl }
+          : await fetchOfficialOpinionPdf(record.pdfUrl);
+        cachedPdf = retrievedPdf;
+        cachedPdfSource = pdfSource;
+        const pdf = retrievedPdf;
         const officialPdfName = new URL(record.pdfUrl).pathname.split("/").pop() ?? "opinion.pdf";
         const stored = await artifactStore.putIfAbsent({
           key: `scotus/slip-opinions/${options.termYear}/${officialPdfName.replaceAll(/[^a-zA-Z0-9._-]/g, "_")}-${pdf.contentHash}.pdf`,
