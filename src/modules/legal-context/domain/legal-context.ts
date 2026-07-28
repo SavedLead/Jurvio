@@ -78,13 +78,15 @@ export function extractCitationLabels(value: unknown): string[] {
 
 
 export function distinguishReportersNote(html: string): string {
-  const marker = "<p>Reporter’s Note</p>";
-  const markerWithoutApostrophe = "<p>Reporters Note</p>";
-  const matchedMarker = html.includes(marker) ? marker : html.includes(markerWithoutApostrophe) ? markerWithoutApostrophe : null;
-  if (!matchedMarker) return html;
+  const markerMatch = /Reporter(?:’|')?s Note/.exec(html);
+  if (!markerMatch || markerMatch.index === undefined) return html;
 
-  const markerIndex = html.indexOf(matchedMarker);
-  const opinion = html.slice(0, markerIndex);
-  const note = html.slice(markerIndex + matchedMarker.length);
+  const markerIndex = markerMatch.index;
+  const paragraphStart = html.lastIndexOf("<p>", markerIndex);
+  const markerIsInsideParagraph = paragraphStart >= 0 && html.lastIndexOf("</p>", markerIndex) < paragraphStart;
+  const opinion = html.slice(0, markerIndex) + (markerIsInsideParagraph ? "</p>" : "");
+  let note = html.slice(markerIndex + markerMatch[0].length);
+  if (markerIsInsideParagraph && note.startsWith("</p>")) note = note.slice(4);
+
   return `${opinion}<aside class="reportersNote" aria-labelledby="reporters-note-heading"><h2 id="reporters-note-heading">Reporter’s Note</h2><p class="reportersNoteExplanation">Publication corrections from the Reporter of Decisions. This note is not part of the Court’s opinion.</p>${note}</aside>`;
 }
