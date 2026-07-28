@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import type { ArtifactStore } from "./artifact-store";
 import { finishIngestionRun, finishIngestionRunItem, startIngestionRun, startIngestionRunItem } from "./ingestion-run";
 import { fetchOfficialOpinionPdf, fetchOfficialSlipOpinionIndex } from "../providers/scotus/official-opinions";
+import type { RetrievedOfficialPdf } from "../providers/scotus/official-opinions";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -75,7 +76,7 @@ export async function ingestOfficialScotusOpinions(
 
     let succeeded = 0;
     let failed = 0;
-    let cachedPdf: Awaited<ReturnType<typeof fetchOfficialOpinionPdf>> | null = null;
+    let cachedPdf: RetrievedOfficialPdf | null = null;
     let cachedPdfSource: string | null = null;
     for (const record of selected) {
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
@@ -83,7 +84,7 @@ export async function ingestOfficialScotusOpinions(
         const sourceWithoutFragment = new URL(record.pdfUrl);
         sourceWithoutFragment.hash = "";
         const pdfSource = sourceWithoutFragment.toString();
-        const retrievedPdf = cachedPdf && cachedPdfSource === pdfSource
+        const retrievedPdf: RetrievedOfficialPdf = cachedPdf && cachedPdfSource === pdfSource
           ? { ...cachedPdf, sourceUri: record.pdfUrl }
           : await fetchOfficialOpinionPdf(record.pdfUrl);
         cachedPdf = retrievedPdf;
