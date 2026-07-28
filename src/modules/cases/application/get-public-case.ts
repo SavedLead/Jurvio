@@ -19,6 +19,20 @@ export interface PublicCase {
   verification: string;
   statusExplanation: string | null;
   statusRuleVersion: string | null;
+  backgroundSummary: string | null;
+  backgroundSourceUrl: string | null;
+  significanceSummary: string | null;
+  significanceSourceUrl: string | null;
+  questionPresented: string | null;
+  questionSourceUrl: string | null;
+  exactHolding: string | null;
+  holdingSourceUrl: string | null;
+  exactDisposition: string | null;
+  dispositionSourceUrl: string | null;
+  decisionLineup: { perCuriam?: boolean; author?: string | null; joins?: string[]; separateOpinions?: Array<{ author: string; type: string }> } | null;
+  officialDocketUrl: string | null;
+  lowerCourtName: string | null;
+  lowerCourtDecidedOn: string | null;
 }
 
 export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicCase | null> {
@@ -32,9 +46,17 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
       c.disposition_scope AS "dispositionScope", c.judgment_state AS "judgmentState",
       c.appeal_state AS "appealState", c.verification::text AS verification,
       c.status_explanation AS "statusExplanation",
-      c.status_rule_version AS "statusRuleVersion"
+      c.status_rule_version AS "statusRuleVersion",
+      enrichment.background_summary AS "backgroundSummary", enrichment.background_source_url AS "backgroundSourceUrl",
+      enrichment.significance_summary AS "significanceSummary", enrichment.significance_source_url AS "significanceSourceUrl",
+      enrichment.question_presented AS "questionPresented", enrichment.question_source_url AS "questionSourceUrl",
+      enrichment.exact_holding AS "exactHolding", enrichment.holding_source_url AS "holdingSourceUrl",
+      enrichment.exact_disposition AS "exactDisposition", enrichment.disposition_source_url AS "dispositionSourceUrl",
+      enrichment.decision_lineup AS "decisionLineup", enrichment.official_docket_url AS "officialDocketUrl",
+      enrichment.lower_court_name AS "lowerCourtName", enrichment.lower_court_decided_on::text AS "lowerCourtDecidedOn"
     FROM legal_case c
     JOIN court ON court.id = c.court_id
+    LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = c.id AND enrichment.verification = 'verified'
     WHERE c.public_id = ${publicId}
       AND c.publication = 'published'
       AND COALESCE((
