@@ -4,7 +4,9 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
-import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { extractOfficialCitation } from "@/modules/cases/domain/scotus-display";
+import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { OpinionReaderTools } from "@/modules/cases/ui/opinion-reader-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { distinguishReportersNote, extractCitationLabels, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
 import { AnnotatedLegalText } from "@/modules/legal-context/ui/annotated-legal-text";
@@ -17,22 +19,20 @@ interface OpinionPageProps {
 
 async function load(params: OpinionPageProps["params"]) {
   const { caseId, documentId } = await params;
-  if (!/^jv-[a-z0-9]{8,10}$/.test(caseId) || !/^jd-[a-z0-9]{8,10}$/.test(documentId)) {
-    return null;
-  }
+  if (!/^jv-[a-z0-9]{8,10}$/.test(caseId) || !/^jd-[a-z0-9]{8,10}$/.test(documentId)) return null;
   return getPublicOpinion(db(), caseId, documentId);
 }
 
 export async function generateMetadata({ params }: OpinionPageProps): Promise<Metadata> {
   const opinion = await load(params);
   if (!opinion) return { title: "Opinion not found" };
-  const description = opinion.contentText.slice(0, 155);
+  const caption = cleanCaseCaption(opinion.caseCaption);
+  const description = opinion.contentText.replace(/\s+/g, " ").trim().slice(0, 155);
   return {
-    title: `${opinion.caseCaption} — Judicial Opinion`,
+    title: `${caption} — Judicial Opinion | Jurvio`,
     description,
-    alternates: {
-      canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`,
-    },
+    alternates: { canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` },
+    openGraph: { title: `${caption} — Judicial Opinion`, description, type: "article" },
     robots: opinion.indexable ? { index: true, follow: true } : { index: false, follow: true },
   };
 }
@@ -41,7 +41,10 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
   const opinion = await load(params);
   if (!opinion) notFound();
 
+  const caption = cleanCaseCaption(opinion.caseCaption);
   const canonicalPath = `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`;
+  const permanentUrl = `https://jurvio.com${canonicalPath}`;
+  const officialCitation = extractOfficialCitation(opinion.contentText);
   const requestHeaders = await headers();
   await recordDemandEvent(db(), {
     eventType: "document_view",
@@ -60,46 +63,75 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     "@context": "https://schema.org",
     "@type": "DigitalDocument",
     name: opinion.title,
-    headline: opinion.caseCaption,
+    headline: caption,
     datePublished: opinion.filedOn ?? undefined,
     pagination: `${opinion.wordCount} words`,
-    isPartOf: { "@type": "CreativeWork", name: opinion.caseCaption },
+    identifier: [
+      { "@type": "PropertyValue", name: "Docket number", value: opinion.docketNumber },
+      { "@type": "PropertyValue", name: "Jurvio document ID", value: opinion.documentPublicId },
+      officialCitation ? { "@type": "PropertyValue", name: "Official citation", value: officialCitation } : null,
+    ].filter(Boolean),
+    isPartOf: { "@type": "LegalCase", name: caption, url: `https://jurvio.com/case/${opinion.casePublicId}` },
     provider: { "@type": "Organization", name: "Jurvio" },
+    url: permanentUrl,
   };
 
   return (
-    <main className="readerShell">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }}
-      />
+    <main className="readerShell enhancedReaderShell">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }} />
       <nav className="breadcrumbs" aria-label="Breadcrumb">
-        <Link href="/cases">Cases</Link> / <Link href={`/case/${opinion.casePublicId}`}><BrandedCaseCaption caption={opinion.caseCaption} /></Link> / Opinion
+        <Link href="/cases">Cases</Link> / <Link href={`/case/${opinion.casePublicId}`}><BrandedCaseCaption caption={caption} /></Link> / Opinion
       </nav>
       <article className="opinionLayout">
         <header className="opinionHeader">
           <p className="eyebrow">{opinion.courtName}</p>
-          <h1><BrandedCaseCaption caption={opinion.caseCaption} /></h1>
-          <p className="lede"><BrandedCaseCaption caption={opinion.caseCaption} /> opinion</p>
+          <h1><BrandedCaseCaption caption={caption} /></h1>
+          <p className="lede">Judicial opinion</p>
           <dl className="metadataGrid">
-            <div><dt>Filed</dt><dd>{opinion.filedOn ?? "Date unavailable"}</dd></div>
+            {opinion.filedOn ? <div><dt>Filed or decided</dt><dd>{opinion.filedOn}</dd></div> : null}
             <div><dt>Docket</dt><dd>{opinion.docketNumber}</dd></div>
-            <div><dt>Opinion</dt><dd>{opinion.opinionType.replaceAll("-", " ")}</dd></div>
-            <div><dt>Status</dt><dd>{opinion.precedentialStatus ?? "Not specified"}</dd></div>
+            {opinion.opinionType && opinion.opinionType !== "unknown" ? <div><dt>Opinion</dt><dd>{opinion.opinionType.replaceAll("-", " ")}</dd></div> : null}
             {opinion.authorName ? <div><dt>Author</dt><dd>{opinion.authorName}</dd></div> : null}
+            {opinion.perCuriam ? <div><dt>Authorship</dt><dd>Per curiam</dd></div> : null}
+            {officialCitation ? <div><dt>Official citation</dt><dd>{officialCitation}</dd></div> : null}
           </dl>
           <aside className="sourceNotice">
-            <strong>Source-backed court text.</strong> Jurvio reformats the published opinion for readability; it does not change the court&apos;s words.
-            {opinion.sourceDownloadUrl ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View source file</a>.</> : null}
+            <strong>Official court text.</strong> Jurvio reformats the published opinion for readability without changing the Court&apos;s words.
+            {opinion.sourceDownloadUrl ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View the official source</a>.</> : null}
           </aside>
-          <p className="legalTermHelp">Tap any dotted legal term for a plain-language explanation.</p>
+          <p className="legalTermHelp">Tap or focus any dotted legal term for a plain-language explanation.</p>
         </header>
-        <AnnotatedLegalText
-          className="opinionBody"
-          html={distinguishReportersNote(opinion.contentHtml)}
-          terms={inlineLegalTerms}
-          citations={citationLinks}
-        />
+
+        <div className="opinionWorkspace">
+          <OpinionReaderTools
+            targetId="opinion-text"
+            permanentUrl={permanentUrl}
+            shareTitle={`${caption} — Judicial Opinion`}
+            citation={officialCitation}
+          />
+          <div id="opinion-text" className="opinionTextSurface" data-reader-size="regular" data-reader-width="standard" data-reader-theme="paper">
+            <AnnotatedLegalText
+              className="opinionBody"
+              html={distinguishReportersNote(opinion.contentHtml)}
+              terms={inlineLegalTerms}
+              citations={citationLinks}
+            />
+          </div>
+          <aside className="readerMetadataRail" aria-label="Opinion source and record details">
+            <section>
+              <p className="sectionKicker">Opinion details</p>
+              <dl className="railFacts">
+                <div><dt>Court</dt><dd>{opinion.courtName}</dd></div>
+                <div><dt>Docket</dt><dd>{opinion.docketNumber}</dd></div>
+                {opinion.filedOn ? <div><dt>Filed or decided</dt><dd>{opinion.filedOn}</dd></div> : null}
+                {officialCitation ? <div><dt>Citation</dt><dd>{officialCitation}</dd></div> : null}
+                <div><dt>Readable text</dt><dd>Extracted and verified</dd></div>
+                <div><dt>Permanent ID</dt><dd>{opinion.documentPublicId}</dd></div>
+              </dl>
+            </section>
+            {opinion.sourceDownloadUrl ? <section><p className="sectionKicker">Provenance</p><p>Published by the Supreme Court of the United States.</p><a href={opinion.sourceDownloadUrl} rel="nofollow noopener">Official court document</a></section> : null}
+          </aside>
+        </div>
       </article>
       <p className="permalink">Permanent Jurvio record: <Link href={canonicalPath as Route}>{opinion.documentPublicId}</Link></p>
     </main>

@@ -20,10 +20,8 @@ export function AnnotatedLegalText({ html, terms, citations = [], className }: A
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-
     const patterns = buildPatterns(terms, citations);
     if (patterns.length === 0) return;
-
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes: Text[] = [];
     while (walker.nextNode()) {
@@ -31,17 +29,29 @@ export function AnnotatedLegalText({ html, terms, citations = [], className }: A
       const parent = node.parentElement;
       if (parent && !skippedParents.has(parent.tagName) && node.data.trim()) nodes.push(node);
     }
-
     nodes.forEach((node) => annotateNode(node, patterns));
+
+    function dismissActiveCard(event: PointerEvent) {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !active.classList.contains("jurvioLegalTerm")) return;
+      if (event.target instanceof Node && active.contains(event.target)) return;
+      active.blur();
+    }
+    function dismissWithKeyboard(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.classList.contains("jurvioLegalTerm")) active.blur();
+    }
+    document.addEventListener("pointerdown", dismissActiveCard);
+    document.addEventListener("keydown", dismissWithKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", dismissActiveCard);
+      document.removeEventListener("keydown", dismissWithKeyboard);
+    };
   }, [citations, terms]);
 
-  return (
-    <div
-      ref={rootRef}
-      className={[styles.root, className].filter(Boolean).join(" ")}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <div ref={rootRef} className={[styles.root, className].filter(Boolean).join(" ")}
+    dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 type Pattern =
@@ -62,7 +72,6 @@ function annotateNode(node: Text, patterns: readonly Pattern[]) {
   const expression = new RegExp(`\\b(${escaped.join("|")})\\b`, "gi");
   const matches = [...node.data.matchAll(expression)];
   if (matches.length === 0) return;
-
   const fragment = document.createDocumentFragment();
   let cursor = 0;
   for (const match of matches) {
@@ -78,11 +87,11 @@ function annotateNode(node: Text, patterns: readonly Pattern[]) {
 
 function createAnnotation(text: string, pattern: Pattern): HTMLElement {
   if (pattern.kind === "citation") return createCitation(text, pattern.context);
-
   const wrapper = document.createElement("span");
   wrapper.className = "jurvioLegalTerm";
   wrapper.tabIndex = 0;
   wrapper.setAttribute("role", "term");
+  wrapper.setAttribute("aria-haspopup", "true");
   wrapper.append(text, createTermCard(pattern.context));
   return wrapper;
 }
@@ -110,7 +119,6 @@ function createCitation(text: string, context: CitedCaseContext): HTMLElement {
   link.href = context.href;
   link.textContent = text;
   if (!hasSourceBackedCaseContext(context)) return link;
-
   link.className = "jurvioCitationContext";
   const card = document.createElement("span");
   card.className = "jurvioContextCard";
@@ -130,6 +138,5 @@ function createCitation(text: string, context: CitedCaseContext): HTMLElement {
 }
 
 function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return value.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
 }
-

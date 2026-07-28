@@ -1,0 +1,112 @@
+.scotusCaseShell { max-width: 1380px; overflow-x: clip; }
+.caseHeader { max-width: 1120px; }
+.caseHeader h1 { text-wrap: balance; }
+.caseMeta { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 24px 0 0; }
+.caseMeta div { min-width: 150px; }
+.caseMeta dt, .railFacts dt { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.caseMeta dd, .railFacts dd { margin: 5px 0 0; overflow-wrap: anywhere; color: var(--ink); font-weight: 700; }
+.caseWorkspace { display: grid; grid-template-columns: minmax(150px, 190px) minmax(0, 1fr) minmax(220px, 260px); gap: clamp(24px, 3.2vw, 52px); align-items: start; margin-top: 42px; }
+.caseWorkspaceNav, .caseProvenanceRail { position: sticky; top: 98px; min-width: 0; }
+.caseWorkspaceMain { min-width: 0; }
+.caseWorkspaceNav .caseNavDesktop { display: grid; gap: 4px; margin: 0; padding: 0 0 24px; overflow: visible; border-bottom: 1px solid var(--border); }
+.caseWorkspaceNav .caseNavDesktop a { min-height: 44px; padding: 11px 12px; }
+.caseNavMobile { display: none; }
+.publicCaseTools { display: grid; gap: 8px; margin-top: 20px; }
+.publicCaseTools button, .readerPublicTools button, .readerSettings button { min-height: 42px; padding: 8px 11px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); font-size: 13px; }
+.publicCaseTools button:hover, .readerPublicTools button:hover, .readerSettings button:hover { border-color: #9fb2d1; background: #eef3fc; }
+.publicCaseTools span, .toolStatus { min-height: 18px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.caseLeadSection, .availableDocuments { padding: 0 0 42px; border-bottom: 1px solid var(--border); }
+.caseLeadSection h2, .availableDocuments h2 { margin: 8px 0 18px; font-size: clamp(28px, 3.4vw, 42px); }
+.verifiedFactSummary, .sectionIntroduction { margin: 0; color: #344055; font-size: 17px; line-height: 1.68; }
+.caseProvenanceRail { display: grid; gap: 14px; }
+.caseProvenanceRail section, .readerMetadataRail section { padding: 20px; border: 1px solid var(--border); border-top: 3px solid #bfd0ec; border-radius: 8px; background: var(--surface); }
+.caseProvenanceRail p:not(.sectionKicker), .readerMetadataRail p:not(.sectionKicker) { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.caseProvenanceRail a, .readerMetadataRail a { display: inline-block; margin-top: 4px; font-size: 13px; font-weight: 750; }
+.railFacts { display: grid; gap: 16px; margin: 16px 0 0; }
+.railFacts div + div { padding-top: 14px; border-top: 1px solid var(--border); }
+.documentCards { display: grid; gap: 12px; margin: 24px 0 0; padding: 0; list-style: none; }
+.documentCards li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: center; padding: 22px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.documentCards h3 { margin: 8px 0; overflow-wrap: anywhere; font-size: 18px; line-height: 1.35; }
+.documentCards time { color: var(--muted); font-size: 13px; }
+.documentType { color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.documentActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.documentActions a { display: inline-flex; min-height: 44px; align-items: center; padding: 10px 13px; border: 1px solid #b9c8df; border-radius: 7px; font-size: 13px; font-weight: 750; }
+.documentActions a:first-child { border-color: var(--brand); background: var(--brand); color: white; }
+.enhancedReaderShell { max-width: 1480px; overflow-x: clip; }
+.enhancedReaderShell .opinionLayout { overflow: visible; }
+.opinionWorkspace { display: grid; grid-template-columns: minmax(190px, 230px) minmax(0, 1fr) minmax(220px, 260px); align-items: start; background: var(--surface); }
+.opinionReaderTools, .readerMetadataRail { position: sticky; top: 94px; max-height: calc(100dvh - 112px); overflow-y: auto; }
+.opinionReaderTools { padding: 24px 18px; border-right: 1px solid var(--border); }
+.readerMetadataRail { display: grid; gap: 12px; padding: 24px 18px; border-left: 1px solid var(--border); }
+.opinionReaderTools details { border-bottom: 1px solid var(--border); }
+.opinionReaderTools summary { min-height: 48px; padding: 15px 2px; cursor: pointer; font-size: 13px; font-weight: 800; }
+.opinionSearch { padding: 4px 0 18px; }
+.opinionSearch label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.opinionSearch div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.opinionSearch input { width: 100%; min-width: 0; min-height: 42px; }
+.opinionSearch button { min-height: 42px; padding: 0 12px; }
+.opinionSectionNav { display: grid; gap: 4px; padding: 4px 0 18px; }
+.opinionSectionNav strong { margin-bottom: 5px; font-size: 12px; }
+.opinionSectionNav a { padding: 7px 8px; border-radius: 5px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+.opinionSectionNav a:hover { background: #eef3fc; color: var(--brand); text-decoration: none; }
+.readerSettings { display: grid; gap: 15px; padding: 4px 0 18px; }
+.readerSettings fieldset { margin: 0; padding: 0; border: 0; }
+.readerSettings legend { margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+.readerSettings button { margin: 0 5px 5px 0; }
+.readerSettings button[aria-pressed="true"] { border-color: var(--brand); background: #eaf1ff; color: var(--brand-dark); }
+.readerPublicTools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-top: 18px; }
+.toolStatus { display: block; padding-top: 10px; }
+.opinionTextSurface { min-width: 0; background: #fff; transition: background .15s ease; }
+.opinionTextSurface[data-reader-theme="soft"] { background: #f7f3e8; }
+.opinionTextSurface[data-reader-size="small"] .opinionBody { font-size: 16px; }
+.opinionTextSurface[data-reader-size="regular"] .opinionBody { font-size: 18px; }
+.opinionTextSurface[data-reader-size="large"] .opinionBody { font-size: 21px; }
+.opinionTextSurface[data-reader-width="standard"] .opinionBody { max-width: 760px; }
+.opinionTextSurface[data-reader-width="wide"] .opinionBody { max-width: 920px; }
+.opinionTextSurface .opinionBody { overflow-wrap: break-word; }
+.readerMetadataRail .railFacts dd { font-size: 13px; }
+.caseCaptionVersus { font-family: "Courier New", ui-monospace, monospace; font-size: .82em; font-weight: 700; letter-spacing: -.08em; }
+.caseCaptionVersus > span { color: var(--accent); }
+@media (min-width: 901px) { .caseShell > .caseNavDesktop { flex-wrap: wrap; overflow: visible; } }
+@media (max-width: 1100px) {
+  .caseWorkspace { grid-template-columns: 170px minmax(0, 1fr); }
+  .caseProvenanceRail { position: static; grid-column: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .opinionWorkspace { grid-template-columns: 210px minmax(0, 1fr); }
+  .readerMetadataRail { position: static; grid-column: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; border-top: 1px solid var(--border); border-left: 0; }
+}
+@media (max-width: 760px) {
+  .scotusCaseShell, .enhancedReaderShell { width: 100%; padding-right: max(16px, env(safe-area-inset-right)); padding-left: max(16px, env(safe-area-inset-left)); }
+  .caseHeader h1, .opinionHeader h1 { font-size: clamp(31px, 10vw, 42px); overflow-wrap: break-word; }
+  .caseMeta { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  .caseMeta div { min-width: 0; padding-top: 10px; border-top: 1px solid var(--border); }
+  .caseWorkspace, .opinionWorkspace { display: block; margin-top: 26px; }
+  .caseWorkspaceNav, .caseProvenanceRail, .opinionReaderTools, .readerMetadataRail { position: static; max-height: none; overflow: visible; }
+  .caseNavDesktop { display: none !important; }
+  .caseNavMobile { display: block; margin: 22px 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+  .caseNavMobile summary { min-height: 50px; padding: 15px 17px; cursor: pointer; font-weight: 800; }
+  .caseNavMobile nav { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 10px 12px; }
+  .caseNavMobile a { display: flex; min-height: 46px; align-items: center; padding: 10px; border-radius: 6px; color: var(--ink); font-size: 14px; font-weight: 700; }
+  .caseNavMobile a:hover { background: #eef3fc; text-decoration: none; }
+  .publicCaseTools { display: flex; flex-wrap: wrap; margin: 0 0 24px; }
+  .publicCaseTools button { flex: 1 1 95px; min-height: 46px; }
+  .publicCaseTools span { flex-basis: 100%; }
+  .caseLeadSection { padding-top: 4px; }
+  .caseProvenanceRail, .readerMetadataRail { display: grid; grid-template-columns: 1fr; margin-top: 28px; padding: 0; border: 0; }
+  .documentCards li { grid-template-columns: 1fr; gap: 16px; padding: 18px; }
+  .documentActions { justify-content: flex-start; }
+  .documentActions a { flex: 1 1 130px; justify-content: center; }
+  .opinionReaderTools { padding: 0 0 22px; border-right: 0; }
+  .opinionReaderTools details { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; padding: 0 14px; background: var(--surface); }
+  .readerPublicTools { grid-template-columns: repeat(2, 1fr); padding: 8px 0; }
+  .readerPublicTools button { min-height: 46px; }
+  .opinionTextSurface[data-reader-size="large"] .opinionBody { font-size: 19px; }
+  .opinionTextSurface .opinionBody { max-width: 100% !important; padding-right: 18px; padding-left: 18px; }
+}
+@media print {
+  .siteHeader, .siteFooter, .breadcrumbs, .caseWorkspaceNav, .caseProvenanceRail, .opinionReaderTools, .readerMetadataRail, .publicCaseTools, .permalink { display: none !important; }
+  .shell, .readerShell { max-width: none; padding: 0; }
+  .caseWorkspace, .opinionWorkspace { display: block; }
+  .opinionLayout { border: 0; }
+  .opinionTextSurface, .opinionTextSurface[data-reader-theme] { background: white; }
+  .opinionBody { max-width: none !important; padding: 24px 0; color: black; font-size: 11pt !important; }
+}

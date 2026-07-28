@@ -4,18 +4,29 @@ interface BrandedCaseCaptionProps {
   caption: string;
 }
 
+const revisionSuffix = /\s+(?:revisions?|revised)\s*:\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*$/i;
+
+export function cleanCaseCaption(caption: string) {
+  let cleaned = caption.replace(/\s+/g, " ").trim();
+  while (revisionSuffix.test(cleaned)) cleaned = cleaned.replace(revisionSuffix, "").trim();
+  return cleaned;
+}
+
 export function splitAdversarialCaseCaption(caption: string): [string, string] | null {
-  const match = /\s+v\.\s+/i.exec(caption);
+  const cleaned = cleanCaseCaption(caption);
+  if (/^(?:in re|ex parte)\b/i.test(cleaned)) return null;
+  const match = /\s+v\.\s+/i.exec(cleaned);
   if (!match || match.index === undefined) return null;
   return [
-    caption.slice(0, match.index).trimEnd(),
-    caption.slice(match.index + match[0].length).trimStart(),
+    cleaned.slice(0, match.index).trimEnd(),
+    cleaned.slice(match.index + match[0].length).trimStart(),
   ];
 }
 
 export function BrandedCaseCaption({ caption }: BrandedCaseCaptionProps): ReactNode {
-  const parties = splitAdversarialCaseCaption(caption);
-  if (!parties) return caption;
+  const cleaned = cleanCaseCaption(caption);
+  const parties = splitAdversarialCaseCaption(cleaned);
+  if (!parties) return cleaned;
 
   return (
     <>
