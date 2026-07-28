@@ -89,7 +89,7 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
           const [entry] = await tx<{ id: string }[]>`
             INSERT INTO docket_entry (public_id, case_id, provider_id, provider_entry_id, entry_number,
               filed_on, description, entry_type, importance, source_artifact_id)
-            VALUES (${createPublicId("docket")}, ${legalCase.id}, ${provider.id}, ${event.sourceRecordId},
+            VALUES (${createPublicId("docketEntry")}, ${legalCase.id}, ${provider.id}, ${event.sourceRecordId},
               ${String(index + 1)}, ${event.filedOn}, ${event.description}, ${event.eventType}, ${importance(event.eventType)}, ${artifact.id})
             ON CONFLICT (provider_id, provider_entry_id) DO UPDATE SET filed_on = EXCLUDED.filed_on,
               description = EXCLUDED.description, entry_type = EXCLUDED.entry_type,
