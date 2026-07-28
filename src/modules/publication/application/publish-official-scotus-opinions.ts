@@ -5,7 +5,7 @@ type Sql = ReturnType<typeof postgres>;
 
 export function normalizeScotusCaption(value: string): string {
   return value
-    .replace(/\\s+Revisions?\\s*:\\s*\\d{1,2}\\/\\d{1,2}\\/\\d{2,4}\\s*$/i, "")
+    .replace(/\s+Revisions?\s*:\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*$/i, "")
     .trim();
 }
 
