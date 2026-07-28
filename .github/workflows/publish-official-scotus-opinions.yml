@@ -1,4 +1,5 @@
 name: Publish verified official Supreme Court opinions
+# Operational trigger: publish preserved official PDFs after the v3 publisher rollout.
 
 on:
   workflow_dispatch:
