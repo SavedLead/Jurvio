@@ -29,7 +29,7 @@ export async function generateMetadata({ params }: OpinionPageProps): Promise<Me
   const caption = cleanCaseCaption(opinion.caseCaption);
   const description = opinion.contentText.replace(/\s+/g, " ").trim().slice(0, 155);
   return {
-    title: `${caption} — Judicial Opinion | Jurvio`,
+    title: `${caption} — Judicial Opinion`,
     description,
     alternates: { canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` },
     openGraph: { title: `${caption} — Judicial Opinion`, description, type: "article" },
