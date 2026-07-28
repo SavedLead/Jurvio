@@ -117,7 +117,7 @@ jobs:
           test -n "$BATCH_RESULT" || BATCH_RESULT='{"cycle":"no batch output available"}'
           EXTRACTION_RESULT="$(tail -n 1 /tmp/scotus-extraction.log 2>/dev/null || true)"
           test -n "$EXTRACTION_RESULT" || EXTRACTION_RESULT='{"cycle":"no extraction output available"}'
-          BODY="$(printf '### SCOTUS publication\n\n- Status: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nPublication batch:\n\n```json\n%s\n```\n\nLive totals:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$BATCH_RESULT" "$EXTRACTION_RESULT" "$TOTALS")"
+          BODY="$(printf '### SCOTUS publication and text extraction\n\n- Status: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nPublication batch:\n\n```json\n%s\n```\n\nText extraction:\n\n```json\n%s\n```\n\nLive totals:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$BATCH_RESULT" "$EXTRACTION_RESULT" "$TOTALS")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
           exit "$REPORT_EXIT"
 
