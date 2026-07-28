@@ -36,7 +36,7 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 30
+    timeout-minutes: 180
     steps:
       - name: Resolve batch inputs
         env:
@@ -46,19 +46,25 @@ jobs:
           INPUT_RESUME: ${{ inputs.resume }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            TERM_YEAR="$INPUT_TERM_YEAR"
+            TERM_YEARS="$INPUT_TERM_YEAR"
             LIMIT="$INPUT_LIMIT"
             RESUME="$INPUT_RESUME"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            TERM_YEARS="24 23 22 21 20 19 18"
+            LIMIT="100"
+            RESUME="true"
           else
-            TERM_YEAR="25"
+            TERM_YEARS="25"
             LIMIT="100"
             RESUME="true"
           fi
-          printf '%s' "$TERM_YEAR" | grep -Eq '^[0-9]{2}$'
+          for TERM_YEAR in $TERM_YEARS; do
+            printf '%s' "$TERM_YEAR" | grep -Eq '^[0-9]{2}$'
+          done
           test "$LIMIT" -ge 1
           test "$LIMIT" -le 100
           case "$RESUME" in true|false) ;; *) echo "::error::Invalid resume value"; exit 1;; esac
-          printf 'TERM_YEAR=%s\nLIMIT=%s\nRESUME=%s\n' "$TERM_YEAR" "$LIMIT" "$RESUME" >> "$GITHUB_ENV"
+          printf 'TERM_YEARS=%s\nLIMIT=%s\nRESUME=%s\n' "$TERM_YEARS" "$LIMIT" "$RESUME" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -126,7 +132,11 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app node /app/jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee /tmp/scotus-ingestion.log
+          : > /tmp/scotus-ingestion.log
+          for TERM_YEAR in $TERM_YEARS; do
+            echo "Ingesting official Supreme Court term $TERM_YEAR" | tee -a /tmp/scotus-ingestion.log
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app node /app/jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee -a /tmp/scotus-ingestion.log
+          done
 
       - name: Publish exact verified matches
         env:
@@ -134,7 +144,11 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'" | tee /tmp/scotus-publication.log
+          : > /tmp/scotus-publication.log
+          for ATTEMPT in 1 2 3 4 5 6 7 8; do
+            echo "Publishing verified Supreme Court batch $ATTEMPT" | tee -a /tmp/scotus-publication.log
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'" | tee -a /tmp/scotus-publication.log
+          done
 
       - name: Report official-source staging queue
         if: always()
