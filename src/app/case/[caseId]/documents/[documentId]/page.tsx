@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
+import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { distinguishReportersNote, extractCitationLabels, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
 import { AnnotatedLegalText } from "@/modules/legal-context/ui/annotated-legal-text";
@@ -78,7 +79,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
       <article className="opinionLayout">
         <header className="opinionHeader">
           <p className="eyebrow">{opinion.courtName}</p>
-          <h1>{opinion.caseCaption}</h1>
+          <h1><BrandedCaseCaption caption={opinion.caseCaption} /></h1>
           <p className="lede">{opinion.title}</p>
           <dl className="metadataGrid">
             <div><dt>Filed</dt><dd>{opinion.filedOn ?? "Date unavailable"}</dd></div>
