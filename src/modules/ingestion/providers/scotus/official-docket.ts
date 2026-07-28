@@ -54,10 +54,10 @@ function officialLink(href: string, base: string) {
 function classifyEvent(description: string) {
   const value = description.toLowerCase();
   if (value.includes("petition for a writ of certiorari filed")) return "petition_filed";
+  if (value.includes("judgment and mandate issued")) return "mandate_issued";
+  if (value.includes("judgment reversed") || value.includes("judgment affirmed") || value.includes("judgment vacated") || value.includes("opinion per curiam")) return "decision";
   if (value.includes("petition granted")) return "certiorari_granted";
   if (value.includes("argument")) return "oral_argument";
-  if (value.includes("judgment and mandate issued")) return "mandate_issued";
-  if (value.includes("judgment reversed") || value.includes("judgment affirmed") || value.includes("opinion per curiam")) return "decision";
   if (value.includes("distributed for conference")) return "conference_distribution";
   if (value.includes("brief")) return "brief_filed";
   if (value.includes("order")) return "order";
