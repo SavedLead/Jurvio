@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: jurvio-production-scotus-publication
@@ -81,16 +82,31 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'"
+          set -o pipefail
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'" | tee /tmp/scotus-publication.log
 
       - name: Report SCOTUS publication totals
         if: always()
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT_COMMENT_ID: "5101767945"
+          WORKFLOW_STATUS: ${{ job.status }}
         run: |
+          REPORT_EXIT=0
           if [ -z "${JURVIO_IMAGE:-}" ]; then
-            echo "::warning::Skipping publication report because the active production image could not be resolved"
-            exit 0
+            TOTALS='{"report":"unavailable","reason":"active production image unresolved"}'
+            REPORT_EXIT=1
+          elif TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_scotus_cases', (SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'), 'published_scotus_documents', (SELECT count(DISTINCT document.id) FROM document JOIN judicial_opinion ON judicial_opinion.document_id = document.id JOIN opinion_cluster ON opinion_cluster.id = judicial_opinion.cluster_id JOIN legal_case ON legal_case.id = opinion_cluster.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND document.publication = 'published'), 'pending_official_candidates', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved_official_candidates', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'));\"" 2>/dev/null)"; then
+            :
+          else
+            REPORT_EXIT=$?
+            TOTALS='{"report":"unavailable","reason":"production database query failed"}'
           fi
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_scotus_cases', (SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'), 'published_scotus_documents', (SELECT count(DISTINCT document.id) FROM document JOIN judicial_opinion ON judicial_opinion.document_id = document.id JOIN opinion_cluster ON opinion_cluster.id = judicial_opinion.cluster_id JOIN legal_case ON legal_case.id = opinion_cluster.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND document.publication = 'published'), 'pending_official_candidates', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved_official_candidates', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'));\""
+          BATCH_RESULT="$(tail -n 1 /tmp/scotus-publication.log 2>/dev/null || true)"
+          test -n "$BATCH_RESULT" || BATCH_RESULT='{"cycle":"no batch output available"}'
+          BODY="$(printf '### SCOTUS publication\n\n- Status: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nPublication batch:\n\n```json\n%s\n```\n\nLive totals:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$BATCH_RESULT" "$TOTALS")"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
+          exit "$REPORT_EXIT"
+
