@@ -27,6 +27,12 @@ const inlineExplainerSlugs = new Set([
   "standing",
   "venue",
   "appeal",
+  "per-curiam",
+  "writ-of-certiorari",
+  "petitioner-and-respondent",
+  "affirmed",
+  "reversed",
+  "vacated",
 ]);
 
 export const inlineLegalTerms: readonly LegalTermContext[] = legalExplainers
@@ -70,3 +76,15 @@ export function extractCitationLabels(value: unknown): string[] {
   return [...labels];
 }
 
+
+export function distinguishReportersNote(html: string): string {
+  const marker = "<p>Reporter’s Note</p>";
+  const markerWithoutApostrophe = "<p>Reporters Note</p>";
+  const matchedMarker = html.includes(marker) ? marker : html.includes(markerWithoutApostrophe) ? markerWithoutApostrophe : null;
+  if (!matchedMarker) return html;
+
+  const markerIndex = html.indexOf(matchedMarker);
+  const opinion = html.slice(0, markerIndex);
+  const note = html.slice(markerIndex + matchedMarker.length);
+  return `${opinion}<aside class="reportersNote" aria-labelledby="reporters-note-heading"><h2 id="reporters-note-heading">Reporter’s Note</h2><p class="reportersNoteExplanation">Publication corrections from the Reporter of Decisions. This note is not part of the Court’s opinion.</p>${note}</aside>`;
+}
