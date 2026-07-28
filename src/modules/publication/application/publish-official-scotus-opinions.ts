@@ -3,8 +3,14 @@ import { createPublicId } from "@/lib/ids/public-id";
 
 type Sql = ReturnType<typeof postgres>;
 
-export function normalizeScotusIdentity(value: string): string {
+export function normalizeScotusCaption(value: string): string {
   return value
+    .replace(/\\s+Revisions?\\s*:\\s*\\d{1,2}\\/\\d{1,2}\\/\\d{2,4}\\s*$/i, "")
+    .trim();
+}
+
+export function normalizeScotusIdentity(value: string): string {
+  return normalizeScotusCaption(value)
     .toLowerCase()
     .replaceAll(/\bversus\b/g, "v")
     .replaceAll(/\bvs\.?\b/g, "v")
@@ -75,6 +81,7 @@ export async function publishVerifiedOfficialScotusOpinions(
   const publicRecords: Array<{ caseId: string; documentIds: string[] }> = [];
 
   for (const candidate of candidates) {
+    const normalizedCaseName = normalizeScotusCaption(candidate.case_name);
     const matches = await sql<Match[]>`
       SELECT legal_case.id AS case_id, legal_case.public_id AS case_public_id,
         legal_case.caption AS case_caption, cluster.id AS cluster_id,
@@ -95,8 +102,8 @@ export async function publishVerifiedOfficialScotusOpinions(
     `;
 
     const compatible = matches.filter((match) =>
-      isSameScotusCase(candidate.case_name, match.case_caption) ||
-      isSameScotusCase(candidate.case_name, match.cluster_case_name)
+      isSameScotusCase(normalizedCaseName, match.case_caption) ||
+      isSameScotusCase(normalizedCaseName, match.cluster_case_name)
     );
     const caseIds = new Set(compatible.map((match) => match.case_id));
     const clusterIds = new Set(compatible.map((match) => match.cluster_id));
@@ -117,7 +124,7 @@ export async function publishVerifiedOfficialScotusOpinions(
         ORDER BY legal_case.id
       `;
       const exactMetadataMatches = metadataMatches.filter((match) =>
-        isSameScotusCase(candidate.case_name, match.case_caption)
+        isSameScotusCase(normalizedCaseName, match.case_caption)
       );
 
       if (exactMetadataMatches.length > 1) {
@@ -162,7 +169,7 @@ export async function publishVerifiedOfficialScotusOpinions(
               source_artifact_id, source_updated_at
             ) VALUES (
               ${createPublicId("case")}, ${court.id}, ${candidate.docket_number},
-              ${candidate.case_name}, NULL, ${candidate.filed_on},
+              ${normalizedCaseName}, NULL, ${candidate.filed_on},
               ${expandScotusTermYear(candidate.term_year)}, ${candidate.citation}, 'verified', 'published',
               ${candidate.opinion_artifact_id}, now()
             )
@@ -227,7 +234,7 @@ export async function publishVerifiedOfficialScotusOpinions(
             source_artifact_id, source_updated_at
           ) VALUES (
             ${createPublicId("cluster")}, ${existing.case_id}, ${candidate.provider_id},
-            ${`official:${candidate.source_record_id}`}, ${candidate.case_name},
+            ${`official:${candidate.source_record_id}`}, ${normalizedCaseName},
             ${candidate.filed_on}, 'published', 0, '[]'::jsonb,
             ${candidate.opinion_artifact_id}, now()
           )
@@ -254,7 +261,7 @@ export async function publishVerifiedOfficialScotusOpinions(
             source_artifact_id, publication, extraction_confidence
           ) VALUES (
             ${createPublicId("document")}, ${existing.case_id}, 'judicial_opinion',
-            ${`${candidate.case_name} opinion`}, ${candidate.filed_on},
+            ${`${normalizedCaseName} opinion`}, ${candidate.filed_on},
             ${candidate.source_content_hash}, ${candidate.opinion_artifact_id},
             'published', NULL
           )
