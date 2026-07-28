@@ -17,7 +17,7 @@ on:
         type: boolean
         default: true
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 * * * *"
   push:
     branches:
       - main
@@ -109,6 +109,13 @@ jobs:
           esac
           printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
           echo "Resolved the image from the running Jurvio app container."
+
+      - name: Enrich canonical SCOTUS opinions from CourtListener
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-opinions.mjs --court scotus --since 1791-01-01 --limit 500 --order newest --delay-ms 100"
 
       - name: Ingest bounded official-source batch
         env:
