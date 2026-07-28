@@ -1,0 +1,113 @@
+name: Federal ingestion loops
+
+on:
+  workflow_dispatch:
+    inputs:
+      loop:
+        description: Federal ingestion loop
+        required: true
+        type: choice
+        default: new-case-discovery
+        options:
+          - new-case-discovery
+          - active-case-updates
+          - material-decisions
+          - historical-backfill
+          - publication-quarantine
+      limit:
+        description: Maximum records for this cycle (1-10000)
+        required: true
+        default: "100"
+  schedule:
+    - cron: "17 * * * *"
+    - cron: "27 */2 * * *"
+    - cron: "37 * * * *"
+    - cron: "47 * * * *"
+    - cron: "57 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production-federal-${{ inputs.loop || github.event.schedule }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 360
+    steps:
+      - name: Resolve loop and safe batch ceiling
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_LOOP: ${{ inputs.loop }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            LOOP="$INPUT_LOOP"
+            LIMIT="$INPUT_LIMIT"
+          else
+            case "$SCHEDULE" in
+              "17 * * * *") LOOP="new-case-discovery"; LIMIT="10000" ;;
+              "27 */2 * * *") LOOP="active-case-updates"; LIMIT="10000" ;;
+              "37 * * * *") LOOP="material-decisions"; LIMIT="10000" ;;
+              "47 * * * *") LOOP="historical-backfill"; LIMIT="10000" ;;
+              "57 * * * *") LOOP="publication-quarantine"; LIMIT="10000" ;;
+              *) echo "::error::Unknown schedule"; exit 1 ;;
+            esac
+          fi
+          case "$LOOP" in
+            new-case-discovery|active-case-updates|material-decisions|historical-backfill|publication-quarantine) ;;
+            *) echo "::error::Invalid loop"; exit 1 ;;
+          esac
+          test "$LIMIT" -ge 1
+          test "$LIMIT" -le 10000
+          printf 'LOOP=%s\nLIMIT=%s\n' "$LOOP" "$LIMIT" >> "$GITHUB_ENV"
+
+      - name: Configure SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          test -n "$DO_SSH_KEY_B64"
+          case "$DO_SSH_KEY_B64" in *[!A-Za-z0-9+/=]*) exit 1;; esac
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Resolve active production image
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
+            set -- $ids
+            test "$#" -eq 1
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ')"
+          test -n "$JURVIO_IMAGE"
+          case "$JURVIO_IMAGE" in *[!A-Za-z0-9._/@:-]*) exit 1;; esac
+          printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Run resumable federal cycle
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --delay-ms=1000"
+
+      - name: Report corpus, failures, lag, and growth
+        if: always()
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          if [ -z "${JURVIO_IMAGE:-}" ]; then exit 0; fi
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('cases',(SELECT count(*) FROM legal_case),'published',(SELECT count(*) FROM legal_case WHERE publication='published'),'held',(SELECT count(*) FROM legal_case WHERE publication IN ('draft','restricted')),'docket_entries',(SELECT count(*) FROM docket_entry),'documents',(SELECT count(*) FROM document),'opinions',(SELECT count(*) FROM judicial_opinion),'failures',(SELECT count(*) FROM ingestion_run_item WHERE status='failed'),'database_bytes',pg_database_size(current_database()),'latest_source_at',(SELECT max(retrieved_at) FROM raw_artifact),'cost_usd',0);\""
