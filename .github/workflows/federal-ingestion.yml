@@ -126,6 +126,15 @@ jobs:
           set -o pipefail
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --approve-scale-up='$APPROVE_SCALE_UP' --delay-ms=1000" | tee /tmp/federal-cycle.log
 
+      - name: Publish eligible federal cases immediately after ingestion
+        if: ${{ env.LOOP != 'publication-quarantine' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -o pipefail
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='publication-quarantine' --limit='$LIMIT' --approve-scale-up='false' --delay-ms=0" | tee /tmp/federal-publication.log
+
       - name: Report corpus, failures, lag, and growth
         if: always()
         env:
