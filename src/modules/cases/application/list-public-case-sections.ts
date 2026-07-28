@@ -22,6 +22,7 @@ export interface PublicDocument {
   filedOn: string | null;
   extractionConfidence: string | null;
   hasReadableContent: boolean;
+  sourceDownloadUrl: string | null;
 }
 
 export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = 250) {
@@ -75,10 +76,12 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
     SELECT document.public_id AS "publicId", document.title,
       document.document_type AS "documentType", document.filed_on::text AS "filedOn",
       document.extraction_confidence::text AS "extractionConfidence",
-      content.document_id IS NOT NULL AS "hasReadableContent"
+      content.document_id IS NOT NULL AS "hasReadableContent",
+      judicial.source_download_url AS "sourceDownloadUrl"
     FROM document
     JOIN legal_case legal_case ON legal_case.id = document.case_id
     LEFT JOIN document_content content ON content.document_id = document.id
+    LEFT JOIN judicial_opinion judicial ON judicial.document_id = document.id
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
       AND document.publication = 'published'

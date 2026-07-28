@@ -37,7 +37,9 @@ export default async function DocumentsPage({ params }: {
             <li key={document.publicId}>
               <strong>{document.hasReadableContent
                 ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>{document.title}</Link>
-                : document.title}</strong>
+                : document.sourceDownloadUrl
+                  ? <a href={document.sourceDownloadUrl} target="_blank" rel="noreferrer">{document.title}</a>
+                  : document.title}</strong>
               {document.filedOn ? " · " + document.filedOn : ""}
               <p>{document.documentType.replaceAll("_", " ")}</p>
             </li>
