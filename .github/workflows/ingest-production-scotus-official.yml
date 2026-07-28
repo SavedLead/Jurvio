@@ -154,4 +154,4 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
           exit "$REPORT_EXIT"
 
-# Workflow touch: retry against the fully deployed production image.
+# Runtime-fixed production retry after PR #55.
