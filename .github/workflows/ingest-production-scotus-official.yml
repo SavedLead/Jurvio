@@ -128,3 +128,5 @@ jobs:
             exit 0
           fi
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\""
+
+# Workflow touch: retry against the fully deployed production image.
