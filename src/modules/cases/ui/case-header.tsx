@@ -7,9 +7,9 @@ interface CaseHeaderProps {
   courtName: string;
   docketNumber: string;
   filedOn: string | null;
-  decidedOn: string | null;
-  supremeCourtTerm: number | null;
-  officialCitation: string | null;
+  decidedOn?: string | null;
+  supremeCourtTerm?: number | null;
+  officialCitation?: string | null;
   showNavigation?: boolean;
 }
 
