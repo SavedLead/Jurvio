@@ -64,7 +64,9 @@ function captionIndex(text: string) {
     if (!match) continue;
     const page = Number.parseInt(match[2] ?? "", 10);
     const caption = (match[1] ?? "").replaceAll(/\s+/g, " ").trim();
-    if (page < 1001 && !captions.has(page)) captions.set(page, caption);
+    const existing = captions.get(page);
+    const crossReference = (value: string) => value.includes(";") || /v\.\s*\.$/.test(value);
+    if (page < 1001 && (!existing || (crossReference(existing) && !crossReference(caption)))) captions.set(page, caption);
   }
   return captions;
 }
