@@ -26,10 +26,8 @@ export function extractOfficialCitation(text: string) {
 export function formatVerifiedOutcome(value: string | null | undefined) {
   const humanized = humanizeVerifiedValue(value);
   if (!humanized) return null;
-  return humanized
-    .toLowerCase()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-    .replace(/\b(And|Or|To|Of|The)\b/g, (word) => word.toLowerCase());
+  const normalized = humanized.toLowerCase();
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
 export function formatPublicCaseDate(value: string | null | undefined) {
