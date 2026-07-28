@@ -11,8 +11,9 @@ describe("legal explainers", () => {
     }
   });
 
-  it("exposes a compact reusable glossary", () => {
-    expect(explainerGlossary()).toHaveLength(11);
+  it("exposes the reusable glossary", () => {
+    expect(explainerGlossary()).toHaveLength(17);
     expect(getExplainer("summary-judgment")?.term).toBe("Summary judgment");
+    expect(getExplainer("per-curiam")?.term).toBe("Per curiam");
   });
 });
