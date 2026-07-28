@@ -36,12 +36,13 @@ export function validateOfficialScotusText(text: string, docketNumber: string) {
   const words = normalized.split(/\s+/).filter(Boolean);
   const letters = [...normalized].filter((character) => /[A-Za-z]/.test(character)).length;
   const replacementCharacters = [...normalized].filter((character) => character === "\uFFFD").length;
+  const nonWhitespaceCharacters = [...normalized].filter((character) => !/\s/.test(character)).length;
   const normalizedDocket = docketNumber.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
   const normalizedText = normalized.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
   const hasCourtMarker = /supreme court of the united states/i.test(normalized);
   const hasDocket = normalizedDocket.length > 3 && normalizedText.includes(normalizedDocket);
   const valid = words.length >= 150
-    && letters / Math.max(normalized.length, 1) >= 0.45
+    && letters / Math.max(nonWhitespaceCharacters, 1) >= 0.55
     && replacementCharacters / Math.max(normalized.length, 1) < 0.001
     && (hasCourtMarker || hasDocket);
   return { valid, normalized, wordCount: words.length };
