@@ -1,9 +1,11 @@
-import type { Metadata } from "next";\nimport { notFound } from "next/navigation";
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicCase } from "@/modules/cases/application/get-public-case";
 import { listPublicParties } from "@/modules/cases/application/list-public-case-sections";
-import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";\nimport { CaseHeader } from "@/modules/cases/ui/case-header";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
 export const dynamic = "force-dynamic";
