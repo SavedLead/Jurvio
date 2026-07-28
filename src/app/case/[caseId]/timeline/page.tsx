@@ -1,12 +1,28 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicCase } from "@/modules/cases/application/get-public-case";
 import { listPublicDocketEntries } from "@/modules/cases/application/list-public-case-sections";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
 export const dynamic = "force-dynamic";
+
+interface SectionPageProps { params: Promise<{ caseId: string }> }
+
+export async function generateMetadata({ params }: SectionPageProps): Promise<Metadata> {
+  const { caseId } = await params;
+  const legalCase = await getPublicCase(db(), caseId);
+  if (!legalCase) return { title: "Timeline not found" };
+  const caption = cleanCaseCaption(legalCase.caption);
+  return {
+    title: `Timeline for ${caption}`,
+    description: `Verified case timeline events currently available for ${caption}, docket ${legalCase.docketNumber}.`,
+    alternates: { canonical: `/case/${caseId}/timeline` },
+  };
+}
 
 export default async function TimelinePage({ params }: {
   params: Promise<{ caseId: string }>;
