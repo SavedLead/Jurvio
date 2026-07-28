@@ -138,6 +138,18 @@ jobs:
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app node /app/jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee -a /tmp/scotus-ingestion.log
           done
 
+
+      - name: Ingest official pre-2018 U.S. Reports volumes
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -o pipefail
+          for VOLUME in 583 584 585; do
+            echo "Ingesting official U.S. Reports volume $VOLUME" | tee -a /tmp/scotus-ingestion.log
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume=true" | tee -a /tmp/scotus-ingestion.log
+          done
+
       - name: Publish exact verified matches
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
