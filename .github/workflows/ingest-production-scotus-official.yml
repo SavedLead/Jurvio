@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: jurvio-production-scotus-official-ingestion
@@ -111,6 +112,8 @@ jobs:
           echo "Resolved the image from the running Jurvio app container."
 
       - name: Enrich canonical SCOTUS opinions from CourtListener
+        id: enrich
+        continue-on-error: true
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -122,18 +125,33 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'"
+          set -o pipefail
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee /tmp/scotus-ingestion.log
 
       - name: Report official-source staging queue
         if: always()
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT_COMMENT_ID: "5101767446"
+          WORKFLOW_STATUS: ${{ job.status }}
+          ENRICH_OUTCOME: ${{ steps.enrich.outcome }}
         run: |
+          REPORT_EXIT=0
           if [ -z "${JURVIO_IMAGE:-}" ]; then
-            echo "::warning::Skipping staging report because the active production image could not be resolved"
-            exit 0
+            QUEUE='{"report":"unavailable","reason":"active production image unresolved"}'
+            REPORT_EXIT=1
+          elif QUEUE="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\"" 2>/dev/null)"; then
+            :
+          else
+            REPORT_EXIT=$?
+            QUEUE='{"report":"unavailable","reason":"production database query failed"}'
           fi
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\""
+          BATCH_RESULT="$(tail -n 1 /tmp/scotus-ingestion.log 2>/dev/null || true)"
+          test -n "$BATCH_RESULT" || BATCH_RESULT='{"cycle":"no batch output available"}'
+          BODY="$(printf '### SCOTUS ingestion\n\n- Status: **%s**\n- CourtListener enrichment: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nOfficial-source batch:\n\n```json\n%s\n```\n\nStaging queue:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$ENRICH_OUTCOME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$BATCH_RESULT" "$QUEUE")"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
+          exit "$REPORT_EXIT"
 
 # Workflow touch: retry against the fully deployed production image.
