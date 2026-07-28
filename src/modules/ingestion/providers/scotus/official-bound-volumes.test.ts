@@ -17,6 +17,8 @@ describe("official U.S. Reports bound-volume ingestion", () => {
       "CASES ADJUDGED\nMINNESOTA VOTERS ALLIANCE v. MANSKY\ncertiorari to the court of appeals\nNo. 16-1435. Argued February 28, 2018—Decided June 14, 2018\n\n1",
       "Cite as: 585 U. S. 1 (2018)\ncontinued text\n3",
       "ANIMAL SCIENCE PRODUCTS v. HEBEI WELCOME\ncertiorari to the court of appeals\nNo. 16-1220. Argued April 24, 2018—Decided June 14, 2018\nCite as: 585 U. S. 33 (2018)",
+      "continued merits text\n34",
+      "ORDERS IN PENDING CASES\nCite as: 585 U. S. 1001 (2018)",
     ].join("\f");
     const records = parseOfficialBoundVolumeText(text, {
       volume: 585, termYear: "17",
