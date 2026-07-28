@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("../src/app/scotus-layout.css", import.meta.url), "utf8");
 const glossaryCss = readFileSync(new URL("../src/modules/legal-context/ui/annotated-legal-text.module.css", import.meta.url), "utf8");
+const casePage = readFileSync(new URL("../src/app/case/[caseId]/page.tsx", import.meta.url), "utf8");
 
 describe("SCOTUS responsive layout contract", () => {
   it("defines the desktop three-column case and reader workspaces", () => {
@@ -24,6 +25,18 @@ describe("SCOTUS responsive layout contract", () => {
     expect(css).toContain(".opinionQuickLinks");
     expect(css).toMatch(/\.caseMeta\s*\{[^}]*repeat\(2, minmax\(0, 1fr\)\)/s);
     expect(css).toContain("@media (max-width: 380px)");
+  });
+
+  it("renders approved sections only when verified inputs exist", () => {
+    expect(casePage).toContain("{outcome ? (");
+    expect(casePage).toContain("{decisionLabel || opinionType ? (");
+    expect(casePage).toContain("{timelineEvents.length > 0 ? (");
+    expect(casePage).toContain("{documents.length > 0 ? (");
+    expect(casePage).toContain("{opinionPath ? (");
+    expect(casePage).not.toContain("Question presented");
+    expect(casePage).not.toContain("Syllabus</");
+    expect(casePage).not.toContain("Transcript</");
+    expect(casePage).not.toContain("Audio</");
   });
 
   it("keeps controls touch-friendly and opinion content viewport-safe", () => {
