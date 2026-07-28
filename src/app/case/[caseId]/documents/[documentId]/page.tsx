@@ -74,13 +74,13 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }}
       />
       <nav className="breadcrumbs" aria-label="Breadcrumb">
-        <Link href="/cases">Cases</Link> / <Link href={`/case/${opinion.casePublicId}`}>{opinion.caseCaption}</Link> / Opinion
+        <Link href="/cases">Cases</Link> / <Link href={`/case/${opinion.casePublicId}`}><BrandedCaseCaption caption={opinion.caseCaption} /></Link> / Opinion
       </nav>
       <article className="opinionLayout">
         <header className="opinionHeader">
           <p className="eyebrow">{opinion.courtName}</p>
           <h1><BrandedCaseCaption caption={opinion.caseCaption} /></h1>
-          <p className="lede">{opinion.title}</p>
+          <p className="lede"><BrandedCaseCaption caption={opinion.caseCaption} /> opinion</p>
           <dl className="metadataGrid">
             <div><dt>Filed</dt><dd>{opinion.filedOn ?? "Date unavailable"}</dd></div>
             <div><dt>Docket</dt><dd>{opinion.docketNumber}</dd></div>
