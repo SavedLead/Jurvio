@@ -33,7 +33,7 @@ describe("SCOTUS responsive layout contract", () => {
     expect(casePage).toContain("{timelineEvents.length > 0 ? (");
     expect(casePage).toContain("{documents.length > 0 ? (");
     expect(casePage).toContain("{opinionPath ? (");
-    expect(casePage).not.toContain("Question presented");
+    expect(casePage).toContain("{legalCase.questionPresented ? (");\n    expect(casePage).toContain("Question presented");
     expect(casePage).not.toContain("Syllabus</");
     expect(casePage).not.toContain("Transcript</");
     expect(casePage).not.toContain("Audio</");
