@@ -45,11 +45,13 @@ export async function finishIngestionRun(sql: Sql, runId: string, fatalError?: s
     UPDATE ingestion_run run SET
       succeeded_count = counts.succeeded,
       failed_count = counts.failed,
-      status = CASE
-        WHEN ${fatalError ?? null} IS NOT NULL THEN 'failed'
-        WHEN counts.failed > 0 THEN 'completed_with_errors'
-        ELSE 'completed'
-      END,
+      status = (
+        CASE
+          WHEN ${fatalError ?? null} IS NOT NULL THEN 'failed'
+          WHEN counts.failed > 0 THEN 'completed_with_errors'
+          ELSE 'completed'
+        END
+      )::ingestion_run_status,
       error = ${fatalError ? sql.json({ message: fatalError.slice(0, 4000) }) : null},
       completed_at = now()
     FROM (

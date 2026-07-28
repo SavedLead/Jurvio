@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:jobs": "esbuild scripts/ingest-courtlistener-opinions.ts scripts/ingest-courtlistener-opinion-cluster.ts scripts/ingest-official-scotus-opinions.ts scripts/publish-official-scotus-opinions.ts scripts/run-federal-ingestion-loop.ts --bundle --platform=node --format=esm --packages=bundle --outdir=dist/jobs --out-extension:.js=.mjs",
+    "build:jobs": "esbuild scripts/ingest-courtlistener-opinions.ts scripts/ingest-courtlistener-opinion-cluster.ts scripts/ingest-official-scotus-opinions.ts scripts/publish-official-scotus-opinions.ts scripts/run-federal-ingestion-loop.ts --bundle --platform=node --format=esm --packages=bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outdir=dist/jobs --out-extension:.js=.mjs && node dist/jobs/ingest-courtlistener-opinions.mjs --limit 0 2>&1 | grep -q -- '--limit must be 1-500'",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
