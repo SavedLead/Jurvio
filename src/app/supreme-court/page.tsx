@@ -68,7 +68,7 @@ export default async function SupremeCourtPage() {
         <article><span>Current membership</span><strong>9</strong><p>One Chief Justice and eight Associate Justices.</p><a href="#justices">Meet the Court ↓</a></article>
         <article><span>Argument season</span><strong>Oct–Apr</strong><p>Arguments are generally held on selected Monday, Tuesday, and Wednesday mornings.</p><a href="https://www.supremecourt.gov/oral_arguments/calendarsandlists.aspx">Current calendar ↗</a></article>
         <article><span>Decisions and orders</span><strong>Term-long</strong><p>Orders appear throughout the term. Opinions often accelerate after arguments end.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">Latest official opinions ↗</a></article>
-        <article><span>Jurvio corpus</span><strong>{discovery.opinionCount.toLocaleString()}</strong><p>Supreme Court opinions currently approved for public display.</p><a href="#recent-opinions">Browse records ↓</a></article>
+        <article><span>Jurvio corpus</span><strong>{discovery.caseCount.toLocaleString()}</strong><p>Supreme Court case pages currently approved for public display.</p><Link href="/cases">Browse records →</Link></article>
       </div>
       <aside className={styles.freshness}><strong>Freshness matters</strong><p>Calendar, docket, order, and opinion status can change. Jurvio links to the controlling official source and does not infer an outcome from silence or an incomplete import.</p></aside>
     </section>
@@ -132,7 +132,7 @@ export default async function SupremeCourtPage() {
         <div><p>Docket {opinion.docketNumber}</p><h3><Link href={`/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` as Route}>{opinion.caseCaption}</Link></h3>
           <div className={styles.tags}><span>{opinion.opinionType.replaceAll("-", " ")}</span>{opinion.perCuriam ? <span>Per curiam</span> : null}{opinion.authorName ? <span>{opinion.authorName}</span> : null}{opinion.precedentialStatus ? <span>{opinion.precedentialStatus}</span> : null}</div>
         </div><div className={styles.reading}><strong>{opinion.wordCount.toLocaleString()}</strong><span>words</span></div>
-      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Corpus status</p><h3>No Supreme Court opinions are approved for public display yet.</h3><p>Opinions will appear after the source record, readable court text, and publication decision have been verified. Nothing is inferred from an incomplete import.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">See current official opinions ↗</a></div>}
+      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Corpus status</p><h3>Opinion text is being prepared.</h3><p>{discovery.caseCount.toLocaleString()} verified Supreme Court case pages are live. Opinion documents will appear after readable text is extracted and separately verified.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">See current official opinions ↗</a></div>}
     </section>
 
     <section id="sources" className={styles.sourceDirectory}>
