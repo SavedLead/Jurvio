@@ -102,7 +102,7 @@ export function OpinionReaderTools({
   }
 
   return (
-    <aside className="opinionReaderTools" aria-label="Opinion reader tools">
+    <aside id="opinion-reader-tools" className="opinionReaderTools" aria-label="Opinion reader tools">
       <details open>
         <summary>Read and navigate</summary>
         <form className="opinionSearch" onSubmit={searchOpinion} role="search">

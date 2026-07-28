@@ -9,7 +9,7 @@ import {
   listPublicDocuments,
   listPublicParties,
 } from "@/modules/cases/application/list-public-case-sections";
-import { visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
+import { formatPublicCaseDate, formatVerifiedOutcome, visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseNav } from "@/modules/cases/ui/case-nav";
@@ -62,8 +62,28 @@ export default async function CasePage({ params }: CasePageProps) {
   ]);
   const verified = legalCase.verification === "verified";
   const statusDetails = verified ? visibleCaseStatusDetails(legalCase) : [];
+  const outcome = verified ? formatVerifiedOutcome(legalCase.dispositionScope) : null;
+  const supportingStatusDetails = outcome ? statusDetails.filter(([label]) => label !== "Disposition") : statusDetails;
   const readableDocuments = documents.filter((document) => document.hasReadableContent);
   const sourceDocument = documents.find((document) => document.sourceDownloadUrl);
+  const primaryOpinion = readableDocuments.find((document) => document.opinionType || document.documentType.includes("opinion")) ?? readableDocuments[0];
+  const opinionPath = primaryOpinion ? `/case/${caseId}/documents/${primaryOpinion.publicId}` : null;
+  const decisionLabel = primaryOpinion?.perCuriam ? "Per curiam" : primaryOpinion?.authorName;
+  const opinionType = primaryOpinion?.opinionType && primaryOpinion.opinionType !== "unknown"
+    ? primaryOpinion.opinionType.replaceAll("-", " ")
+    : null;
+  const timelineEvents = [
+    legalCase.filedOn ? { date: legalCase.filedOn, label: "Case filed" } : null,
+    ...docketEntries.filter((entry) => entry.filedOn).map((entry) => ({
+      date: entry.filedOn as string,
+      label: entry.description,
+    })),
+    legalCase.decidedOn ? { date: legalCase.decidedOn, label: "Decision issued" } : null,
+  ]
+    .filter((event): event is { date: string; label: string } => Boolean(event))
+    .filter((event, index, events) => events.findIndex((candidate) => candidate.date === event.date && candidate.label === event.label) === index)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const availableDocumentTypes = [...new Set(documents.map((document) => document.documentType.replaceAll("_", " ")))];
   const caption = cleanCaseCaption(legalCase.caption);
   const canonicalPath = `/case/${caseId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
@@ -114,9 +134,11 @@ export default async function CasePage({ params }: CasePageProps) {
         </aside>
 
         <div className="caseWorkspaceMain">
-          <section className="caseLeadSection" aria-labelledby="understand-case">
-            <p className="sectionKicker">Understand this case</p>
-            <h2 id="understand-case">Verified case record</h2>
+          <section className="caseLeadSection caseFeatureSection" aria-labelledby="understand-case">
+            <div className="featureHeading">
+              <span className="featureBadge" aria-hidden="true">A</span>
+              <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Verified case record</h2></div>
+            </div>
             {verified && legalCase.statusExplanation ? (
               <p className="statusExplanation">{legalCase.statusExplanation}</p>
             ) : (
@@ -125,17 +147,61 @@ export default async function CasePage({ params }: CasePageProps) {
                 {readableDocuments.length > 0 ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.` : ""}
               </p>
             )}
-            {statusDetails.length > 0 ? (
+            {supportingStatusDetails.length > 0 ? (
               <dl className="caseStatusGrid">
-                {statusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+                {supportingStatusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
               </dl>
             ) : null}
           </section>
 
+          {outcome ? (
+            <section className="contentSection caseFeatureSection" aria-labelledby="case-outcome">
+              <div className="featureHeading">
+                <span className="featureBadge" aria-hidden="true">C</span>
+                <h2 id="case-outcome">Holding and outcome</h2>
+              </div>
+              <div className="outcomeCallout"><strong>{outcome}.</strong></div>
+            </section>
+          ) : null}
+
+          {decisionLabel || opinionType ? (
+            <section className="contentSection caseFeatureSection" aria-labelledby="decision-lineup">
+              <div className="featureHeading decisionHeading">
+                <span className="featureBadge" aria-hidden="true">D</span>
+                <h2 id="decision-lineup">Decision lineup</h2>
+                {decisionLabel ? <strong className="decisionLabel">{decisionLabel}</strong> : null}
+              </div>
+              {opinionType ? <p className="verifiedDetail">Opinion type: <strong>{opinionType}</strong></p> : null}
+            </section>
+          ) : null}
+
+          {timelineEvents.length > 0 ? (
+            <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">
+              <div className="featureHeading">
+                <span className="featureBadge" aria-hidden="true">E</span>
+                <h2 id="case-timeline">Case timeline</h2>
+              </div>
+              <ol className="caseMilestones">
+                {timelineEvents.map((event) => (
+                  <li key={event.date + event.label}>
+                    <time dateTime={event.date}>{formatPublicCaseDate(event.date) ?? event.date}</time>
+                    <span>{event.label}</span>
+                  </li>
+                ))}
+              </ol>
+              {docketEntries.length > 0 ? <Link className="sectionLink" href={`/case/${caseId}/timeline` as Route}>View complete available timeline →</Link> : null}
+            </section>
+          ) : null}
+
           {documents.length > 0 ? (
-            <section className="contentSection availableDocuments" aria-labelledby="available-documents">
-              <p className="sectionKicker">Available court materials</p>
-              <h2 id="available-documents">Documents currently available</h2>
+            <section className="contentSection availableDocuments caseFeatureSection" aria-labelledby="available-documents">
+              <div className="featureHeading">
+                <span className="featureBadge featureBadgeWide" aria-hidden="true">F–G</span>
+                <div><p className="sectionKicker">Available court materials</p><h2 id="available-documents">Documents and argument</h2></div>
+              </div>
+              <div className="availableDocumentTypes" aria-label="Available document types">
+                {availableDocumentTypes.map((type) => <span key={type}>{type}</span>)}
+              </div>
               <p className="sectionIntroduction">Jurvio shows only verified documents currently available for this case. Additional court materials will appear here as they are obtained and verified.</p>
               <ul className="documentCards">
                 {documents.map((document) => (
@@ -156,20 +222,18 @@ export default async function CasePage({ params }: CasePageProps) {
             </section>
           ) : null}
 
-          {docketEntries.length > 0 ? (
-            <section className="contentSection" aria-labelledby="recent-activity">
-              <p className="sectionKicker">Official activity</p>
-              <h2 id="recent-activity">Recent case activity</h2>
-              <ol className="recordList">
-                {docketEntries.slice(0, 5).map((entry) => (
-                  <li key={entry.publicId}>
-                    <strong>{entry.entryNumber ? `Entry ${entry.entryNumber}` : "Court event"}</strong>
-                    {entry.filedOn ? ` · ${entry.filedOn}` : ""}
-                    <p>{entry.description}</p>
-                  </li>
-                ))}
-              </ol>
-              <Link className="sectionLink" href={`/case/${caseId}/timeline` as Route}>View case timeline →</Link>
+          {opinionPath ? (
+            <section className="contentSection caseFeatureSection" aria-labelledby="read-opinion">
+              <div className="featureHeading">
+                <span className="featureBadge" aria-hidden="true">H</span>
+                <h2 id="read-opinion">Read the opinion</h2>
+              </div>
+              <nav className="opinionQuickLinks" aria-label="Opinion reading tools">
+                <Link href={`${opinionPath}#opinion-reader-tools` as Route}>Search</Link>
+                <Link href={`${opinionPath}#opinion-reader-tools` as Route}>Contents</Link>
+                {opinionType ? <Link href={`${opinionPath}#opinion-text` as Route}>{opinionType}</Link> : null}
+                {primaryOpinion?.hasReportersNote ? <Link href={`${opinionPath}#reporters-note-heading` as Route}>Reporter’s Note</Link> : null}
+              </nav>
             </section>
           ) : null}
 

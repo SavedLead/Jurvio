@@ -23,6 +23,10 @@ export interface PublicDocument {
   extractionConfidence: string | null;
   hasReadableContent: boolean;
   sourceDownloadUrl: string | null;
+  opinionType: string | null;
+  authorName: string | null;
+  perCuriam: boolean;
+  hasReportersNote: boolean;
 }
 
 export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = 250) {
@@ -77,7 +81,11 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
       document.document_type AS "documentType", document.filed_on::text AS "filedOn",
       document.extraction_confidence::text AS "extractionConfidence",
       content.document_id IS NOT NULL AS "hasReadableContent",
-      judicial.source_download_url AS "sourceDownloadUrl"
+      judicial.source_download_url AS "sourceDownloadUrl",
+      judicial.opinion_type AS "opinionType",
+      judicial.author_name AS "authorName",
+      COALESCE(judicial.per_curiam, false) AS "perCuriam",
+      COALESCE(content.content_text ILIKE '%REPORTER''S NOTE%' OR content.content_text ILIKE '%REPORTER’S NOTE%', false) AS "hasReportersNote"
     FROM document
     JOIN legal_case legal_case ON legal_case.id = document.case_id
     LEFT JOIN document_content content ON content.document_id = document.id
