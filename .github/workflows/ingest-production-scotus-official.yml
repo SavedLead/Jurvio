@@ -140,6 +140,7 @@ jobs:
 
 
       - name: Ingest official pre-2018 U.S. Reports volumes
+        continue-on-error: true
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
