@@ -87,12 +87,12 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
     if (firstPage === null || firstPage >= 1001) continue;
     const caseName = captions.get(firstPage);
     if (!caseName) continue;
-    const docketNumber = (docketAndDate[1] ?? "").replaceAll(/[–—]/g, "-").replaceAll(/\s+/g, " ").trim();
+    const docketNumber = (docketMatch[1] ?? "").replaceAll(/[–—]/g, "-").replaceAll(/\s+/g, " ").trim();
     const startPage = index + 1;
     starts.push({
       sourceRecordId: `bound:${source.volume}:${firstPage}:${docketNumber}`,
       releaseNumber: null,
-      filedOn: isoLongDate(docketAndDate[2] ?? ""),
+      filedOn: isoLongDate(decisionMatch[1] ?? ""),
       docketNumber,
       caseName,
       authorCode: null,
