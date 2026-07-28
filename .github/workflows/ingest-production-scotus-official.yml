@@ -10,12 +10,19 @@ on:
       limit:
         description: Maximum official opinions (1-100)
         required: true
-        default: "10"
+        default: "100"
       resume:
         description: Resume after the last successful official-source checkpoint
         required: true
         type: boolean
         default: true
+  schedule:
+    - cron: "17 */6 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ingest-production-scotus-official.yml"
 
 permissions:
   contents: read
@@ -30,14 +37,27 @@ jobs:
     environment: production
     timeout-minutes: 30
     steps:
-      - name: Validate bounded batch
+      - name: Resolve batch inputs
         env:
-          TERM_YEAR: ${{ inputs.term }}
-          LIMIT: ${{ inputs.limit }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TERM_YEAR: ${{ inputs.term }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+          INPUT_RESUME: ${{ inputs.resume }}
         run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TERM_YEAR="$INPUT_TERM_YEAR"
+            LIMIT="$INPUT_LIMIT"
+            RESUME="$INPUT_RESUME"
+          else
+            TERM_YEAR="25"
+            LIMIT="100"
+            RESUME="true"
+          fi
           printf '%s' "$TERM_YEAR" | grep -Eq '^[0-9]{2}$'
           test "$LIMIT" -ge 1
           test "$LIMIT" -le 100
+          case "$RESUME" in true|false) ;; *) echo "::error::Invalid resume value"; exit 1;; esac
+          printf 'TERM_YEAR=%s\nLIMIT=%s\nRESUME=%s\n' "$TERM_YEAR" "$LIMIT" "$RESUME" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -94,9 +114,6 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
-          TERM_YEAR: ${{ inputs.term }}
-          LIMIT: ${{ inputs.limit }}
-          RESUME: ${{ inputs.resume }}
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'"
 
