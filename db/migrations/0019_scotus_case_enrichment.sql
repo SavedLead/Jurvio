@@ -42,6 +42,15 @@ CREATE TABLE scotus_case_enrichment (
   CHECK (syllabus_text IS NULL OR (syllabus_source_url IS NOT NULL AND syllabus_source_locator IS NOT NULL))
 );
 
+CREATE TABLE scotus_docket_document (
+  document_id uuid PRIMARY KEY REFERENCES document(id) ON DELETE CASCADE,
+  source_url text NOT NULL,
+  source_record_id text NOT NULL UNIQUE,
+  source_artifact_id uuid NOT NULL REFERENCES raw_artifact(id),
+  verified_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (source_url ~ '^https://www[.]supremecourt[.]gov/')
+);
+
 CREATE INDEX scotus_case_enrichment_verification_idx
   ON scotus_case_enrichment (verification, updated_at DESC);
 
