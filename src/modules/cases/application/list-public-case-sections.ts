@@ -24,6 +24,17 @@ export interface PublicDocument {
   hasReadableContent: boolean;
 }
 
+export interface PublicCaseOpinion {
+  documentPublicId: string;
+  title: string;
+  filedOn: string | null;
+  opinionType: string;
+  precedentialStatus: string | null;
+  authorName: string | null;
+  citationCount: number;
+  isJudgment: boolean;
+}
+
 export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = 250) {
   return sql<PublicDocketEntry[]>`
     SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
@@ -93,5 +104,33 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
         ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
       ), false)
     ORDER BY document.filed_on DESC NULLS LAST, document.title
+  `;
+}
+
+export async function listPublicCaseOpinions(sql: Sql, casePublicId: string) {
+  return sql<PublicCaseOpinion[]>`
+    SELECT document.public_id AS "documentPublicId", document.title,
+      document.filed_on::text AS "filedOn", judicial.opinion_type AS "opinionType",
+      cluster.precedential_status AS "precedentialStatus", judicial.author_name AS "authorName",
+      cluster.citation_count AS "citationCount",
+      (document.document_type ILIKE '%judgment%' OR document.title ILIKE '%judgment%') AS "isJudgment"
+    FROM judicial_opinion judicial
+    JOIN document ON document.id = judicial.document_id
+    JOIN opinion_cluster cluster ON cluster.id = judicial.cluster_id
+    JOIN legal_case ON legal_case.id = document.case_id
+    JOIN document_content content ON content.document_id = document.id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published' AND document.publication = 'published'
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
+        WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
+      AND COALESCE((
+        SELECT decision.displayable FROM publication_decision decision
+        WHERE decision.object_type = 'document' AND decision.object_id = document.id
+        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+      ), false)
+    ORDER BY "isJudgment" DESC, document.filed_on DESC NULLS LAST, document.title
   `;
 }
