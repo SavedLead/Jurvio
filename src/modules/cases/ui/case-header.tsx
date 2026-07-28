@@ -1,4 +1,3 @@
-import "@/app/scotus-layout.css";
 import { CaseNav } from "./case-nav";
 import { BrandedCaseCaption } from "./branded-case-caption";
 
