@@ -26,7 +26,7 @@ describe("official U.S. Reports bound-volume ingestion", () => {
       expect.objectContaining({ caseName: "Minnesota Voters Alliance v. Mansky", docketNumber: "16-1435",
         filedOn: "2018-06-14", citation: "585 U.S. 1", startPage: 2, endPage: 3 }),
       expect.objectContaining({ caseName: "Animal Science Products v. Hebei Welcome Pharm. Co.",
-        citation: "585 U.S. 33", startPage: 4, endPage: null }),
+        citation: "585 U.S. 33", startPage: 4, endPage: 5 }),
     ]);
   });
 
