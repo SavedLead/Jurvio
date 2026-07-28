@@ -7,6 +7,7 @@ interface CaseHeaderProps {
   courtName: string;
   docketNumber: string;
   filedOn: string | null;
+  showNavigation?: boolean;
 }
 
 export function CaseHeader({
@@ -15,6 +16,7 @@ export function CaseHeader({
   courtName,
   docketNumber,
   filedOn,
+  showNavigation = true,
 }: CaseHeaderProps) {
   return (
     <>
@@ -24,13 +26,12 @@ export function CaseHeader({
       <header className="caseHeader">
         <p className="eyebrow">{courtName}</p>
         <h1><BrandedCaseCaption caption={caption} /></h1>
-        <div className="caseMeta" aria-label="Case details">
-          <span><strong>Docket</strong> {docketNumber}</span>
-          <span><strong>Filed</strong> {filedOn ?? "Date unavailable"}</span>
-          <span><strong>Jurvio ID</strong> {caseId}</span>
-        </div>
+        <dl className="caseMeta" aria-label="Case details">
+          <div><dt>Docket</dt><dd>{docketNumber}</dd></div>
+          {filedOn ? <div><dt>Filed or decided</dt><dd>{filedOn}</dd></div> : null}
+        </dl>
       </header>
-      <CaseNav caseId={caseId} />
+      {showNavigation ? <CaseNav caseId={caseId} /> : null}
     </>
   );
 }
