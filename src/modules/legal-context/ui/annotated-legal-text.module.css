@@ -1,83 +1,33 @@
 .root :global(.jurvioLegalTerm) {
-  position: relative;
-  border-bottom: 1px dotted #7185ad;
-  cursor: help;
-  font: inherit;
-  text-decoration: none;
-  text-underline-offset: 3px;
+  position: relative; border-bottom: 1px dotted #7185ad; cursor: help; font: inherit;
+  text-decoration: none; text-underline-offset: 3px;
 }
-
-.root :global(.jurvioLegalTerm:focus-visible) {
-  border-radius: 2px;
-  outline: 2px solid #3155d9;
-  outline-offset: 2px;
-}
-
+.root :global(.jurvioLegalTerm:focus-visible) { border-radius: 2px; outline: 2px solid #3155d9; outline-offset: 2px; }
 .root :global(.jurvioContextCard) {
-  position: absolute;
-  z-index: 20;
-  bottom: calc(100% + 10px);
-  left: 50%;
-  display: none;
-  width: min(340px, calc(100vw - 40px));
-  padding: 14px 16px;
-  transform: translateX(-50%);
-  border: 1px solid #cad3e3;
-  border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 12px 36px rgb(31 42 68 / 16%);
-  color: #172033;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  font-size: 14px;
-  font-style: normal;
-  font-weight: 400;
-  line-height: 1.45;
-  text-align: left;
+  position: absolute; z-index: 20; bottom: calc(100% + 10px); left: 50%; display: none;
+  width: min(340px, calc(100vw - 40px)); max-height: min(420px, calc(100dvh - 40px));
+  padding: 14px 16px; overflow-y: auto; overscroll-behavior: contain; transform: translateX(-50%);
+  border: 1px solid #cad3e3; border-radius: 10px; background: #fff;
+  box-shadow: 0 12px 36px rgb(31 42 68 / 16%); color: #172033;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-style: normal;
+  font-weight: 400; line-height: 1.45; text-align: left;
 }
-
 .root :global(.jurvioLegalTerm:hover > .jurvioContextCard),
 .root :global(.jurvioLegalTerm:focus > .jurvioContextCard),
 .root :global(.jurvioCitationContext:hover > .jurvioContextCard),
-.root :global(.jurvioCitationContext:focus > .jurvioContextCard) {
-  display: block;
-}
-
-.root :global(.jurvioContextCard strong),
-.root :global(.jurvioContextCard span) {
-  display: block;
-}
-
+.root :global(.jurvioCitationContext:focus > .jurvioContextCard) { display: block; }
+.root :global(.jurvioContextCard strong), .root :global(.jurvioContextCard span) { display: block; }
 .root :global(.jurvioContextCard a) {
-  display: inline-block;
-  margin-top: 8px;
-  color: #2448c7;
-  font-weight: 650;
+  display: inline-block; min-height: 44px; margin-top: 8px; padding: 10px 0; color: #2448c7; font-weight: 650;
 }
-
-.root :global(.jurvioContextCaution) {
-  margin-top: 8px;
-  color: #657087;
-  font-size: 12px;
-}
-
-.root :global(.jurvioCitationContext) {
-  position: relative;
-}
-
+.root :global(.jurvioContextCaution) { margin-top: 8px; color: #657087; font-size: 12px; }
+.root :global(.jurvioCitationContext) { position: relative; }
 @media (max-width: 640px) {
   .root :global(.jurvioContextCard) {
-    position: fixed;
-    z-index: 100;
-    top: 50dvh;
-    right: max(16px, env(safe-area-inset-right));
-    bottom: auto;
-    left: max(16px, env(safe-area-inset-left));
-    width: auto;
-    max-height: calc(100dvh - max(32px, env(safe-area-inset-top) + env(safe-area-inset-bottom) + 32px));
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    transform: translateY(-50%);
+    position: fixed; z-index: 100; top: 50dvh; right: max(14px, env(safe-area-inset-right));
+    bottom: auto; left: max(14px, env(safe-area-inset-left)); width: auto; max-width: none;
+    max-height: calc(100dvh - max(40px, env(safe-area-inset-top) + env(safe-area-inset-bottom) + 40px));
+    padding: 18px; overflow-y: auto; transform: translateY(-50%);
     box-shadow: 0 20px 60px rgb(23 32 51 / 28%);
   }
 }
-
