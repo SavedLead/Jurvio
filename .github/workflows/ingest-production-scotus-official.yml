@@ -126,7 +126,7 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee /tmp/scotus-ingestion.log
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app node /app/jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee /tmp/scotus-ingestion.log
 
       - name: Publish exact verified matches
         env:
