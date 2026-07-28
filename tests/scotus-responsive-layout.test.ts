@@ -28,12 +28,13 @@ describe("SCOTUS responsive layout contract", () => {
   });
 
   it("renders approved sections only when verified inputs exist", () => {
-    expect(casePage).toContain("{outcome ? (");
-    expect(casePage).toContain("{decisionLabel || opinionType ? (");
+    expect(casePage).toContain("{outcome || legalCase.exactHolding ? (");
+    expect(casePage).toContain("{decisionLabel || opinionType || legalCase.decisionLineup ? (");
     expect(casePage).toContain("{timelineEvents.length > 0 ? (");
     expect(casePage).toContain("{documents.length > 0 ? (");
     expect(casePage).toContain("{opinionPath ? (");
-    expect(casePage).not.toContain("Question presented");
+    expect(casePage).toContain("{legalCase.questionPresented ? (");
+    expect(casePage).toContain("Question presented");
     expect(casePage).not.toContain("Syllabus</");
     expect(casePage).not.toContain("Transcript</");
     expect(casePage).not.toContain("Audio</");
