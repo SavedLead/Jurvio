@@ -24,7 +24,7 @@ export async function generateMetadata({ params }: DocumentsPageProps): Promise<
   if (!loaded) return { title: "Documents not found" };
   const caption = cleanCaseCaption(loaded.legalCase.caption);
   return {
-    title: `Available documents for ${caption} | Jurvio`,
+    title: `Available documents for ${caption}`,
     description: `Verified court documents currently available for ${caption}, docket ${loaded.legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${loaded.caseId}/documents` },
   };

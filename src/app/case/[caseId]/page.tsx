@@ -43,7 +43,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     loaded.legalCase.officialCitation,
   ].filter(Boolean).join(". ");
   return {
-    title: `${caption} | Jurvio`,
+    title: caption,
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
     openGraph: { title: caption, description, type: "article" },
