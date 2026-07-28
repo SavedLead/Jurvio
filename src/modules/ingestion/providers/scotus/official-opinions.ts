@@ -13,6 +13,8 @@ export interface OfficialSlipOpinion {
   authorCode: string | null;
   citation: string | null;
   pdfUrl: string;
+  startPage: number | null;
+  endPage: number | null;
 }
 
 export interface RetrievedOfficialIndex {
@@ -55,11 +57,12 @@ function isoDate(value: string) {
 export function parseOfficialSlipOpinionIndex(html: string, termYear: string, sourceUri: string) {
   if (!/^\d{2}$/.test(termYear)) throw new Error("Supreme Court term must be a two-digit year");
   const records: OfficialSlipOpinion[] = [];
+  const priorStartPageByPdf = new Map<string, number>();
   for (const row of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
     const rowHtml = row[1] ?? "";
     const cells = [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((cell) => cell[1] ?? "");
     if (cells.length < 5) continue;
-    const link = /href\s*=\s*["']([^"']+\.pdf(?:\?[^"']*)?)["']/i.exec(rowHtml)?.[1];
+    const link = /href\s*=\s*["']([^"']+\.pdf(?:[?#][^"']*)?)["']/i.exec(rowHtml)?.[1];
     if (!link) continue;
     const values = cells.map(decodeHtml);
     const releaseNumber = values[0] || null;
@@ -68,11 +71,20 @@ export function parseOfficialSlipOpinionIndex(html: string, termYear: string, so
     const caseName = values[3]?.trim() ?? "";
     if (!docketNumber || !caseName) throw new Error("Official opinion row lacks a docket number or case name");
     const pdfUrl = officialUrl(link, sourceUri);
-    const pdfName = new URL(pdfUrl).pathname.split("/").pop() ?? "opinion.pdf";
+    const parsedPdfUrl = new URL(pdfUrl);
+    const pdfName = parsedPdfUrl.pathname.split("/").pop() ?? "opinion.pdf";
+    const pageMatch = /^#page=(\d+)$/.exec(parsedPdfUrl.hash);
+    const startPage = pageMatch ? Number.parseInt(pageMatch[1] ?? "", 10) : null;
+    const priorStartPage = priorStartPageByPdf.get(pdfName);
+    const endPage = startPage !== null && priorStartPage !== undefined
+      ? priorStartPage - 1
+      : null;
+    if (startPage !== null) priorStartPageByPdf.set(pdfName, startPage);
     records.push({
       sourceRecordId: `${termYear}:${docketNumber}:${pdfName}`,
       releaseNumber, filedOn, docketNumber, caseName,
       authorCode: values[4] || null, citation: values[5] || null, pdfUrl,
+      startPage, endPage,
     });
   }
   const unique = new Map(records.map((record) => [record.sourceRecordId, record]));
