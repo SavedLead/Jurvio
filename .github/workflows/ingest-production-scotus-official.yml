@@ -128,6 +128,14 @@ jobs:
           set -o pipefail
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee /tmp/scotus-ingestion.log
 
+      - name: Publish exact verified matches
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -o pipefail
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'" | tee /tmp/scotus-publication.log
+
       - name: Report official-source staging queue
         if: always()
         env:
@@ -142,7 +150,7 @@ jobs:
           if [ -z "${JURVIO_IMAGE:-}" ]; then
             QUEUE='{"report":"unavailable","reason":"active production image unresolved"}'
             REPORT_EXIT=1
-          elif QUEUE="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\"" 2>/dev/null)"; then
+          elif QUEUE="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'), 'published_scotus_cases', (SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'), 'published_scotus_documents', (SELECT count(DISTINCT document.id) FROM document JOIN judicial_opinion ON judicial_opinion.document_id = document.id JOIN opinion_cluster ON opinion_cluster.id = judicial_opinion.cluster_id JOIN legal_case ON legal_case.id = opinion_cluster.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND document.publication = 'published'), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\"" 2>/dev/null)"; then
             :
           else
             REPORT_EXIT=$?
@@ -150,7 +158,9 @@ jobs:
           fi
           BATCH_RESULT="$(tail -n 1 /tmp/scotus-ingestion.log 2>/dev/null || true)"
           test -n "$BATCH_RESULT" || BATCH_RESULT='{"cycle":"no batch output available"}'
-          BODY="$(printf '### SCOTUS ingestion\n\n- Status: **%s**\n- CourtListener enrichment: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nOfficial-source batch:\n\n```json\n%s\n```\n\nStaging queue:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$ENRICH_OUTCOME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$BATCH_RESULT" "$QUEUE")"
+          PUBLICATION_RESULT="$(tail -n 1 /tmp/scotus-publication.log 2>/dev/null || true)"
+          test -n "$PUBLICATION_RESULT" || PUBLICATION_RESULT='{"cycle":"no publication output available"}'
+          BODY="$(printf '### SCOTUS ingestion and publication\n\n- Status: **%s**\n- CourtListener enrichment: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nOfficial-source batch:\n\n```json\n%s\n```\n\nPublication batch:\n\n```json\n%s\n```\n\nLive totals:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$ENRICH_OUTCOME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$BATCH_RESULT" "$PUBLICATION_RESULT" "$QUEUE")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
           exit "$REPORT_EXIT"
 
