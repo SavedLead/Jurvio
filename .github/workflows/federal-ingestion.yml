@@ -124,7 +124,7 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --approve-scale-up='$APPROVE_SCALE_UP' --delay-ms=1000" | tee /tmp/federal-cycle.log
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --approve-scale-up='$APPROVE_SCALE_UP' --delay-ms=1000" | tee /tmp/federal-cycle.log
 
       - name: Publish eligible federal cases immediately after ingestion
         if: ${{ env.LOOP != 'publication-quarantine' }}
@@ -133,7 +133,7 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='publication-quarantine' --limit='$LIMIT' --approve-scale-up='false' --delay-ms=0" | tee /tmp/federal-publication.log
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/run-federal-ingestion-loop.mjs --loop='publication-quarantine' --limit='$LIMIT' --approve-scale-up='false' --delay-ms=0" | tee /tmp/federal-publication.log
 
       - name: Report corpus, failures, lag, and growth
         if: always()
