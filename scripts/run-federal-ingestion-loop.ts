@@ -120,7 +120,9 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
         batchSize: 100,
         completedWindows: 0,
       };
-  const streamName = `federal:${kind}:v1`;
+  const streamName = kind === "historical-backfill"
+    ? "federal:historical-backfill:v2:filed"
+    : "federal:new-case-discovery:v1";
   const checkpoint = await readCheckpoint(streamName, fallback);
   const limit = Math.min(requestedLimit, checkpoint.batchSize);
   const runId = await startIngestionRun(sql, {
@@ -147,11 +149,17 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
 
   try {
     while (discovered < limit) {
-      const page = await fetchDocketPage({
-        modifiedAfter: checkpoint.windowStart,
-        modifiedBefore: checkpoint.windowEnd,
-        cursor: next ?? undefined,
-      });
+      const page = await fetchDocketPage(kind === "historical-backfill"
+        ? {
+            filedAfter: checkpoint.windowStart.slice(0, 10),
+            filedBefore: checkpoint.windowEnd.slice(0, 10),
+            cursor: next ?? undefined,
+          }
+        : {
+            modifiedAfter: checkpoint.windowStart,
+            modifiedBefore: checkpoint.windowEnd,
+            cursor: next ?? undefined,
+          });
       sourceTotal ??= page.total;
       if (page.records.length === 0) {
         next = null;

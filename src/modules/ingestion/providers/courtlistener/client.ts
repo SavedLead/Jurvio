@@ -138,11 +138,17 @@ export async function fetchOpinionClusterIds(input: {
   return ids.slice(0, input.limit);
 }
 
-export async function fetchDocketPage(input: {
+export async function fetchDocketPage(input: ({
   modifiedAfter: string;
   modifiedBefore: string;
-  cursor?: string;
-}): Promise<{
+  filedAfter?: never;
+  filedBefore?: never;
+} | {
+  filedAfter: string;
+  filedBefore: string;
+  modifiedAfter?: never;
+  modifiedBefore?: never;
+}) & { cursor?: string }): Promise<{
   records: RetrievedRecord<CourtListenerDocket>[];
   next: string | null;
   total: number | null;
@@ -151,9 +157,15 @@ export async function fetchDocketPage(input: {
     ? new URL(input.cursor)
     : new URL("dockets/", `${env().COURTLISTENER_API_BASE_URL}/`);
   if (!input.cursor) {
-    url.searchParams.set("date_modified__gte", input.modifiedAfter);
-    url.searchParams.set("date_modified__lt", input.modifiedBefore);
-    url.searchParams.set("order_by", "date_modified,id");
+    if (input.filedAfter !== undefined && input.filedBefore !== undefined) {
+      url.searchParams.set("date_filed__gte", input.filedAfter);
+      url.searchParams.set("date_filed__lt", input.filedBefore);
+      url.searchParams.set("order_by", "date_filed,id");
+    } else {
+      url.searchParams.set("date_modified__gte", input.modifiedAfter);
+      url.searchParams.set("date_modified__lt", input.modifiedBefore);
+      url.searchParams.set("order_by", "date_modified,id");
+    }
   }
   const { response, body } = await retrieve(url);
   const page = courtListenerPageSchema.parse(JSON.parse(body));
