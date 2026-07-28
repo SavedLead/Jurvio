@@ -24,7 +24,7 @@ export async function fetchOfficialFilingPdf(sourceUri: string): Promise<Officia
 
 export function extractQuestionPresented(text: string): string | null {
   const normalized = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
-  const match = /(?:^|\n)\s*(?:QUESTIONS? PRESENTED|QUESTION PRESENTED FOR REVIEW)\s*\n([\s\S]*?)(?=\n\s*(?:PARTIES TO THE PROCEEDING|TABLE OF CONTENTS|LIST OF PARTIES|CORPORATE DISCLOSURE|OPINIONS BELOW|JURISDICTION|CONSTITUTIONAL AND STATUTORY PROVISIONS)\s*(?:\n|$))/im.exec(normalized);
+  const match = /(?:^|\n)\s*(?:QUESTIONS? PRESENTED|QUESTION PRESENTED FOR REVIEW)\s*\n([\s\S]*?)(?=\n\s*(?:RELATED PROCEEDINGS|PARTIES TO THE PROCEEDING|TABLE OF CONTENTS|LIST OF PARTIES|CORPORATE DISCLOSURE|OPINIONS BELOW|JURISDICTION|CONSTITUTIONAL AND STATUTORY PROVISIONS)\s*(?:\n|$))/im.exec(normalized);
   if (!match) return null;
   const question = (match[1] ?? "").replaceAll(/\s+/g, " ").replace(/^\d+\.\s*/, "").trim();
   if (question.length < 20 || question.length > 8_000) return null;
