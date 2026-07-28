@@ -23,6 +23,16 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.SITE_URL ?? "https://jurvio.com"),
   title: { default: "Jurvio | Public Legal Intelligence", template: "%s | Jurvio" },
   description: "Public litigation made searchable, understandable, and connected.",
+  robots: {
+    index: false,
+    follow: false,
+    nocache: true,
+    googleBot: {
+      index: false,
+      follow: false,
+      noimageindex: true,
+    },
+  },
   icons: { icon: "/brand/jurvio-icon-light.svg", shortcut: "/brand/jurvio-icon-light.svg", apple: "/brand/jurvio-icon-light.svg" },
 };
 
