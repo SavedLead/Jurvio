@@ -17,6 +17,15 @@ describe("SCOTUS responsive layout contract", () => {
     expect(css).toMatch(/\.caseNavMobile\s*\{\s*display: block/s);
   });
 
+  it("uses the approved feature hierarchy and adaptive phone metadata", () => {
+    expect(css).toContain(".featureBadge");
+    expect(css).toContain(".caseMilestones");
+    expect(css).toContain(".availableDocumentTypes");
+    expect(css).toContain(".opinionQuickLinks");
+    expect(css).toMatch(/\.caseMeta\s*\{[^}]*repeat\(2, minmax\(0, 1fr\)\)/s);
+    expect(css).toContain("@media (max-width: 380px)");
+  });
+
   it("keeps controls touch-friendly and opinion content viewport-safe", () => {
     expect(css).toContain("min-height: 46px");
     expect(css).toContain("overflow-x: clip");
