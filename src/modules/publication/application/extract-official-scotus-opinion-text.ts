@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type postgres from "postgres";
@@ -26,6 +26,7 @@ interface ExtractionCandidate {
   content_hash: string;
   object_key: string;
   source_artifact_id: string;
+  source_download_url: string;
 }
 
 export function validateOfficialScotusText(text: string, docketNumber: string) {
@@ -70,7 +71,8 @@ export async function extractOfficialScotusOpinionText(
       court.name AS court_name, legal_case.docket_number, document.title,
       document.filed_on::text AS filed_on, cluster.precedential_status,
       judicial.opinion_type, cluster.citation_count, artifact.content_hash,
-      artifact.object_key, artifact.id AS source_artifact_id
+      artifact.object_key, artifact.id AS source_artifact_id,
+      judicial.source_download_url
     FROM document
     JOIN document_identifier identifier ON identifier.document_id = document.id
       AND identifier.identifier_type = 'scotus_official_opinion'
@@ -98,7 +100,34 @@ export async function extractOfficialScotusOpinionText(
       if (sourcePath !== artifactRoot && !sourcePath.startsWith(artifactRoot + path.sep)) {
         throw new Error("Artifact path escaped configured root");
       }
-      const pdf = await readFile(sourcePath);
+      let pdf: Buffer;
+      try {
+        pdf = await readFile(sourcePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const sourceUrl = new URL(candidate.source_download_url);
+        if (sourceUrl.protocol !== "https:"
+          || !["www.supremecourt.gov", "supremecourt.gov"].includes(sourceUrl.hostname)) {
+          throw new Error("Missing artifact has no permitted official Supreme Court source");
+        }
+        const response = await fetch(sourceUrl, {
+          headers: { "User-Agent": "Jurvio legal research ingestion contact@jurvio.com" },
+          signal: AbortSignal.timeout(120_000),
+        });
+        if (!response.ok) throw new Error(`Official PDF recovery failed: ${response.status} ${response.statusText}`);
+        pdf = Buffer.from(await response.arrayBuffer());
+        if (pdf.length < 5 || pdf.subarray(0, 5).toString("ascii") !== "%PDF-") {
+          throw new Error("Recovered official source is not a PDF");
+        }
+        const recoveredHash = createHash("sha256").update(pdf).digest("hex");
+        if (recoveredHash !== candidate.content_hash) {
+          throw new Error("Recovered official PDF checksum mismatch");
+        }
+        await mkdir(path.dirname(sourcePath), { recursive: true });
+        await writeFile(sourcePath, pdf, { flag: "wx" }).catch((writeError: NodeJS.ErrnoException) => {
+          if (writeError.code !== "EEXIST") throw writeError;
+        });
+      }
       const hash = createHash("sha256").update(pdf).digest("hex");
       if (hash !== candidate.content_hash) throw new Error("Official PDF checksum mismatch");
       const { stdout } = await execFileAsync("pdftotext", ["-layout", sourcePath, "-"], {
