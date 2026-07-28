@@ -5,7 +5,7 @@ import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
-import { extractCitationLabels, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
+import { distinguishReportersNote, extractCitationLabels, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
 import { AnnotatedLegalText } from "@/modules/legal-context/ui/annotated-legal-text";
 
 export const dynamic = "force-dynamic";
@@ -91,10 +91,11 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
             <strong>Source-backed court text.</strong> Jurvio reformats the published opinion for readability; it does not change the court&apos;s words.
             {opinion.sourceDownloadUrl ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View source file</a>.</> : null}
           </aside>
+          <p className="legalTermHelp">Tap any dotted legal term for a plain-language explanation.</p>
         </header>
         <AnnotatedLegalText
           className="opinionBody"
-          html={opinion.contentHtml}
+          html={distinguishReportersNote(opinion.contentHtml)}
           terms={inlineLegalTerms}
           citations={citationLinks}
         />
