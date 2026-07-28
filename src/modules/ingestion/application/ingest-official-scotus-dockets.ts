@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import type { ArtifactStore } from "./artifact-store";
 import { fetchOfficialDocket } from "../providers/scotus/official-docket";
+import { extractQuestionPresentedFromPdf, fetchOfficialFilingPdf } from "../providers/scotus/official-filing";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -55,6 +56,27 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
       if (!artifact) throw new Error("Official docket artifact was not persisted");
       let caseEvents = 0;
       let caseDocuments = 0;
+      let questionPresented: string | null = null;
+      let questionSourceUrl: string | null = null;
+      const petition = docket.events.flatMap((event) => event.documents).find((document) => document.documentType === "petition");
+      if (petition) {
+        try {
+          const pdf = await fetchOfficialFilingPdf(petition.url);
+          const petitionStored = await artifactStore.putIfAbsent({ key: `scotus/dockets/${legalCase.docket_number}/petition-${pdf.contentHash}.pdf`,
+            mediaType: "application/pdf", body: pdf.body, contentHash: pdf.contentHash });
+          await sql`
+            INSERT INTO raw_artifact (provider_id, source_uri, source_record_id, content_hash, object_key,
+              media_type, retrieved_at, response_metadata)
+            VALUES (${provider.id}, ${pdf.sourceUri}, ${petition.sourceRecordId}, ${pdf.contentHash},
+              ${petitionStored.objectKey}, 'application/pdf', ${pdf.retrievedAt}, ${sql.json({ docketNumber: legalCase.docket_number, documentType: "petition" })})
+            ON CONFLICT (provider_id, source_uri, content_hash) DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
+          `;
+          questionPresented = await extractQuestionPresentedFromPdf(pdf.body);
+          questionSourceUrl = questionPresented ? pdf.sourceUri : null;
+        } catch (error) {
+          console.error(JSON.stringify({ caseId: legalCase.public_id, petitionHeld: error instanceof Error ? error.message : "Petition extraction failed" }));
+        }
+      }
       await sql.begin(async (tx) => {
         const decisionEvent = [...docket.events].reverse().find((event) => event.eventType === "decision");
         const exactDisposition = decisionEvent?.description ?? null;
@@ -63,17 +85,22 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
         await tx`
           INSERT INTO scotus_case_enrichment (case_id, official_docket_url, docket_source_artifact_id,
             docketed_on, lower_court_name, lower_court_case_numbers, lower_court_decided_on,
-            exact_disposition, disposition_source_url, disposition_source_locator,
+            question_presented, question_source_url, question_source_locator, exact_disposition, disposition_source_url, disposition_source_locator,
             decision_lineup, completeness, verification, parser_version, verified_at)
           VALUES (${legalCase.id}, ${docket.sourceUri}, ${artifact.id}, ${docket.docketedOn}, ${docket.lowerCourtName},
-            ${tx.json(docket.lowerCourtCaseNumbers)}, ${docket.lowerCourtDecidedOn}, ${exactDisposition},
+            ${tx.json(docket.lowerCourtCaseNumbers)}, ${docket.lowerCourtDecidedOn}, ${questionPresented},
+            ${questionSourceUrl}, ${questionPresented ? "Petition PDF: Question Presented" : null}, ${exactDisposition},
             ${exactDisposition ? docket.sourceUri : null}, ${exactDisposition ? `Proceedings and Orders: ${decisionEvent?.filedOn}` : null},
             ${tx.json({ perCuriam })}, ${tx.json({ docketEvents: true, docketDocuments: true, eventCount: docket.events.length })},
             'verified', 'official-scotus-docket-v1', now())
           ON CONFLICT (case_id) DO UPDATE SET official_docket_url = EXCLUDED.official_docket_url,
             docket_source_artifact_id = EXCLUDED.docket_source_artifact_id, docketed_on = EXCLUDED.docketed_on,
             lower_court_name = EXCLUDED.lower_court_name, lower_court_case_numbers = EXCLUDED.lower_court_case_numbers,
-            lower_court_decided_on = EXCLUDED.lower_court_decided_on, exact_disposition = EXCLUDED.exact_disposition,
+            lower_court_decided_on = EXCLUDED.lower_court_decided_on,
+            question_presented = COALESCE(EXCLUDED.question_presented, scotus_case_enrichment.question_presented),
+            question_source_url = COALESCE(EXCLUDED.question_source_url, scotus_case_enrichment.question_source_url),
+            question_source_locator = COALESCE(EXCLUDED.question_source_locator, scotus_case_enrichment.question_source_locator),
+            exact_disposition = EXCLUDED.exact_disposition,
             disposition_source_url = EXCLUDED.disposition_source_url,
             disposition_source_locator = EXCLUDED.disposition_source_locator,
             decision_lineup = scotus_case_enrichment.decision_lineup || EXCLUDED.decision_lineup,
