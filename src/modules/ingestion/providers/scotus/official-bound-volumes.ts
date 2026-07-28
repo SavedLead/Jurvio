@@ -64,7 +64,9 @@ function captionIndex(text: string) {
     if (!match) continue;
     const page = Number.parseInt(match[2] ?? "", 10);
     const caption = (match[1] ?? "").replaceAll(/\s+/g, " ").trim();
-    if (page < 1001 && !captions.has(page)) captions.set(page, caption);
+    const existing = captions.get(page);
+    const crossReference = (value: string) => value.includes(";") || /v\.\s*\.$/.test(value);
+    if (page < 1001 && (!existing || (crossReference(existing) && !crossReference(caption)))) captions.set(page, caption);
   }
   return captions;
 }
@@ -72,6 +74,8 @@ function captionIndex(text: string) {
 function reportPage(page: string, volume: number) {
   const citation = new RegExp(`Cite as:\\s*${volume}\\s+U\\.\\s*S\\.\\s*(\\d+)`, "i").exec(page)?.[1];
   if (citation) return Number.parseInt(citation, 10);
+  const termHeader = /^\s*OCTOBER TERM,\s+\d{4}\s+(\d{1,4})\s*$/m.exec(page)?.[1];
+  if (termHeader) return Number.parseInt(termHeader, 10);
   const standalone = [...page.matchAll(/^\s*(\d{1,4})\s*$/gm)].at(-1)?.[1];
   return standalone ? Number.parseInt(standalone, 10) : null;
 }
