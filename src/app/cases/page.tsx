@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 
 type Params = { page?: string; court?: string };
 
-function pageHref(page: number, court?: string) {
+function pageHref(page: number, court?: string | null) {
   const params = new URLSearchParams({ page: String(page) });
   if (court) params.set("court", court);
   return `/cases?${params}` as Route;
