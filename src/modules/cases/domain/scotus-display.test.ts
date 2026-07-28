@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractOfficialCitation, humanizeVerifiedValue, visibleCaseStatusDetails } from "./scotus-display";
+import { extractOfficialCitation, formatPublicCaseDate, formatVerifiedOutcome, humanizeVerifiedValue, visibleCaseStatusDetails } from "./scotus-display";
 
 describe("SCOTUS public display policy", () => {
   it("suppresses generic and unsupported status values", () => {
@@ -14,6 +14,17 @@ describe("SCOTUS public display policy", () => {
       judgmentState: "none",
       appealState: "unavailable",
     })).toEqual([["Disposition", "Reversed And Remanded"]]);
+  });
+
+  it("formats verified outcomes without title-casing conjunctions", () => {
+    expect(formatVerifiedOutcome("reversed_and_remanded")).toBe("Reversed and Remanded");
+    expect(formatVerifiedOutcome("unknown")).toBeNull();
+  });
+
+  it("formats verified ISO dates for public display", () => {
+    expect(formatPublicCaseDate("2025-11-24")).toBe("Nov. 24, 2025");
+    expect(formatPublicCaseDate(null)).toBeNull();
+    expect(formatPublicCaseDate("not-a-date")).toBeNull();
   });
 
   it("extracts a supported United States Reports citation from court text", () => {
