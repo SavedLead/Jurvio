@@ -37,7 +37,10 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     caption,
     loaded.legalCase.courtName,
     `Docket ${loaded.legalCase.docketNumber}`,
-    loaded.legalCase.filedOn ? `filed or decided ${loaded.legalCase.filedOn}` : null,
+    loaded.legalCase.filedOn ? `filed ${loaded.legalCase.filedOn}` : null,
+    loaded.legalCase.decidedOn ? `decided ${loaded.legalCase.decidedOn}` : null,
+    loaded.legalCase.supremeCourtTerm ? `Supreme Court term ${loaded.legalCase.supremeCourtTerm}` : null,
+    loaded.legalCase.officialCitation,
   ].filter(Boolean).join(". ");
   return {
     title: `${caption} | Jurvio`,
@@ -84,7 +87,7 @@ export default async function CasePage({ params }: CasePageProps) {
       { "@type": "PropertyValue", name: "Docket number", value: legalCase.docketNumber },
       { "@type": "PropertyValue", name: "Jurvio ID", value: caseId },
     ],
-    datePublished: legalCase.filedOn ?? undefined,
+    datePublished: legalCase.decidedOn ?? legalCase.filedOn ?? undefined,
     url: permanentUrl,
     isPartOf: { "@type": "WebSite", name: "Jurvio", url: "https://jurvio.com" },
   };
@@ -98,13 +101,16 @@ export default async function CasePage({ params }: CasePageProps) {
         courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber}
         filedOn={legalCase.filedOn}
+        decidedOn={legalCase.decidedOn}
+        supremeCourtTerm={legalCase.supremeCourtTerm}
+        officialCitation={legalCase.officialCitation}
         showNavigation={false}
       />
 
       <div className="caseWorkspace">
         <aside className="caseWorkspaceNav">
           <CaseNav caseId={caseId} />
-          <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} />
+          <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
         </aside>
 
         <div className="caseWorkspaceMain">
@@ -186,6 +192,9 @@ export default async function CasePage({ params }: CasePageProps) {
             <dl className="railFacts">
               <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
               {readableDocuments.length > 0 ? <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div> : null}
+              {legalCase.decidedOn ? <div><dt>Decision date</dt><dd>{legalCase.decidedOn}</dd></div> : null}
+              {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
+              {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
               <div><dt>Permanent ID</dt><dd>{caseId}</dd></div>
             </dl>
           </section>
