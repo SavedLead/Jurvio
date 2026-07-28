@@ -13,7 +13,7 @@ describe("official U.S. Reports bound-volume ingestion", () => {
 
   it("segments merits opinions using physical pages and official reporter pages", () => {
     const text = [
-      "TABLE OF CASES REPORTED\nMinnesota Voters Alliance v. Mansky . . . . . . . . 1\nAnimal Science Products v. Hebei Welcome Pharm. Co. . . . . . . . . 33",
+      "TABLE OF CASES REPORTED\nMansky; Minnesota Voters Alliance v. . . . . . . . . 1\nMinnesota Voters Alliance v. Mansky . . . . . . . . 1\nAnimal Science Products v. Hebei Welcome Pharm. Co. . . . . . . . . 33",
       "CASES ADJUDGED\nMINNESOTA VOTERS ALLIANCE v. MANSKY\ncertiorari to the court of appeals\nNo. 16-1435. Argued February 28, 2018—Decided June 14, 2018\n\n1",
       "Cite as: 585 U. S. 1 (2018)\ncontinued text\n3",
       "OCTOBER TERM, 2017                               33\n\nANIMAL SCIENCE PRODUCTS v. HEBEI WELCOME\ncertiorari to the court of appeals\nNo. 16-1220. Argued April 24, 2018—Decided June 14, 2018",
