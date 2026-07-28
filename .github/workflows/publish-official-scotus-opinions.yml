@@ -13,7 +13,7 @@ on:
     types:
       - completed
   schedule:
-    - cron: "47 */6 * * *"
+    - cron: "47 * * * *"
   push:
     branches:
       - main
@@ -82,3 +82,15 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'"
+
+      - name: Report SCOTUS publication totals
+        if: always()
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          if [ -z "${JURVIO_IMAGE:-}" ]; then
+            echo "::warning::Skipping publication report because the active production image could not be resolved"
+            exit 0
+          fi
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_scotus_cases', (SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'), 'published_scotus_documents', (SELECT count(DISTINCT document.id) FROM document JOIN judicial_opinion ON judicial_opinion.document_id = document.id JOIN opinion_cluster ON opinion_cluster.id = judicial_opinion.cluster_id JOIN legal_case ON legal_case.id = opinion_cluster.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND document.publication = 'published'), 'pending_official_candidates', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved_official_candidates', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'));\""
