@@ -81,8 +81,9 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
   const captions = captionIndex(text);
   const starts: Array<Omit<OfficialBoundOpinion, "endPage">> = [];
   for (const [index, page] of pages.entries()) {
-    const docketAndDate = /\bNos?\.\s+([^\n.]+?)\.\s+(?:Argued[^\n]*?[—-]\s*)?Decided\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})/m.exec(page);
-    if (!docketAndDate) continue;
+    const docketMatch = /\bNos?\.\s+([^\n.]+?)\./m.exec(page);
+    const decisionMatch = /\bDecided\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})/m.exec(page);
+    if (!docketMatch || !decisionMatch) continue;
     const firstPage = reportPage(page, source.volume);
     if (firstPage === null || firstPage >= 1001) continue;
     const caseName = captions.get(firstPage);
@@ -103,9 +104,12 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
   }
   const unique = [...new Map(starts.map((record) => [record.sourceRecordId, record])).values()]
     .sort((a, b) => a.startPage - b.startPage);
+  const firstOpinionPage = unique[0]?.startPage ?? Number.POSITIVE_INFINITY;
+  const firstOrdersPage = pages.findIndex((page, index) => index + 1 > firstOpinionPage && (reportPage(page, source.volume) ?? 0) >= 1001) + 1;
+  const finalMeritsPage = firstOrdersPage > 0 ? firstOrdersPage - 1 : null;
   return unique.map((record, index): OfficialBoundOpinion => ({
     ...record,
-    endPage: unique[index + 1] ? (unique[index + 1]?.startPage ?? record.startPage) - 1 : null,
+    endPage: unique[index + 1] ? (unique[index + 1]?.startPage ?? record.startPage) - 1 : finalMeritsPage,
   }));
 }
 
