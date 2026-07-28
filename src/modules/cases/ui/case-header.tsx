@@ -1,4 +1,5 @@
 import { CaseNav } from "./case-nav";
+import { BrandedCaseCaption } from "./branded-case-caption";
 
 interface CaseHeaderProps {
   caseId: string;
@@ -22,7 +23,7 @@ export function CaseHeader({
       </nav>
       <header className="caseHeader">
         <p className="eyebrow">{courtName}</p>
-        <h1>{caption}</h1>
+        <h1><BrandedCaseCaption caption={caption} /></h1>
         <div className="caseMeta" aria-label="Case details">
           <span><strong>Docket</strong> {docketNumber}</span>
           <span><strong>Filed</strong> {filedOn ?? "Date unavailable"}</span>

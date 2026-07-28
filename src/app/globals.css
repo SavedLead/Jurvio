@@ -165,6 +165,9 @@ button:hover { background: var(--brand-dark); }
 .opinionLayout { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
 .opinionHeader { padding: 48px clamp(24px, 7vw, 76px) 36px; border-bottom: 1px solid var(--border); }
 .opinionHeader h1 { max-width: 820px; font-size: clamp(34px, 6vw, 58px); }
+.caseCaptionVersus { white-space: nowrap; font-family: Georgia, "Times New Roman", serif; font-size: .9em; font-style: normal; font-weight: 700; letter-spacing: -.04em; }
+.caseCaptionVersus > span { color: #d55549; }
+
 .metadataGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 32px 0; }
 .metadataGrid div { padding-top: 12px; border-top: 1px solid var(--border); }
 .metadataGrid dt { color: var(--muted); font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }

@@ -2,6 +2,7 @@ import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { db } from "@/db/client";
 import { listPublicCases } from "@/modules/cases/application/list-public-cases";
+import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import styles from "./cases.module.css";
 
 export const dynamic = "force-dynamic";
@@ -80,7 +81,7 @@ export default async function CasesPage({
                   {legalCase.filedOn ? <span>Filed {legalCase.filedOn}</span> : null}
                 </div>
                 <h2>
-                  <Link href={`/case/${legalCase.publicId}` as Route}>{legalCase.caption}</Link>
+                  <Link href={`/case/${legalCase.publicId}` as Route}><BrandedCaseCaption caption={legalCase.caption} /></Link>
                 </h2>
                 <p>Docket {legalCase.docketNumber}</p>
                 <div className={styles.status}>

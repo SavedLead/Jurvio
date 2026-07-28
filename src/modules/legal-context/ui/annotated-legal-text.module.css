@@ -66,8 +66,18 @@
 
 @media (max-width: 640px) {
   .root :global(.jurvioContextCard) {
-    left: 0;
-    transform: none;
+    position: fixed;
+    z-index: 100;
+    top: 50dvh;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: auto;
+    left: max(16px, env(safe-area-inset-left));
+    width: auto;
+    max-height: calc(100dvh - max(32px, env(safe-area-inset-top) + env(safe-area-inset-bottom) + 32px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: translateY(-50%);
+    box-shadow: 0 20px 60px rgb(23 32 51 / 28%);
   }
 }
 
