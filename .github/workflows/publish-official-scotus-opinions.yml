@@ -7,6 +7,13 @@ on:
         description: Maximum staged candidates to reconcile and publish (1-100)
         required: true
         default: "100"
+  workflow_run:
+    workflows:
+      - "Ingest official Supreme Court opinions"
+    types:
+      - completed
+  schedule:
+    - cron: "47 */6 * * *"
 
 permissions:
   contents: read
@@ -17,16 +24,24 @@ concurrency:
 
 jobs:
   publish:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
     steps:
-      - name: Validate bounded batch
+      - name: Resolve batch limit
         env:
-          LIMIT: ${{ inputs.limit }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_LIMIT: ${{ inputs.limit }}
         run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            LIMIT="$INPUT_LIMIT"
+          else
+            LIMIT="100"
+          fi
           test "$LIMIT" -ge 1
           test "$LIMIT" -le 100
+          printf 'LIMIT=%s\n' "$LIMIT" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -38,7 +53,7 @@ jobs:
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1
-          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$DO_KN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
       - name: Resolve active production image
@@ -60,6 +75,5 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
-          LIMIT: ${{ inputs.limit }}
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'"
