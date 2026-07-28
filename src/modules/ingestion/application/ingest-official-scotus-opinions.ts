@@ -79,8 +79,9 @@ export async function ingestOfficialScotusOpinions(
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
       try {
         const pdf = await fetchOfficialOpinionPdf(record.pdfUrl);
+        const officialPdfName = new URL(record.pdfUrl).pathname.split("/").pop() ?? "opinion.pdf";
         const stored = await artifactStore.putIfAbsent({
-          key: `scotus/slip-opinions/${options.termYear}/${record.sourceRecordId.replaceAll(/[^a-zA-Z0-9._-]/g, "_")}-${pdf.contentHash}.pdf`,
+          key: `scotus/slip-opinions/${options.termYear}/${officialPdfName.replaceAll(/[^a-zA-Z0-9._-]/g, "_")}-${pdf.contentHash}.pdf`,
           mediaType: pdf.mediaType, body: pdf.body, contentHash: pdf.contentHash,
         });
         const [pdfArtifact] = await sql<{ id: string }[]>`
