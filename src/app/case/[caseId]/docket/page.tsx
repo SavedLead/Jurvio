@@ -12,11 +12,12 @@ export default async function DocketPage({ params }: {
   params: Promise<{ caseId: string }>;
 }) {
   const { caseId } = await params;
-  const legalCase = await getPublicCase(db(), caseId);
+  const sql = db();
+  const legalCase = await getPublicCase(sql, caseId);
   if (!legalCase) notFound();
-  const records = await listPublicDocketEntries(db(), caseId);
+  const records = await listPublicDocketEntries(sql, caseId);
   const requestHeaders = await headers();
-  await recordDemandEvent(db(), {
+  await recordDemandEvent(sql, {
     eventType: "page_view",
     userAgent: requestHeaders.get("user-agent"),
     referrer: requestHeaders.get("referer"),
@@ -28,19 +29,12 @@ export default async function DocketPage({ params }: {
 
   return (
     <main className="shell caseShell">
-      <CaseHeader
-        caseId={caseId}
-        caption={legalCase.caption}
-        courtName={legalCase.courtName}
-        docketNumber={legalCase.docketNumber}
-        filedOn={legalCase.filedOn}
-      />
-      <section className="contentSection">
-        <p className="sectionKicker">Official activity</p>
-        <h2>Full docket</h2>
-        {records.length === 0 ? (
-          <p className="emptyState">No docket entries are approved for publication.</p>
-        ) : (
+      <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
+        docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn} />
+      {records.length > 0 ? (
+        <section className="contentSection">
+          <p className="sectionKicker">Official activity</p>
+          <h2>Full docket</h2>
           <ol className="recordList">
             {records.map((entry) => (
               <li key={entry.publicId}>
@@ -50,8 +44,8 @@ export default async function DocketPage({ params }: {
               </li>
             ))}
           </ol>
-        )}
-      </section>
+        </section>
+      ) : null}
     </main>
   );
 }
