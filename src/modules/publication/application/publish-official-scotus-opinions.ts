@@ -49,6 +49,15 @@ export async function publishVerifiedOfficialScotusOpinions(
     SELECT id, provider_id, source_record_id, opinion_artifact_id, docket_number, case_name, filed_on::text, source_pdf_uri, source_content_hash
     FROM official_opinion_candidate
     WHERE review_status = 'pending_review'
+      OR (
+        review_status = 'approved'
+        AND NOT EXISTS (
+          SELECT 1 FROM document_identifier identifier
+          WHERE identifier.provider_id = official_opinion_candidate.provider_id
+            AND identifier.identifier_type = 'scotus_official_opinion'
+            AND identifier.identifier_value = official_opinion_candidate.source_record_id
+        )
+      )
     ORDER BY filed_on, source_record_id
     LIMIT ${options.limit}
   `;
@@ -197,10 +206,84 @@ export async function publishVerifiedOfficialScotusOpinions(
           WHERE object_type = 'legal_case' AND object_id = ${existing.case_id}
             AND status IN ('pending', 'in_review', 'needs_changes')
         `;
+        const [cluster] = await tx<{ id: string }[]>`
+          INSERT INTO opinion_cluster (
+            public_id, case_id, provider_id, provider_cluster_id, case_name,
+            date_filed, precedential_status, citation_count, citations,
+            source_artifact_id, source_updated_at
+          ) VALUES (
+            ${createPublicId("cluster")}, ${existing.case_id}, ${candidate.provider_id},
+            ${`official:${candidate.source_record_id}`}, ${candidate.case_name},
+            ${candidate.filed_on}, 'published', 0, '[]'::jsonb,
+            ${candidate.opinion_artifact_id}, now()
+          )
+          ON CONFLICT (provider_id, provider_cluster_id)
+          DO UPDATE SET case_id = EXCLUDED.case_id, case_name = EXCLUDED.case_name,
+            date_filed = EXCLUDED.date_filed, source_artifact_id = EXCLUDED.source_artifact_id,
+            source_updated_at = EXCLUDED.source_updated_at, updated_at = now()
+          RETURNING id
+        `;
+        if (!cluster) throw new Error("Official Supreme Court opinion cluster was not persisted");
+
+        const [existingDocument] = await tx<{ id: string; public_id: string }[]>`
+          SELECT document.id, document.public_id
+          FROM document_identifier identifier
+          JOIN document ON document.id = identifier.document_id
+          WHERE identifier.provider_id = ${candidate.provider_id}
+            AND identifier.identifier_type = 'scotus_official_opinion'
+            AND identifier.identifier_value = ${candidate.source_record_id}
+          LIMIT 1
+        `;
+        const [document] = existingDocument ? [existingDocument] : await tx<{ id: string; public_id: string }[]>`
+          INSERT INTO document (
+            public_id, case_id, document_type, title, filed_on, content_hash,
+            source_artifact_id, publication, extraction_confidence
+          ) VALUES (
+            ${createPublicId("document")}, ${existing.case_id}, 'judicial_opinion',
+            ${`${candidate.case_name} opinion`}, ${candidate.filed_on},
+            ${candidate.source_content_hash}, ${candidate.opinion_artifact_id},
+            'published', NULL
+          )
+          RETURNING id, public_id
+        `;
+        if (!document) throw new Error("Official Supreme Court PDF document was not persisted");
+        await tx`UPDATE document SET publication = 'published', updated_at = now() WHERE id = ${document.id}`;
+        await tx`
+          INSERT INTO document_identifier (document_id, provider_id, identifier_type, identifier_value)
+          VALUES (${document.id}, ${candidate.provider_id}, 'scotus_official_opinion', ${candidate.source_record_id})
+          ON CONFLICT (provider_id, identifier_type, identifier_value)
+          DO UPDATE SET document_id = EXCLUDED.document_id
+        `;
+        await tx`
+          INSERT INTO judicial_opinion (
+            cluster_id, document_id, provider_id, provider_opinion_id, opinion_type,
+            author_name, per_curiam, source_download_url, source_artifact_id
+          ) VALUES (
+            ${cluster.id}, ${document.id}, ${candidate.provider_id}, ${candidate.source_record_id},
+            'majority', NULL, false, ${candidate.source_pdf_uri}, ${candidate.opinion_artifact_id}
+          )
+          ON CONFLICT (provider_id, provider_opinion_id)
+          DO UPDATE SET cluster_id = EXCLUDED.cluster_id, document_id = EXCLUDED.document_id,
+            source_download_url = EXCLUDED.source_download_url,
+            source_artifact_id = EXCLUDED.source_artifact_id, updated_at = now()
+        `;
+        await tx`
+          INSERT INTO publication_decision (
+            object_type, object_id, displayable, indexable, machine_accessible,
+            downloadable, summary_eligible, reason_code, rule_version
+          )
+          SELECT 'document', ${document.id}, true, true, true, true, false,
+            'verified_official_scotus_pdf', 'official-scotus-publication-v3'
+          WHERE NOT COALESCE((
+            SELECT displayable FROM publication_decision
+            WHERE object_type = 'document' AND object_id = ${document.id}
+            ORDER BY decided_at DESC, id DESC LIMIT 1
+          ), false)
+        `;
         await tx`
           UPDATE official_opinion_candidate
           SET review_status = 'approved', reviewed_at = now(),
-            reviewer_notes = 'Verified official Supreme Court metadata published; document and opinion text remain unpublished pending extraction validation.'
+            reviewer_notes = 'Verified official Supreme Court metadata and authoritative PDF published; text extraction remains pending.'
           WHERE id = ${candidate.id}
         `;
         await tx`
@@ -213,16 +296,17 @@ export async function publishVerifiedOfficialScotusOpinions(
               source: "scotus_official",
               candidateId: candidate.id,
               sourceHash: candidate.source_content_hash,
-              documentCount: 0,
-              metadataOnly: true,
+              documentCount: 1,
+              metadataOnly: false,
+              textExtractionPending: true,
             })}
           )
         `;
-        return existing;
+        return { ...existing, documentPublicId: document.public_id };
       });
 
       published += 1;
-      publicRecords.push({ caseId: metadataCase.case_public_id, documentIds: [] });
+      publicRecords.push({ caseId: metadataCase.case_public_id, documentIds: [metadataCase.documentPublicId] });
       continue;
     }
 
