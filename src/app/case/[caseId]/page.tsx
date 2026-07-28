@@ -40,7 +40,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     loaded.legalCase.filedOn ? `filed or decided ${loaded.legalCase.filedOn}` : null,
   ].filter(Boolean).join(". ");
   return {
-    title: `${caption} | Jurvio`,
+    title: caption,
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
     openGraph: { title: caption, description, type: "article" },
