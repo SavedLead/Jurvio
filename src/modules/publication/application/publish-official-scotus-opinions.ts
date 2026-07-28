@@ -15,6 +15,11 @@ export function isSameScotusCase(left: string, right: string): boolean {
   return normalizeScotusIdentity(left) === normalizeScotusIdentity(right);
 }
 
+export function expandScotusTermYear(termYear: string): number {
+  if (!/^\d{2}$/.test(termYear)) throw new Error("Supreme Court term must be a two-digit year");
+  return 2000 + Number(termYear);
+}
+
 interface Candidate {
   id: string;
   provider_id: string;
@@ -158,7 +163,7 @@ export async function publishVerifiedOfficialScotusOpinions(
             ) VALUES (
               ${createPublicId("case")}, ${court.id}, ${candidate.docket_number},
               ${candidate.case_name}, NULL, ${candidate.filed_on},
-              ${2000 + Number(candidate.term_year)}, ${candidate.citation}, 'verified', 'published',
+              ${expandScotusTermYear(candidate.term_year)}, ${candidate.citation}, 'verified', 'published',
               ${candidate.opinion_artifact_id}, now()
             )
             ON CONFLICT (court_id, docket_number)
@@ -187,7 +192,7 @@ export async function publishVerifiedOfficialScotusOpinions(
           await tx`
             UPDATE legal_case
             SET filed_on = NULL, decided_on = ${candidate.filed_on},
-              supreme_court_term = ${2000 + Number(candidate.term_year)},
+              supreme_court_term = ${expandScotusTermYear(candidate.term_year)},
               official_citation = ${candidate.citation}, verification = 'verified',
               publication = 'published', source_artifact_id = ${candidate.opinion_artifact_id},
               updated_at = now()
@@ -339,7 +344,7 @@ export async function publishVerifiedOfficialScotusOpinions(
       await tx`
         UPDATE legal_case
         SET decided_on = ${candidate.filed_on},
-          supreme_court_term = ${2000 + Number(candidate.term_year)},
+          supreme_court_term = ${expandScotusTermYear(candidate.term_year)},
           official_citation = ${candidate.citation}, verification = 'verified',
           publication = 'published', updated_at = now()
         WHERE id = ${first.case_id}
