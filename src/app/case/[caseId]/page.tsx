@@ -74,8 +74,15 @@ export default async function CasePage({ params }: CasePageProps) {
     : null;
   const timelineEvents = [
     legalCase.filedOn ? { date: legalCase.filedOn, label: "Case filed" } : null,
+    ...docketEntries.filter((entry) => entry.filedOn).map((entry) => ({
+      date: entry.filedOn as string,
+      label: entry.description,
+    })),
     legalCase.decidedOn ? { date: legalCase.decidedOn, label: "Decision issued" } : null,
-  ].filter((event): event is { date: string; label: string } => Boolean(event));
+  ]
+    .filter((event): event is { date: string; label: string } => Boolean(event))
+    .filter((event, index, events) => events.findIndex((candidate) => candidate.date === event.date && candidate.label === event.label) === index)
+    .sort((left, right) => left.date.localeCompare(right.date));
   const availableDocumentTypes = [...new Set(documents.map((document) => document.documentType.replaceAll("_", " ")))];
   const caption = cleanCaseCaption(legalCase.caption);
   const canonicalPath = `/case/${caseId}`;
@@ -227,23 +234,6 @@ export default async function CasePage({ params }: CasePageProps) {
                 {opinionType ? <Link href={`${opinionPath}#opinion-text` as Route}>{opinionType}</Link> : null}
                 {primaryOpinion?.hasReportersNote ? <Link href={`${opinionPath}#reporters-note-heading` as Route}>Reporter’s Note</Link> : null}
               </nav>
-            </section>
-          ) : null}
-
-          {docketEntries.length > 0 ? (
-            <section className="contentSection" aria-labelledby="recent-activity">
-              <p className="sectionKicker">Official activity</p>
-              <h2 id="recent-activity">Recent case activity</h2>
-              <ol className="recordList">
-                {docketEntries.slice(0, 5).map((entry) => (
-                  <li key={entry.publicId}>
-                    <strong>{entry.entryNumber ? `Entry ${entry.entryNumber}` : "Court event"}</strong>
-                    {entry.filedOn ? ` · ${entry.filedOn}` : ""}
-                    <p>{entry.description}</p>
-                  </li>
-                ))}
-              </ol>
-              <Link className="sectionLink" href={`/case/${caseId}/timeline` as Route}>View case timeline →</Link>
             </section>
           ) : null}
 
