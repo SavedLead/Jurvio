@@ -11,6 +11,7 @@ import {
 import {
   decodeStreamCursor,
   encodeStreamCursor,
+  evaluateFederalPublicationCandidate,
   isNonBankruptcyFederalJurisdiction,
   isRestrictedDocketText,
   nextBatchSize,
@@ -33,6 +34,7 @@ function option(name: string, fallback: string): string {
 
 const loop = option("loop", "new-case-discovery") as FederalLoop;
 const requestedLimit = normalizeBatchSize(Number(option("limit", "100")));
+const promotionApproved = option("approve-scale-up", "false") === "true";
 const delayMs = Number(option("delay-ms", "1000"));
 const lookbackDays = Number(option("lookback-days", "2"));
 const allowedLoops: FederalLoop[] = [
@@ -43,6 +45,9 @@ const allowedLoops: FederalLoop[] = [
   "publication-quarantine",
 ];
 if (!allowedLoops.includes(loop)) throw new Error("--loop is invalid");
+if (promotionApproved && loop !== "historical-backfill") {
+  throw new Error("--approve-scale-up is only valid for historical-backfill");
+}
 if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
   throw new Error("--delay-ms must be 0-60000");
 }
@@ -121,7 +126,12 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: kind,
-    selection: { ...checkpoint, requestedLimit, effectiveLimit: limit },
+    selection: {
+      ...checkpoint,
+      requestedLimit,
+      effectiveLimit: limit,
+      promotionApproved,
+    },
     selectedCount: limit,
   });
 
@@ -216,7 +226,13 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
     }
 
     const completedWindow = next === null;
-    const batchSize = nextBatchSize(limit, failed, held);
+    const batchSize = nextBatchSize(
+      checkpoint.batchSize,
+      requestedLimit,
+      failed,
+      held,
+      promotionApproved,
+    );
     const nextCursor: StreamCursor = completedWindow
       ? kind === "new-case-discovery"
         ? {
@@ -401,22 +417,65 @@ async function runPublicationAndQuarantine() {
     caption: string;
     docket_number: string;
     source_artifact_id: string | null;
+    court_jurisdiction: string | null;
+    court_provider_id: string | null;
+    court_verification: string | null;
+    source_provider_code: string | null;
+    source_record_id: string | null;
+    source_uri: string | null;
+    source_content_hash: string | null;
+    source_retrieved_at: string | null;
+    canonical_identifier: string | null;
+    canonical_identifier_count: number;
+    identity_collision_count: number;
     unresolved_rejections: number;
     document_count: number;
+    restricted_text: string;
   }[]>`
     SELECT legal_case.id, legal_case.caption, legal_case.docket_number,
       legal_case.source_artifact_id,
+      court.jurisdiction AS court_jurisdiction,
+      court.provider_court_id AS court_provider_id,
+      court.verification::text AS court_verification,
+      source_provider.code AS source_provider_code,
+      source_artifact.source_record_id,
+      source_artifact.source_uri,
+      source_artifact.content_hash AS source_content_hash,
+      source_artifact.retrieved_at::text AS source_retrieved_at,
+      canonical.identifier_value AS canonical_identifier,
+      (SELECT count(*)::int FROM case_identifier identifier
+       WHERE identifier.case_id = legal_case.id
+         AND identifier.provider_id = source_provider.id
+         AND identifier.identifier_type = 'courtlistener_docket_id'
+      ) AS canonical_identifier_count,
+      (SELECT count(*)::int FROM legal_case collision
+       WHERE collision.court_id = legal_case.court_id
+         AND lower(trim(collision.docket_number)) = lower(trim(legal_case.docket_number))
+      ) AS identity_collision_count,
       (SELECT count(*)::int FROM ingestion_rejection rejection
        WHERE rejection.resolved_at IS NULL
-         AND rejection.source_record_id = (
-           SELECT identifier_value FROM case_identifier
-           WHERE case_id = legal_case.id
-             AND identifier_type = 'courtlistener_docket_id'
-           LIMIT 1
-         )) AS unresolved_rejections,
-      (SELECT count(*)::int FROM document WHERE case_id = legal_case.id) AS document_count
+         AND rejection.source_record_id = canonical.identifier_value
+      ) AS unresolved_rejections,
+      (SELECT count(*)::int FROM document WHERE case_id = legal_case.id) AS document_count,
+      concat_ws(' ', legal_case.caption, legal_case.docket_number,
+        (SELECT string_agg(coalesce(entry.description, ''), ' ')
+         FROM docket_entry entry WHERE entry.case_id = legal_case.id),
+        (SELECT string_agg(coalesce(document.title, ''), ' ')
+         FROM document WHERE document.case_id = legal_case.id)
+      ) AS restricted_text
     FROM legal_case
     JOIN court ON court.id = legal_case.court_id
+    LEFT JOIN raw_artifact source_artifact ON source_artifact.id = legal_case.source_artifact_id
+    LEFT JOIN provider source_provider ON source_provider.id = source_artifact.provider_id
+    LEFT JOIN LATERAL (
+      SELECT identifier_value
+      FROM case_identifier
+      WHERE case_id = legal_case.id
+        AND provider_id = source_provider.id
+        AND identifier_type = 'courtlistener_docket_id'
+      ORDER BY identifier_value
+      LIMIT 1
+    ) canonical ON true
     WHERE legal_case.publication = 'draft'
       AND (
         lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
@@ -429,27 +488,36 @@ async function runPublicationAndQuarantine() {
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: "publication-quarantine",
-    selection: { requestedLimit, policy: "federal-publication-v1" },
+    selection: { requestedLimit, policy: "federal-publication-v2" },
     selectedCount: candidates.length,
   });
   let published = 0;
   let held = 0;
   for (const candidate of candidates) {
     await startIngestionRunItem(sql, runId, candidate.id);
-    const reason = !candidate.source_artifact_id
-      ? "missing_source_artifact"
-      : !candidate.caption.trim() || !candidate.docket_number.trim()
-        ? "missing_stable_identity"
-        : isRestrictedDocketText(`${candidate.caption} ${candidate.docket_number}`)
-          ? "restricted_or_sensitive"
-          : candidate.unresolved_rejections > 0
-            ? "unresolved_ingestion_rejection"
-            : null;
-    if (reason) {
+    const decision = evaluateFederalPublicationCandidate({
+      caption: candidate.caption,
+      docketNumber: candidate.docket_number,
+      courtJurisdiction: candidate.court_jurisdiction,
+      courtProviderId: candidate.court_provider_id,
+      courtVerification: candidate.court_verification,
+      sourceArtifactId: candidate.source_artifact_id,
+      sourceProviderCode: candidate.source_provider_code,
+      sourceRecordId: candidate.source_record_id,
+      sourceUri: candidate.source_uri,
+      sourceContentHash: candidate.source_content_hash,
+      sourceRetrievedAt: candidate.source_retrieved_at,
+      canonicalIdentifier: candidate.canonical_identifier,
+      canonicalIdentifierCount: candidate.canonical_identifier_count,
+      identityCollisionCount: candidate.identity_collision_count,
+      unresolvedRejections: candidate.unresolved_rejections,
+      restrictedText: candidate.restricted_text,
+    });
+    if (!decision.eligible) {
       held += 1;
       await sql`
         UPDATE legal_case SET verification = 'needs_review',
-          publication = CASE WHEN ${reason} = 'restricted_or_sensitive'
+          publication = CASE WHEN ${decision.restricted}
             THEN 'restricted'::publication_state ELSE publication END,
           updated_at = now()
         WHERE id = ${candidate.id}
@@ -457,7 +525,7 @@ async function runPublicationAndQuarantine() {
       await finishIngestionRunItem(sql, {
         runId,
         sourceRecordId: candidate.id,
-        error: `Held: ${reason}`,
+        error: `Held: ${decision.reasons.join(",")}`,
       });
       continue;
     }
@@ -473,7 +541,7 @@ async function runPublicationAndQuarantine() {
           downloadable, summary_eligible, reason_code, rule_version
         )
         SELECT 'legal_case', ${candidate.id}, true, true, true, false, false,
-          'deterministic_federal_source_validation', 'federal-publication-v1'
+          'deterministic_federal_source_validation', 'federal-publication-v2'
         WHERE NOT COALESCE((
           SELECT displayable FROM publication_decision
           WHERE object_type = 'legal_case' AND object_id = ${candidate.id}
@@ -486,7 +554,7 @@ async function runPublicationAndQuarantine() {
         ) VALUES (
           'publication.changed', 'legal_case', ${candidate.id},
           (extract(epoch from clock_timestamp()) * 1000000)::bigint,
-          ${tx.json({ source: "courtlistener", policy: "federal-publication-v1" })}
+          ${tx.json({ source: "courtlistener", policy: "federal-publication-v2" })}
         )
       `;
     });
