@@ -88,7 +88,8 @@ export async function ingestOfficialScotusOpinions(
             content_hash, object_key, media_type, retrieved_at, response_metadata)
           VALUES (${provider.id}, ${runId}, ${pdf.sourceUri}, ${record.sourceRecordId},
             ${pdf.contentHash}, ${stored.objectKey}, ${pdf.mediaType}, ${pdf.retrievedAt},
-            ${sql.json({ termYear: options.termYear, docketNumber: record.docketNumber })})
+            ${sql.json({ termYear: options.termYear, docketNumber: record.docketNumber,
+          sourcePageStart: record.startPage, sourcePageEnd: record.endPage })})
           ON CONFLICT (provider_id, source_uri, content_hash)
           DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
           RETURNING id
@@ -97,11 +98,12 @@ export async function ingestOfficialScotusOpinions(
         await sql`
           INSERT INTO official_opinion_candidate (provider_id, term_year, source_record_id,
             release_number, docket_number, case_name, filed_on, author_code, citation,
-            source_pdf_uri, source_content_hash, listing_artifact_id, opinion_artifact_id)
+            source_pdf_uri, source_content_hash, listing_artifact_id, opinion_artifact_id,
+            source_page_start, source_page_end)
           VALUES (${provider.id}, ${options.termYear}, ${record.sourceRecordId},
             ${record.releaseNumber}, ${record.docketNumber}, ${record.caseName}, ${record.filedOn},
             ${record.authorCode}, ${record.citation}, ${record.pdfUrl}, ${pdf.contentHash},
-            ${listingArtifact.id}, ${pdfArtifact.id})
+            ${listingArtifact.id}, ${pdfArtifact.id}, ${record.startPage}, ${record.endPage})
           ON CONFLICT (provider_id, source_record_id) DO UPDATE SET
             release_number = EXCLUDED.release_number, docket_number = EXCLUDED.docket_number,
             case_name = EXCLUDED.case_name, filed_on = EXCLUDED.filed_on,
@@ -109,6 +111,8 @@ export async function ingestOfficialScotusOpinions(
             source_pdf_uri = EXCLUDED.source_pdf_uri,
             listing_artifact_id = EXCLUDED.listing_artifact_id,
             opinion_artifact_id = EXCLUDED.opinion_artifact_id,
+            source_page_start = EXCLUDED.source_page_start,
+            source_page_end = EXCLUDED.source_page_end,
             review_status = CASE WHEN official_opinion_candidate.source_content_hash <> EXCLUDED.source_content_hash
               THEN 'pending_review'::ingestion_candidate_status ELSE official_opinion_candidate.review_status END,
             source_content_hash = EXCLUDED.source_content_hash, last_seen_at = now(),
