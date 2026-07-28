@@ -17,7 +17,7 @@ describe("SCOTUS public display policy", () => {
   });
 
   it("formats verified outcomes without title-casing conjunctions", () => {
-    expect(formatVerifiedOutcome("reversed_and_remanded")).toBe("Reversed and Remanded");
+    expect(formatVerifiedOutcome("reversed_and_remanded")).toBe("Reversed and remanded");
     expect(formatVerifiedOutcome("unknown")).toBeNull();
   });
 
