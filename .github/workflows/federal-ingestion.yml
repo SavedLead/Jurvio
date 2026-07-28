@@ -37,6 +37,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: jurvio-production-federal-${{ inputs.loop || github.event.schedule }}
@@ -122,13 +123,31 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --approve-scale-up='$APPROVE_SCALE_UP' --delay-ms=1000"
+          set -o pipefail
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --approve-scale-up='$APPROVE_SCALE_UP' --delay-ms=1000" | tee /tmp/federal-cycle.log
 
       - name: Report corpus, failures, lag, and growth
         if: always()
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT_COMMENT_ID: "5101766948"
+          WORKFLOW_STATUS: ${{ job.status }}
         run: |
-          if [ -z "${JURVIO_IMAGE:-}" ]; then exit 0; fi
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('cases',(SELECT count(*) FROM legal_case),'published',(SELECT count(*) FROM legal_case WHERE publication='published'),'held',(SELECT count(*) FROM legal_case WHERE publication IN ('draft','restricted')),'docket_entries',(SELECT count(*) FROM docket_entry),'documents',(SELECT count(*) FROM document),'opinions',(SELECT count(*) FROM judicial_opinion),'failures',(SELECT count(*) FROM ingestion_run_item WHERE status='failed'),'database_bytes',pg_database_size(current_database()),'latest_source_at',(SELECT max(retrieved_at) FROM raw_artifact),'cost_usd',0);\""
+          REPORT_EXIT=0
+          if [ -z "${JURVIO_IMAGE:-}" ]; then
+            CORPUS='{"report":"unavailable","reason":"active production image unresolved"}'
+            REPORT_EXIT=1
+          elif CORPUS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('cases',(SELECT count(*) FROM legal_case),'published',(SELECT count(*) FROM legal_case WHERE publication='published'),'held',(SELECT count(*) FROM legal_case WHERE publication IN ('draft','restricted')),'docket_entries',(SELECT count(*) FROM docket_entry),'documents',(SELECT count(*) FROM document),'opinions',(SELECT count(*) FROM judicial_opinion),'failures',(SELECT count(*) FROM ingestion_run_item WHERE status='failed'),'database_bytes',pg_database_size(current_database()),'latest_source_at',(SELECT max(retrieved_at) FROM raw_artifact),'cost_usd',0);\"" 2>/dev/null)"; then
+            :
+          else
+            REPORT_EXIT=$?
+            CORPUS='{"report":"unavailable","reason":"production database query failed"}'
+          fi
+          CYCLE_RESULT="$(tail -n 1 /tmp/federal-cycle.log 2>/dev/null || true)"
+          test -n "$CYCLE_RESULT" || CYCLE_RESULT='{"cycle":"no batch output available"}'
+          BODY="$(printf '### Federal ingestion\n\n- Status: **%s**\n- Loop: `%s`\n- Limit: `%s`\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nBatch output:\n\n```json\n%s\n```\n\nCorpus totals:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "${LOOP:-unknown}" "${LIMIT:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$CYCLE_RESULT" "$CORPUS")"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
+          exit "$REPORT_EXIT"
+
