@@ -104,7 +104,7 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
         windowStart: isoDaysAgo(lookbackDays),
         windowEnd: now,
         next: null,
-        batchSize: requestedLimit,
+        batchSize: 100,
         completedWindows: 0,
       }
     : {
@@ -112,7 +112,7 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
         windowStart: "2000-01-01T00:00:00.000Z",
         windowEnd: "2001-01-01T00:00:00.000Z",
         next: null,
-        batchSize: requestedLimit,
+        batchSize: 100,
         completedWindows: 0,
       };
   const streamName = `federal:${kind}:v1`;
