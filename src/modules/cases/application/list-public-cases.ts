@@ -7,6 +7,9 @@ interface PublicCaseRow {
   caption: string;
   docketNumber: string;
   filedOn: string | null;
+  decidedOn: string | null;
+  supremeCourtTerm: number | null;
+  officialCitation: string | null;
   courtName: string;
   hasPublicDocument: boolean;
 }
@@ -54,6 +57,9 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
         legal_case.caption,
         legal_case.docket_number AS "docketNumber",
         legal_case.filed_on::text AS "filedOn",
+        legal_case.decided_on::text AS "decidedOn",
+        legal_case.supreme_court_term AS "supremeCourtTerm",
+        legal_case.official_citation AS "officialCitation",
         court.name AS "courtName",
         EXISTS (
           SELECT 1
@@ -73,7 +79,8 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
       JOIN court ON court.id = legal_case.court_id
       WHERE ${publicationGate}
         AND (${courtFilter}::text IS NULL OR court.public_id = ${courtFilter})
-      ORDER BY legal_case.filed_on DESC NULLS LAST, legal_case.caption, legal_case.id
+      ORDER BY COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST,
+        legal_case.caption, legal_case.id
       LIMIT ${pageSize} OFFSET ${offset}
     `,
     sql<CourtFacet[]>`

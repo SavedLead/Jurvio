@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSameScotusCase, normalizeScotusIdentity } from "./publish-official-scotus-opinions";
+import { expandScotusTermYear, isSameScotusCase, normalizeScotusIdentity } from "./publish-official-scotus-opinions";
 
 describe("official SCOTUS publication identity", () => {
   it("normalizes punctuation and common versus forms", () => {
@@ -9,5 +9,10 @@ describe("official SCOTUS publication identity", () => {
 
   it("does not approve merely similar captions", () => {
     expect(isSameScotusCase("Smith v. Jones", "Smith v. Jones Holdings")).toBe(false);
+  });
+
+  it("expands the official two-digit October Term deterministically", () => {
+    expect(expandScotusTermYear("25")).toBe(2025);
+    expect(() => expandScotusTermYear("2025")).toThrow("two-digit year");
   });
 });
