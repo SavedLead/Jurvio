@@ -59,7 +59,17 @@ export async function listPublicScotusOpinions(
   const [totals, opinions] = await Promise.all([
     sql<Array<{ opinionCount: number; caseCount: number; latestFiledOn: string | null }>>`
       SELECT count(DISTINCT document.id)::int AS "opinionCount",
-        count(DISTINCT legal_case.id)::int AS "caseCount",
+        (
+          SELECT count(DISTINCT published_case.id)::int
+          FROM legal_case published_case
+          WHERE published_case.court_id = ${court.id}
+            AND published_case.publication = 'published'
+            AND COALESCE((
+              SELECT decision.displayable FROM publication_decision decision
+              WHERE decision.object_type = 'legal_case' AND decision.object_id = published_case.id
+              ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+            ), false)
+        ) AS "caseCount",
         max(cluster.date_filed)::text AS "latestFiledOn"
       FROM legal_case
       JOIN document ON document.case_id = legal_case.id
