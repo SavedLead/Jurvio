@@ -6,6 +6,17 @@ describe("official SCOTUS native text extraction", () => {
     const text = "SUPREME COURT OF THE UNITED STATES\nNo. 24-1159\n\n" + "Court opinion text ".repeat(180);
     expect(validateOfficialScotusText(text, "24-1159").valid).toBe(true);
   });
+  it("accepts readable Court text with wide layout spacing", () => {
+    const text = [
+      "SUPREME COURT OF THE UNITED STATES",
+      "No. 19-7",
+      ...Array.from({ length: 180 }, (_, index) =>
+        `The Court explains the verified legal question and judgment in paragraph ${index}.          `
+      ),
+    ].join("\n\n");
+    expect(validateOfficialScotusText(text, "19-7").valid).toBe(true);
+  });
+
   it("rejects thin or unrelated output", () => {
     expect(validateOfficialScotusText("Page 1", "24-1159").valid).toBe(false);
   });
