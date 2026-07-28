@@ -157,7 +157,7 @@ export async function fetchDocketPage(input: ({
     ? new URL(input.cursor)
     : new URL("dockets/", `${env().COURTLISTENER_API_BASE_URL}/`);
   if (!input.cursor) {
-    if ("filedAfter" in input) {
+    if (input.filedAfter !== undefined && input.filedBefore !== undefined) {
       url.searchParams.set("date_filed__gte", input.filedAfter);
       url.searchParams.set("date_filed__lt", input.filedBefore);
       url.searchParams.set("order_by", "date_filed,id");
