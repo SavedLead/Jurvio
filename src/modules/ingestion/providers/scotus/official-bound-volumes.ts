@@ -60,7 +60,7 @@ export function parseOfficialBoundVolumeIndex(html: string) {
 function captionIndex(text: string) {
   const captions = new Map<number, string>();
   for (const line of text.split("\n")) {
-    const match = /^\s*(.+?\bv\.\s+.+?)\s+\.{2,}\s+(\d{1,4})\s*$/.exec(line);
+    const match = /^\s*(.+?\bv\.\s+.+?)\s+(?:\.\s*){2,}(\d{1,4})\s*$/.exec(line);
     if (!match) continue;
     const page = Number.parseInt(match[2] ?? "", 10);
     const caption = (match[1] ?? "").replaceAll(/\s+/g, " ").trim();
