@@ -10,9 +10,9 @@ describe("Supreme Court reader context", () => {
   });
 
   it("visually separates an official Reporter’s Note without dropping text", () => {
-    const html = "<p>Court opinion.</p><p>Reporter’s Note</p><p>A citation correction.</p>";
+    const html = "<p>Court opinion. Reporter’s Note</p><p>A citation correction.</p>";
     const result = distinguishReportersNote(html);
-    expect(result).toContain("<p>Court opinion.</p>");
+    expect(result).toContain("<p>Court opinion. </p>");
     expect(result).toContain('class="reportersNote"');
     expect(result).toContain("not part of the Court’s opinion");
     expect(result).toContain("<p>A citation correction.</p>");
