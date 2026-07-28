@@ -23,6 +23,8 @@ interface Candidate {
   docket_number: string;
   case_name: string;
   filed_on: string;
+  term_year: string;
+  citation: string | null;
   source_pdf_uri: string;
   source_content_hash: string;
 }
@@ -46,7 +48,8 @@ export async function publishVerifiedOfficialScotusOpinions(
   }
 
   const candidates = await sql<Candidate[]>`
-    SELECT id, provider_id, source_record_id, opinion_artifact_id, docket_number, case_name, filed_on::text, source_pdf_uri, source_content_hash
+    SELECT id, provider_id, source_record_id, opinion_artifact_id, docket_number, case_name,
+      filed_on::text, term_year, citation, source_pdf_uri, source_content_hash
     FROM official_opinion_candidate
     WHERE review_status = 'pending_review'
       OR (
@@ -106,7 +109,6 @@ export async function publishVerifiedOfficialScotusOpinions(
         WHERE lower(regexp_replace(legal_case.docket_number, '[^a-zA-Z0-9]', '', 'g'))
           = lower(regexp_replace(${candidate.docket_number}, '[^a-zA-Z0-9]', '', 'g'))
           AND lower(court.provider_court_id) = 'scotus'
-          AND (legal_case.filed_on IS NULL OR legal_case.filed_on = ${candidate.filed_on})
         ORDER BY legal_case.id
       `;
       const exactMetadataMatches = metadataMatches.filter((match) =>
@@ -150,15 +152,19 @@ export async function publishVerifiedOfficialScotusOpinions(
             case_caption: string;
           }[]>`
             INSERT INTO legal_case (
-              public_id, court_id, docket_number, caption, filed_on,
-              verification, publication, source_artifact_id, source_updated_at
+              public_id, court_id, docket_number, caption, filed_on, decided_on,
+              supreme_court_term, official_citation, verification, publication,
+              source_artifact_id, source_updated_at
             ) VALUES (
               ${createPublicId("case")}, ${court.id}, ${candidate.docket_number},
-              ${candidate.case_name}, ${candidate.filed_on}, 'verified', 'published',
+              ${candidate.case_name}, NULL, ${candidate.filed_on},
+              ${2000 + Number(candidate.term_year)}, ${candidate.citation}, 'verified', 'published',
               ${candidate.opinion_artifact_id}, now()
             )
             ON CONFLICT (court_id, docket_number)
-            DO UPDATE SET caption = EXCLUDED.caption, filed_on = EXCLUDED.filed_on,
+            DO UPDATE SET caption = EXCLUDED.caption, decided_on = EXCLUDED.decided_on,
+              supreme_court_term = EXCLUDED.supreme_court_term,
+              official_citation = EXCLUDED.official_citation,
               verification = 'verified', publication = 'published',
               source_artifact_id = EXCLUDED.source_artifact_id,
               source_updated_at = EXCLUDED.source_updated_at, updated_at = now()
@@ -180,8 +186,11 @@ export async function publishVerifiedOfficialScotusOpinions(
         } else {
           await tx`
             UPDATE legal_case
-            SET verification = 'verified', publication = 'published',
-              source_artifact_id = ${candidate.opinion_artifact_id}, updated_at = now()
+            SET filed_on = NULL, decided_on = ${candidate.filed_on},
+              supreme_court_term = ${2000 + Number(candidate.term_year)},
+              official_citation = ${candidate.citation}, verification = 'verified',
+              publication = 'published', source_artifact_id = ${candidate.opinion_artifact_id},
+              updated_at = now()
             WHERE id = ${existing.case_id}
           `;
         }
@@ -329,7 +338,10 @@ export async function publishVerifiedOfficialScotusOpinions(
     await sql.begin(async (tx) => {
       await tx`
         UPDATE legal_case
-        SET verification = 'verified', publication = 'published', updated_at = now()
+        SET decided_on = ${candidate.filed_on},
+          supreme_court_term = ${2000 + Number(candidate.term_year)},
+          official_citation = ${candidate.citation}, verification = 'verified',
+          publication = 'published', updated_at = now()
         WHERE id = ${first.case_id}
       `;
       await tx`
