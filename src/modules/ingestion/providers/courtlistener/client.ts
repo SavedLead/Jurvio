@@ -40,12 +40,14 @@ export function courtListenerRetryDelayMs(retryAfter: string | null, attempt: nu
     : 1_000 * (2 ** (attempt - 1));
 }
 
+let useConfiguredApiToken = true;
+
 function headers(): HeadersInit {
   const config = env();
   return {
     Accept: "application/json",
     "User-Agent": config.INGESTION_USER_AGENT,
-    ...(config.COURTLISTENER_API_TOKEN
+    ...(useConfiguredApiToken && config.COURTLISTENER_API_TOKEN
       ? { Authorization: `Token ${config.COURTLISTENER_API_TOKEN}` }
       : {}),
   };
@@ -54,11 +56,21 @@ function headers(): HeadersInit {
 async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
   const maximumAttempts = 4;
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    const sentConfiguredToken = Boolean(
+      useConfiguredApiToken && env().COURTLISTENER_API_TOKEN,
+    );
     const response = await fetch(url, {
       headers: headers(),
       signal: AbortSignal.timeout(30_000),
     });
     if (response.ok) return { response, body: await response.text() };
+    if (response.status === 401 && sentConfiguredToken) {
+      useConfiguredApiToken = false;
+      process.stderr.write(
+        "CourtListener rejected the configured API token; retrying public access.\n",
+      );
+      continue;
+    }
 
     const retryable = response.status === 429 || response.status >= 500;
     if (!retryable || attempt === maximumAttempts) {
