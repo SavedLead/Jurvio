@@ -1,7 +1,7 @@
+import type { Metadata, Route } from "next";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
-import type { Route } from "next";
 import { db } from "@/db/client";
 import { getPublicCase } from "@/modules/cases/application/get-public-case";
 import {
@@ -9,7 +9,11 @@ import {
   listPublicDocuments,
   listPublicParties,
 } from "@/modules/cases/application/list-public-case-sections";
+import { visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
+import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { CaseNav } from "@/modules/cases/ui/case-nav";
+import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
 export const dynamic = "force-dynamic";
@@ -18,145 +22,182 @@ interface CasePageProps {
   params: Promise<{ caseId: string }>;
 }
 
-function humanize(value: string | null) {
-  if (!value || value === "unknown" || value === "not_applicable") return null;
-  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+async function loadCase(params: CasePageProps["params"]) {
+  const { caseId } = await params;
+  if (!/^jv-[a-z0-9]{8,10}$/.test(caseId)) return null;
+  const legalCase = await getPublicCase(db(), caseId);
+  return legalCase ? { caseId, legalCase } : null;
+}
+
+export async function generateMetadata({ params }: CasePageProps): Promise<Metadata> {
+  const loaded = await loadCase(params);
+  if (!loaded) return { title: "Case not found" };
+  const caption = cleanCaseCaption(loaded.legalCase.caption);
+  const description = [
+    caption,
+    loaded.legalCase.courtName,
+    `Docket ${loaded.legalCase.docketNumber}`,
+    loaded.legalCase.filedOn ? `filed or decided ${loaded.legalCase.filedOn}` : null,
+  ].filter(Boolean).join(". ");
+  return {
+    title: `${caption} | Jurvio`,
+    description,
+    alternates: { canonical: `/case/${loaded.caseId}` },
+    openGraph: { title: caption, description, type: "article" },
+  };
 }
 
 export default async function CasePage({ params }: CasePageProps) {
-  const { caseId } = await params;
-  if (!/^jv-[a-z0-9]{8,10}$/.test(caseId)) notFound();
-
+  const loaded = await loadCase(params);
+  if (!loaded) notFound();
+  const { caseId, legalCase } = loaded;
   const sql = db();
-  const legalCase = await getPublicCase(sql, caseId);
-  if (!legalCase) notFound();
   const [docketEntries, parties, documents] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
   ]);
   const verified = legalCase.verification === "verified";
-  const statusDetails = [
-    ["Activity", humanize(legalCase.activityState)],
-    ["Phase", humanize(legalCase.proceduralPhase)],
-    ["Disposition", humanize(legalCase.dispositionScope)],
-    ["Judgment", humanize(legalCase.judgmentState)],
-    ["Appeal", humanize(legalCase.appealState)],
-  ].filter((detail): detail is [string, string] => Boolean(detail[1]));
+  const statusDetails = verified ? visibleCaseStatusDetails(legalCase) : [];
+  const readableDocuments = documents.filter((document) => document.hasReadableContent);
+  const sourceDocument = documents.find((document) => document.sourceDownloadUrl);
+  const caption = cleanCaseCaption(legalCase.caption);
+  const canonicalPath = `/case/${caseId}`;
+  const permanentUrl = `https://jurvio.com${canonicalPath}`;
 
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
     eventType: "page_view",
     userAgent: requestHeaders.get("user-agent"),
     referrer: requestHeaders.get("referer"),
-    path: `/case/${caseId}`,
+    path: canonicalPath,
     contentKind: "case",
     targetType: "case",
     targetPublicId: caseId,
   });
 
-  const sectionCards = [
-    { label: "Docket entries", count: docketEntries.length, suffix: "/docket" },
-    { label: "Parties", count: parties.length, suffix: "/parties" },
-    { label: "Documents", count: documents.length, suffix: "/documents" },
-    { label: "Timeline events", count: docketEntries.length, suffix: "/timeline" },
-  ] as const;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "LegalCase",
+    name: caption,
+    identifier: [
+      { "@type": "PropertyValue", name: "Docket number", value: legalCase.docketNumber },
+      { "@type": "PropertyValue", name: "Jurvio ID", value: caseId },
+    ],
+    datePublished: legalCase.filedOn ?? undefined,
+    url: permanentUrl,
+    isPartOf: { "@type": "WebSite", name: "Jurvio", url: "https://jurvio.com" },
+  };
 
   return (
-    <main className="shell caseShell">
+    <main className="shell caseShell scotusCaseShell">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }} />
       <CaseHeader
         caseId={caseId}
-        caption={legalCase.caption}
+        caption={caption}
         courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber}
         filedOn={legalCase.filedOn}
+        showNavigation={false}
       />
 
-      <section className="caseOverview" aria-labelledby="case-overview">
-        <p className="sectionKicker">Case overview</p>
-        <h2 id="case-overview">At a glance</h2>
-        <div className="caseSectionGrid">
-          {sectionCards.map((section) => (
-            <Link
-              key={section.label}
-              className="caseSectionCard"
-              href={(`/case/${caseId}${section.suffix}`) as Route}
-            >
-              <strong>{section.count.toLocaleString()}</strong>
-              <span>{section.label}</span>
-            </Link>
-          ))}
-        </div>
-      </section>
+      <div className="caseWorkspace">
+        <aside className="caseWorkspaceNav">
+          <CaseNav caseId={caseId} />
+          <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} />
+        </aside>
 
-      {verified && (legalCase.statusExplanation || statusDetails.length > 0) ? (
-        <section className="contentSection" aria-labelledby="current-status">
-          <p className="sectionKicker">Current posture</p>
-          <h2 id="current-status">Case status</h2>
-          {legalCase.statusExplanation ? <p className="statusExplanation">{legalCase.statusExplanation}</p> : null}
-          {statusDetails.length > 0 ? (
-            <dl className="caseStatusGrid">
-              {statusDetails.map(([label, value]) => (
-                <div key={label}>
-                  <dt>{label}</dt>
-                  <dd>{value}</dd>
-                </div>
-              ))}
-            </dl>
+        <div className="caseWorkspaceMain">
+          <section className="caseLeadSection" aria-labelledby="understand-case">
+            <p className="sectionKicker">Understand this case</p>
+            <h2 id="understand-case">Verified case record</h2>
+            {verified && legalCase.statusExplanation ? (
+              <p className="statusExplanation">{legalCase.statusExplanation}</p>
+            ) : (
+              <p className="verifiedFactSummary">
+                The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as Supreme Court docket {legalCase.docketNumber}.
+                {readableDocuments.length > 0 ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.` : ""}
+              </p>
+            )}
+            {statusDetails.length > 0 ? (
+              <dl className="caseStatusGrid">
+                {statusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+              </dl>
+            ) : null}
+          </section>
+
+          {documents.length > 0 ? (
+            <section className="contentSection availableDocuments" aria-labelledby="available-documents">
+              <p className="sectionKicker">Available court materials</p>
+              <h2 id="available-documents">Documents currently available</h2>
+              <p className="sectionIntroduction">Jurvio shows only verified documents currently available for this case. Additional court materials will appear here as they are obtained and verified.</p>
+              <ul className="documentCards">
+                {documents.map((document) => (
+                  <li key={document.publicId}>
+                    <div>
+                      <span className="documentType">{document.documentType.replaceAll("_", " ")}</span>
+                      <h3>{document.title}</h3>
+                      {document.filedOn ? <time dateTime={document.filedOn}>{document.filedOn}</time> : null}
+                    </div>
+                    <div className="documentActions">
+                      {document.hasReadableContent ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>Read on Jurvio</Link> : null}
+                      {document.sourceDownloadUrl ? <a href={document.sourceDownloadUrl} rel="nofollow noopener">Official source</a> : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <Link className="sectionLink" href={`/case/${caseId}/documents` as Route}>View available documents →</Link>
+            </section>
           ) : null}
-        </section>
-      ) : null}
 
-      {docketEntries.length > 0 ? (
-        <section className="contentSection" aria-labelledby="recent-activity">
-          <p className="sectionKicker">Official activity</p>
-          <h2 id="recent-activity">Recent docket activity</h2>
-          <ol className="recordList">
-            {docketEntries.slice(0, 5).map((entry) => (
-              <li key={entry.publicId}>
-                <strong>{entry.entryNumber ? `Entry ${entry.entryNumber}` : "Docket entry"}</strong>
-                {entry.filedOn ? ` · ${entry.filedOn}` : ""}
-                <p>{entry.description}</p>
-              </li>
-            ))}
-          </ol>
-          <Link className="sectionLink" href={(`/case/${caseId}/docket`) as Route}>View full docket →</Link>
-        </section>
-      ) : null}
+          {docketEntries.length > 0 ? (
+            <section className="contentSection" aria-labelledby="recent-activity">
+              <p className="sectionKicker">Official activity</p>
+              <h2 id="recent-activity">Recent case activity</h2>
+              <ol className="recordList">
+                {docketEntries.slice(0, 5).map((entry) => (
+                  <li key={entry.publicId}>
+                    <strong>{entry.entryNumber ? `Entry ${entry.entryNumber}` : "Court event"}</strong>
+                    {entry.filedOn ? ` · ${entry.filedOn}` : ""}
+                    <p>{entry.description}</p>
+                  </li>
+                ))}
+              </ol>
+              <Link className="sectionLink" href={`/case/${caseId}/timeline` as Route}>View case timeline →</Link>
+            </section>
+          ) : null}
 
-      {parties.length > 0 ? (
-        <section className="contentSection" aria-labelledby="named-parties">
-          <p className="sectionKicker">Named in the record</p>
-          <h2 id="named-parties">Parties</h2>
-          <p className="sourceNote">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
-          <ul className="recordList">
-            {parties.slice(0, 8).map((party) => (
-              <li key={party.publicId + ":" + party.role}>
-                <strong>{party.displayName}</strong>
-                <p>{humanize(party.role) ?? party.role}</p>
-              </li>
-            ))}
-          </ul>
-          <Link className="sectionLink" href={(`/case/${caseId}/parties`) as Route}>View all parties →</Link>
-        </section>
-      ) : null}
+          {parties.length > 0 ? (
+            <section className="contentSection" aria-labelledby="named-parties">
+              <p className="sectionKicker">Named in the record</p>
+              <h2 id="named-parties">Parties</h2>
+              <p className="sourceNote">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
+              <ul className="recordList">
+                {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><strong>{party.displayName}</strong><p>{party.role.replaceAll("_", " ")}</p></li>)}
+              </ul>
+              <Link className="sectionLink" href={`/case/${caseId}/parties` as Route}>View all parties →</Link>
+            </section>
+          ) : null}
+        </div>
 
-      {documents.length > 0 ? (
-        <section className="contentSection" aria-labelledby="case-documents">
-          <p className="sectionKicker">Source material</p>
-          <h2 id="case-documents">Documents</h2>
-          <ul className="recordList">
-            {documents.slice(0, 5).map((document) => (
-              <li key={document.publicId}>
-                <strong>{document.title}</strong>
-                {document.filedOn ? ` · ${document.filedOn}` : ""}
-                <p>{humanize(document.documentType) ?? document.documentType}</p>
-              </li>
-            ))}
-          </ul>
-          <Link className="sectionLink" href={(`/case/${caseId}/documents`) as Route}>View all documents →</Link>
-        </section>
-      ) : null}
+        <aside className="caseProvenanceRail" aria-label="Source and record details">
+          <section>
+            <p className="sectionKicker">Case status</p>
+            <dl className="railFacts">
+              <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
+              {readableDocuments.length > 0 ? <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div> : null}
+              <div><dt>Permanent ID</dt><dd>{caseId}</dd></div>
+            </dl>
+          </section>
+          {sourceDocument ? (
+            <section>
+              <p className="sectionKicker">Official source</p>
+              <p>This record includes material published by the Supreme Court of the United States.</p>
+              <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
+            </section>
+          ) : null}
+        </aside>
+      </div>
     </main>
   );
 }
