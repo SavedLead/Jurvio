@@ -89,7 +89,8 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
     FROM document
     JOIN legal_case legal_case ON legal_case.id = document.case_id
     LEFT JOIN document_content content ON content.document_id = document.id
-    LEFT JOIN judicial_opinion judicial ON judicial.document_id = document.id\n    LEFT JOIN scotus_docket_document docket_document ON docket_document.document_id = document.id
+    LEFT JOIN judicial_opinion judicial ON judicial.document_id = document.id
+    LEFT JOIN scotus_docket_document docket_document ON docket_document.document_id = document.id
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
       AND document.publication = 'published'
