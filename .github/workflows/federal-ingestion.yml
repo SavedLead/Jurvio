@@ -15,14 +15,19 @@ on:
           - historical-backfill
           - publication-quarantine
       limit:
-        description: Maximum records for this cycle (1-10000)
+        description: Maximum records for this cycle (100, 1000, or 10000)
         required: true
         default: "100"
+      approve_scale_up:
+        description: Promote a clean historical checkpoint by one reviewed stage
+        required: true
+        type: boolean
+        default: false
   schedule:
     - cron: "17 * * * *"
-    - cron: "27 */2 * * *"
+    - cron: "27 */6 * * *"
     - cron: "37 * * * *"
-    - cron: "47 * * * *"
+    - cron: "47 3 * * *"
     - cron: "57 * * * *"
 
 permissions:
@@ -44,27 +49,34 @@ jobs:
           SCHEDULE: ${{ github.event.schedule }}
           INPUT_LOOP: ${{ inputs.loop }}
           INPUT_LIMIT: ${{ inputs.limit }}
+          INPUT_APPROVE_SCALE_UP: ${{ inputs.approve_scale_up }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             LOOP="$INPUT_LOOP"
             LIMIT="$INPUT_LIMIT"
+            APPROVE_SCALE_UP="$INPUT_APPROVE_SCALE_UP"
           else
             case "$SCHEDULE" in
-              "17 * * * *") LOOP="new-case-discovery"; LIMIT="10000" ;;
-              "27 */2 * * *") LOOP="active-case-updates"; LIMIT="10000" ;;
-              "37 * * * *") LOOP="material-decisions"; LIMIT="10000" ;;
-              "47 * * * *") LOOP="historical-backfill"; LIMIT="10000" ;;
-              "57 * * * *") LOOP="publication-quarantine"; LIMIT="10000" ;;
+              "17 * * * *") LOOP="new-case-discovery"; LIMIT="100" ;;
+              "27 */6 * * *") LOOP="active-case-updates"; LIMIT="100" ;;
+              "37 * * * *") LOOP="material-decisions"; LIMIT="100" ;;
+              "47 3 * * *") LOOP="historical-backfill"; LIMIT="100" ;;
+              "57 * * * *") LOOP="publication-quarantine"; LIMIT="100" ;;
               *) echo "::error::Unknown schedule"; exit 1 ;;
             esac
+            APPROVE_SCALE_UP="false"
           fi
           case "$LOOP" in
             new-case-discovery|active-case-updates|material-decisions|historical-backfill|publication-quarantine) ;;
             *) echo "::error::Invalid loop"; exit 1 ;;
           esac
-          test "$LIMIT" -ge 1
-          test "$LIMIT" -le 10000
-          printf 'LOOP=%s\nLIMIT=%s\n' "$LOOP" "$LIMIT" >> "$GITHUB_ENV"
+          case "$LIMIT" in 100|1000|10000) ;; *) echo "::error::Invalid batch stage"; exit 1 ;; esac
+          if [ "$APPROVE_SCALE_UP" = "true" ] && [ "$LOOP" != "historical-backfill" ]; then
+            echo "::error::Only historical backfill checkpoints may be promoted"
+            exit 1
+          fi
+          printf 'LOOP=%s\nLIMIT=%s\nAPPROVE_SCALE_UP=%s\n' \
+            "$LOOP" "$LIMIT" "$APPROVE_SCALE_UP" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -101,7 +113,7 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --delay-ms=1000"
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop='$LOOP' --limit='$LIMIT' --approve-scale-up='$APPROVE_SCALE_UP' --delay-ms=1000"
 
       - name: Report corpus, failures, lag, and growth
         if: always()
