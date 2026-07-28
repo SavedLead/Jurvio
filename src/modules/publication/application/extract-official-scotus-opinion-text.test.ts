@@ -16,7 +16,10 @@ describe("official SCOTUS native text extraction", () => {
     ].join("\n\n");
     expect(validateOfficialScotusText(text, "19-7").valid).toBe(true);
   });
-
+  it("accepts a substantial verified preliminary-print segment without a repeated title marker", () => {
+    const text = "The constitutional judgment and legal analysis follow. ".repeat(5_100);
+    expect(validateOfficialScotusText(text, "19-7").valid).toBe(true);
+  });
   it("rejects thin or unrelated output", () => {
     expect(validateOfficialScotusText("Page 1", "24-1159").valid).toBe(false);
   });
