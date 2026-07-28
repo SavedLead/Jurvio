@@ -47,7 +47,7 @@ export async function finishIngestionRun(sql: Sql, runId: string, fatalError?: s
       failed_count = counts.failed,
       status = (
         CASE
-          WHEN ${fatalError ?? null} IS NOT NULL THEN 'failed'
+          WHEN ${fatalError ?? null}::text IS NOT NULL THEN 'failed'
           WHEN counts.failed > 0 THEN 'completed_with_errors'
           ELSE 'completed'
         END
