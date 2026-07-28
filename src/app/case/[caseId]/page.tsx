@@ -147,6 +147,8 @@ export default async function CasePage({ params }: CasePageProps) {
                 {readableDocuments.length > 0 ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.` : ""}
               </p>
             )}
+            {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{legalCase.backgroundSummary}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+            {legalCase.significanceSummary ? <div className="verifiedNarrative"><h3>Why it matters</h3><p>{legalCase.significanceSummary}</p>{legalCase.significanceSourceUrl ? <a href={legalCase.significanceSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
             {supportingStatusDetails.length > 0 ? (
               <dl className="caseStatusGrid">
                 {supportingStatusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
@@ -154,17 +156,26 @@ export default async function CasePage({ params }: CasePageProps) {
             ) : null}
           </section>
 
-          {outcome ? (
+          {legalCase.questionPresented ? (
+            <section className="contentSection caseFeatureSection" aria-labelledby="question-presented">
+              <div className="featureHeading"><span className="featureBadge" aria-hidden="true">B</span><h2 id="question-presented">Question presented</h2></div>
+              <p>{legalCase.questionPresented}</p>
+              {legalCase.questionSourceUrl ? <a className="sectionLink" href={legalCase.questionSourceUrl} rel="nofollow noopener">Read the official petition →</a> : null}
+            </section>
+          ) : null}
+
+          {outcome || legalCase.exactHolding ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-outcome">
               <div className="featureHeading">
                 <span className="featureBadge" aria-hidden="true">C</span>
                 <h2 id="case-outcome">Holding and outcome</h2>
               </div>
-              <div className="outcomeCallout"><strong>{outcome}.</strong></div>
+              {outcome ? <div className="outcomeCallout"><strong>{outcome}.</strong></div> : null}
+              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>Exact sourced holding</h3><p>{legalCase.exactHolding}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
             </section>
           ) : null}
 
-          {decisionLabel || opinionType ? (
+          {decisionLabel || opinionType || legalCase.decisionLineup ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="decision-lineup">
               <div className="featureHeading decisionHeading">
                 <span className="featureBadge" aria-hidden="true">D</span>
@@ -172,6 +183,8 @@ export default async function CasePage({ params }: CasePageProps) {
                 {decisionLabel ? <strong className="decisionLabel">{decisionLabel}</strong> : null}
               </div>
               {opinionType ? <p className="verifiedDetail">Opinion type: <strong>{opinionType}</strong></p> : null}
+              {legalCase.decisionLineup?.joins?.length ? <p className="verifiedDetail">Joined by: <strong>{legalCase.decisionLineup.joins.join(", ")}</strong></p> : null}
+              {legalCase.decisionLineup?.separateOpinions?.map((opinion) => <p className="verifiedDetail" key={opinion.author + opinion.type}>{opinion.author}: <strong>{opinion.type.replaceAll("_", " ")}</strong></p>)}
             </section>
           ) : null}
 
