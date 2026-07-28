@@ -23,6 +23,21 @@ Every public field requires a source artifact or official source URL, source ide
 | U | Supreme Court term; official citation; decision date; opinion type; author; per-curiam flag; disposition; source |
 | V | Topic/classification ID; neutral label; controlling source or reviewed classification method; verification timestamp |
 
+
+## Current mobile case-page coverage
+
+| ID | Current verified coverage | Remaining ingestion requirement |
+|---|---|---|
+| A | Court, docket, verified status explanation when present, readable-document count | Structured background and why-it-matters summaries with source locators |
+| B | Hidden | Verified question text and source locator |
+| C | Verified normalized disposition | Exact sourced holding text and locator |
+| D | Opinion type, author when present, and per-curiam flag | Votes, joins, recusals, participating justices, and separate-opinion relationships |
+| E/L | Case filed date, decision date, and any published docket events | Petition, certiorari, argument, lower-court, and mandate events with completeness boundaries |
+| F/G | Only verified document types currently published; opinion HTML and official source are available | Complete source-scoped collection, transcripts, audio, briefs, orders, syllabuses, and version relationships |
+| H | Opinion search, generated contents, opinion-type jump, and Reporter’s Note jump when detected | Reliable majority/concurrence/dissent structure for every extracted document |
+
+The public interface must never render the illustrative wireframe text as case facts. It expands from the verified fields above and hides unsupported labels, events, document types, and navigation targets.
+
 ## Document completeness
 
 The current public corpus has one readable official opinion for each published SCOTUS case. The interface must say “Documents currently available,” not “Complete document library.” A completeness claim requires an explicit, source-scoped completeness record covering the expected document categories and checked source window.
