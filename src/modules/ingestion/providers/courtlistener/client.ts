@@ -138,6 +138,34 @@ export async function fetchOpinionClusterIds(input: {
   return ids.slice(0, input.limit);
 }
 
+export async function fetchDocketPage(input: {
+  modifiedAfter: string;
+  modifiedBefore: string;
+  cursor?: string;
+}): Promise<{
+  records: RetrievedRecord<CourtListenerDocket>[];
+  next: string | null;
+  total: number | null;
+}> {
+  const url = input.cursor
+    ? new URL(input.cursor)
+    : new URL("dockets/", `${env().COURTLISTENER_API_BASE_URL}/`);
+  if (!input.cursor) {
+    url.searchParams.set("date_modified__gte", input.modifiedAfter);
+    url.searchParams.set("date_modified__lt", input.modifiedBefore);
+    url.searchParams.set("order_by", "date_modified,id");
+  }
+  const { response, body } = await retrieve(url);
+  const page = courtListenerPageSchema.parse(JSON.parse(body));
+  return {
+    records: page.results.map((record) =>
+      wrap(record, record.resource_uri, JSON.stringify(record), response),
+    ),
+    next: page.next,
+    total: page.count ?? null,
+  };
+}
+
 export async function fetchModifiedDockets(
   modifiedAfter: string,
   cursor?: string,
