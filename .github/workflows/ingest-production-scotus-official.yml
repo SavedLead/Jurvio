@@ -161,6 +161,17 @@ jobs:
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-official-scotus-dockets.mjs --limit=100"
           done
 
+      - name: Enrich verified opinion metadata
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -o pipefail
+          for ATTEMPT in 1 2 3 4 5 6; do
+            echo "Extracting verified Supreme Court opinion metadata batch $ATTEMPT"
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/enrich-official-scotus-opinion-metadata.mjs --limit=100"
+          done
+
       - name: Report official-source staging queue
         if: always()
         env:
