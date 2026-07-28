@@ -1,6 +1,11 @@
 name: Federal ingestion loops
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/federal-backfill-kickoff"
   workflow_dispatch:
     inputs:
       loop:
@@ -55,6 +60,10 @@ jobs:
             LOOP="$INPUT_LOOP"
             LIMIT="$INPUT_LIMIT"
             APPROVE_SCALE_UP="$INPUT_APPROVE_SCALE_UP"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            LOOP="historical-backfill"
+            LIMIT="100"
+            APPROVE_SCALE_UP="false"
           else
             case "$SCHEDULE" in
               "17 * * * *") LOOP="new-case-discovery"; LIMIT="100" ;;
