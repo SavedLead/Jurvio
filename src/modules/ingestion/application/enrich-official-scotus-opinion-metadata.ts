@@ -16,7 +16,7 @@ export async function enrichOfficialScotusOpinionMetadata(sql: Sql, options: { l
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id
     WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'
       AND judicial.source_download_url LIKE 'https://www.supremecourt.gov/%'
-      AND (enrichment.exact_holding IS NULL OR enrichment.parser_version <> 'official-scotus-opinion-v1')
+      AND (enrichment.completeness->>'opinionMetadata') IS DISTINCT FROM 'true'
     ORDER BY legal_case.decided_on DESC NULLS LAST, legal_case.id
     LIMIT ${options.limit}
   `;
