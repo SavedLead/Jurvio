@@ -14,7 +14,7 @@ publish pages, or overwrite the canonical public corpus.
 
 ## Safety and cost controls
 
-- Manual workflow dispatch only; no schedule or automatic production trigger.
+- Hourly current-term polling plus bounded manual dispatch and a one-time resumable historical slip-opinion backfill.
 - One term and a hard limit of 1–100 records per run.
 - One index response capped at 2 MiB and PDFs capped at 40 MiB each.
 - Official-host allowlisting and PDF signature validation.
@@ -57,3 +57,22 @@ Expected effect: stage at most ten opinions from the October 2025 Supreme Court
 term in deterministic index order, preserve the official HTML and PDFs, and add
 all successful candidates to the manual review queue. No AI summaries and no
 public pages are created by this run.
+
+
+## Historical official slip-opinion backfill
+
+The Court keeps term-indexed official slip-opinion pages for October Terms 2018
+through 2025. Jurvio reuses the current production connector for these archives.
+Each term has an independent durable checkpoint, so retries cannot skip a failed
+record or restart completed terms.
+
+A push that changes the production workflow processes terms 2024 through 2018
+in descending order with the existing 100-record per-term cap. It then drains
+the verified publication queue in bounded batches. The downstream publication
+workflow continues native-text extraction until the readable-document backlog
+is empty. Hourly scheduled runs remain limited to the current term.
+
+Older cases that are no longer available through the Court's slip-opinion
+indexes require the separate official U.S. Reports volume lane. CourtListener
+may supplement historical metadata and readable text but is not required for
+official-source publication.
