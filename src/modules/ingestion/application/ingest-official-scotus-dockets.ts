@@ -32,9 +32,10 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id
     WHERE lower(court.provider_court_id) = 'scotus'
       AND (enrichment.case_id IS NULL
-        OR (enrichment.completeness->>'docketEvents') IS DISTINCT FROM 'true'
-        OR (enrichment.completeness->>'docketDocuments') IS DISTINCT FROM 'true'
-        OR enrichment.updated_at < now() - interval '24 hours')
+        OR enrichment.updated_at < now() - interval '24 hours'
+        OR (((enrichment.completeness->>'docketEvents') IS DISTINCT FROM 'true'
+          OR (enrichment.completeness->>'docketDocuments') IS DISTINCT FROM 'true')
+          AND enrichment.updated_at < now() - interval '5 minutes'))
     ORDER BY enrichment.updated_at NULLS FIRST, legal_case.decided_on DESC NULLS LAST, legal_case.id
     LIMIT ${options.limit}
   `;
@@ -174,6 +175,20 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
       publicRecords.push({ caseId: legalCase.public_id, events: caseEvents, documents: caseDocuments });
     } catch (error) {
       held += 1;
+      const heldReason = error instanceof Error ? error.message : "Official docket ingestion failed";
+      await sql`
+        INSERT INTO scotus_case_enrichment (
+          case_id, official_docket_url, completeness, verification, parser_version, verified_at
+        ) VALUES (
+          ${legalCase.id},
+          ${`https://www.supremecourt.gov/docket/docketfiles/html/public/${legalCase.docket_number}.html`},
+          ${sql.json({ docketChecked: true, docketUnavailable: true, docketUnavailableReason: heldReason })},
+          'verified', 'official-scotus-docket-v1', now()
+        )
+        ON CONFLICT (case_id) DO UPDATE SET
+          completeness = scotus_case_enrichment.completeness || EXCLUDED.completeness,
+          updated_at = now()
+      `;
       console.error(JSON.stringify({ caseId: legalCase.public_id, docketNumber: legalCase.docket_number,
         held: error instanceof Error ? error.message : "Official docket ingestion failed" }));
     }
