@@ -127,7 +127,7 @@ export default async function CasePage({ params }: CasePageProps) {
         showNavigation={false}
       />
 
-      <div className="caseWorkspace">
+      <div className={`caseWorkspace${sourceDocument ? "" : " caseWorkspaceNoRail"}`}>
         <aside className="caseWorkspaceNav">
           <CaseNav caseId={caseId} />
           <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
@@ -136,8 +136,7 @@ export default async function CasePage({ params }: CasePageProps) {
         <div className="caseWorkspaceMain">
           <section className="caseLeadSection caseFeatureSection" aria-labelledby="understand-case">
             <div className="featureHeading">
-              <span className="featureBadge" aria-hidden="true">A</span>
-              <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Verified case record</h2></div>
+              <h2 id="understand-case">Understand this case</h2>
             </div>
             {verified && legalCase.statusExplanation ? (
               <p className="statusExplanation">{legalCase.statusExplanation}</p>
@@ -158,7 +157,7 @@ export default async function CasePage({ params }: CasePageProps) {
 
           {legalCase.questionPresented ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="question-presented">
-              <div className="featureHeading"><span className="featureBadge" aria-hidden="true">B</span><h2 id="question-presented">Question presented</h2></div>
+              <div className="featureHeading"><h2 id="question-presented">Question presented</h2></div>
               <p>{legalCase.questionPresented}</p>
               {legalCase.questionSourceUrl ? <a className="sectionLink" href={legalCase.questionSourceUrl} rel="nofollow noopener">Read the official petition →</a> : null}
             </section>
@@ -167,7 +166,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {outcome || legalCase.exactHolding ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-outcome">
               <div className="featureHeading">
-                <span className="featureBadge" aria-hidden="true">C</span>
+                
                 <h2 id="case-outcome">Holding and outcome</h2>
               </div>
               {outcome ? <div className="outcomeCallout"><strong>{outcome}.</strong></div> : null}
@@ -178,7 +177,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {decisionLabel || opinionType || legalCase.decisionLineup ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="decision-lineup">
               <div className="featureHeading decisionHeading">
-                <span className="featureBadge" aria-hidden="true">D</span>
+                
                 <h2 id="decision-lineup">Decision lineup</h2>
                 {decisionLabel ? <strong className="decisionLabel">{decisionLabel}</strong> : null}
               </div>
@@ -191,7 +190,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {timelineEvents.length > 0 ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">
               <div className="featureHeading">
-                <span className="featureBadge" aria-hidden="true">E</span>
+                
                 <h2 id="case-timeline">Case timeline</h2>
               </div>
               <ol className="caseMilestones">
@@ -209,7 +208,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {documents.length > 0 ? (
             <section className="contentSection availableDocuments caseFeatureSection" aria-labelledby="available-documents">
               <div className="featureHeading">
-                <span className="featureBadge featureBadgeWide" aria-hidden="true">F–G</span>
+                
                 <div><p className="sectionKicker">Available court materials</p><h2 id="available-documents">Documents and argument</h2></div>
               </div>
               <div className="availableDocumentTypes" aria-label="Available document types">
@@ -238,7 +237,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {opinionPath ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="read-opinion">
               <div className="featureHeading">
-                <span className="featureBadge" aria-hidden="true">H</span>
+                
                 <h2 id="read-opinion">Read the opinion</h2>
               </div>
               <nav className="opinionQuickLinks" aria-label="Opinion reading tools">
@@ -263,26 +262,15 @@ export default async function CasePage({ params }: CasePageProps) {
           ) : null}
         </div>
 
-        <aside className="caseProvenanceRail" aria-label="Source and record details">
-          <section>
-            <p className="sectionKicker">Case status</p>
-            <dl className="railFacts">
-              <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
-              {readableDocuments.length > 0 ? <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div> : null}
-              {legalCase.decidedOn ? <div><dt>Decision date</dt><dd>{legalCase.decidedOn}</dd></div> : null}
-              {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
-              {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
-              <div><dt>Permanent ID</dt><dd>{caseId}</dd></div>
-            </dl>
-          </section>
-          {sourceDocument ? (
+        {sourceDocument ? (
+          <aside className="caseProvenanceRail" aria-label="Official court source">
             <section>
               <p className="sectionKicker">Official source</p>
-              <p>This record includes source-linked court material.</p>
+              <p>This case includes source-linked court material.</p>
               <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
             </section>
-          ) : null}
-        </aside>
+          </aside>
+        ) : null}
       </div>
     </main>
   );
