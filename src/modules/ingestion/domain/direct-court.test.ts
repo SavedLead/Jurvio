@@ -8,7 +8,10 @@ import {
   visitorFriendlyDescription,
 } from "./direct-court";
 import { parseCmecfRss } from "../providers/courts/cmecf-rss";
-import { federalCourtByCode } from "../providers/courts/registry";
+import {
+  FEDERAL_COURT_REGISTRY,
+  federalCourtByCode,
+} from "../providers/courts/registry";
 
 const court = federalCourtByCode("TXWD");
 if (!court) throw new Error("TXWD fixture court missing");
@@ -21,11 +24,17 @@ const feed = `<?xml version="1.0"?><rss version="2.0"><channel><item>
 </item></channel></rss>`;
 
 describe("direct federal court ingestion", () => {
-  it("looks up the pilot registry entry", () => {
-    expect(court).toMatchObject({
-      officialCourtCode: "txwd",
+  it("covers the approved first direct-court cohort", () => {
+    expect(FEDERAL_COURT_REGISTRY.map((entry) => entry.officialCourtCode))
+      .toEqual(["txwd", "nysd", "njd"]);
+    expect(federalCourtByCode("NYSD")).toMatchObject({
       rssCoverageWindowHours: 24,
       pollingMinutes: 5,
+      adapterType: "cmecf-rss-v1",
+    });
+    expect(federalCourtByCode("njd")).toMatchObject({
+      includedEventCategories: ["all"],
+      timeZone: "America/New_York",
     });
   });
   it.each([
@@ -34,7 +43,7 @@ describe("direct federal court ingestion", () => {
   ])("normalizes docket %s", (input, expected) => {
     expect(normalizeDocketNumber(input)).toBe(expected);
   });
-  it("parses and classifies TXWD RSS", () => {
+  it("parses and classifies CM/ECF RSS", () => {
     expect(parseCmecfRss(feed, court)[0]).toMatchObject({
       docketNumber: "2:26-mj-00830",
       eventType: "order_entered",
