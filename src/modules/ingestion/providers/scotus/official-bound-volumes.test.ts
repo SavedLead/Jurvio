@@ -50,4 +50,19 @@ describe("official U.S. Reports bound-volume ingestion", () => {
     expect(parseOfficialBoundVolumeText(text, { volume: 585, termYear: "17",
       pdfUrl: "https://www.supremecourt.gov/opinions/boundvolumes/585BV.pdf" })).toEqual([]);
   });
+
+  it("recovers canonical captions from opinion text and prefers final entered judgments", () => {
+    const text = [
+      "Texas; United States v. . . . . . . . . 547",
+      "OCTOBER TERM, 2015 547 Syllabus UNITED STATES et al. v. TEXAS et al. certiorari to the court of appeals No. 15-674. Decided June 23, 2016",
+      "Montana v. Wyoming . . . . . . . . 600",
+      "OCTOBER TERM, 2015 600 Judgment MONTANA v. WYOMING on bill of complaint No. 137, Orig. Decided May 2, 2011—Order and judgment entered March 21, 2016",
+    ].join("\f");
+    const records = parseOfficialBoundVolumeText(text, { volume: 579, termYear: "15",
+      pdfUrl: "https://www.supremecourt.gov/opinions/boundvolumes/579BV.pdf" });
+    expect(records).toEqual([
+      expect.objectContaining({ caseName: "United States v. Texas", filedOn: "2016-06-23" }),
+      expect.objectContaining({ caseName: "Montana v. Wyoming", filedOn: "2016-03-21" }),
+    ]);
+  });
 });
