@@ -29,6 +29,7 @@ interface ExtractionCandidate {
   source_download_url: string;
   source_page_start: number | null;
   source_page_end: number | null;
+  next_source_page_start: number | null;
 }
 
 export function validateOfficialScotusText(text: string, docketNumber: string) {
@@ -47,6 +48,14 @@ export function validateOfficialScotusText(text: string, docketNumber: string) {
     && replacementCharacters / Math.max(normalized.length, 1) < 0.001
     && (hasCourtMarker || hasDocket || hasSubstantialOfficialText);
   return { valid, normalized, wordCount: words.length };
+}
+
+export function resolveOfficialScotusPageEnd(
+  explicitPageEnd: number | null,
+  nextPageStart: number | null,
+) {
+  if (explicitPageEnd !== null) return explicitPageEnd;
+  return nextPageStart !== null ? nextPageStart - 1 : null;
 }
 
 export function officialOpinionTextToHtml(text: string) {
@@ -76,7 +85,8 @@ export async function extractOfficialScotusOpinionText(
       document.filed_on::text AS filed_on, cluster.precedential_status,
       judicial.opinion_type, cluster.citation_count, artifact.content_hash,
       artifact.object_key, artifact.id AS source_artifact_id,
-      judicial.source_download_url, candidate.source_page_start, candidate.source_page_end
+      judicial.source_download_url, candidate.source_page_start, candidate.source_page_end,
+      next_candidate.source_page_start AS next_source_page_start
     FROM document
     JOIN document_identifier identifier ON identifier.document_id = document.id
       AND identifier.identifier_type = 'scotus_official_opinion'
@@ -88,6 +98,17 @@ export async function extractOfficialScotusOpinionText(
     JOIN judicial_opinion judicial ON judicial.document_id = document.id
     JOIN opinion_cluster cluster ON cluster.id = judicial.cluster_id
     JOIN raw_artifact artifact ON artifact.id = document.source_artifact_id
+    LEFT JOIN LATERAL (
+      SELECT MIN(other_candidate.source_page_start)::integer AS source_page_start
+      FROM official_opinion_candidate other_candidate
+      JOIN document_identifier other_identifier
+        ON other_identifier.provider_id = other_candidate.provider_id
+       AND other_identifier.identifier_type = 'scotus_official_opinion'
+       AND other_identifier.identifier_value = other_candidate.source_record_id
+      JOIN document other_document ON other_document.id = other_identifier.document_id
+      WHERE other_document.source_artifact_id = document.source_artifact_id
+        AND other_candidate.source_page_start > candidate.source_page_start
+    ) next_candidate ON true
     LEFT JOIN document_content content ON content.document_id = document.id
     WHERE document.publication = 'published'
       AND legal_case.publication = 'published'
@@ -140,8 +161,12 @@ export async function extractOfficialScotusOpinionText(
       const extractionArgs: string[] = [];
       if (candidate.source_page_start !== null) {
         extractionArgs.push("-f", String(candidate.source_page_start));
-        if (candidate.source_page_end !== null) {
-          extractionArgs.push("-l", String(candidate.source_page_end));
+        const resolvedPageEnd = resolveOfficialScotusPageEnd(
+          candidate.source_page_end,
+          candidate.next_source_page_start,
+        );
+        if (resolvedPageEnd !== null) {
+          extractionArgs.push("-l", String(resolvedPageEnd));
         }
       }
       extractionArgs.push("-layout", sourcePath, "-");

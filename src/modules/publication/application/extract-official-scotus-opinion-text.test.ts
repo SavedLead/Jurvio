@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { officialOpinionTextToHtml, validateOfficialScotusText } from "./extract-official-scotus-opinion-text";
+import {
+  officialOpinionTextToHtml,
+  resolveOfficialScotusPageEnd,
+  validateOfficialScotusText,
+} from "./extract-official-scotus-opinion-text";
 
 describe("official SCOTUS native text extraction", () => {
   it("accepts substantial official text with a matching docket", () => {
@@ -19,6 +23,11 @@ describe("official SCOTUS native text extraction", () => {
   it("accepts a substantial verified preliminary-print segment without a repeated title marker", () => {
     const text = "The constitutional judgment and legal analysis follow. ".repeat(5_100);
     expect(validateOfficialScotusText(text, "19-7").valid).toBe(true);
+  });
+  it("infers a missing segment end from the next opinion in the same artifact", () => {
+    expect(resolveOfficialScotusPageEnd(null, 297)).toBe(296);
+    expect(resolveOfficialScotusPageEnd(295, 297)).toBe(295);
+    expect(resolveOfficialScotusPageEnd(null, null)).toBeNull();
   });
   it("rejects thin or unrelated output", () => {
     expect(validateOfficialScotusText("Page 1", "24-1159").valid).toBe(false);
