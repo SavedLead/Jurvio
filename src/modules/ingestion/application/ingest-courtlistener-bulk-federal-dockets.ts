@@ -7,17 +7,24 @@ import {
 } from "../providers/courtlistener/bulk-dockets";
 
 type Sql = ReturnType<typeof postgres>;
+export type BulkFederalJurisdiction = "F" | "FD" | "FB";
 
 export interface BulkFederalDocketOptions {
   filePath: string;
   snapshotDate: string;
   year: number;
   includeBankruptcy: boolean;
+  jurisdiction?: BulkFederalJurisdiction;
   rowLimit?: number;
 }
 
-function isFederalJurisdiction(value: string | null, includeBankruptcy: boolean): boolean {
+export function matchesBulkFederalJurisdiction(
+  value: string | null,
+  includeBankruptcy: boolean,
+  jurisdiction?: BulkFederalJurisdiction,
+): boolean {
   const normalized = value?.trim().toLowerCase() ?? "";
+  if (jurisdiction) return normalized === jurisdiction.toLowerCase();
   if (normalized === "f" || normalized === "fd" || normalized === "federal") return true;
   if (normalized.includes("federal district") || normalized.includes("federal appellate")) return true;
   return includeBankruptcy && (normalized === "fb" || normalized.includes("bankruptcy"));
@@ -38,6 +45,9 @@ export async function ingestCourtListenerBulkFederalDockets(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(options.snapshotDate)) {
     throw new Error("Bulk snapshot date must be YYYY-MM-DD");
   }
+  if (options.jurisdiction && !["F", "FD", "FB"].includes(options.jurisdiction)) {
+    throw new Error("Bulk federal jurisdiction must be F, FD, or FB");
+  }
 
   const [provider] = await sql<{ id: string }[]>`
     SELECT id FROM provider WHERE code = 'courtlistener'
@@ -48,6 +58,7 @@ export async function ingestCourtListenerBulkFederalDockets(
   let accepted = 0;
   let heldWrongYear = 0;
   let heldNonFederal = 0;
+  let heldWrongJurisdiction = 0;
   let heldMissingIdentity = 0;
   let failed = 0;
   const errors: Array<{ docketId: string; error: string }> = [];
@@ -69,8 +80,17 @@ export async function ingestCourtListenerBulkFederalDockets(
       SELECT id, jurisdiction FROM court
       WHERE provider_id = ${provider.id} AND provider_court_id = ${docket.court_id}
     `;
-    if (!court || !isFederalJurisdiction(court.jurisdiction, options.includeBankruptcy)) {
+    if (!court) {
       heldNonFederal += 1;
+      continue;
+    }
+    if (!matchesBulkFederalJurisdiction(
+      court.jurisdiction,
+      options.includeBankruptcy,
+      options.jurisdiction,
+    )) {
+      if (options.jurisdiction) heldWrongJurisdiction += 1;
+      else heldNonFederal += 1;
       continue;
     }
     if (options.rowLimit && accepted + failed >= options.rowLimit) break;
@@ -146,6 +166,7 @@ export async function ingestCourtListenerBulkFederalDockets(
               source: "courtlistener_bulk",
               snapshotDate: options.snapshotDate,
               year: options.year,
+              jurisdiction: options.jurisdiction ?? null,
             })}
           )
         `;
@@ -166,13 +187,15 @@ export async function ingestCourtListenerBulkFederalDockets(
     version: 1,
     snapshotDate: options.snapshotDate,
     year: options.year,
+    jurisdiction: options.jurisdiction ?? null,
     rowsRead,
     completed: !options.rowLimit,
   });
   await sql`
     INSERT INTO ingestion_checkpoint (provider_id, stream_name, cursor_value)
     VALUES (
-      ${provider.id}, ${`bulk:federal-dockets:${options.snapshotDate}:${options.year}`},
+      ${provider.id},
+      ${`bulk:federal-dockets:${options.snapshotDate}:${options.year}:${options.jurisdiction ?? "all"}`},
       ${checkpoint}
     )
     ON CONFLICT (provider_id, stream_name)
@@ -182,10 +205,12 @@ export async function ingestCourtListenerBulkFederalDockets(
   return {
     snapshotDate: options.snapshotDate,
     year: options.year,
+    jurisdiction: options.jurisdiction ?? null,
     rowsRead,
     accepted,
     heldWrongYear,
     heldNonFederal,
+    heldWrongJurisdiction,
     heldMissingIdentity,
     failed,
     errors,
