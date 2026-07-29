@@ -11,3 +11,5 @@ Retry by reusing complete checksum-verified retained snapshot: 2026-07-29.
 Retry after exact production image is active, with isolated snapshot worker: 2026-07-29.
 
 Retry after production image remains stable for 60 seconds; cancel stale waiter: 2026-07-29.
+
+Retry 2026 canary after verified bulk provenance publication fix: 2026-07-29.
