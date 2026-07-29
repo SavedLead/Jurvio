@@ -3,6 +3,7 @@ import {
   decodeStreamCursor,
   encodeStreamCursor,
   evaluateFederalPublicationCandidate,
+  isFederalJurisdiction,
   isNonBankruptcyFederalJurisdiction,
   isRestrictedDocketText,
   nextBatchSize,
@@ -67,6 +68,13 @@ describe("federal ingestion stream controls", () => {
     expect(isNonBankruptcyFederalJurisdiction("Federal Bankruptcy")).toBe(false);
   });
 
+  it("recognizes verified bankruptcy courts in complete federal coverage", () => {
+    expect(isFederalJurisdiction("Federal District")).toBe(true);
+    expect(isFederalJurisdiction("Federal Appellate")).toBe(true);
+    expect(isFederalJurisdiction("Federal Bankruptcy")).toBe(true);
+    expect(isFederalJurisdiction("State")).toBe(false);
+  });
+
   it("holds restricted docket text", () => {
     expect(isRestrictedDocketText("Complaint filed under seal")).toBe(true);
     expect(isRestrictedDocketText("United States v. Smith")).toBe(false);
@@ -78,6 +86,27 @@ describe("federal ingestion stream controls", () => {
       restricted: false,
       reasons: [],
     });
+  });
+
+  it("accepts checksum-verified bulk snapshot provenance for the same docket", () => {
+    expect(evaluateFederalPublicationCandidate({
+      ...publishable,
+      courtJurisdiction: "Federal Bankruptcy",
+      sourceUri: "https://www.courtlistener.com/help/api/bulk-data/#docket-2026-03-31-123",
+    })).toEqual({
+      eligible: true,
+      restricted: false,
+      reasons: [],
+    });
+  });
+
+  it("rejects bulk provenance that names a different docket", () => {
+    const decision = evaluateFederalPublicationCandidate({
+      ...publishable,
+      sourceUri: "https://www.courtlistener.com/help/api/bulk-data/#docket-2026-03-31-999",
+    });
+    expect(decision.eligible).toBe(false);
+    expect(decision.reasons).toContain("invalid_source_uri");
   });
 
   it.each([
