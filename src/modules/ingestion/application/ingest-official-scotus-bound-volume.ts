@@ -71,6 +71,7 @@ export async function ingestOfficialScotusBoundVolume(
     if (!indexArtifact || !volumeArtifact) throw new Error("Official bound-volume artifacts were not persisted");
     let succeeded = 0;
     let failed = 0;
+    const failures: Array<{ sourceRecordId: string; reason: string }> = [];
     for (const record of selected) {
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
       try {
@@ -124,14 +125,15 @@ export async function ingestOfficialScotusBoundVolume(
         succeeded += 1;
       } catch (error) {
         failed += 1;
-        await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId,
-          error: error instanceof Error ? error.message : "Bound-volume ingestion failed" });
+        const reason = error instanceof Error ? error.message : "Bound-volume ingestion failed";
+        failures.push({ sourceRecordId: record.sourceRecordId, reason });
+        await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, error: reason });
         break;
       }
     }
     await finishIngestionRun(sql, runId);
     return { runId, volume: options.volume, termYear: source.termYear, discovered: records.length,
-      selected: selected.length, succeeded, failed,
+      selected: selected.length, succeeded, failed, failures,
       checkpoint: succeeded ? selected[succeeded - 1]?.sourceRecordId ?? null : checkpoint?.cursor_value ?? null };
   } catch (error) {
     await finishIngestionRun(sql, runId, error instanceof Error ? error.message : "Bound-volume ingestion failed");
