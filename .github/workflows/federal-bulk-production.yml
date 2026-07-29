@@ -77,6 +77,7 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUIRED_IMAGE_ANCESTOR: 7d2f98751237db32f79cde4b24105690f836cff2
         run: |
           previous=
           stable=0
@@ -93,7 +94,7 @@ jobs:
             candidate_sha="${current##*:}"
             candidate_status=
             if [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]; then
-              candidate_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$candidate_sha" --jq .status 2>/dev/null || true)"
+              candidate_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$REQUIRED_IMAGE_ANCESTOR...$candidate_sha" --jq .status 2>/dev/null || true)"
             fi
             if { [ "$candidate_status" = "identical" ] || [ "$candidate_status" = "ahead" ]; } &&
                [ "$current" = "$previous" ]; then

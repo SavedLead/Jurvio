@@ -15,3 +15,5 @@ Retry after production image remains stable for 60 seconds; cancel stale waiter:
 Retry 2026 canary after verified bulk provenance publication fix: 2026-07-29.
 
 Retry after deployed-image ancestry verification: 2026-07-29.
+
+Retry against image containing publication fix 7d2f987: 2026-07-29.
