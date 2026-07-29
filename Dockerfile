@@ -25,7 +25,7 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 WORKDIR /app
 
-RUN apk add --no-cache poppler-utils
+RUN apk add --no-cache bzip2 poppler-utils
 
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
