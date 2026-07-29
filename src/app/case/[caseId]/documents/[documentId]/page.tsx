@@ -4,7 +4,6 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
-import { extractOfficialCitation } from "@/modules/cases/domain/scotus-display";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { OpinionReaderTools } from "@/modules/cases/ui/opinion-reader-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
@@ -44,7 +43,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
   const caption = cleanCaseCaption(opinion.caseCaption);
   const canonicalPath = `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
-  const officialCitation = extractOfficialCitation(opinion.contentText);
+  const officialCitation = opinion.officialCitation;
   const requestHeaders = await headers();
   await recordDemandEvent(db(), {
     eventType: "document_view",
