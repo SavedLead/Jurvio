@@ -486,9 +486,10 @@ async function runPublicationAndQuarantine() {
     ) canonical ON true
     WHERE legal_case.publication = 'draft'
       AND (
-        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
+        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'federal')
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
+        OR lower(coalesce(court.jurisdiction, '')) LIKE '%bankruptcy%'
       )
     ORDER BY legal_case.created_at
     LIMIT ${requestedLimit}
@@ -501,6 +502,7 @@ async function runPublicationAndQuarantine() {
   });
   let published = 0;
   let held = 0;
+  const holdReasons: Record<string, number> = {};
   for (const candidate of candidates) {
     await startIngestionRunItem(sql, runId, candidate.id);
     const decision = evaluateFederalPublicationCandidate({
@@ -523,6 +525,9 @@ async function runPublicationAndQuarantine() {
     });
     if (!decision.eligible) {
       held += 1;
+      for (const reason of decision.reasons) {
+        holdReasons[reason] = (holdReasons[reason] ?? 0) + 1;
+      }
       await sql`
         UPDATE legal_case SET verification = 'needs_review',
           publication = CASE WHEN ${decision.restricted}
@@ -580,6 +585,7 @@ async function runPublicationAndQuarantine() {
     discovered: candidates.length,
     published,
     held,
+    holdReasons,
     failed: 0,
     costs: 0,
   };
