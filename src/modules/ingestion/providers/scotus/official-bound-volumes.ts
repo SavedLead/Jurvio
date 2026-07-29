@@ -101,10 +101,13 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
   for (const [index, page] of pages.entries()) {
     const docketMatch = /\bNos?\.\s+([^\n.]+?)\./m.exec(page);
     const decisionMatch = /\bDecided\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})/m.exec(page);
+    const enteredMatch = /\b(?:Order and judgment|Judgment|Order) entered\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})/m.exec(page);
     if (!docketMatch || !decisionMatch) continue;
     const firstPage = reportPage(page, source.volume);
     if (firstPage === null || firstPage >= ordersStart) continue;
-    const caseName = captions.get(firstPage);
+    const indexedCaseName = captions.get(firstPage);
+    const indexArtifact = indexedCaseName?.includes(";") || /v\.\s*\.$/.test(indexedCaseName ?? "");
+    const caseName = indexArtifact ? opinionPageCaption(page) : indexedCaseName;
     if (!caseName) continue;
     const docketNumber = (docketMatch[1] ?? "").replaceAll(/[–—]/g, "-").replaceAll(/\s+/g, " ").trim();
     const startPage = index + 1;
