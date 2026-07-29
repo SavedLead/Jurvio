@@ -26,7 +26,7 @@ permissions:
 
 concurrency:
   group: jurvio-production-federal-bulk
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   ingest:
@@ -77,20 +77,27 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          expected="ghcr.io/savedlead/jurvio:$GITHUB_SHA"
-          JURVIO_IMAGE=
+          previous=
+          stable=0
           for attempt in $(seq 1 60); do
-            JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            current="$(ssh "$DO_USER@$DO_HOST" '
               set -eu
               ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
               set -- $ids
               test "$#" -eq 1
               docker inspect --format "{{.Config.Image}}" "$1"
             ')"
-            if [ "$JURVIO_IMAGE" = "$expected" ]; then break; fi
+            if [ -n "$current" ] && [ "$current" = "$previous" ]; then
+              stable=$((stable + 1))
+            else
+              previous="$current"
+              stable=0
+            fi
+            if [ "$stable" -ge 4 ]; then break; fi
             sleep 15
           done
-          test "$JURVIO_IMAGE" = "$expected"
+          test "$stable" -ge 4
+          JURVIO_IMAGE="$previous"
           printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
 
       - name: Download and verify retained snapshot
