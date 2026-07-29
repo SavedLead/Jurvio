@@ -57,16 +57,16 @@ export function parseOfficialBoundVolumeIndex(html: string) {
   return [...new Map(volumes.map((item) => [item.volume, item])).values()].sort((a, b) => b.volume - a.volume);
 }
 
-function captionIndex(text: string) {
+function captionIndex(text: string, ordersStart: number) {
   const captions = new Map<number, string>();
   for (const line of text.split(/[\n\f]/)) {
-    const match = /^\s*(.+?\bv\.\s+.+?)\s+(?:\.\s*){2,}(\d{1,4})\s*$/.exec(line);
+    const match = /^\s*(.+?\bv\.\s+.+?)\s+(?:\.\s*){2,}(\d{1,4})(?:,\s*\d{1,4})*\s*$/.exec(line);
     if (!match) continue;
     const page = Number.parseInt(match[2] ?? "", 10);
     const caption = (match[1] ?? "").replaceAll(/\s+/g, " ").trim();
     const existing = captions.get(page);
     const crossReference = (value: string) => value.includes(";") || /v\.\s*\.$/.test(value);
-    if (page < 1001 && (!existing || (crossReference(existing) && !crossReference(caption)))) captions.set(page, caption);
+    if (page < ordersStart && (!existing || (crossReference(existing) && !crossReference(caption)))) captions.set(page, caption);
   }
   return captions;
 }
@@ -82,14 +82,15 @@ function reportPage(page: string, volume: number) {
 
 export function parseOfficialBoundVolumeText(text: string, source: OfficialBoundVolume) {
   const pages = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\f");
-  const captions = captionIndex(text);
+  const ordersStart = Number.parseInt(/Cases reported on page\s+(\d{1,4})\s+et seq\./i.exec(text)?.[1] ?? "1001", 10);
+  const captions = captionIndex(text, ordersStart);
   const starts: Array<Omit<OfficialBoundOpinion, "endPage">> = [];
   for (const [index, page] of pages.entries()) {
     const docketMatch = /\bNos?\.\s+([^\n.]+?)\./m.exec(page);
     const decisionMatch = /\bDecided\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})/m.exec(page);
     if (!docketMatch || !decisionMatch) continue;
     const firstPage = reportPage(page, source.volume);
-    if (firstPage === null || firstPage >= 1001) continue;
+    if (firstPage === null || firstPage >= ordersStart) continue;
     const caseName = captions.get(firstPage);
     if (!caseName) continue;
     const docketNumber = (docketMatch[1] ?? "").replaceAll(/[–—]/g, "-").replaceAll(/\s+/g, " ").trim();
@@ -109,7 +110,7 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
   const unique = [...new Map(starts.map((record) => [record.sourceRecordId, record])).values()]
     .sort((a, b) => a.startPage - b.startPage);
   const firstOpinionPage = unique[0]?.startPage ?? Number.POSITIVE_INFINITY;
-  const firstOrdersPage = pages.findIndex((page, index) => index + 1 > firstOpinionPage && (reportPage(page, source.volume) ?? 0) >= 1001) + 1;
+  const firstOrdersPage = pages.findIndex((page, index) => index + 1 > firstOpinionPage && (reportPage(page, source.volume) ?? 0) >= ordersStart) + 1;
   const finalMeritsPage = firstOrdersPage > 0 ? firstOrdersPage - 1 : null;
   return unique.map((record, index): OfficialBoundOpinion => ({
     ...record,

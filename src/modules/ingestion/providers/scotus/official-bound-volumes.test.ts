@@ -32,6 +32,19 @@ describe("official U.S. Reports bound-volume ingestion", () => {
     ]);
   });
 
+  it("uses the volume-specific orders boundary and multi-page case index entries", () => {
+    const text = [
+      "Cases reported before page 801 are opinions. Cases reported on page 801 et seq. are orders.\nKernan v. Cuero . . . . . . . . 1,1085",
+      "KERNAN v. CUERO\nNo. 16-1468. Decided November 6, 2017\n\n1",
+      "continued merits text\n9",
+      "ORDERS\n801",
+    ].join("\f");
+    expect(parseOfficialBoundVolumeText(text, { volume: 583, termYear: "17",
+      pdfUrl: "https://www.supremecourt.gov/opinions/boundvolumes/583BV.pdf" })).toEqual([
+      expect.objectContaining({ caseName: "Kernan v. Cuero", citation: "583 U.S. 1", startPage: 2, endPage: 3 }),
+    ]);
+  });
+
   it("does not stage orders beginning at reporter page 1001", () => {
     const text = "A v. B . . . . . . . . 1001\fA v. B\nNo. 17-1. Decided June 14, 2018\n1001";
     expect(parseOfficialBoundVolumeText(text, { volume: 585, termYear: "17",
