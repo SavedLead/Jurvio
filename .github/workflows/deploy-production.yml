@@ -1,6 +1,10 @@
 name: Deploy production
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/deploy-kickoff"
   workflow_run:
     workflows:
       - CI
@@ -20,7 +24,7 @@ permissions:
   packages: write
 
 env:
-  DEPLOY_COMMIT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.image_commit }}
+  DEPLOY_COMMIT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'push' && github.sha || inputs.image_commit }}
 
 concurrency:
   group: jurvio-production
@@ -28,7 +32,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     outputs:
@@ -39,7 +43,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ env.DEPLOY_COMMIT }}
         run: |
-          successful=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT_SHA/check-runs" --jq '[.check_runs[] | select(.name == "verify" and .conclusion == "success")] | length')
+          successful=0
+          for attempt in $(seq 1 60); do
+            successful=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT_SHA/check-runs" --jq '[.check_runs[] | select(.name == "verify" and .conclusion == "success")] | length')
+            if [ "$successful" -ge 1 ]; then break; fi
+            sleep 15
+          done
           test "$successful" -ge 1
       - uses: actions/checkout@v4
         with:
