@@ -101,12 +101,12 @@ export function extractOfficialOpinionMetadata(sourceText: string): OfficialOpin
     : /(?:JUSTICE\s+)?([A-Z][A-Z'’\-]+),?\s*(?:C\.\s*J\.|J\.)?[,]?\s+delivered the opinion of the Court/i.exec(text);
   const author = authorMatch?.[1] ? justiceName(authorMatch[1]) : null;
   const joins = new Set<string>();
-  const courtOpinionSentence = /delivered the opinion of the Court([^\n.]{0,500})/i.exec(text)?.[1] ?? "";
+  const courtOpinionSentence = /delivered the opinion of the Court([^\\n]{0,700})/i.exec(text)?.[1] ?? "";
   const courtJoins = /in which\s+([\s\S]*?)\s+joined/i.exec(courtOpinionSentence)?.[1] ?? "";
   for (const name of justiceNames(courtJoins)) if (name !== author) joins.add(name);
 
   const separateOpinions: OfficialOpinionMetadata["lineup"]["separateOpinions"] = [];
-  const separatePattern = /(?:JUSTICE\s+)?([A-Z][A-Z'’\-]+),?\s*(?:C\.\s*J\.|J\.)?[,]?\s+(?:filed|delivered)\s+(?:an?\s+)?opinion\s+([^\n.]{0,220})(?:\.|\n|$)/gi;
+  const separatePattern = /(?:JUSTICE\\s+)?([A-Z][A-Z'’\\-]+),?\\s*(?:C\\.\\s*J\\.|J\\.)?[,]?\\s+(?:filed|delivered)\\s+(?:an?\\s+)?opinion\\s+([^\\n]{0,300})(?:\\n|$)/gi;
   for (const match of text.matchAll(separatePattern)) {
     const description = clean(match[2] ?? "");
     if (!/concurr|dissent/i.test(description)) continue;
