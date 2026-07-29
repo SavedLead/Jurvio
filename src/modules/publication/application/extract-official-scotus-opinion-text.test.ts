@@ -25,6 +25,10 @@ describe("official SCOTUS native text extraction", () => {
     const text = "The constitutional judgment and legal analysis follow. ".repeat(5_100);
     expect(validateOfficialScotusText(text, "19-7").valid).toBe(true);
   });
+  it("accepts a long docket-identified decree dominated by numeric boundary coordinates", () => {
+    const text = "No. 5, Orig.\n" + "100 200 300 boundary ".repeat(4_000);
+    expect(validateOfficialScotusText(text, "5, Orig.").valid).toBe(true);
+  });
   it("infers a missing segment end from the next opinion in the same artifact", () => {
     expect(resolveOfficialScotusPageEnd(null, 297)).toBe(296);
     expect(resolveOfficialScotusPageEnd(295, 297)).toBe(295);
