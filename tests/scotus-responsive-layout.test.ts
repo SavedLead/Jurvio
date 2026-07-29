@@ -18,7 +18,7 @@ describe("SCOTUS responsive layout contract", () => {
     expect(css).toMatch(/\.caseNavMobile\s*\{\s*display: block/s);
   });
 
-  it("uses the approved feature hierarchy without exposing internal feature IDs", () => {
+  it("uses the approved feature hierarchy without exposing internal feature IDs or trust notes", () => {
     expect(css).not.toContain(".featureBadge");
     expect(css).toContain(".caseMilestones");
     expect(css).toContain(".availableDocumentTypes");
@@ -27,7 +27,9 @@ describe("SCOTUS responsive layout contract", () => {
     expect(css).toContain("@media (max-width: 380px)");
     expect(css).toContain(".caseWorkspaceNoRail");
     expect(casePage).not.toContain("className=\"featureBadge");
+    expect(casePage).not.toContain("Verified case record");
     expect(casePage).not.toContain(">Verification</dt>");
+    expect(casePage).not.toContain("Court metadata verified");
     expect(casePage).not.toContain(">Permanent ID</dt>");
     expect(casePage).toContain("as {legalCase.courtName} docket {legalCase.docketNumber}");
     expect(casePage).toContain("{sourceDocument ? (");
