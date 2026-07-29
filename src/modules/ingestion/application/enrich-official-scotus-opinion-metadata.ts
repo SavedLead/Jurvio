@@ -16,7 +16,8 @@ export async function enrichOfficialScotusOpinionMetadata(sql: Sql, options: { l
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id
     WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'
       AND judicial.source_download_url LIKE 'https://www.supremecourt.gov/%'
-      AND (enrichment.parser_version IS DISTINCT FROM 'official-scotus-opinion-v2'\n        OR (enrichment.completeness->>'opinionMetadataV2') IS DISTINCT FROM 'true')
+      AND (enrichment.parser_version IS DISTINCT FROM 'official-scotus-opinion-v2'
+        OR (enrichment.completeness->>'opinionMetadataV2') IS DISTINCT FROM 'true')
     ORDER BY legal_case.decided_on DESC NULLS LAST, legal_case.id
     LIMIT ${options.limit}
   `;
@@ -40,8 +41,11 @@ export async function enrichOfficialScotusOpinionMetadata(sql: Sql, options: { l
           ${metadata.exactDisposition}, ${metadata.exactDisposition ? row.source_url : null}, ${metadata.exactDisposition ? 'Opinion disposition paragraph' : null},
           ${metadata.syllabus}, ${metadata.syllabus ? row.source_url : null}, ${metadata.syllabus ? 'Official syllabus' : null},
           ${tx.json({ perCuriam: metadata.perCuriam, author: metadata.lineup.author, joins: metadata.lineup.joins,
-            separateOpinions: metadata.lineup.separateOpinions, recusals: metadata.lineup.recusals,\n            justiceVotes: metadata.lineup.justiceVotes, voteBreakdown: metadata.lineup.voteBreakdown })},
-          ${tx.json({ opinionMetadata: true, opinionMetadataV2: true, lineupChecked: true,\n            voteBreakdownAvailable: Boolean(metadata.lineup.voteBreakdown.label), holdingAvailable: Boolean(metadata.exactHolding),\n            syllabusAvailable: Boolean(metadata.syllabus) })},
+            separateOpinions: metadata.lineup.separateOpinions, recusals: metadata.lineup.recusals,
+            justiceVotes: metadata.lineup.justiceVotes, voteBreakdown: metadata.lineup.voteBreakdown })},
+          ${tx.json({ opinionMetadata: true, opinionMetadataV2: true, lineupChecked: true,
+            voteBreakdownAvailable: Boolean(metadata.lineup.voteBreakdown.label), holdingAvailable: Boolean(metadata.exactHolding),
+            syllabusAvailable: Boolean(metadata.syllabus) })},
           'verified', 'official-scotus-opinion-v2', now())
         ON CONFLICT (case_id) DO UPDATE SET
           background_summary = COALESCE(EXCLUDED.background_summary, scotus_case_enrichment.background_summary),
