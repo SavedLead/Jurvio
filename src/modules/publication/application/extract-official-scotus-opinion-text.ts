@@ -197,9 +197,10 @@ export async function extractOfficialScotusOpinionText(
       const { stdout } = await execFileAsync("pdftotext", extractionArgs, {
         encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000,
       });
-      const structurallyBoundText = candidate.source_page_end === null
-        ? trimOfficialScotusBoundVolumeText(stdout, candidate.official_citation)
-        : stdout;
+      const structurallyBoundText = trimOfficialScotusBoundVolumeText(
+        stdout,
+        candidate.official_citation,
+      );
       const validation = validateOfficialScotusText(structurallyBoundText, candidate.docket_number);
       if (!validation.valid) {
         held += 1;
