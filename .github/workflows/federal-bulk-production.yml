@@ -71,15 +71,18 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Resolve active production image
+      - name: Resolve active production image containing this run
         id: image
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           previous=
           stable=0
-          for attempt in $(seq 1 60); do
+          candidate_sha=
+          candidate_status=
+          for attempt in $(seq 1 120); do
             current="$(ssh "$DO_USER@$DO_HOST" '
               set -eu
               ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
@@ -87,7 +90,13 @@ jobs:
               test "$#" -eq 1
               docker inspect --format "{{.Config.Image}}" "$1"
             ')"
-            if [ -n "$current" ] && [ "$current" = "$previous" ]; then
+            candidate_sha="${current##*:}"
+            candidate_status=
+            if [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              candidate_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$candidate_sha" --jq .status 2>/dev/null || true)"
+            fi
+            if { [ "$candidate_status" = "identical" ] || [ "$candidate_status" = "ahead" ]; } &&
+               [ "$current" = "$previous" ]; then
               stable=$((stable + 1))
             else
               previous="$current"
@@ -96,7 +105,10 @@ jobs:
             if [ "$stable" -ge 4 ]; then break; fi
             sleep 15
           done
-          test "$stable" -ge 4
+          if [ "$stable" -lt 4 ]; then
+            printf 'Production image %s (%s) does not contain workflow commit %s\n'               "$candidate_sha" "$candidate_status" "$GITHUB_SHA" >&2
+            exit 1
+          fi
           JURVIO_IMAGE="$previous"
           printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
 
