@@ -1,6 +1,10 @@
 name: Federal bulk production backfill
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/federal-bulk-kickoff"
   workflow_dispatch:
     inputs:
       year:
@@ -37,9 +41,15 @@ jobs:
           INPUT_SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
           INPUT_ROW_LIMIT: ${{ inputs.row_limit }}
         run: |
-          YEAR="$INPUT_YEAR"
-          SNAPSHOT_DATE="$INPUT_SNAPSHOT_DATE"
-          ROW_LIMIT="$INPUT_ROW_LIMIT"
+          if [ "$EVENT_NAME" = "push" ]; then
+            YEAR=2026
+            SNAPSHOT_DATE=2026-03-31
+            ROW_LIMIT=100
+          else
+            YEAR="$INPUT_YEAR"
+            SNAPSHOT_DATE="$INPUT_SNAPSHOT_DATE"
+            ROW_LIMIT="$INPUT_ROW_LIMIT"
+          fi
           case "$YEAR" in 19[0-9][0-9]|20[0-9][0-9]|2100) ;; *) exit 1 ;; esac
           case "$SNAPSHOT_DATE" in ????-??-??) ;; *) exit 1 ;; esac
           if [ -n "$ROW_LIMIT" ]; then
