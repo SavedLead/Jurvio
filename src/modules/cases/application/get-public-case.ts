@@ -29,7 +29,23 @@ export interface PublicCase {
   holdingSourceUrl: string | null;
   exactDisposition: string | null;
   dispositionSourceUrl: string | null;
-  decisionLineup: { perCuriam?: boolean; author?: string | null; joins?: string[]; separateOpinions?: Array<{ author: string; type: string }> } | null;
+  decisionLineup: {
+    perCuriam?: boolean;
+    author?: string | null;
+    joins?: string[];
+    separateOpinions?: Array<{ author: string; type: string; joins?: string[] }>;
+    recusals?: string[];
+    justiceVotes?: Array<{ justice: string; position: string }>;
+    voteBreakdown?: {
+      forJudgment: number;
+      courtOpinion: number;
+      concurring: number;
+      dissenting: number;
+      mixed: number;
+      notParticipating: number;
+      label: string | null;
+    };
+  } | null;
   officialDocketUrl: string | null;
   lowerCourtName: string | null;
   lowerCourtDecidedOn: string | null;
