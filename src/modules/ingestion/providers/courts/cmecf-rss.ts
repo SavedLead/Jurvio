@@ -1,4 +1,3 @@
-import { decode } from "node:html-entities";
 import {
   classifyDirectEvent, isRestrictedDirectEvent, normalizeDocketNumber,
   stableDirectEventIdentity, visitorFriendlyDescription, type DirectCourtEvent,
@@ -7,9 +6,11 @@ import type { FederalCourtSource } from "./registry";
 
 const MAX_FEED_BYTES = 5 * 1024 * 1024;
 
+function decodeXml(value: string) { return value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;|&apos;/g, "'"); }
+
 function tag(xml: string, name: string): string {
   const match = new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i").exec(xml);
-  return decode((match?.[1] ?? "").replace(/<!\[CDATA\[|\]\]>/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+  return decodeXml((match?.[1] ?? "").replace(/<!\[CDATA\[|\]\]>/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
 }
 
 function href(xml: string): string | null {
