@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 const OFFICIAL_ORIGIN = "https://www.supremecourt.gov";
 const MAX_DOCKET_BYTES = 4 * 1024 * 1024;
@@ -131,6 +133,18 @@ export function parseOfficialDocket(html: string, docketNumber: string, sourceUr
 export async function fetchOfficialDocket(docketNumber: string): Promise<OfficialDocket> {
   const docketSlug = officialDocketSlug(docketNumber);
   const sourceUri = `${OFFICIAL_ORIGIN}/docket/docketfiles/html/public/${docketSlug}.html`;
+  const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT ?? process.env.RAW_ARTIFACT_DIR;
+  if (artifactRoot) {
+    try {
+      const bytes = new Uint8Array(await readFile(join(artifactRoot, "scotus-docket-mirror", `${docketSlug}.html`)));
+      if (bytes.byteLength > MAX_DOCKET_BYTES) throw new Error("Supreme Court docket exceeds byte cap");
+      const rawBody = new TextDecoder().decode(bytes);
+      return { ...parseOfficialDocket(rawBody, docketSlug, sourceUri),
+        contentHash: createHash("sha256").update(bytes).digest("hex"), retrievedAt: new Date().toISOString() };
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
   const response = await fetch(sourceUri, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
   if (!response.ok) throw new Error(`Supreme Court docket returned HTTP ${response.status}`);
   const length = Number(response.headers.get("content-length") ?? "0");
