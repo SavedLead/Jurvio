@@ -50,13 +50,13 @@ jobs:
             LIMIT="$INPUT_LIMIT"
             RESUME="$INPUT_RESUME"
             BOUND_RESUME="true"
-          elif [ "$EVENT_NAME" = "push" ]; then
-            TERM_YEARS="24 23 22 21 20 19 18"
-            LIMIT="100"
-            RESUME="true"
-            BOUND_RESUME="true"
           else
-            TERM_YEARS="25"
+            CALENDAR_YEAR="$(date -u +%Y)"
+            CALENDAR_MONTH="$(date -u +%m)"
+            if [ "$CALENDAR_MONTH" -lt 10 ]; then
+              CALENDAR_YEAR=$((CALENDAR_YEAR - 1))
+            fi
+            TERM_YEARS="$(printf '%02d' $((CALENDAR_YEAR % 100)))"
             LIMIT="100"
             RESUME="true"
             BOUND_RESUME="true"
