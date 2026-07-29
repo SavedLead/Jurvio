@@ -45,6 +45,21 @@ describe("official U.S. Reports bound-volume ingestion", () => {
     ]);
   });
 
+  it("ignores incidental high standalone numbers before the explicit orders heading", () => {
+    const text = [
+      "Cases reported on page 901 et seq. are orders.\nAlpha v. Beta . . . . . . . . 1\nWilliams v. Johnson . . . . . . . . 773",
+      "ALPHA v. BETA\nNo. 13-1. Decided June 1, 2014\n1",
+      "merits text with a citation count\n1895",
+      "OCTOBER TERM, 2013 773\nWILLIAMS v. JOHNSON\nNo. 13-9085. Decided July 1, 2014",
+      "ORDERS IN PENDING CASES\n901",
+    ].join("\f");
+    expect(parseOfficialBoundVolumeText(text, { volume: 573, termYear: "13",
+      pdfUrl: "https://www.supremecourt.gov/opinions/boundvolumes/573BV.pdf" })).toEqual([
+      expect.objectContaining({ caseName: "Alpha v. Beta", startPage: 2, endPage: 3 }),
+      expect.objectContaining({ caseName: "Williams v. Johnson", startPage: 4, endPage: 4 }),
+    ]);
+  });
+
   it("does not stage orders beginning at reporter page 1001", () => {
     const text = "A v. B . . . . . . . . 1001\fA v. B\nNo. 17-1. Decided June 14, 2018\n1001";
     expect(parseOfficialBoundVolumeText(text, { volume: 585, termYear: "17",
