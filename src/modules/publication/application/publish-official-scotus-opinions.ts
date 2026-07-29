@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
+import { extractOfficialOpinionMetadata } from "@/modules/ingestion/providers/scotus/official-opinion-metadata";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -48,6 +49,8 @@ interface Match {
   cluster_case_name: string;
   document_id: string;
   document_public_id: string;
+  content_text: string;
+  source_url: string;
 }
 
 export async function publishVerifiedOfficialScotusOpinions(
@@ -86,7 +89,8 @@ export async function publishVerifiedOfficialScotusOpinions(
       SELECT legal_case.id AS case_id, legal_case.public_id AS case_public_id,
         legal_case.caption AS case_caption, cluster.id AS cluster_id,
         cluster.case_name AS cluster_case_name, document.id AS document_id,
-        document.public_id AS document_public_id
+        document.public_id AS document_public_id, content.content_text,
+        COALESCE(judicial.source_download_url, ${candidate.source_pdf_uri}) AS source_url
       FROM legal_case
       JOIN court ON court.id = legal_case.court_id
       JOIN opinion_cluster cluster ON cluster.case_id = legal_case.id
@@ -107,6 +111,17 @@ export async function publishVerifiedOfficialScotusOpinions(
     );
     const caseIds = new Set(compatible.map((match) => match.case_id));
     const clusterIds = new Set(compatible.map((match) => match.cluster_id));
+
+    if (compatible.length === 0) {
+      held += 1;
+      await sql`
+        UPDATE official_opinion_candidate
+        SET reviewer_notes = 'Held: verified official opinion is waiting for readable canonical text and enrichment',
+          last_seen_at = now()
+        WHERE id = ${candidate.id}
+      `;
+      continue;
+    }
 
     if (compatible.length === 0) {
       const metadataMatches = await sql<Array<{
@@ -355,6 +370,69 @@ export async function publishVerifiedOfficialScotusOpinions(
     const documentPublicIds = [...new Set(compatible.map((match) => match.document_public_id))];
 
     await sql.begin(async (tx) => {
+      const metadata = extractOfficialOpinionMetadata(first.content_text);
+      await tx`
+        INSERT INTO scotus_case_enrichment (
+          case_id, official_docket_url, background_summary, background_source_url,
+          background_source_locator, significance_summary, significance_source_url,
+          significance_source_locator, exact_holding, holding_source_url, holding_source_locator,
+          exact_disposition, disposition_source_url, disposition_source_locator,
+          syllabus_text, syllabus_source_url, syllabus_source_locator, decision_lineup,
+          completeness, verification, parser_version, verified_at
+        ) VALUES (
+          ${first.case_id},
+          ${`https://www.supremecourt.gov/docket/docketfiles/html/public/${candidate.docket_number}.html`},
+          ${metadata.background}, ${metadata.background ? first.source_url : null},
+          ${metadata.background ? "Official syllabus: factual and procedural background" : null},
+          ${metadata.significance}, ${metadata.significance ? first.source_url : null},
+          ${metadata.significance ? "Official syllabus: first sentence of Held" : null},
+          ${metadata.exactHolding}, ${metadata.exactHolding ? first.source_url : null},
+          ${metadata.exactHolding ? "Official syllabus: Held" : null},
+          ${metadata.exactDisposition}, ${metadata.exactDisposition ? first.source_url : null},
+          ${metadata.exactDisposition ? "Opinion disposition paragraph" : null},
+          ${metadata.syllabus}, ${metadata.syllabus ? first.source_url : null},
+          ${metadata.syllabus ? "Official syllabus" : null},
+          ${tx.json({
+            perCuriam: metadata.perCuriam, author: metadata.lineup.author,
+            joins: metadata.lineup.joins, separateOpinions: metadata.lineup.separateOpinions,
+            recusals: metadata.lineup.recusals, justiceVotes: metadata.lineup.justiceVotes,
+            voteBreakdown: metadata.lineup.voteBreakdown,
+          })},
+          ${tx.json({
+            opinionMetadata: true, opinionMetadataV2: true, lineupChecked: true,
+            voteBreakdownAvailable: Boolean(metadata.lineup.voteBreakdown.label),
+            holdingAvailable: Boolean(metadata.exactHolding), syllabusAvailable: Boolean(metadata.syllabus),
+          })},
+          'verified', 'official-scotus-opinion-v2', now()
+        )
+        ON CONFLICT (case_id) DO UPDATE SET
+          background_summary = COALESCE(EXCLUDED.background_summary, scotus_case_enrichment.background_summary),
+          background_source_url = COALESCE(EXCLUDED.background_source_url, scotus_case_enrichment.background_source_url),
+          background_source_locator = COALESCE(EXCLUDED.background_source_locator, scotus_case_enrichment.background_source_locator),
+          significance_summary = COALESCE(EXCLUDED.significance_summary, scotus_case_enrichment.significance_summary),
+          significance_source_url = COALESCE(EXCLUDED.significance_source_url, scotus_case_enrichment.significance_source_url),
+          significance_source_locator = COALESCE(EXCLUDED.significance_source_locator, scotus_case_enrichment.significance_source_locator),
+          exact_holding = COALESCE(EXCLUDED.exact_holding, scotus_case_enrichment.exact_holding),
+          holding_source_url = COALESCE(EXCLUDED.holding_source_url, scotus_case_enrichment.holding_source_url),
+          holding_source_locator = COALESCE(EXCLUDED.holding_source_locator, scotus_case_enrichment.holding_source_locator),
+          exact_disposition = COALESCE(scotus_case_enrichment.exact_disposition, EXCLUDED.exact_disposition),
+          disposition_source_url = COALESCE(scotus_case_enrichment.disposition_source_url, EXCLUDED.disposition_source_url),
+          disposition_source_locator = COALESCE(scotus_case_enrichment.disposition_source_locator, EXCLUDED.disposition_source_locator),
+          syllabus_text = COALESCE(EXCLUDED.syllabus_text, scotus_case_enrichment.syllabus_text),
+          syllabus_source_url = COALESCE(EXCLUDED.syllabus_source_url, scotus_case_enrichment.syllabus_source_url),
+          syllabus_source_locator = COALESCE(EXCLUDED.syllabus_source_locator, scotus_case_enrichment.syllabus_source_locator),
+          decision_lineup = scotus_case_enrichment.decision_lineup || EXCLUDED.decision_lineup,
+          completeness = scotus_case_enrichment.completeness || EXCLUDED.completeness,
+          verification = 'verified', parser_version = EXCLUDED.parser_version,
+          verified_at = now(), updated_at = now()
+      `;
+      await tx`
+        UPDATE judicial_opinion
+        SET per_curiam = ${metadata.perCuriam},
+          author_name = CASE WHEN ${metadata.perCuriam} THEN NULL ELSE COALESCE(author_name, ${metadata.lineup.author}) END,
+          updated_at = now()
+        WHERE document_id = ANY(${documentIds}::uuid[])
+      `;
       await tx`
         UPDATE legal_case
         SET decided_on = ${candidate.filed_on},
