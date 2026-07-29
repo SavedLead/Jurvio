@@ -108,8 +108,29 @@ export function isNonBankruptcyFederalJurisdiction(value: string | null): boolea
     normalized.includes("federal appellate");
 }
 
+export function isFederalJurisdiction(value: string | null): boolean {
+  if (isNonBankruptcyFederalJurisdiction(value)) return true;
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return normalized === "fb" || normalized.includes("bankruptcy");
+}
+
 export function isRestrictedDocketText(value: string): boolean {
   return /\b(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\b/i.test(value);
+}
+
+function isVerifiedCourtListenerDocketSourceUri(
+  sourceUri: string | null,
+  sourceRecordId: string | null,
+): boolean {
+  if (!sourceUri || !sourceRecordId || !/^\d+$/.test(sourceRecordId)) return false;
+  if (sourceUri === `https://www.courtlistener.com/api/rest/v4/dockets/${sourceRecordId}/`) {
+    return true;
+  }
+  const bulkPrefix = "https://www.courtlistener.com/help/api/bulk-data/#docket-";
+  if (!sourceUri.startsWith(bulkPrefix)) return false;
+  const suffix = sourceUri.slice(bulkPrefix.length);
+  const match = /^(\d{4}-\d{2}-\d{2})-(\d+)$/.exec(suffix);
+  return match?.[2] === sourceRecordId && !Number.isNaN(Date.parse(`${match[1]}T00:00:00Z`));
 }
 
 export function evaluateFederalPublicationCandidate(
@@ -120,7 +141,7 @@ export function evaluateFederalPublicationCandidate(
   if (!candidate.caption.trim() || !candidate.docketNumber.trim()) {
     reasons.push("missing_stable_identity");
   }
-  if (!isNonBankruptcyFederalJurisdiction(candidate.courtJurisdiction)) {
+  if (!isFederalJurisdiction(candidate.courtJurisdiction)) {
     reasons.push("unverified_federal_court");
   }
   if (!candidate.courtProviderId) reasons.push("missing_court_provider_identity");
@@ -132,9 +153,10 @@ export function evaluateFederalPublicationCandidate(
   if (!candidate.sourceRecordId || candidate.sourceRecordId !== candidate.canonicalIdentifier) {
     reasons.push("source_identifier_mismatch");
   }
-  if (
-    !candidate.sourceUri?.startsWith("https://www.courtlistener.com/api/rest/v4/dockets/")
-  ) {
+  if (!isVerifiedCourtListenerDocketSourceUri(
+    candidate.sourceUri,
+    candidate.sourceRecordId,
+  )) {
     reasons.push("invalid_source_uri");
   }
   if (!candidate.sourceContentHash || !/^[a-f0-9]{64}$/i.test(candidate.sourceContentHash)) {

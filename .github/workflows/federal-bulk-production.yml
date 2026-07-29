@@ -139,9 +139,10 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
+          set -o pipefail
           EXTRA=
           if [ -n "$ROW_LIMIT" ]; then EXTRA="--row-limit=$ROW_LIMIT"; fi
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --include-bankruptcy=true $EXTRA" | tee /tmp/federal-bulk-result.json
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=12 "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --include-bankruptcy=true $EXTRA" | tee /tmp/federal-bulk-result.json
 
       - name: Publish eligible cases
         id: publish
