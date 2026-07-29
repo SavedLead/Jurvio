@@ -166,7 +166,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {outcome || legalCase.exactHolding ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-outcome">
               <div className="featureHeading">
-                
                 <h2 id="case-outcome">Holding and outcome</h2>
               </div>
               {outcome ? <div className="outcomeCallout"><strong>{outcome}.</strong></div> : null}
@@ -177,7 +176,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {decisionLabel || opinionType || legalCase.decisionLineup ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="decision-lineup">
               <div className="featureHeading decisionHeading">
-                
                 <h2 id="decision-lineup">Decision lineup</h2>
                 {decisionLabel ? <strong className="decisionLabel">{decisionLabel}</strong> : null}
               </div>
@@ -190,7 +188,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {timelineEvents.length > 0 ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">
               <div className="featureHeading">
-                
                 <h2 id="case-timeline">Case timeline</h2>
               </div>
               <ol className="caseMilestones">
@@ -208,7 +205,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {documents.length > 0 ? (
             <section className="contentSection availableDocuments caseFeatureSection" aria-labelledby="available-documents">
               <div className="featureHeading">
-                
                 <div><p className="sectionKicker">Available court materials</p><h2 id="available-documents">Documents and argument</h2></div>
               </div>
               <div className="availableDocumentTypes" aria-label="Available document types">
@@ -237,7 +233,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {opinionPath ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="read-opinion">
               <div className="featureHeading">
-                
                 <h2 id="read-opinion">Read the opinion</h2>
               </div>
               <nav className="opinionQuickLinks" aria-label="Opinion reading tools">
