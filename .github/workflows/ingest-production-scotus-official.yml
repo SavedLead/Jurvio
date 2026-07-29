@@ -129,18 +129,18 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-courtlistener-opinions.mjs --court scotus --since 1791-01-01 --limit 500 --order newest --delay-ms 100"
 
-      - name: Ingest bounded official-source batch
+      - name: Ingest, fully enrich, and publish verified SCOTUS cases
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
           : > /tmp/scotus-ingestion.log
+          : > /tmp/scotus-publication.log
           for TERM_YEAR in $TERM_YEARS; do
-            echo "Ingesting official Supreme Court term $TERM_YEAR" | tee -a /tmp/scotus-ingestion.log
-            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app node /app/jobs/ingest-official-scotus-opinions.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME'" | tee -a /tmp/scotus-ingestion.log
+            echo "Processing enriched Supreme Court term $TERM_YEAR"
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-enriched-official-scotus.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME' --attempts=10" | tee -a /tmp/scotus-ingestion.log /tmp/scotus-publication.log
           done
-
 
       - name: Ingest official pre-2018 U.S. Reports volumes
         continue-on-error: true
@@ -152,40 +152,6 @@ jobs:
           for VOLUME in 568 569 570; do
             echo "Ingesting official U.S. Reports volume $VOLUME" | tee -a /tmp/scotus-ingestion.log
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='$BOUND_RESUME'" | tee -a /tmp/scotus-ingestion.log
-          done
-
-      - name: Publish exact verified matches
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          set -o pipefail
-          : > /tmp/scotus-publication.log
-          for ATTEMPT in 1 2 3 4 5 6 7 8; do
-            echo "Publishing verified Supreme Court batch $ATTEMPT" | tee -a /tmp/scotus-publication.log
-            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'" | tee -a /tmp/scotus-publication.log
-          done
-
-      - name: Ingest official dockets and verified filings
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          set -o pipefail
-          for ATTEMPT in 1 2 3 4 5 6; do
-            echo "Enriching verified Supreme Court dockets batch $ATTEMPT"
-            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-official-scotus-dockets.mjs --limit=100"
-          done
-
-      - name: Enrich verified opinion metadata
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          set -o pipefail
-          for ATTEMPT in 1 2 3 4 5 6; do
-            echo "Extracting verified Supreme Court opinion metadata batch $ATTEMPT"
-            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/enrich-official-scotus-opinion-metadata.mjs --limit=100"
           done
 
       - name: Report official-source staging queue
@@ -202,7 +168,7 @@ jobs:
           if [ -z "${JURVIO_IMAGE:-}" ]; then
             QUEUE='{"report":"unavailable","reason":"active production image unresolved"}'
             REPORT_EXIT=1
-          elif QUEUE="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'), 'published_scotus_cases', (SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'), 'published_scotus_documents', (SELECT count(DISTINCT document.id) FROM document JOIN judicial_opinion ON judicial_opinion.document_id = document.id JOIN opinion_cluster ON opinion_cluster.id = judicial_opinion.cluster_id JOIN legal_case ON legal_case.id = opinion_cluster.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND document.publication = 'published'), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\"" 2>/dev/null)"; then
+          elif QUEUE="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('official_candidates', (SELECT count(*) FROM official_opinion_candidate), 'pending_review', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'pending_review'), 'approved', (SELECT count(*) FROM official_opinion_candidate WHERE review_status = 'approved'), 'published_scotus_cases', (SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'), 'published_scotus_documents', (SELECT count(DISTINCT document.id) FROM document JOIN judicial_opinion ON judicial_opinion.document_id = document.id JOIN opinion_cluster ON opinion_cluster.id = judicial_opinion.cluster_id JOIN legal_case ON legal_case.id = opinion_cluster.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND document.publication = 'published'), 'verified_enrichments', (SELECT count(*) FROM scotus_case_enrichment enrichment JOIN legal_case ON legal_case.id = enrichment.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND enrichment.verification = 'verified'), 'opinion_metadata_v2', (SELECT count(*) FROM scotus_case_enrichment enrichment JOIN legal_case ON legal_case.id = enrichment.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND enrichment.completeness->>'opinionMetadataV2' = 'true'), 'lineup_checked', (SELECT count(*) FROM scotus_case_enrichment enrichment JOIN legal_case ON legal_case.id = enrichment.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND enrichment.completeness->>'lineupChecked' = 'true'), 'vote_breakdowns', (SELECT count(*) FROM scotus_case_enrichment enrichment JOIN legal_case ON legal_case.id = enrichment.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND enrichment.completeness->>'voteBreakdownAvailable' = 'true'), 'with_questions', (SELECT count(*) FROM scotus_case_enrichment enrichment JOIN legal_case ON legal_case.id = enrichment.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND enrichment.question_presented IS NOT NULL), 'with_holdings', (SELECT count(*) FROM scotus_case_enrichment enrichment JOIN legal_case ON legal_case.id = enrichment.case_id JOIN court ON court.id = legal_case.court_id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND enrichment.exact_holding IS NOT NULL), 'unenriched_cases', (SELECT count(*) FROM legal_case JOIN court ON court.id = legal_case.court_id LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id AND enrichment.verification = 'verified' WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND enrichment.case_id IS NULL), 'failed_items', (SELECT count(*) FROM ingestion_run_item WHERE status = 'failed'));\"" 2>/dev/null)"; then
             :
           else
             REPORT_EXIT=$?

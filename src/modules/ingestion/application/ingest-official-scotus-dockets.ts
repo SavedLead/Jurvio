@@ -30,8 +30,11 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
     SELECT legal_case.id, legal_case.public_id, legal_case.docket_number
     FROM legal_case JOIN court ON court.id = legal_case.court_id
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id
-    WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published'
-      AND (enrichment.case_id IS NULL OR enrichment.updated_at < now() - interval '24 hours')
+    WHERE lower(court.provider_court_id) = 'scotus'
+      AND (enrichment.case_id IS NULL
+        OR (enrichment.completeness->>'docketEvents') IS DISTINCT FROM 'true'
+        OR (enrichment.completeness->>'docketDocuments') IS DISTINCT FROM 'true'
+        OR enrichment.updated_at < now() - interval '24 hours')
     ORDER BY enrichment.updated_at NULLS FIRST, legal_case.decided_on DESC NULLS LAST, legal_case.id
     LIMIT ${options.limit}
   `;
