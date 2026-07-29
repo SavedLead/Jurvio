@@ -71,6 +71,19 @@ function captionIndex(text: string, ordersStart: number) {
   return captions;
 }
 
+function opinionPageCaption(page: string) {
+  const normalized = page.replaceAll(/\s+/g, " ").trim();
+  const match = /(?:Syllabus\s+)?([A-Z][A-Z0-9 .,'’&()-]+?\bv\.\s+[A-Z][A-Z0-9 .,'’&()-]+?)\s+(?:certiorari|appeal|on\s+(?:petition|exceptions|writ|bill))/i.exec(normalized);
+  if (!match) return null;
+  return (match[1] ?? "")
+    .replaceAll(/\s+et al\.?/gi, "")
+    .replaceAll(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/\bV\./, "v.");
+}
+
 function reportPage(page: string, volume: number) {
   const citation = new RegExp(`Cite as:\\s*${volume}\\s+U\\.\\s*S\\.\\s*(\\d+)`, "i").exec(page)?.[1];
   if (citation) return Number.parseInt(citation, 10);
@@ -98,7 +111,7 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
     starts.push({
       sourceRecordId: `bound:${source.volume}:${firstPage}:${docketNumber}`,
       releaseNumber: null,
-      filedOn: isoLongDate(decisionMatch[1] ?? ""),
+      filedOn: isoLongDate(enteredMatch?.[1] ?? decisionMatch[1] ?? ""),
       docketNumber,
       caseName,
       authorCode: null,
