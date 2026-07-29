@@ -77,14 +77,20 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
-            set -eu
-            ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
-            set -- $ids
-            test "$#" -eq 1
-            docker inspect --format "{{.Config.Image}}" "$1"
-          ')"
-          test -n "$JURVIO_IMAGE"
+          expected="ghcr.io/savedlead/jurvio:$GITHUB_SHA"
+          JURVIO_IMAGE=
+          for attempt in $(seq 1 60); do
+            JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+              set -eu
+              ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
+              set -- $ids
+              test "$#" -eq 1
+              docker inspect --format "{{.Config.Image}}" "$1"
+            ')"
+            if [ "$JURVIO_IMAGE" = "$expected" ]; then break; fi
+            sleep 15
+          done
+          test "$JURVIO_IMAGE" = "$expected"
           printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
 
       - name: Download and verify retained snapshot
@@ -93,7 +99,7 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' SNAPSHOT_DATE='$SNAPSHOT_DATE' docker compose -f docker-compose.production.yml exec -T -e SNAPSHOT_DATE='$SNAPSHOT_DATE' app sh -lc '
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' SNAPSHOT_DATE='$SNAPSHOT_DATE' docker compose -f docker-compose.production.yml run --rm --no-deps -T -e SNAPSHOT_DATE='$SNAPSHOT_DATE' app sh -lc '
             set -eu
             root=/var/lib/jurvio/artifacts/courtlistener/bulk/\$SNAPSHOT_DATE
             mkdir -p \"\$root\"
