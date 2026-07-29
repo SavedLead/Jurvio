@@ -97,11 +97,15 @@ jobs:
             set -eu
             root=/var/lib/jurvio/artifacts/courtlistener/bulk/\$SNAPSHOT_DATE
             mkdir -p \"\$root\"
-            available_kb=\$(df -Pk /var/lib/jurvio/artifacts | awk \"NR==2 {print \\\$4}\")
-            test \"\$available_kb\" -ge 6500000
-            base=https://com-courtlistener-storage.s3-us-west-2.amazonaws.com/bulk-data
-            wget -c -O \"\$root/courts-\$SNAPSHOT_DATE.csv.bz2\" \"\$base/courts-\$SNAPSHOT_DATE.csv.bz2\"
-            wget -c -O \"\$root/dockets-\$SNAPSHOT_DATE.csv.bz2\" \"\$base/dockets-\$SNAPSHOT_DATE.csv.bz2\"
+            courts=\"\$root/courts-\$SNAPSHOT_DATE.csv.bz2\"
+            dockets=\"\$root/dockets-\$SNAPSHOT_DATE.csv.bz2\"
+            if [ ! -f \"\$courts\" ] || [ \"\$(wc -c < \"\$courts\")\" -ne 81168 ] || [ ! -f \"\$dockets\" ] || [ \"\$(wc -c < \"\$dockets\")\" -ne 4979286998 ]; then
+              available_kb=\$(df -Pk /var/lib/jurvio/artifacts | awk \"NR==2 {print \\\$4}\")
+              test \"\$available_kb\" -ge 6500000
+              base=https://com-courtlistener-storage.s3-us-west-2.amazonaws.com/bulk-data
+              wget -c -O \"\$courts\" \"\$base/courts-\$SNAPSHOT_DATE.csv.bz2\"
+              wget -c -O \"\$dockets\" \"\$base/dockets-\$SNAPSHOT_DATE.csv.bz2\"
+            fi
             test \"\$(wc -c < \"\$root/courts-\$SNAPSHOT_DATE.csv.bz2\")\" -eq 81168
             test \"\$(wc -c < \"\$root/dockets-\$SNAPSHOT_DATE.csv.bz2\")\" -eq 4979286998
             echo \"4b41dbdfbda38cddf71e4974df1e1f1e522e7c01eba83dd173e899996d358778  \$root/courts-\$SNAPSHOT_DATE.csv.bz2\" | sha256sum -c -
