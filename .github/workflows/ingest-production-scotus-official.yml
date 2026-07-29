@@ -54,7 +54,7 @@ jobs:
             TERM_YEARS="24 23 22 21 20 19 18"
             LIMIT="100"
             RESUME="true"
-            BOUND_RESUME="true"
+            BOUND_RESUME="false"
           else
             TERM_YEARS="25"
             LIMIT="100"
