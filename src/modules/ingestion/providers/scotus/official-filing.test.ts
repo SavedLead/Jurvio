@@ -5,6 +5,13 @@ describe("official Supreme Court petition metadata", () => {
   it("extracts a source-bounded question presented", () => {
     expect(extractQuestionPresented(`QUESTION PRESENTED\nWhether a court may deny face-to-face confrontation without evidence and a case-specific finding of necessity.\nOPINIONS BELOW\nThe opinion is reported.`)).toBe("Whether a court may deny face-to-face confrontation without evidence and a case-specific finding of necessity.");
   });
+  it("stops at a related-proceedings heading used by official petitions", () => {
+    expect(extractQuestionPresented(`QUESTION PRESENTED
+Whether the Confrontation Clause permits a screen without an individualized finding of necessity.
+RELATED PROCEEDINGS
+Mississippi Supreme Court: Pitts v. State.`)).toBe("Whether the Confrontation Clause permits a screen without an individualized finding of necessity.");
+  });
+
   it("does not invent a question when the verified section is absent", () => {
     expect(extractQuestionPresented("Petition for a writ of certiorari")).toBeNull();
   });

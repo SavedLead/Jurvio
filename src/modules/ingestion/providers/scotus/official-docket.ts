@@ -77,6 +77,16 @@ function classifyDocument(title: string, url: string) {
   return "court_filing";
 }
 
+export function officialDocketSlug(value: string) {
+  const docketNumber = value.trim();
+  const original = /^(\d+),\s*Orig[.]?$/i.exec(docketNumber);
+  if (original?.[1]) return `22o${original[1]}`;
+  const linkedApplication = /^([0-9]{2}-[0-9]+)\s+\([0-9]{2}A[0-9]+\)$/i.exec(docketNumber);
+  if (linkedApplication?.[1]) return linkedApplication[1];
+  if (/^[0-9A-Za-z-]+$/.test(docketNumber)) return docketNumber;
+  throw new Error("Unsupported Supreme Court docket number");
+}
+
 function labeledValue(html: string, label: string) {
   const pattern = new RegExp(`${label.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*(?:<[^>]+>\\s*)*([^<\\r\\n]+)`, "i");
   return decodeHtml(pattern.exec(html)?.[1] ?? "") || null;
@@ -119,8 +129,8 @@ export function parseOfficialDocket(html: string, docketNumber: string, sourceUr
 }
 
 export async function fetchOfficialDocket(docketNumber: string): Promise<OfficialDocket> {
-  if (!/^[0-9A-Za-z-]+$/.test(docketNumber)) throw new Error("Unsupported Supreme Court docket number");
-  const sourceUri = `${OFFICIAL_ORIGIN}/docket/docketfiles/html/public/${docketNumber}.html`;
+  const docketSlug = officialDocketSlug(docketNumber);
+  const sourceUri = `${OFFICIAL_ORIGIN}/docket/docketfiles/html/public/${docketSlug}.html`;
   const response = await fetch(sourceUri, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
   if (!response.ok) throw new Error(`Supreme Court docket returned HTTP ${response.status}`);
   const length = Number(response.headers.get("content-length") ?? "0");
@@ -128,6 +138,6 @@ export async function fetchOfficialDocket(docketNumber: string): Promise<Officia
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength > MAX_DOCKET_BYTES) throw new Error("Supreme Court docket exceeds byte cap");
   const rawBody = new TextDecoder().decode(bytes);
-  return { ...parseOfficialDocket(rawBody, docketNumber, sourceUri),
+  return { ...parseOfficialDocket(rawBody, docketSlug, sourceUri),
     contentHash: createHash("sha256").update(bytes).digest("hex"), retrievedAt: new Date().toISOString() };
 }

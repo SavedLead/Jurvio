@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOfficialDocket } from "./official-docket";
+import { officialDocketSlug, parseOfficialDocket } from "./official-docket";
 
 const sourceUri = "https://www.supremecourt.gov/docket/docketfiles/html/public/24-1159.html";
 const fixture = `
@@ -25,6 +25,11 @@ describe("official Supreme Court docket parser", () => {
     expect(result.events[1]).toMatchObject({ eventType: "decision", filedOn: "2025-11-24" });
     expect(result.events[1]?.description).toContain("Opinion per curiam");
     expect(result.events[1]?.documents[0]?.url).toBe("https://www.supremecourt.gov/opinions/25pdf/24-1159_k536.pdf");
+  });
+
+  it("resolves original-jurisdiction and linked application docket labels", () => {
+    expect(officialDocketSlug("141, Orig.")).toBe("22o141");
+    expect(officialDocketSlug("21-588 (21A85)")).toBe("21-588");
   });
 
   it("rejects links outside the official Court origin", () => {
