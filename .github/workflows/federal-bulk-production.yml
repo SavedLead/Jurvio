@@ -93,7 +93,7 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' SNAPSHOT_DATE='$SNAPSHOT_DATE' docker compose -f docker-compose.production.yml exec -T app sh -lc '
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' SNAPSHOT_DATE='$SNAPSHOT_DATE' docker compose -f docker-compose.production.yml exec -T -e SNAPSHOT_DATE='$SNAPSHOT_DATE' app sh -lc '
             set -eu
             root=/var/lib/jurvio/artifacts/courtlistener/bulk/\$SNAPSHOT_DATE
             mkdir -p \"\$root\"
