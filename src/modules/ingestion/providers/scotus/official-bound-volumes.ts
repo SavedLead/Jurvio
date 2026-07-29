@@ -128,7 +128,7 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
     .sort((a, b) => a.startPage - b.startPage);
   const firstOpinionPage = unique[0]?.startPage ?? Number.POSITIVE_INFINITY;
   const firstOrdersPage = pages.findIndex((page, index) => index + 1 > firstOpinionPage
-    && /\\bORDERS\\b/i.test(page)
+    && /\bORDERS\b/i.test(page)
     && (reportPage(page, source.volume) ?? 0) >= ordersStart) + 1;
   const finalMeritsPage = firstOrdersPage > 0 ? firstOrdersPage - 1 : null;
   return unique.map((record, index): OfficialBoundOpinion => ({
