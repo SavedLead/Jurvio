@@ -1,6 +1,7 @@
 import { closeDb, db } from "@/db/client";
 import { ingestOfficialScotusOpinions } from "@/modules/ingestion/application/ingest-official-scotus-opinions";
 import { ingestOfficialScotusDockets } from "@/modules/ingestion/application/ingest-official-scotus-dockets";
+import { enrichOfficialScotusOpinionMetadata } from "@/modules/ingestion/application/enrich-official-scotus-opinion-metadata";
 import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
 import { publishVerifiedOfficialScotusOpinions } from "@/modules/publication/application/publish-official-scotus-opinions";
 
@@ -29,18 +30,22 @@ try {
     artifactStore,
     { termYear, limit, resume },
   );
+  const opinionRuns = [];
   const docketRuns = [];
   const publicationRuns = [];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const opinion = await enrichOfficialScotusOpinionMetadata(sql, { limit });
+    opinionRuns.push(opinion);
     const docket = await ingestOfficialScotusDockets(sql, artifactStore, { limit });
     docketRuns.push(docket);
     const publication = await publishVerifiedOfficialScotusOpinions(sql, { limit });
     publicationRuns.push(publication);
-    if (docket.selected === 0 && publication.selected === 0) break;
+    if (opinion.selected === 0 && docket.selected === 0 && publication.selected === 0) break;
   }
   console.log(JSON.stringify({
     mode: "ingest_enrich_publish",
     ingestion,
+    opinions: opinionRuns,
     dockets: docketRuns,
     publications: publicationRuns,
   }));
