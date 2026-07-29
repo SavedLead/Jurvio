@@ -3,3 +3,5 @@ Approved by David Rosenberg on 2026-07-29: run bounded 2026 production canary, 1
 Retry after deployment with exact stage reporting: 2026-07-29.
 
 Retry with SNAPSHOT_DATE passed into the app container: 2026-07-29.
+
+Retry retained snapshot with isolated worker containers after exit 137: 2026-07-29.

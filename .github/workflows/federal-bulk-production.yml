@@ -114,7 +114,7 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-bulk-courts.mjs '/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/courts-$SNAPSHOT_DATE.csv.bz2' '$SNAPSHOT_DATE'"
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/ingest-courtlistener-bulk-courts.mjs '/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/courts-$SNAPSHOT_DATE.csv.bz2' '$SNAPSHOT_DATE'"
 
       - name: Import federal filing-year cohort
         id: cohort
@@ -124,7 +124,7 @@ jobs:
         run: |
           EXTRA=
           if [ -n "$ROW_LIMIT" ]; then EXTRA="--row-limit=$ROW_LIMIT"; fi
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --include-bankruptcy=true $EXTRA" | tee /tmp/federal-bulk-result.json
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --include-bankruptcy=true $EXTRA" | tee /tmp/federal-bulk-result.json
 
       - name: Publish eligible cases
         id: publish
@@ -132,7 +132,7 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --limit=100 --delay-ms=0"
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --limit=100 --delay-ms=0"
 
       - name: Report production cohort
         if: always()
