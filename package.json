@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:jobs": "esbuild scripts/ingest-courtlistener-opinions.ts scripts/ingest-courtlistener-opinion-cluster.ts scripts/ingest-official-scotus-opinions.ts scripts/ingest-official-scotus-bound-volume.ts scripts/ingest-official-scotus-dockets.ts scripts/enrich-official-scotus-opinion-metadata.ts scripts/publish-official-scotus-opinions.ts scripts/extract-official-scotus-opinion-text.ts scripts/run-federal-ingestion-loop.ts --bundle --platform=node --format=esm --packages=bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outdir=dist/jobs --out-extension:.js=.mjs && node dist/jobs/ingest-courtlistener-opinions.mjs --limit 0 2>&1 | grep -q -- '--limit must be 1-500'",
+    "build:jobs": "esbuild scripts/ingest-courtlistener-opinions.ts scripts/ingest-courtlistener-opinion-cluster.ts scripts/ingest-official-scotus-opinions.ts scripts/ingest-official-scotus-bound-volume.ts scripts/ingest-official-scotus-dockets.ts scripts/enrich-official-scotus-opinion-metadata.ts scripts/publish-official-scotus-opinions.ts scripts/extract-official-scotus-opinion-text.ts scripts/run-federal-ingestion-loop.ts scripts/ingest-courtlistener-bulk-federal-dockets.ts --bundle --platform=node --format=esm --packages=bundle --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outdir=dist/jobs --out-extension:.js=.mjs && node dist/jobs/ingest-courtlistener-opinions.mjs --limit 0 2>&1 | grep -q -- '--limit must be 1-500'",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -20,6 +20,7 @@
     "ingest:opinion-cluster": "tsx scripts/ingest-courtlistener-opinion-cluster.ts",
     "ingest:opinions": "tsx scripts/ingest-courtlistener-opinions.ts",
     "ingest:bulk:courts": "tsx scripts/ingest-courtlistener-bulk-courts.ts",
+    "ingest:bulk:federal-dockets": "tsx scripts/ingest-courtlistener-bulk-federal-dockets.ts",
     "ingest:scotus:official": "tsx scripts/ingest-official-scotus-opinions.ts",
     "ingest:scotus:dockets": "tsx scripts/ingest-official-scotus-dockets.ts",
     "enrich:scotus:opinions": "tsx scripts/enrich-official-scotus-opinion-metadata.ts",
