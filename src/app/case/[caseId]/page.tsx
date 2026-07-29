@@ -143,7 +143,7 @@ export default async function CasePage({ params }: CasePageProps) {
               <p className="statusExplanation">{legalCase.statusExplanation}</p>
             ) : (
               <p className="verifiedFactSummary">
-                The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as Supreme Court docket {legalCase.docketNumber}.
+                The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as {legalCase.courtName} docket {legalCase.docketNumber}.
                 {readableDocuments.length > 0 ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.` : ""}
               </p>
             )}
@@ -278,7 +278,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {sourceDocument ? (
             <section>
               <p className="sectionKicker">Official source</p>
-              <p>This record includes material published by the Supreme Court of the United States.</p>
+              <p>This record includes source-linked court material.</p>
               <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
             </section>
           ) : null}
