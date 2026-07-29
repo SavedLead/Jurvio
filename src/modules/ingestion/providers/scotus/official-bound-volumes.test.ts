@@ -54,9 +54,9 @@ describe("official U.S. Reports bound-volume ingestion", () => {
   it("recovers canonical captions from opinion text and prefers final entered judgments", () => {
     const text = [
       "Texas; United States v. . . . . . . . . 547",
-      "OCTOBER TERM, 2015                               547\\n\\nSyllabus UNITED STATES et al. v. TEXAS et al. certiorari to the court of appeals\\nNo. 15-674. Decided June 23, 2016",
+      "OCTOBER TERM, 2015                               547\n\nSyllabus UNITED STATES et al. v. TEXAS et al. certiorari to the court of appeals\nNo. 15-674. Decided June 23, 2016",
       "Montana v. Wyoming . . . . . . . . 600",
-      "OCTOBER TERM, 2015                               600\\n\\nJudgment MONTANA v. WYOMING on bill of complaint\\nNo. 137, Orig. Decided May 2, 2011—Order and judgment entered March 21, 2016",
+      "OCTOBER TERM, 2015                               600\n\nJudgment MONTANA v. WYOMING on bill of complaint\nNo. 137, Orig. Decided May 2, 2011—Order and judgment entered March 21, 2016",
     ].join("\f");
     const records = parseOfficialBoundVolumeText(text, { volume: 579, termYear: "15",
       pdfUrl: "https://www.supremecourt.gov/opinions/boundvolumes/579BV.pdf" });
