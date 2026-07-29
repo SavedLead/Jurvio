@@ -54,7 +54,7 @@ jobs:
             TERM_YEARS="24 23 22 21 20 19 18"
             LIMIT="100"
             RESUME="true"
-            BOUND_RESUME="false"
+            BOUND_RESUME="true"
           else
             TERM_YEARS="25"
             LIMIT="100"
@@ -149,7 +149,7 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          for VOLUME in 577 578 579 580 581 582 583 584 585; do
+          for VOLUME in 574 575 576 577 578 579 580 581 582 583 584 585; do
             echo "Ingesting official U.S. Reports volume $VOLUME" | tee -a /tmp/scotus-ingestion.log
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='$BOUND_RESUME'" | tee -a /tmp/scotus-ingestion.log
           done
