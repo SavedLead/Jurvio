@@ -1,0 +1,130 @@
+name: Federal bulk production backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: Filing year to ingest and publish
+        required: true
+        default: "2026"
+      snapshot_date:
+        description: CourtListener snapshot date
+        required: true
+        default: "2026-03-31"
+      row_limit:
+        description: Optional bounded canary row limit; blank scans the full snapshot
+        required: false
+        default: "100"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: jurvio-production-federal-bulk
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 360
+    steps:
+      - name: Resolve bounded cohort
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_YEAR: ${{ inputs.year }}
+          INPUT_SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+          INPUT_ROW_LIMIT: ${{ inputs.row_limit }}
+        run: |
+          YEAR="$INPUT_YEAR"
+          SNAPSHOT_DATE="$INPUT_SNAPSHOT_DATE"
+          ROW_LIMIT="$INPUT_ROW_LIMIT"
+          case "$YEAR" in 19[0-9][0-9]|20[0-9][0-9]|2100) ;; *) exit 1 ;; esac
+          case "$SNAPSHOT_DATE" in ????-??-??) ;; *) exit 1 ;; esac
+          if [ -n "$ROW_LIMIT" ]; then
+            case "$ROW_LIMIT" in *[!0-9]*|0) exit 1 ;; esac
+          fi
+          printf 'YEAR=%s\nSNAPSHOT_DATE=%s\nROW_LIMIT=%s\n' \
+            "$YEAR" "$SNAPSHOT_DATE" "$ROW_LIMIT" >> "$GITHUB_ENV"
+
+      - name: Configure SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Resolve active production image
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
+            set -- $ids
+            test "$#" -eq 1
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ')"
+          test -n "$JURVIO_IMAGE"
+          printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Download and verify retained snapshot
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' SNAPSHOT_DATE='$SNAPSHOT_DATE' docker compose -f docker-compose.production.yml exec -T app sh -lc '
+            set -eu
+            root=/var/lib/jurvio/artifacts/courtlistener/bulk/\$SNAPSHOT_DATE
+            mkdir -p \"\$root\"
+            available_kb=\$(df -Pk /var/lib/jurvio/artifacts | awk \"NR==2 {print \\\$4}\")
+            test \"\$available_kb\" -ge 6500000
+            base=https://com-courtlistener-storage.s3-us-west-2.amazonaws.com/bulk-data
+            wget -c -O \"\$root/courts-\$SNAPSHOT_DATE.csv.bz2\" \"\$base/courts-\$SNAPSHOT_DATE.csv.bz2\"
+            wget -c -O \"\$root/dockets-\$SNAPSHOT_DATE.csv.bz2\" \"\$base/dockets-\$SNAPSHOT_DATE.csv.bz2\"
+            test \"\$(wc -c < \"\$root/courts-\$SNAPSHOT_DATE.csv.bz2\")\" -eq 81168
+            test \"\$(wc -c < \"\$root/dockets-\$SNAPSHOT_DATE.csv.bz2\")\" -eq 4979286998
+            echo \"4b41dbdfbda38cddf71e4974df1e1f1e522e7c01eba83dd173e899996d358778  \$root/courts-\$SNAPSHOT_DATE.csv.bz2\" | sha256sum -c -
+            echo \"490908419eb42111d8ca8aec16f0c4e1bfbaac0dc0b92e197ca3bcf91dd4279f  \$root/dockets-\$SNAPSHOT_DATE.csv.bz2\" | sha256sum -c -
+          '"
+
+      - name: Import verified courts
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-bulk-courts.mjs '/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/courts-$SNAPSHOT_DATE.csv.bz2' '$SNAPSHOT_DATE'"
+
+      - name: Import federal filing-year cohort
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          EXTRA=
+          if [ -n "$ROW_LIMIT" ]; then EXTRA="--row-limit=$ROW_LIMIT"; fi
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --include-bankruptcy=true $EXTRA" | tee /tmp/federal-bulk-result.json
+
+      - name: Publish eligible cases
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --limit=100 --delay-ms=0"
+
+      - name: Report production cohort
+        if: always()
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          corpus="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('year',$YEAR,'cases',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR),'published',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR AND publication='published'),'draft',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR AND publication='draft'),'docket_entries',(SELECT count(*) FROM docket_entry entry JOIN legal_case c ON c.id=entry.case_id WHERE extract(year from c.filed_on)=$YEAR),'documents',(SELECT count(*) FROM document document JOIN legal_case c ON c.id=document.case_id WHERE extract(year from c.filed_on)=$YEAR));\"")"
+          body="$(printf '### Federal bulk cohort\n\n- Year: `%s`\n- Snapshot: `%s`\n- Status: **%s**\n\nImporter:\n```json\n%s\n```\n\nProduction:\n```json\n%s\n```' "$YEAR" "$SNAPSHOT_DATE" "${{ job.status }}" "$(tail -n 1 /tmp/federal-bulk-result.json 2>/dev/null || true)" "$corpus")"
+          gh issue comment 106 --repo "$GITHUB_REPOSITORY" --body "$body"
