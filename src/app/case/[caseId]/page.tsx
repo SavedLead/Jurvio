@@ -50,6 +50,22 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
   };
 }
 
+function formatJusticeName(value: string) {
+  return value.toLocaleLowerCase("en-US").replaceAll(/(^|[\s'’\-])\p{L}/gu, (letter) => letter.toLocaleUpperCase("en-US"));
+}
+
+function formatJusticePosition(value: string) {
+  const labels: Record<string, string> = {
+    court_opinion: "Majority",
+    concurrence: "Concurrence",
+    concurrence_in_judgment: "Concurrence in judgment",
+    dissent: "Dissent",
+    concurrence_and_dissent: "Concurrence and dissent",
+    not_participating: "Did not participate",
+  };
+  return labels[value] ?? value.replaceAll("_", " ");
+}
+
 export default async function CasePage({ params }: CasePageProps) {
   const loaded = await loadCase(params);
   if (!loaded) notFound();
@@ -183,8 +199,24 @@ export default async function CasePage({ params }: CasePageProps) {
                 {decisionLabel ? <strong className="decisionLabel">{decisionLabel}</strong> : null}
               </div>
               {opinionType ? <p className="verifiedDetail">Opinion type: <strong>{opinionType}</strong></p> : null}
-              {legalCase.decisionLineup?.joins?.length ? <p className="verifiedDetail">Joined by: <strong>{legalCase.decisionLineup.joins.join(", ")}</strong></p> : null}
-              {legalCase.decisionLineup?.separateOpinions?.map((opinion) => <p className="verifiedDetail" key={opinion.author + opinion.type}>{opinion.author}: <strong>{opinion.type.replaceAll("_", " ")}</strong></p>)}
+              {legalCase.decisionLineup?.voteBreakdown?.label ? (
+                <p className="verifiedDetail">Final vote: <strong>{legalCase.decisionLineup.voteBreakdown.label}</strong></p>
+              ) : null}
+              {legalCase.decisionLineup?.justiceVotes?.length ? (
+                <dl className="caseStatusGrid justiceVoteGrid" aria-label="Justice votes">
+                  {legalCase.decisionLineup.justiceVotes.map((vote) => (
+                    <div key={vote.justice}>
+                      <dt>{formatJusticeName(vote.justice)}</dt>
+                      <dd>{formatJusticePosition(vote.position)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <>
+                  {legalCase.decisionLineup?.joins?.length ? <p className="verifiedDetail">Joined by: <strong>{legalCase.decisionLineup.joins.map(formatJusticeName).join(", ")}</strong></p> : null}
+                  {legalCase.decisionLineup?.separateOpinions?.map((opinion) => <p className="verifiedDetail" key={opinion.author + opinion.type}>{formatJusticeName(opinion.author)}: <strong>{formatJusticePosition(opinion.type)}</strong></p>)}
+                </>
+              )}
             </section>
           ) : null}
 
