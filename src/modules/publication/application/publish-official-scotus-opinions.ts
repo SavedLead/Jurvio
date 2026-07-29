@@ -268,7 +268,14 @@ export async function publishVerifiedOfficialScotusOpinions(
           RETURNING id, public_id
         `;
         if (!document) throw new Error("Official Supreme Court PDF document was not persisted");
-        await tx`UPDATE document SET publication = 'published', updated_at = now() WHERE id = ${document.id}`;
+        await tx`
+          UPDATE document
+          SET case_id = ${existing.case_id}, title = ${`${normalizedCaseName} opinion`},
+            filed_on = ${candidate.filed_on}, content_hash = ${candidate.source_content_hash},
+            source_artifact_id = ${candidate.opinion_artifact_id},
+            publication = 'published', updated_at = now()
+          WHERE id = ${document.id}
+        `;
         await tx`
           INSERT INTO document_identifier (document_id, provider_id, identifier_type, identifier_value)
           VALUES (${document.id}, ${candidate.provider_id}, 'scotus_official_opinion', ${candidate.source_record_id})
