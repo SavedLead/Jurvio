@@ -106,7 +106,8 @@ export async function extractOfficialScotusOpinionText(
        AND other_identifier.identifier_type = 'scotus_official_opinion'
        AND other_identifier.identifier_value = other_candidate.source_record_id
       JOIN document other_document ON other_document.id = other_identifier.document_id
-      WHERE other_document.source_artifact_id = document.source_artifact_id
+      JOIN raw_artifact other_artifact ON other_artifact.id = other_document.source_artifact_id
+      WHERE other_artifact.content_hash = artifact.content_hash
         AND other_candidate.source_page_start > candidate.source_page_start
     ) next_candidate ON true
     LEFT JOIN document_content content ON content.document_id = document.id
