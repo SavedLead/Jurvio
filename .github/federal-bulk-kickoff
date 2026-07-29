@@ -5,3 +5,5 @@ Retry after deployment with exact stage reporting: 2026-07-29.
 Retry with SNAPSHOT_DATE passed into the app container: 2026-07-29.
 
 Retry retained snapshot with isolated worker containers after exit 137: 2026-07-29.
+
+Retry by reusing complete checksum-verified retained snapshot: 2026-07-29.
