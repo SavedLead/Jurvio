@@ -59,6 +59,7 @@ jobs:
             "$YEAR" "$SNAPSHOT_DATE" "$ROW_LIMIT" >> "$GITHUB_ENV"
 
       - name: Configure SSH
+        id: ssh
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
           DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
@@ -71,6 +72,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Resolve active production image
+        id: image
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -86,6 +88,7 @@ jobs:
           printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
 
       - name: Download and verify retained snapshot
+        id: download
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -106,6 +109,7 @@ jobs:
           '"
 
       - name: Import verified courts
+        id: courts
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -113,6 +117,7 @@ jobs:
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-bulk-courts.mjs '/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/courts-$SNAPSHOT_DATE.csv.bz2' '$SNAPSHOT_DATE'"
 
       - name: Import federal filing-year cohort
+        id: cohort
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -122,6 +127,7 @@ jobs:
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --include-bankruptcy=true $EXTRA" | tee /tmp/federal-bulk-result.json
 
       - name: Publish eligible cases
+        id: publish
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -136,5 +142,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           corpus="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('year',$YEAR,'cases',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR),'published',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR AND publication='published'),'draft',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR AND publication='draft'),'docket_entries',(SELECT count(*) FROM docket_entry entry JOIN legal_case c ON c.id=entry.case_id WHERE extract(year from c.filed_on)=$YEAR),'documents',(SELECT count(*) FROM document document JOIN legal_case c ON c.id=document.case_id WHERE extract(year from c.filed_on)=$YEAR));\"")"
-          body="$(printf '### Federal bulk cohort\n\n- Year: `%s`\n- Snapshot: `%s`\n- Status: **%s**\n\nImporter:\n```json\n%s\n```\n\nProduction:\n```json\n%s\n```' "$YEAR" "$SNAPSHOT_DATE" "${{ job.status }}" "$(tail -n 1 /tmp/federal-bulk-result.json 2>/dev/null || true)" "$corpus")"
+          body="$(printf '### Federal bulk cohort\n\n- Year: `%s`\n- Snapshot: `%s`\n- Status: **%s**\n- Run: %s\n- Steps: ssh=`%s`, image=`%s`, download=`%s`, courts=`%s`, cohort=`%s`, publish=`%s`\n\nImporter:\n```json\n%s\n```\n\nProduction:\n```json\n%s\n```' "$YEAR" "$SNAPSHOT_DATE" "${{ job.status }}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "${{ steps.ssh.outcome }}" "${{ steps.image.outcome }}" "${{ steps.download.outcome }}" "${{ steps.courts.outcome }}" "${{ steps.cohort.outcome }}" "${{ steps.publish.outcome }}" "$(tail -n 1 /tmp/federal-bulk-result.json 2>/dev/null || true)" "$corpus")"
           gh issue comment 106 --repo "$GITHUB_REPOSITORY" --body "$body"
