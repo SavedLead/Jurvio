@@ -73,7 +73,8 @@ function captionIndex(text: string, ordersStart: number) {
 
 function opinionPageCaption(page: string) {
   const normalized = page.replaceAll(/\s+/g, " ").trim();
-  const match = /(?:Syllabus\s+)?([A-Z][A-Z0-9 .,'’&()-]+?\bv\.\s+[A-Z][A-Z0-9 .,'’&()-]+?)\s+(?:certiorari|appeal|on\s+(?:petition|exceptions|writ|bill))/i.exec(normalized);
+  const heading = normalized.replace(/^.*?\b(?:Syllabus|Judgment)\s+(?=[A-Z])/i, "");
+  const match = /([A-Z][A-Z0-9 .,'’&()-]+?\bv\.\s+[A-Z][A-Z0-9 .,'’&()-]+?)\s+(?:certiorari|appeal|on\s+(?:petition|exceptions|writ|bill))/i.exec(heading);
   if (!match) return null;
   return (match[1] ?? "")
     .replaceAll(/\s+et al\.?/gi, "")
