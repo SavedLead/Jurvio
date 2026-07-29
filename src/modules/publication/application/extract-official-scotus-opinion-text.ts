@@ -18,6 +18,7 @@ interface ExtractionCandidate {
   case_caption: string;
   court_name: string;
   docket_number: string;
+  official_citation: string | null;
   title: string;
   filed_on: string | null;
   precedential_status: string | null;
@@ -58,6 +59,26 @@ export function resolveOfficialScotusPageEnd(
   return nextPageStart !== null ? nextPageStart - 1 : null;
 }
 
+export function trimOfficialScotusBoundVolumeText(
+  text: string,
+  officialCitation: string | null,
+) {
+  if (officialCitation === null) return text;
+  const normalizedCitation = officialCitation.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
+  const citationMarker = `citeas${normalizedCitation}`;
+  const pages = text.split("\f");
+  const retained: string[] = [];
+  let sawOwnCitation = false;
+  for (const page of pages) {
+    const normalizedPage = page.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
+    const hasOwnCitation = normalizedPage.includes(citationMarker);
+    if (sawOwnCitation && !hasOwnCitation && /october\s+term,\s*20\d{2}/i.test(page)) break;
+    retained.push(page);
+    if (hasOwnCitation) sawOwnCitation = true;
+  }
+  return sawOwnCitation ? retained.join("\f") : text;
+}
+
 export function officialOpinionTextToHtml(text: string) {
   const escape = (value: string) => value
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -81,7 +102,8 @@ export async function extractOfficialScotusOpinionText(
     SELECT document.id AS document_id, document.public_id AS document_public_id,
       legal_case.id AS case_id, legal_case.public_id AS case_public_id,
       court.id AS court_id, cluster.id AS cluster_id, legal_case.caption AS case_caption,
-      court.name AS court_name, legal_case.docket_number, document.title,
+      court.name AS court_name, legal_case.docket_number, legal_case.official_citation,
+      document.title,
       document.filed_on::text AS filed_on, cluster.precedential_status,
       judicial.opinion_type, cluster.citation_count, artifact.content_hash,
       artifact.object_key, artifact.id AS source_artifact_id,
@@ -175,7 +197,10 @@ export async function extractOfficialScotusOpinionText(
       const { stdout } = await execFileAsync("pdftotext", extractionArgs, {
         encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000,
       });
-      const validation = validateOfficialScotusText(stdout, candidate.docket_number);
+      const structurallyBoundText = candidate.source_page_end === null
+        ? trimOfficialScotusBoundVolumeText(stdout, candidate.official_citation)
+        : stdout;
+      const validation = validateOfficialScotusText(structurallyBoundText, candidate.docket_number);
       if (!validation.valid) {
         held += 1;
         records.push({ caseId: candidate.case_public_id, documentId: candidate.document_public_id,
