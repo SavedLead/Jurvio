@@ -8,17 +8,26 @@ on:
   workflow_dispatch:
     inputs:
       year:
-        description: Filing year to ingest and publish
+        description: Filing year to ingest, enrich, and publish
         required: true
         default: "2026"
+      jurisdiction:
+        description: Federal jurisdiction segment (F appellate, FD district, FB bankruptcy)
+        required: true
+        type: choice
+        default: F
+        options:
+          - F
+          - FD
+          - FB
       snapshot_date:
         description: CourtListener snapshot date
         required: true
         default: "2026-03-31"
       row_limit:
-        description: Optional bounded canary row limit; blank scans the full snapshot
-        required: false
-        default: "100"
+        description: Bounded production cohort size
+        required: true
+        default: "1000"
 
 permissions:
   contents: read
@@ -26,7 +35,7 @@ permissions:
 
 concurrency:
   group: jurvio-production-federal-bulk
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ingest:
@@ -38,25 +47,27 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_YEAR: ${{ inputs.year }}
+          INPUT_JURISDICTION: ${{ inputs.jurisdiction }}
           INPUT_SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
           INPUT_ROW_LIMIT: ${{ inputs.row_limit }}
         run: |
           if [ "$EVENT_NAME" = "push" ]; then
             YEAR=2026
+            JURISDICTION=F
             SNAPSHOT_DATE=2026-03-31
-            ROW_LIMIT=100
+            ROW_LIMIT=1000
           else
             YEAR="$INPUT_YEAR"
+            JURISDICTION="$INPUT_JURISDICTION"
             SNAPSHOT_DATE="$INPUT_SNAPSHOT_DATE"
             ROW_LIMIT="$INPUT_ROW_LIMIT"
           fi
           case "$YEAR" in 19[0-9][0-9]|20[0-9][0-9]|2100) ;; *) exit 1 ;; esac
+          case "$JURISDICTION" in F|FD|FB) ;; *) exit 1 ;; esac
           case "$SNAPSHOT_DATE" in ????-??-??) ;; *) exit 1 ;; esac
-          if [ -n "$ROW_LIMIT" ]; then
-            case "$ROW_LIMIT" in *[!0-9]*|0) exit 1 ;; esac
-          fi
-          printf 'YEAR=%s\nSNAPSHOT_DATE=%s\nROW_LIMIT=%s\n' \
-            "$YEAR" "$SNAPSHOT_DATE" "$ROW_LIMIT" >> "$GITHUB_ENV"
+          case "$ROW_LIMIT" in 100|1000|5000) ;; *) exit 1 ;; esac
+          printf 'YEAR=%s\nJURISDICTION=%s\nSNAPSHOT_DATE=%s\nROW_LIMIT=%s\n' \
+            "$YEAR" "$JURISDICTION" "$SNAPSHOT_DATE" "$ROW_LIMIT" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         id: ssh
@@ -71,13 +82,13 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Resolve active production image containing this run
+      - name: Resolve active production image containing unified cohort jobs
         id: image
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REQUIRED_IMAGE_ANCESTOR: 7d2f98751237db32f79cde4b24105690f836cff2
+          REQUIRED_IMAGE_ANCESTOR: ${{ github.sha }}
         run: |
           previous=
           stable=0
@@ -107,7 +118,8 @@ jobs:
             sleep 15
           done
           if [ "$stable" -lt 4 ]; then
-            printf 'Production image %s (%s) does not contain workflow commit %s\n'               "$candidate_sha" "$candidate_status" "$GITHUB_SHA" >&2
+            printf 'Production image %s (%s) does not contain workflow commit %s\n' \
+              "$candidate_sha" "$candidate_status" "$REQUIRED_IMAGE_ANCESTOR" >&2
             exit 1
           fi
           JURVIO_IMAGE="$previous"
@@ -146,24 +158,49 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/ingest-courtlistener-bulk-courts.mjs '/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/courts-$SNAPSHOT_DATE.csv.bz2' '$SNAPSHOT_DATE'"
 
-      - name: Import federal filing-year cohort
+      - name: Import bounded filing-year jurisdiction cohort
         id: cohort
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          EXTRA=
-          if [ -n "$ROW_LIMIT" ]; then EXTRA="--row-limit=$ROW_LIMIT"; fi
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=12 "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --include-bankruptcy=true $EXTRA" | tee /tmp/federal-bulk-result.json
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=12 "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/ingest-courtlistener-bulk-federal-dockets.mjs --file='/var/lib/jurvio/artifacts/courtlistener/bulk/$SNAPSHOT_DATE/dockets-$SNAPSHOT_DATE.csv.bz2' --snapshot-date='$SNAPSHOT_DATE' --year='$YEAR' --jurisdiction='$JURISDICTION' --include-bankruptcy=true --row-limit='$ROW_LIMIT'" | tee /tmp/federal-bulk-result.json
 
-      - name: Publish eligible cases
+      - name: Enrich the same draft cohort before publication
+        id: enrich
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -o pipefail
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=12 "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/enrich-bulk-federal-cohort.mjs --year='$YEAR' --jurisdiction='$JURISDICTION' --limit='$ROW_LIMIT' --delay-ms=1000" | tee /tmp/federal-enrichment-result.json
+
+      - name: Reconcile enrichment before publication
+        id: reconcile
+        run: |
+          import_json="$(tail -n 1 /tmp/federal-bulk-result.json)"
+          enrich_json="$(tail -n 1 /tmp/federal-enrichment-result.json)"
+          accepted="$(jq -er '.accepted' <<<"$import_json")"
+          selected="$(jq -er '.selected' <<<"$enrich_json")"
+          enriched="$(jq -er '.enriched' <<<"$enrich_json")"
+          failed="$(jq -er '.failed' <<<"$enrich_json")"
+          test "$accepted" -gt 0
+          test "$selected" -gt 0
+          tolerance=$((accepted / 100))
+          if [ "$tolerance" -lt 10 ]; then tolerance=10; fi
+          test "$selected" -ge $((accepted - tolerance))
+          test "$enriched" -eq $((selected - failed))
+          test $((failed * 100)) -le "$selected"
+
+      - name: Publish eligible enriched cases
         id: publish
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --limit=100 --delay-ms=0"
+          publication_limit=$((ROW_LIMIT + 100))
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm --no-deps -T app node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --limit='$publication_limit' --delay-ms=0"
 
       - name: Report production cohort
         if: always()
@@ -172,6 +209,6 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          corpus="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('year',$YEAR,'cases',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR),'published',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR AND publication='published'),'draft',(SELECT count(*) FROM legal_case WHERE extract(year from filed_on)=$YEAR AND publication='draft'),'docket_entries',(SELECT count(*) FROM docket_entry entry JOIN legal_case c ON c.id=entry.case_id WHERE extract(year from c.filed_on)=$YEAR),'documents',(SELECT count(*) FROM document document JOIN legal_case c ON c.id=document.case_id WHERE extract(year from c.filed_on)=$YEAR));\"")"
-          body="$(printf '### Federal bulk cohort\n\n- Year: `%s`\n- Snapshot: `%s`\n- Status: **%s**\n- Run: %s\n- Steps: ssh=`%s`, image=`%s`, download=`%s`, courts=`%s`, cohort=`%s`, publish=`%s`\n\nImporter:\n```json\n%s\n```\n\nProduction:\n```json\n%s\n```' "$YEAR" "$SNAPSHOT_DATE" "${{ job.status }}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "${{ steps.ssh.outcome }}" "${{ steps.image.outcome }}" "${{ steps.download.outcome }}" "${{ steps.courts.outcome }}" "${{ steps.cohort.outcome }}" "${{ steps.publish.outcome }}" "$(tail -n 1 /tmp/federal-bulk-result.json 2>/dev/null || true)" "$corpus")"
+          corpus="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('year',$YEAR,'jurisdiction','$JURISDICTION','cases',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'published',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION' AND c.publication='published'),'draft',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION' AND c.publication='draft'),'parties',(SELECT count(*) FROM party_appearance party JOIN legal_case c ON c.id=party.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'docket_entries',(SELECT count(*) FROM docket_entry entry JOIN legal_case c ON c.id=entry.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'documents',(SELECT count(*) FROM document document JOIN legal_case c ON c.id=document.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'));\"")"
+          body="$(printf '### Federal unified bulk cohort\n\n- Year: `%s`\n- Jurisdiction: `%s`\n- Snapshot: `%s`\n- Status: **%s**\n- Run: %s\n- Steps: ssh=`%s`, image=`%s`, download=`%s`, courts=`%s`, cohort=`%s`, enrich=`%s`, reconcile=`%s`, publish=`%s`\n\nImporter:\n```json\n%s\n```\n\nEnrichment:\n```json\n%s\n```\n\nProduction:\n```json\n%s\n```' "$YEAR" "$JURISDICTION" "$SNAPSHOT_DATE" "${{ job.status }}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "${{ steps.ssh.outcome }}" "${{ steps.image.outcome }}" "${{ steps.download.outcome }}" "${{ steps.courts.outcome }}" "${{ steps.cohort.outcome }}" "${{ steps.enrich.outcome }}" "${{ steps.reconcile.outcome }}" "${{ steps.publish.outcome }}" "$(tail -n 1 /tmp/federal-bulk-result.json 2>/dev/null || true)" "$(tail -n 1 /tmp/federal-enrichment-result.json 2>/dev/null || true)" "$corpus")"
           gh issue comment 106 --repo "$GITHUB_REPOSITORY" --body "$body"
