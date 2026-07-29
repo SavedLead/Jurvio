@@ -17,3 +17,5 @@ Retry 2026 canary after verified bulk provenance publication fix: 2026-07-29.
 Retry after deployed-image ancestry verification: 2026-07-29.
 
 Retry against image containing publication fix 7d2f987: 2026-07-29.
+
+Start approved 2026 federal appellate fully enriched production tranche: 1,000 source rows, fail closed above 1%, no paid AI/OCR/PACER/new infrastructure: 2026-07-29.
