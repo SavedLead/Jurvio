@@ -129,6 +129,35 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-courtlistener-opinions.mjs --court scotus --since 1791-01-01 --limit 500 --order newest --delay-ms 100"
 
+      - name: Relay blocked official dockets into the artifact volume
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          MIRROR_DIR="$(mktemp -d)"
+          trap 'rm -rf "$MIRROR_DIR"' EXIT
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT legal_case.docket_number FROM legal_case JOIN court ON court.id = legal_case.court_id LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND (enrichment.completeness->>'docketEvents') IS DISTINCT FROM 'true' ORDER BY legal_case.decided_on DESC NULLS LAST;\"" > "$MIRROR_DIR/dockets.txt"
+          DOWNLOADED=0
+          while IFS= read -r DOCKET; do
+            case "$DOCKET" in
+              *[!0-9A-Za-z,.\ -]*|'') continue ;;
+            esac
+            SLUG="$DOCKET"
+            if [[ "$DOCKET" =~ ^([0-9]+),[[:space:]]*Orig\.?$ ]]; then
+              SLUG="22o${BASH_REMATCH[1]}"
+            elif [[ "$DOCKET" =~ ^([0-9]{2}-[0-9]+)[[:space:]]+\([0-9]{2}A[0-9]+\)$ ]]; then
+              SLUG="${BASH_REMATCH[1]}"
+            fi
+            if curl --fail --silent --show-error --location --retry 2 --max-time 30               -A "Mozilla/5.0 (compatible; JurvioBot/1.0; +https://jurvio.com)"               -H "Accept: text/html,application/xhtml+xml"               "https://www.supremecourt.gov/docket/docketfiles/html/public/$SLUG.html"               -o "$MIRROR_DIR/$SLUG.html"; then
+              DOWNLOADED=$((DOWNLOADED + 1))
+            fi
+          done < "$MIRROR_DIR/dockets.txt"
+          tar -C "$MIRROR_DIR" -czf /tmp/scotus-docket-mirror.tgz --exclude=dockets.txt .
+          scp /tmp/scotus-docket-mirror.tgz "$DO_USER@$DO_HOST:/tmp/scotus-docket-mirror.tgz"
+          ssh "$DO_USER@$DO_HOST" "set -eu; STAGE=\$(mktemp -d); trap 'rm -rf \"\$STAGE\" /tmp/scotus-docket-mirror.tgz' EXIT; tar -xzf /tmp/scotus-docket-mirror.tgz -C \"\$STAGE\"; CONTAINER_ID=\$(cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml ps -q app); test -n \"\$CONTAINER_ID\"; docker exec \"\$CONTAINER_ID\" mkdir -p /var/lib/jurvio/artifacts/scotus-docket-mirror; docker cp \"\$STAGE/.\" \"\$CONTAINER_ID:/var/lib/jurvio/artifacts/scotus-docket-mirror/\""
+          echo "Relayed $DOWNLOADED official Supreme Court dockets."
+
       - name: Ingest, fully enrich, and publish verified SCOTUS cases
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
