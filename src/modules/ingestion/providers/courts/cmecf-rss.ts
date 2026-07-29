@@ -40,8 +40,9 @@ export function parseCmecfRss(xml: string, court: FederalCourtSource): DirectCou
     const docketNumber = docketFrom(exactText);
     const sourceUrl = href(item) ?? court.rssUrl;
     const filed = tag(item, "pubDate") || tag(item, "updated") || tag(item, "published");
-    const filedAt = new Date(filed).toISOString();
-    if (!docketNumber || !sourceUrl || !exactText || Number.isNaN(Date.parse(filedAt))) continue;
+    const filedTimestamp = Date.parse(filed);
+    if (!docketNumber || !sourceUrl || !exactText || Number.isNaN(filedTimestamp)) continue;
+    const filedAt = new Date(filedTimestamp).toISOString();
     const officialEventId = tag(item, "guid") || tag(item, "id") || null;
     const eventType = classifyDirectEvent(exactText);
     const identity = stableDirectEventIdentity({
