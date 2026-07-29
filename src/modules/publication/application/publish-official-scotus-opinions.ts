@@ -366,26 +366,8 @@ export async function publishVerifiedOfficialScotusOpinions(
 
     const first = compatible[0];
     if (!first) continue;
-    const [docketReadiness] = await sql<{ ready: boolean }[]>`
-      SELECT COALESCE(
-        completeness->>'docketEvents' = 'true'
-        AND completeness->>'docketDocuments' = 'true',
-        false
-      ) AS ready
-      FROM scotus_case_enrichment
-      WHERE case_id = ${first.case_id} AND verification = 'verified'
-    `;
-    if (!docketReadiness?.ready) {
-      held += 1;
-      await sql`
-        UPDATE official_opinion_candidate
-        SET reviewer_notes = 'Held: official docket and filing enrichment has not completed',
-          last_seen_at = now()
-        WHERE id = ${candidate.id}
-      `;
-      continue;
-    }
-
+    // Docket events, questions, briefs, transcripts, and audio are valuable optional
+    // enrichment. Their source availability must never block a verified opinion case.
     const documentIds = [...new Set(compatible.map((match) => match.document_id))];
     const documentPublicIds = [...new Set(compatible.map((match) => match.document_public_id))];
 
