@@ -7,6 +7,7 @@ export interface PublicOpinion {
   documentPublicId: string;
   caseCaption: string;
   docketNumber: string;
+  officialCitation: string | null;
   courtName: string;
   title: string;
   filedOn: string | null;
@@ -34,6 +35,7 @@ export async function getPublicOpinion(
       document.public_id AS "documentPublicId",
       legal_case.caption AS "caseCaption",
       legal_case.docket_number AS "docketNumber",
+      legal_case.official_citation AS "officialCitation",
       court.name AS "courtName",
       document.title,
       document.filed_on::text AS "filedOn",
