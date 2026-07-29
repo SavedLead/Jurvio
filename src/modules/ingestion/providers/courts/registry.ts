@@ -74,7 +74,8 @@ export const FEDERAL_COURT_REGISTRY: readonly FederalCourtSource[] = [{
   calendarUrl: "https://www.njd.uscourts.gov/court-info/court-calendars",
   timeZone: "America/New_York",
   pollingMinutes: 5,
-  adapterType: "cmecf-rss-v1",, {
+  adapterType: "cmecf-rss-v1",
+}, {
   name: "United States District Court for the Northern District of California",
   jurvioCourtCode: "cand",
   officialCourtCode: "cand",
@@ -128,7 +129,6 @@ export const FEDERAL_COURT_REGISTRY: readonly FederalCourtSource[] = [{
   timeZone: "America/Los_Angeles",
   pollingMinutes: 5,
   adapterType: "cmecf-rss-v1",
-}
 }] as const;
 
 export function federalCourtByCode(code: string): FederalCourtSource | null {
