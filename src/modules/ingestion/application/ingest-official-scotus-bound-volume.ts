@@ -88,6 +88,31 @@ export async function ingestOfficialScotusBoundVolume(
             source_pdf_uri = EXCLUDED.source_pdf_uri, source_content_hash = EXCLUDED.source_content_hash,
             listing_artifact_id = EXCLUDED.listing_artifact_id, opinion_artifact_id = EXCLUDED.opinion_artifact_id,
             source_page_start = EXCLUDED.source_page_start, source_page_end = EXCLUDED.source_page_end,
+            review_status = CASE WHEN (
+              official_opinion_candidate.docket_number,
+              official_opinion_candidate.case_name,
+              official_opinion_candidate.filed_on,
+              official_opinion_candidate.citation
+            ) IS DISTINCT FROM (
+              EXCLUDED.docket_number, EXCLUDED.case_name, EXCLUDED.filed_on, EXCLUDED.citation
+            ) THEN 'pending_review' ELSE official_opinion_candidate.review_status END,
+            reviewed_at = CASE WHEN (
+              official_opinion_candidate.docket_number,
+              official_opinion_candidate.case_name,
+              official_opinion_candidate.filed_on,
+              official_opinion_candidate.citation
+            ) IS DISTINCT FROM (
+              EXCLUDED.docket_number, EXCLUDED.case_name, EXCLUDED.filed_on, EXCLUDED.citation
+            ) THEN NULL ELSE official_opinion_candidate.reviewed_at END,
+            reviewer_notes = CASE WHEN (
+              official_opinion_candidate.docket_number,
+              official_opinion_candidate.case_name,
+              official_opinion_candidate.filed_on,
+              official_opinion_candidate.citation
+            ) IS DISTINCT FROM (
+              EXCLUDED.docket_number, EXCLUDED.case_name, EXCLUDED.filed_on, EXCLUDED.citation
+            ) THEN 'Authoritative bound-volume metadata changed; deterministic republication required.'
+              ELSE official_opinion_candidate.reviewer_notes END,
             last_seen_at = now()
         `;
         await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, documentCount: 1 });
