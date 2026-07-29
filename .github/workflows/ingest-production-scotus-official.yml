@@ -154,7 +154,19 @@ jobs:
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='$BOUND_RESUME'" | tee -a /tmp/scotus-ingestion.log
           done
 
-      - name: Publish exact verified matches
+      - name: Prepare official dockets and verified filings before publication
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -o pipefail
+          for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
+            echo "Enriching verified Supreme Court dockets batch $ATTEMPT"
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-official-scotus-dockets.mjs --limit=100"
+          done
+
+
+      - name: Publish only fully enriched verified matches
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -164,17 +176,6 @@ jobs:
           for ATTEMPT in 1 2 3 4 5 6 7 8; do
             echo "Publishing verified Supreme Court batch $ATTEMPT" | tee -a /tmp/scotus-publication.log
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/publish-official-scotus-opinions.mjs --limit='$LIMIT'" | tee -a /tmp/scotus-publication.log
-          done
-
-      - name: Ingest official dockets and verified filings
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          set -o pipefail
-          for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
-            echo "Enriching verified Supreme Court dockets batch $ATTEMPT"
-            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-official-scotus-dockets.mjs --limit=100"
           done
 
       - name: Enrich verified opinion metadata
