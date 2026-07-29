@@ -118,6 +118,11 @@ export function extractOfficialOpinionMetadata(sourceText: string): OfficialOpin
     };
     if (record.author && !separateOpinions.some((item) => item.author === record.author && item.type === record.type)) separateOpinions.push(record);
   }
+  for (const match of text.matchAll(/(?:JUSTICE\s+)?([A-Z][A-Z'’\-]+),?\s*(?:C\.\s*J\.|J\.)?[,]?\s+filed\s+(?:an?\s+)?(concurring in part and dissenting in part|concurring in the judgment|concurring|dissenting)\s+opinion([^\n]*)/gi)) {
+    const joinFragment = /in which\s+([\s\S]*?)\s+joined/i.exec(match[3] ?? "")?.[1] ?? "";
+    const record = { author: justiceName(match[1] ?? ""), type: positionType(match[2] ?? ""), joins: justiceNames(joinFragment) };
+    if (record.author && record.author !== author && !separateOpinions.some((item) => item.author === record.author && item.type === record.type)) separateOpinions.push(record);
+  }
   for (const match of text.matchAll(/JUSTICE\s+([A-Z][A-Z'’\-]+)[^\n]{0,100}\b(concurring in part and dissenting in part|concurring in the judgment|concurring|dissenting)\b/gi)) {
     const record = { author: justiceName(match[1] ?? ""), type: positionType(match[2] ?? ""), joins: [] };
     if (record.author && record.author !== author && !separateOpinions.some((item) => item.author === record.author && item.type === record.type)) separateOpinions.push(record);
