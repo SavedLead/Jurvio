@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import "./globals.css";
 import "./scotus-layout.css";
+import { PrivacySafeAnalytics } from "./privacy-safe-analytics";
 
 const primaryNavigation = [
   ["Research", "/search"], ["Cases", "/cases"], ["Parties", "/parties"],
@@ -39,6 +40,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en"><body>
+      <PrivacySafeAnalytics />
       <header className="siteHeader">
         <Link className="brand" href="/" aria-label="Jurvio home">
           <Image className="brandWordmark" src="/brand/jurvio-wordmark-light.svg" width={333} height={112} priority alt="Jurvio" />
