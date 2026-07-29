@@ -54,7 +54,6 @@ export async function ingestCourtListenerBulkFederalDockets(
 
   for await (const docket of readBulkDockets(options.filePath)) {
     rowsRead += 1;
-    if (options.rowLimit && rowsRead > options.rowLimit) break;
 
     const filedOn = safeDate(docket.date_filed);
     if (!filedOn || Number(filedOn.slice(0, 4)) !== options.year) {
@@ -74,6 +73,7 @@ export async function ingestCourtListenerBulkFederalDockets(
       heldNonFederal += 1;
       continue;
     }
+    if (options.rowLimit && accepted + failed >= options.rowLimit) break;
 
     try {
       const sourceUri = bulkDocketSourceUri(options.snapshotDate, docket.id);
