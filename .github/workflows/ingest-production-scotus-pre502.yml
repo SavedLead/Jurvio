@@ -1,6 +1,11 @@
 name: Ingest pre-502 SCOTUS cases
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ingest-production-scotus-pre502.yml"
   workflow_dispatch:
     inputs:
       newest_volume:
@@ -28,8 +33,8 @@ jobs:
     steps:
       - name: Validate range
         env:
-          NEWEST: ${{ inputs.newest_volume }}
-          OLDEST: ${{ inputs.oldest_volume }}
+          NEWEST: ${{ inputs.newest_volume || '501' }}
+          OLDEST: ${{ inputs.oldest_volume || '501' }}
         run: |
           set -euo pipefail
           test "$NEWEST" -ge 2
