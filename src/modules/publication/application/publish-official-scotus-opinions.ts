@@ -113,17 +113,6 @@ export async function publishVerifiedOfficialScotusOpinions(
     const clusterIds = new Set(compatible.map((match) => match.cluster_id));
 
     if (compatible.length === 0) {
-      held += 1;
-      await sql`
-        UPDATE official_opinion_candidate
-        SET reviewer_notes = 'Held: verified official opinion is waiting for readable canonical text and enrichment',
-          last_seen_at = now()
-        WHERE id = ${candidate.id}
-      `;
-      continue;
-    }
-
-    if (compatible.length === 0) {
       const metadataMatches = await sql<Array<{
         case_id: string;
         case_public_id: string;
