@@ -57,8 +57,8 @@ export async function publishVerifiedOfficialScotusOpinions(
   sql: Sql,
   options: { limit: number },
 ) {
-  if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) {
-    throw new Error("Publication limit must be between 1 and 100");
+  if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100_000) {
+    throw new Error("Publication limit must be between 1 and 100000");
   }
 
   const candidates = await sql<Candidate[]>`
