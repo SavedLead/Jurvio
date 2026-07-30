@@ -200,8 +200,18 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XRAY_COMMENT_ID: "5133453027"
         run: |
           set -euo pipefail
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+
+- Phase: `mirroring and converting 66 official PDFs`
+- Target: U.S. Reports Volumes `567 → 502`
+- PDF-to-text workers: 4 on GitHub runner
+- Production staging workers: 2
+- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           MIRROR_DIR="$(mktemp -d)"
           trap 'rm -rf "$MIRROR_DIR" /tmp/scotus-bound-mirror.tar' EXIT
           curl --fail --silent --show-error --location --retry 3 --max-time 60 \
