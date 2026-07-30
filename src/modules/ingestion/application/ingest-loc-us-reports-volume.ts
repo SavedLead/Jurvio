@@ -1,0 +1,146 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import type postgres from "postgres";
+import type { ArtifactStore } from "./artifact-store";
+import { finishIngestionRun, finishIngestionRunItem, startIngestionRun, startIngestionRunItem } from "./ingestion-run";
+import { fetchLocUsReportsPdf, fetchLocUsReportsVolume } from "../providers/scotus/loc-us-reports";
+
+type Sql = ReturnType<typeof postgres>;
+const execFileAsync = promisify(execFile);
+const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+function parseDecision(text: string) {
+  const date = /\bDecided\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/m.exec(text);
+  const docket = /\bNos?\.\s+([^\n.]+?)\.(?:\s|$)/m.exec(text);
+  if (!date || !docket) throw new Error("Official case PDF lacks deterministic docket or decision date");
+  const month = months.indexOf((date[1] ?? "").toLowerCase()) + 1;
+  if (month < 1) throw new Error("Official case PDF has unsupported decision month");
+  const decidedOn = `${date[3]}-${String(month).padStart(2, "0")}-${date[2]?.padStart(2, "0")}`;
+  const year = Number(date[3]);
+  const term = month >= 10 ? year : year - 1;
+  return {
+    docketNumber: (docket[1] ?? "").replaceAll(/[–—]/g, "-").replaceAll(/\s+/g, " ").trim(),
+    decidedOn,
+    termYear: String(term).slice(-2),
+  };
+}
+
+async function extractText(body: Uint8Array, sourceRecordId: string) {
+  const directory = await mkdtemp(path.join(tmpdir(), "jurvio-loc-usreports-"));
+  try {
+    const safe = sourceRecordId.replaceAll(/[^a-zA-Z0-9_-]/g, "_");
+    const pdfPath = path.join(directory, `${safe}.pdf`);
+    const textPath = path.join(directory, `${safe}.txt`);
+    await writeFile(pdfPath, body);
+    await execFileAsync("pdftotext", ["-layout", pdfPath, textPath], { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+    const text = await readFile(textPath, "utf8");
+    if (text.replaceAll(/\s+/g, "").length < 500) throw new Error("Official case PDF native text is unexpectedly thin");
+    return text;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+export async function ingestLocUsReportsVolume(
+  sql: Sql,
+  artifactStore: ArtifactStore,
+  options: { volume: number; limit: number; resume: boolean },
+) {
+  if (!Number.isInteger(options.volume) || options.volume < 2 || options.volume > 501) throw new Error("Unsupported pre-502 volume");
+  if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 1000) throw new Error("Batch limit must be between 1 and 1000");
+  const index = await fetchLocUsReportsVolume(options.volume);
+  if (index.records.length === 0) throw new Error(`Library of Congress returned no cases for Volume ${options.volume}`);
+  const [provider] = await sql<{ id: string }[]> `SELECT id FROM provider WHERE code = 'scotus_official'`;
+  if (!provider) throw new Error("Official Supreme Court provider seed is missing");
+  const streamName = `official:loc-us-reports:${options.volume}`;
+  const [checkpoint] = options.resume ? await sql<{ cursor_value: string }[]> `
+    SELECT cursor_value FROM ingestion_checkpoint WHERE provider_id = ${provider.id} AND stream_name = ${streamName}
+  ` : [];
+  const checkpointIndex = checkpoint ? index.records.findIndex((record) => record.sourceRecordId === checkpoint.cursor_value) : -1;
+  if (checkpoint && checkpointIndex < 0) throw new Error("Stored Library of Congress checkpoint is absent from the current volume");
+  const selected = index.records.slice(checkpointIndex + 1, checkpointIndex + 1 + options.limit);
+  const runId = await startIngestionRun(sql, {
+    providerCode: "scotus_official",
+    runType: "official_scotus_loc_us_reports",
+    selection: { volume: options.volume, limit: options.limit, checkpoint: checkpoint?.cursor_value ?? null, sourceUri: index.sourceUri },
+    selectedCount: selected.length,
+  });
+  const listingStored = await artifactStore.putIfAbsent({
+    key: `scotus/loc-us-reports/${options.volume}/index-${index.contentHash}.json`,
+    mediaType: "application/json",
+    body: index.rawBody,
+    contentHash: index.contentHash,
+  });
+  const [listingArtifact] = await sql<{ id: string }[]> `
+    INSERT INTO raw_artifact (provider_id, ingestion_run_id, source_uri, source_record_id,
+      content_hash, object_key, media_type, retrieved_at, response_metadata)
+    VALUES (${provider.id}, ${runId}, ${index.sourceUri}, ${`loc-volume:${options.volume}`},
+      ${index.contentHash}, ${listingStored.objectKey}, 'application/json', ${index.retrievedAt},
+      ${sql.json({ volume: options.volume, recordCount: index.records.length })})
+    ON CONFLICT (provider_id, source_uri, content_hash) DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at RETURNING id
+  `;
+  if (!listingArtifact) throw new Error("Library of Congress listing artifact was not persisted");
+  let succeeded = 0;
+  let failed = 0;
+  const failures: Array<{ sourceRecordId: string; reason: string }> = [];
+  try {
+    for (const record of selected) {
+      await startIngestionRunItem(sql, runId, record.sourceRecordId);
+      try {
+        const pdf = await fetchLocUsReportsPdf(record.pdfUrl);
+        const text = await extractText(pdf.body, record.sourceRecordId);
+        const metadata = parseDecision(text);
+        const stored = await artifactStore.putIfAbsent({
+          key: `scotus/loc-us-reports/${options.volume}/${record.sourceRecordId.replaceAll(":", "-")}-${pdf.contentHash}.pdf`,
+          mediaType: pdf.mediaType,
+          body: pdf.body,
+          contentHash: pdf.contentHash,
+        });
+        const [pdfArtifact] = await sql<{ id: string }[]> `
+          INSERT INTO raw_artifact (provider_id, ingestion_run_id, source_uri, source_record_id,
+            content_hash, object_key, media_type, retrieved_at, response_metadata)
+          VALUES (${provider.id}, ${runId}, ${pdf.sourceUri}, ${record.sourceRecordId},
+            ${pdf.contentHash}, ${stored.objectKey}, ${pdf.mediaType}, ${pdf.retrievedAt},
+            ${sql.json({ volume: options.volume, citation: record.citation, itemUrl: record.itemUrl })})
+          ON CONFLICT (provider_id, source_uri, content_hash) DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at RETURNING id
+        `;
+        if (!pdfArtifact) throw new Error("Library of Congress PDF artifact was not persisted");
+        await sql `
+          INSERT INTO official_opinion_candidate (provider_id, term_year, source_record_id,
+            release_number, docket_number, case_name, filed_on, author_code, citation,
+            source_pdf_uri, source_content_hash, listing_artifact_id, opinion_artifact_id,
+            source_page_start, source_page_end)
+          VALUES (${provider.id}, ${metadata.termYear}, ${record.sourceRecordId}, NULL,
+            ${metadata.docketNumber}, ${record.caseName}, ${metadata.decidedOn}, NULL, ${record.citation},
+            ${record.pdfUrl}, ${pdf.contentHash}, ${listingArtifact.id}, ${pdfArtifact.id}, NULL, NULL)
+          ON CONFLICT (provider_id, source_record_id) DO UPDATE SET
+            docket_number = EXCLUDED.docket_number, case_name = EXCLUDED.case_name,
+            filed_on = EXCLUDED.filed_on, citation = EXCLUDED.citation,
+            source_pdf_uri = EXCLUDED.source_pdf_uri, source_content_hash = EXCLUDED.source_content_hash,
+            listing_artifact_id = EXCLUDED.listing_artifact_id, opinion_artifact_id = EXCLUDED.opinion_artifact_id,
+            last_seen_at = now()
+        `;
+        await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, documentCount: 1 });
+        await sql `
+          INSERT INTO ingestion_checkpoint (provider_id, stream_name, cursor_value)
+          VALUES (${provider.id}, ${streamName}, ${record.sourceRecordId})
+          ON CONFLICT (provider_id, stream_name) DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = now()
+        `;
+        succeeded += 1;
+      } catch (error) {
+        failed += 1;
+        const reason = error instanceof Error ? error.message : "Library of Congress case ingestion failed";
+        failures.push({ sourceRecordId: record.sourceRecordId, reason });
+        await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, error: reason });
+      }
+    }
+    await finishIngestionRun(sql, runId);
+    return { runId, volume: options.volume, discovered: index.records.length, selected: selected.length, succeeded, failed, failures };
+  } catch (error) {
+    await finishIngestionRun(sql, runId, error instanceof Error ? error.message : "Library of Congress ingestion failed");
+    throw error;
+  }
+}
