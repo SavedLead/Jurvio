@@ -53,4 +53,3 @@ jobs:
       - run: pnpm test
       - run: pnpm build:jobs
       - run: pnpm build
-      - run: docker build --tag jurvio:ci .
