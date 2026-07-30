@@ -224,6 +224,7 @@ jobs:
               "https://www.supremecourt.gov/opinions/boundvolumes/${VOLUME}BV.pdf" \
               -o "$MIRROR_DIR/${VOLUME}BV.pdf"
             test "$(head -c 4 "$MIRROR_DIR/${VOLUME}BV.pdf")" = "%PDF"
+            ln -s "${VOLUME}BV.pdf" "$MIRROR_DIR/${VOLUME}bv.pdf"
           done
           command -v pdftotext >/dev/null || { sudo apt-get update; sudo apt-get install -y poppler-utils; }
           convert_volume() {
