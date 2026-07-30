@@ -47,46 +47,83 @@ export async function persistCourtListenerCase(
     if (!artifact) throw new Error("Raw artifact was not persisted");
 
     const courtCode = providerCourtId(normalized.sourceCourtUri);
-    const [court] = await tx<{ id: string }[]>`
-      INSERT INTO court (
-        public_id, provider_id, provider_court_id, name, short_name,
-        verification, source_artifact_id
-      ) VALUES (
-        ${createPublicId("court")}, ${provider.id}, ${courtCode},
-        ${courtCode.toUpperCase()}, ${courtCode.toUpperCase()},
-        'not_verified', ${artifact.id}
-      )
-      ON CONFLICT (provider_id, provider_court_id)
-      DO UPDATE SET source_artifact_id = EXCLUDED.source_artifact_id, updated_at = now()
-      RETURNING id
+    const canonicalMatches = await tx<{
+      case_id: string; case_public_id: string; court_id: string;
+    }[]>`
+      SELECT legal_case.id AS case_id, legal_case.public_id AS case_public_id,
+        court.id AS court_id
+      FROM legal_case
+      JOIN court ON court.id=legal_case.court_id
+      WHERE lower(coalesce(court.provider_court_id,''))=lower(${courtCode})
+        AND lower(regexp_replace(legal_case.docket_number,'[^a-zA-Z0-9]','','g'))
+          = lower(regexp_replace(${normalized.docketNumber},'[^a-zA-Z0-9]','','g'))
+      ORDER BY (legal_case.verification='verified') DESC,
+        (legal_case.publication='published') DESC, legal_case.created_at
+      LIMIT 2
     `;
-    if (!court) throw new Error("Court was not persisted");
 
-    const [legalCase] = await tx<{ id: string; public_id: string }[]>`
-      INSERT INTO legal_case (
-        public_id, court_id, docket_number, caption, filed_on, terminated_on,
-        nature_of_suit_code, cause_of_action, verification, publication,
-        source_artifact_id, source_updated_at
-      ) VALUES (
-        ${createPublicId("case")}, ${court.id}, ${normalized.docketNumber},
-        ${normalized.caption}, ${normalized.filedOn ?? null},
-        ${normalized.terminatedOn ?? null}, ${normalized.natureOfSuit ?? null},
-        ${normalized.causeOfAction ?? null}, 'not_verified', 'draft',
-        ${artifact.id}, ${normalized.sourceUpdatedAt}
-      )
-      ON CONFLICT (court_id, docket_number)
-      DO UPDATE SET
-        caption = EXCLUDED.caption,
-        filed_on = EXCLUDED.filed_on,
-        terminated_on = EXCLUDED.terminated_on,
-        nature_of_suit_code = EXCLUDED.nature_of_suit_code,
-        cause_of_action = EXCLUDED.cause_of_action,
-        source_artifact_id = EXCLUDED.source_artifact_id,
-        source_updated_at = EXCLUDED.source_updated_at,
-        updated_at = now()
-      RETURNING id, public_id
-    `;
-    if (!legalCase) throw new Error("Case was not persisted");
+    let court: { id: string };
+    let legalCase: { id: string; public_id: string };
+    if (canonicalMatches.length === 1 && canonicalMatches[0]) {
+      court = { id: canonicalMatches[0].court_id };
+      legalCase = {
+        id: canonicalMatches[0].case_id,
+        public_id: canonicalMatches[0].case_public_id,
+      };
+      await tx`
+        UPDATE legal_case SET
+          caption=CASE WHEN length(${normalized.caption}) > length(caption)
+            THEN ${normalized.caption} ELSE caption END,
+          filed_on=COALESCE(filed_on, ${normalized.filedOn ?? null}),
+          terminated_on=COALESCE(terminated_on, ${normalized.terminatedOn ?? null}),
+          nature_of_suit_code=COALESCE(nature_of_suit_code, ${normalized.natureOfSuit ?? null}),
+          cause_of_action=COALESCE(cause_of_action, ${normalized.causeOfAction ?? null}),
+          source_updated_at=GREATEST(source_updated_at, ${normalized.sourceUpdatedAt}),
+          updated_at=now()
+        WHERE id=${legalCase.id}
+      `;
+    } else {
+      const [persistedCourt] = await tx<{ id: string }[]>`
+        INSERT INTO court (
+          public_id, provider_id, provider_court_id, name, short_name,
+          verification, source_artifact_id
+        ) VALUES (
+          ${createPublicId("court")}, ${provider.id}, ${courtCode},
+          ${courtCode.toUpperCase()}, ${courtCode.toUpperCase()},
+          'not_verified', ${artifact.id}
+        )
+        ON CONFLICT (provider_id, provider_court_id)
+        DO UPDATE SET source_artifact_id=EXCLUDED.source_artifact_id, updated_at=now()
+        RETURNING id
+      `;
+      if (!persistedCourt) throw new Error("Court was not persisted");
+      court = persistedCourt;
+
+      const [persistedCase] = await tx<{ id: string; public_id: string }[]>`
+        INSERT INTO legal_case (
+          public_id, court_id, docket_number, caption, filed_on, terminated_on,
+          nature_of_suit_code, cause_of_action, verification, publication,
+          source_artifact_id, source_updated_at
+        ) VALUES (
+          ${createPublicId("case")}, ${court.id}, ${normalized.docketNumber},
+          ${normalized.caption}, ${normalized.filedOn ?? null},
+          ${normalized.terminatedOn ?? null}, ${normalized.natureOfSuit ?? null},
+          ${normalized.causeOfAction ?? null}, 'not_verified', 'draft',
+          ${artifact.id}, ${normalized.sourceUpdatedAt}
+        )
+        ON CONFLICT (court_id, docket_number)
+        DO UPDATE SET
+          caption=EXCLUDED.caption, filed_on=EXCLUDED.filed_on,
+          terminated_on=EXCLUDED.terminated_on,
+          nature_of_suit_code=EXCLUDED.nature_of_suit_code,
+          cause_of_action=EXCLUDED.cause_of_action,
+          source_artifact_id=EXCLUDED.source_artifact_id,
+          source_updated_at=EXCLUDED.source_updated_at, updated_at=now()
+        RETURNING id, public_id
+      `;
+      if (!persistedCase) throw new Error("Case was not persisted");
+      legalCase = persistedCase;
+    }
 
     await tx`
       INSERT INTO case_identifier (
