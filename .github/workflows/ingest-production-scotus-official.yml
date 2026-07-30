@@ -77,8 +77,8 @@ jobs:
         run: |
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: `runner started`
-- Target: U.S. Reports Volumes `567 → 502`
+- Phase: **runner started**
+- Target: U.S. Reports Volumes **567 → 502**
 - PDF-to-text workers: 4 on GitHub runner
 - Production staging workers: 2
 - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
@@ -156,8 +156,8 @@ jobs:
           set -euo pipefail
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: `mirroring 66 official PDFs`
-- Target: U.S. Reports Volumes `567 → 502`
+- Phase: **mirroring 66 official PDFs**
+- Target: U.S. Reports Volumes **567 → 502**
 - PDF-to-text workers: 4 on GitHub runner
 - Production staging workers: 2
 - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
@@ -224,8 +224,8 @@ jobs:
           set -euo pipefail
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: `mirroring and converting 66 official PDFs`
-- Target: U.S. Reports Volumes `567 → 502`
+- Phase: **mirroring and converting 66 official PDFs**
+- Target: U.S. Reports Volumes **567 → 502**
 - PDF-to-text workers: 4 on GitHub runner
 - Production staging workers: 2
 - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
@@ -283,7 +283,7 @@ jobs:
             fi
             COMPLETED="$(find "$RESULT_DIR" -name '*.ok' -o -name '*.failed' | wc -l)"
             FAILURES="$(find "$RESULT_DIR" -name '*.failed' | wc -l)"
-            BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Phase: `parallel staging`\n- Target: U.S. Reports Volumes `567 → 502`\n- PDF mirror and text conversion: complete\n- PDF-to-text workers: 4 on GitHub runner\n- Production staging workers: 2\n- Volumes completed: %s / 66\n- Failures: %s\n- Latest volume: %s (%s)\n- Run: %s/%s/actions/runs/%s\n- Last heartbeat: %s' "$COMPLETED" "$FAILURES" "$VOLUME" "$STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+            BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Phase: `parallel staging`\n- Target: U.S. Reports Volumes **567 → 502**\n- PDF mirror and text conversion: complete\n- PDF-to-text workers: 4 on GitHub runner\n- Production staging workers: 2\n- Volumes completed: %s / 66\n- Failures: %s\n- Latest volume: %s (%s)\n- Run: %s/%s/actions/runs/%s\n- Last heartbeat: %s' "$COMPLETED" "$FAILURES" "$VOLUME" "$STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="$BODY" >/dev/null || true
           }
           export -f run_volume
