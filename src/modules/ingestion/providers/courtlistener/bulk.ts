@@ -21,6 +21,13 @@ export interface BulkCsvSource {
   completion: Promise<void>;
 }
 
+export function bulkCsvProcessCompleted(
+  code: number | null,
+  closedByConsumer: boolean,
+): boolean {
+  return code === 0 || code === null || closedByConsumer;
+}
+
 export function openBulkCsv(filePath: string): BulkCsvSource {
   if (!filePath.endsWith(".bz2")) {
     const stream: ReadStream = createReadStream(filePath);
@@ -38,6 +45,7 @@ export function openBulkCsv(filePath: string): BulkCsvSource {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let standardError = "";
+  let closedByConsumer = false;
   process.stderr.setEncoding("utf8");
   process.stderr.on("data", (chunk: string) => {
     standardError += chunk;
@@ -45,11 +53,14 @@ export function openBulkCsv(filePath: string): BulkCsvSource {
 
   return {
     stream: process.stdout,
-    close: () => process.kill("SIGTERM"),
+    close: () => {
+      closedByConsumer = true;
+      process.kill("SIGTERM");
+    },
     completion: new Promise((resolve, reject) => {
       process.once("error", reject);
       process.once("close", (code) => {
-        if (code === 0 || code === null) resolve();
+        if (bulkCsvProcessCompleted(code, closedByConsumer)) resolve();
         else reject(new Error(`bzip2 exited with code ${code}: ${standardError.trim()}`));
       });
     }),
