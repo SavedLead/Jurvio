@@ -203,10 +203,24 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
+          RESULT_DIR="$(mktemp -d)"
+          trap 'rm -rf "$RESULT_DIR"' EXIT
+          run_volume() {
+            VOLUME="$1"
+            if ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts SCOTUS_BOUND_MIRROR_DIR=/var/lib/jurvio/artifacts/scotus-bound-mirror node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='true'" > "$RESULT_DIR/$VOLUME.log" 2>&1; then
+              : > "$RESULT_DIR/$VOLUME.ok"
+            else
+              : > "$RESULT_DIR/$VOLUME.failed"
+            fi
+          }
+          export -f run_volume
+          export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR
+          seq 567 -1 502 | xargs -P 2 -n 1 bash -c 'run_volume "$1"' _
           FAILED_VOLUMES=""
           for VOLUME in $(seq 567 -1 502); do
-            echo "Ingesting official U.S. Reports volume $VOLUME" | tee -a /tmp/scotus-ingestion.log
-            if ! ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts SCOTUS_BOUND_MIRROR_DIR=/var/lib/jurvio/artifacts/scotus-bound-mirror node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='true'" | tee -a /tmp/scotus-ingestion.log; then
+            echo "Official U.S. Reports volume $VOLUME" | tee -a /tmp/scotus-ingestion.log
+            cat "$RESULT_DIR/$VOLUME.log" | tee -a /tmp/scotus-ingestion.log
+            if [ -f "$RESULT_DIR/$VOLUME.failed" ]; then
               FAILED_VOLUMES="$FAILED_VOLUMES $VOLUME"
             fi
           done
