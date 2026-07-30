@@ -20,11 +20,12 @@ async function heartbeat(
   courtCode: string | null,
   metadata: Record<string, unknown> = {},
 ) {
+  const serializedMetadata = JSON.parse(JSON.stringify(metadata));
   await sql`
     INSERT INTO appellate_worker_heartbeat (
       worker_id, stage, court_code, heartbeat_at, metadata
     ) VALUES (
-      'appellate-discovery-1', ${stage}, ${courtCode}, now(), ${sql.json(metadata)}
+      'appellate-discovery-1', ${stage}, ${courtCode}, now(), ${sql.json(serializedMetadata)}
     )
     ON CONFLICT (worker_id) DO UPDATE SET
       stage = EXCLUDED.stage,
