@@ -28,16 +28,22 @@ export async function ingestOfficialScotusBoundVolume(
     SELECT cursor_value FROM ingestion_checkpoint WHERE provider_id = ${provider.id} AND stream_name = ${streamName}
   ` : [];
   const volume = await fetchOfficialBoundVolume(source);
-  const directory = await mkdtemp(path.join(tmpdir(), `jurvio-usreports-${options.volume}-`));
+  const textMirrorDir = process.env.SCOTUS_BOUND_TEXT_MIRROR_DIR;
   let text: string;
-  try {
-    const pdfPath = path.join(directory, `${options.volume}.pdf`);
-    const textPath = path.join(directory, `${options.volume}.txt`);
-    await writeFile(pdfPath, volume.body);
-    await execFileAsync("pdftotext", ["-layout", pdfPath, textPath], { timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
-    text = await readFile(textPath, "utf8");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+  if (textMirrorDir) {
+    text = await readFile(path.join(textMirrorDir, `${options.volume}BV.txt`), "utf8");
+    if (text.length < 1_000) throw new Error("Mirrored bound-volume text is unexpectedly thin");
+  } else {
+    const directory = await mkdtemp(path.join(tmpdir(), `jurvio-usreports-${options.volume}-`));
+    try {
+      const pdfPath = path.join(directory, `${options.volume}.pdf`);
+      const textPath = path.join(directory, `${options.volume}.txt`);
+      await writeFile(pdfPath, volume.body);
+      await execFileAsync("pdftotext", ["-layout", pdfPath, textPath], { timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
+      text = await readFile(textPath, "utf8");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
   const records = parseOfficialBoundVolumeText(text, source);
   const checkpointIndex = checkpoint ? records.findIndex((record) => record.sourceRecordId === checkpoint.cursor_value) : -1;
