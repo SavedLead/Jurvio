@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { closeDb, db } from "@/db/client";
+import { createPublicId } from "@/lib/ids/public-id";
 import { discoverOfficialAppellateOpinions } from "@/modules/ingestion/application/discover-official-appellate-opinions";
 import {
   APPELLATE_COURT_REGISTRY,
@@ -72,7 +73,8 @@ async function heartbeat(
 }
 
 async function downloadAndExtract(item: {
-  id: string; court_code: string; docket_number: string | null; document_url: string;
+  id: string; court_code: string; docket_number: string | null; caption: string;
+  decided_on: string | null; document_url: string; source_listing_url: string;
 }) {
   if (!item.docket_number) {
     await sql`UPDATE appellate_ingestion_item SET state='blocked',
@@ -115,18 +117,22 @@ async function downloadAndExtract(item: {
     LIMIT 2
   `;
 
-  if (matches.length !== 1 || !matches[0]?.document_id || !matches[0]?.cluster_id) {
-    const blocker = matches.length > 1 ? "ambiguous_case_match"
-      : matches.length === 0 ? "canonical_case_missing" : "canonical_opinion_missing";
+  if (matches.length > 1) {
     await sql`UPDATE appellate_ingestion_item SET state='blocked',
-      blocker_code=${blocker},
-      blocker_detail=${`Official docket ${item.docket_number} matched ${matches.length} usable Jurvio opinions`},
-      next_action='Reconcile through the existing CourtListener bulk case lane, then retry this item'
+      blocker_code='ambiguous_case_match',
+      blocker_detail=${`Official docket ${item.docket_number} matched multiple Jurvio cases`},
+      next_action='Resolve the duplicate canonical case identities, then retry this item'
       WHERE id=${item.id}`;
-    return { state: "blocked", reason: blocker };
+    return { state: "blocked", reason: "ambiguous_case_match" };
   }
-  const match = matches[0];
-  if (!match?.document_id || !match.cluster_id) throw new Error("Canonical opinion match disappeared");
+  const existingMatch = matches[0] ?? null;
+  const [officialProvider] = await sql<{ id: string }[]>`
+    SELECT id FROM provider WHERE code = 'official_cmecf'
+  `;
+  const providerId = existingMatch?.provider_id ?? officialProvider?.id;
+  if (!providerId) throw new Error("Official federal court provider seed is missing");
+  const courtSource = appellateCourtByCode(item.court_code);
+  if (!courtSource) throw new Error(`Unknown appellate court ${item.court_code}`);
 
   const response = await fetch(item.document_url, {
     headers: { "User-Agent": process.env.INGESTION_USER_AGENT
@@ -173,7 +179,7 @@ async function downloadAndExtract(item: {
         provider_id, source_uri, source_record_id, content_hash, object_key,
         media_type, retrieved_at, response_metadata
       ) VALUES (
-        ${match.provider_id}, ${item.document_url}, ${item.id}, ${pdfHash}, ${objectKey},
+        ${providerId}, ${item.document_url}, ${item.id}, ${pdfHash}, ${objectKey},
         'application/pdf', now(),
         ${tx.json({ source: "official_appellate", courtCode: item.court_code })}
       )
@@ -182,12 +188,185 @@ async function downloadAndExtract(item: {
       RETURNING id
     `;
     if (!artifact) throw new Error("Official appellate artifact was not persisted");
+
+    let canonical = existingMatch;
+    if (!canonical?.document_id || !canonical.cluster_id) {
+      const [courtRecord] = await tx<{ id: string; name: string }[]>`
+        INSERT INTO court (
+          public_id, provider_id, provider_court_id, name, short_name,
+          jurisdiction, verification, source_artifact_id
+        ) VALUES (
+          ${createPublicId("court")}, ${providerId}, ${item.court_code},
+          ${courtSource.name}, ${`${courtSource.circuit} Cir.`},
+          'Federal Appellate', 'verified', ${artifact.id}
+        )
+        ON CONFLICT (provider_id, provider_court_id)
+        DO UPDATE SET verification='verified', source_artifact_id=EXCLUDED.source_artifact_id,
+          updated_at=now()
+        RETURNING id, name
+      `;
+      if (!courtRecord) throw new Error("Official appellate court was not persisted");
+
+      const [legalCase] = await tx<{
+        id: string; public_id: string; caption: string; decided_on: string | null;
+        publication: string;
+      }[]>`
+        INSERT INTO legal_case (
+          public_id, court_id, docket_number, caption, decided_on,
+          verification, publication, source_artifact_id, source_updated_at
+        ) VALUES (
+          ${createPublicId("case")}, ${courtRecord.id}, ${item.docket_number},
+          ${item.caption}, ${item.decided_on}, 'verified', 'published',
+          ${artifact.id}, now()
+        )
+        ON CONFLICT (court_id, docket_number)
+        DO UPDATE SET caption=CASE WHEN length(EXCLUDED.caption) > length(legal_case.caption)
+            THEN EXCLUDED.caption ELSE legal_case.caption END,
+          decided_on=COALESCE(EXCLUDED.decided_on, legal_case.decided_on),
+          verification='verified', publication='published',
+          source_artifact_id=EXCLUDED.source_artifact_id, source_updated_at=now(),
+          updated_at=now()
+        RETURNING id, public_id, caption, decided_on::text, publication::text
+      `;
+      if (!legalCase) throw new Error("Official appellate case was not persisted");
+
+      await tx`
+        INSERT INTO case_identifier (case_id, provider_id, identifier_type, identifier_value)
+        VALUES (
+          ${legalCase.id}, ${providerId}, 'official_appellate_docket',
+          ${`${item.court_code}:${item.docket_number}`}
+        )
+        ON CONFLICT (provider_id, identifier_type, identifier_value)
+        DO UPDATE SET case_id=EXCLUDED.case_id
+      `;
+
+      const sourceRecordId = `${item.court_code}:${pdfHash}`;
+      const [cluster] = await tx<{ id: string }[]>`
+        INSERT INTO opinion_cluster (
+          public_id, case_id, provider_id, provider_cluster_id, case_name,
+          date_filed, precedential_status, citation_count, citations,
+          source_artifact_id, source_updated_at
+        ) VALUES (
+          ${createPublicId("cluster")}, ${legalCase.id}, ${providerId},
+          ${sourceRecordId}, ${legalCase.caption}, ${item.decided_on},
+          NULL, 0, '[]'::jsonb, ${artifact.id}, now()
+        )
+        ON CONFLICT (provider_id, provider_cluster_id)
+        DO UPDATE SET case_id=EXCLUDED.case_id, case_name=EXCLUDED.case_name,
+          date_filed=COALESCE(EXCLUDED.date_filed, opinion_cluster.date_filed),
+          source_artifact_id=EXCLUDED.source_artifact_id, source_updated_at=now(),
+          updated_at=now()
+        RETURNING id
+      `;
+      if (!cluster) throw new Error("Official appellate opinion cluster was not persisted");
+
+      const [identifiedDocument] = await tx<{ id: string; public_id: string }[]>`
+        SELECT document.id, document.public_id
+        FROM document_identifier identifier
+        JOIN document ON document.id=identifier.document_id
+        WHERE identifier.provider_id=${providerId}
+          AND identifier.identifier_type='official_appellate_pdf'
+          AND identifier.identifier_value=${sourceRecordId}
+        LIMIT 1
+      `;
+      let document = identifiedDocument;
+      if (!document) {
+        [document] = await tx<{ id: string; public_id: string }[]>`
+          INSERT INTO document (
+            public_id, case_id, document_type, title, filed_on, content_hash,
+            source_artifact_id, publication, extraction_confidence
+          ) VALUES (
+            ${createPublicId("document")}, ${legalCase.id}, 'judicial_opinion',
+            ${`${legalCase.caption} opinion`}, ${item.decided_on}, ${textHash},
+            ${artifact.id}, 'published', 0.980
+          )
+          RETURNING id, public_id
+        `;
+      }
+      if (!document) throw new Error("Official appellate opinion document was not persisted");
+      await tx`
+        UPDATE document SET case_id=${legalCase.id}, title=${`${legalCase.caption} opinion`},
+          filed_on=COALESCE(${item.decided_on}, filed_on), content_hash=${textHash},
+          source_artifact_id=${artifact.id}, publication='published',
+          extraction_confidence=0.980, updated_at=now()
+        WHERE id=${document.id}
+      `;
+      await tx`
+        INSERT INTO document_identifier (
+          document_id, provider_id, identifier_type, identifier_value
+        ) VALUES (
+          ${document.id}, ${providerId}, 'official_appellate_pdf', ${sourceRecordId}
+        )
+        ON CONFLICT (provider_id, identifier_type, identifier_value)
+        DO UPDATE SET document_id=EXCLUDED.document_id
+      `;
+      await tx`
+        INSERT INTO judicial_opinion (
+          cluster_id, document_id, provider_id, provider_opinion_id, opinion_type,
+          author_name, per_curiam, source_download_url, source_artifact_id
+        ) VALUES (
+          ${cluster.id}, ${document.id}, ${providerId}, ${sourceRecordId},
+          'majority', NULL, false, ${item.document_url}, ${artifact.id}
+        )
+        ON CONFLICT (provider_id, provider_opinion_id)
+        DO UPDATE SET cluster_id=EXCLUDED.cluster_id, document_id=EXCLUDED.document_id,
+          source_download_url=EXCLUDED.source_download_url,
+          source_artifact_id=EXCLUDED.source_artifact_id, updated_at=now()
+      `;
+      await tx`
+        INSERT INTO publication_decision (
+          object_type, object_id, displayable, indexable, machine_accessible,
+          downloadable, summary_eligible, reason_code, rule_version
+        )
+        SELECT 'legal_case', ${legalCase.id}, true, true, true, false, true,
+          'verified_official_appellate', 'official-appellate-publication-v1'
+        WHERE NOT COALESCE((
+          SELECT displayable FROM publication_decision
+          WHERE object_type='legal_case' AND object_id=${legalCase.id}
+          ORDER BY decided_at DESC, id DESC LIMIT 1
+        ), false)
+      `;
+      await tx`
+        INSERT INTO publication_decision (
+          object_type, object_id, displayable, indexable, machine_accessible,
+          downloadable, summary_eligible, reason_code, rule_version
+        )
+        SELECT 'document', ${document.id}, true, true, true, true, true,
+          'verified_official_appellate_pdf', 'official-appellate-publication-v1'
+        WHERE NOT COALESCE((
+          SELECT displayable FROM publication_decision
+          WHERE object_type='document' AND object_id=${document.id}
+          ORDER BY decided_at DESC, id DESC LIMIT 1
+        ), false)
+      `;
+      canonical = {
+        case_id: legalCase.id,
+        case_public_id: legalCase.public_id,
+        case_publication: legalCase.publication,
+        court_id: courtRecord.id,
+        court_name: courtRecord.name,
+        provider_id: providerId,
+        document_id: document.id,
+        cluster_id: cluster.id,
+        document_publication: "published",
+        title: `${legalCase.caption} opinion`,
+        caption: legalCase.caption,
+        decided_on: legalCase.decided_on,
+        opinion_type: "majority",
+        precedential_status: null,
+        citation_count: 0,
+      };
+    }
+    if (!canonical?.document_id || !canonical.cluster_id) {
+      throw new Error("Canonical appellate opinion could not be resolved");
+    }
+
     await tx`
       INSERT INTO document_content (
         document_id, content_html, content_text, content_hash, extraction_method,
         word_count, source_artifact_id
       ) VALUES (
-        ${match.document_id}, ${html}, ${validation.normalized}, ${textHash},
+        ${canonical.document_id}, ${html}, ${validation.normalized}, ${textHash},
         'native_pdf_text', ${validation.wordCount}, ${artifact.id}
       )
       ON CONFLICT (document_id) DO UPDATE SET
@@ -197,18 +376,18 @@ async function downloadAndExtract(item: {
         updated_at=now()
     `;
     await tx`UPDATE document SET content_hash=${textHash}, source_artifact_id=${artifact.id},
-      extraction_confidence=0.980, updated_at=now() WHERE id=${match.document_id}`;
+      extraction_confidence=0.980, updated_at=now() WHERE id=${canonical.document_id}`;
     await tx`UPDATE judicial_opinion SET source_download_url=${item.document_url},
-      source_artifact_id=${artifact.id}, updated_at=now() WHERE document_id=${match.document_id}`;
+      source_artifact_id=${artifact.id}, updated_at=now() WHERE document_id=${canonical.document_id}`;
     await tx`
       INSERT INTO opinion_search_projection (
         document_id, case_id, court_id, cluster_id, title, case_caption, court_name,
         date_filed, precedential_status, opinion_type, citation_count, body
       ) VALUES (
-        ${match.document_id}, ${match.case_id}, ${match.court_id}, ${match.cluster_id},
-        ${match.title ?? `${match.caption} opinion`}, ${match.caption}, ${match.court_name},
-        ${match.decided_on}, ${match.precedential_status}, ${match.opinion_type ?? "majority"},
-        ${match.citation_count ?? 0}, ${validation.normalized}
+        ${canonical.document_id}, ${canonical.case_id}, ${canonical.court_id}, ${canonical.cluster_id},
+        ${canonical.title ?? `${canonical.caption} opinion`}, ${canonical.caption}, ${canonical.court_name},
+        ${canonical.decided_on}, ${canonical.precedential_status}, ${canonical.opinion_type ?? "majority"},
+        ${canonical.citation_count ?? 0}, ${validation.normalized}
       )
       ON CONFLICT (document_id) DO UPDATE SET body=EXCLUDED.body,
         title=EXCLUDED.title, case_caption=EXCLUDED.case_caption,
@@ -216,13 +395,13 @@ async function downloadAndExtract(item: {
     `;
     await tx`UPDATE appellate_ingestion_item SET source_artifact_id=${artifact.id},
       document_content_hash=${pdfHash}, state='published', blocker_code=NULL,
-      blocker_detail=NULL, next_action=NULL, published_case_id=${match.case_id},
+      blocker_detail=NULL, next_action=NULL, published_case_id=${canonical.case_id},
       last_seen_at=now() WHERE id=${item.id}`;
     await tx`
       INSERT INTO outbox_event (
         topic, aggregate_type, aggregate_id, aggregate_version, payload
       ) VALUES (
-        'publication.changed', 'legal_case', ${match.case_id},
+        'publication.changed', 'legal_case', ${canonical.case_id},
         (extract(epoch from clock_timestamp()) * 1000000)::bigint,
         ${tx.json({ source: "official_appellate", courtCode: item.court_code,
           docketNumber: item.docket_number, sourceHash: pdfHash,
@@ -230,14 +409,16 @@ async function downloadAndExtract(item: {
       )
     `;
   });
-  return { state: "published", caseId: match.case_public_id, words: validation.wordCount };
+  return { state: "published", caseId: canonical.case_public_id, words: validation.wordCount };
 }
 
 async function processQueue() {
   const items = await sql<{
-    id: string; court_code: string; docket_number: string | null; document_url: string;
+    id: string; court_code: string; docket_number: string | null; caption: string;
+    decided_on: string | null; document_url: string; source_listing_url: string;
   }[]>`
-    SELECT id, court_code, docket_number, document_url
+    SELECT id, court_code, docket_number, caption, decided_on::text,
+      document_url, source_listing_url
     FROM appellate_ingestion_item
     WHERE state IN ('discovered','downloaded','extracted','enriched','publication_ready')
     ORDER BY decided_on DESC NULLS LAST, first_seen_at
