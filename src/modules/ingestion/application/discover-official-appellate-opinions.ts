@@ -47,8 +47,8 @@ export async function discoverOfficialAppellateOpinions(sql: Sql, court: Appella
         health_state = 'degraded',
         consecutive_failures = consecutive_failures + 1,
         next_poll_at = now() + LEAST(
-          interval '60 minutes',
-          interval '5 minutes' * power(2, LEAST(consecutive_failures, 4))
+          interval '10 minutes',
+          interval '5 minutes' * power(2, LEAST(consecutive_failures, 1))
         ),
         updated_at = now()
       WHERE court_code = ${court.code}
