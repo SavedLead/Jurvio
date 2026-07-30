@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseOfficialBoundVolumeIndex, parseOfficialBoundVolumeText } from "./official-bound-volumes";
+import { officialBoundVolumeMirrorFileName, parseOfficialBoundVolumeIndex, parseOfficialBoundVolumeText } from "./official-bound-volumes";
 
 describe("official U.S. Reports bound-volume ingestion", () => {
+  it("uses the canonical Court filename regardless of source URL casing", () => {
+    expect(officialBoundVolumeMirrorFileName(560)).toBe("560BV.pdf");
+  });
+
   it("discovers authoritative volume links and terms", () => {
     const html = `<li><a id='585' href='boundvolumes/585BV.pdf'>Volume 585&nbsp;&nbsp;(2017 Term - 4983K)</a></li>`;
     expect(parseOfficialBoundVolumeIndex(html)).toEqual([{
