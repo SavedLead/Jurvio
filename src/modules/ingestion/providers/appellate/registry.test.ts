@@ -9,7 +9,9 @@ describe("appellate source registry",()=>{
     expect(["ca1","ca2","ca3","ca4","ca5","ca6","ca7","ca8","ca9","ca10","ca11","cadc","cafc"].every(c=>appellateCourtByCode(c))).toBe(true);
   });
   it("puts unstarted circuits first and remains deterministic",()=>{
-    const checkpoints=new Map(APPELLATE_COURT_REGISTRY.map((court)=>[court.code,"2026-07-30"] as const));
+    const checkpoints = new Map<string, string | null>(
+      APPELLATE_COURT_REGISTRY.map((court)=>[court.code,"2026-07-30"]),
+    );
     checkpoints.set("ca2",null);
     const order=fairAppellateOrder(checkpoints);
     expect(order[0]?.code).toBe("ca2");
