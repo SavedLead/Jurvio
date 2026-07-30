@@ -77,10 +77,10 @@ jobs:
         run: |
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: `runner started`
-- Target: U.S. Reports Volumes `567 → 502`
+- Phase: **runner started**
+- Target: U.S. Reports Volumes **567 → 502**
 - PDF-to-text workers: 4 on GitHub runner
-- Production staging workers: 2
+- Production staging workers: 8
 - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 - Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
 
@@ -156,10 +156,10 @@ jobs:
           set -euo pipefail
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: `mirroring 66 official PDFs`
-- Target: U.S. Reports Volumes `567 → 502`
+- Phase: **mirroring 66 official PDFs**
+- Target: U.S. Reports Volumes **567 → 502**
 - PDF-to-text workers: 4 on GitHub runner
-- Production staging workers: 2
+- Production staging workers: 8
 - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 - Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           MIRROR_DIR="$(mktemp -d)"
@@ -224,10 +224,10 @@ jobs:
           set -euo pipefail
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: `mirroring and converting 66 official PDFs`
-- Target: U.S. Reports Volumes `567 → 502`
+- Phase: **mirroring and converting 66 official PDFs**
+- Target: U.S. Reports Volumes **567 → 502**
 - PDF-to-text workers: 4 on GitHub runner
-- Production staging workers: 2
+- Production staging workers: 8
 - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 - Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           MIRROR_DIR="$(mktemp -d)"
@@ -283,12 +283,25 @@ jobs:
             fi
             COMPLETED="$(find "$RESULT_DIR" -name '*.ok' -o -name '*.failed' | wc -l)"
             FAILURES="$(find "$RESULT_DIR" -name '*.failed' | wc -l)"
-            BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Phase: `parallel staging`\n- Target: U.S. Reports Volumes `567 → 502`\n- PDF mirror and text conversion: complete\n- PDF-to-text workers: 4 on GitHub runner\n- Production staging workers: 2\n- Volumes completed: %s / 66\n- Failures: %s\n- Latest volume: %s (%s)\n- Run: %s/%s/actions/runs/%s\n- Last heartbeat: %s' "$COMPLETED" "$FAILURES" "$VOLUME" "$STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+            BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Phase: `parallel staging`\n- Target: U.S. Reports Volumes **567 → 502**\n- PDF mirror and text conversion: complete\n- PDF-to-text workers: 4 on GitHub runner\n- Production staging workers: 8\n- Volumes completed: %s / 66\n- Failures: %s\n- Latest volume: %s (%s)\n- Run: %s/%s/actions/runs/%s\n- Last heartbeat: %s' "$COMPLETED" "$FAILURES" "$VOLUME" "$STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="$BODY" >/dev/null || true
           }
           export -f run_volume
           export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR GH_TOKEN XRAY_COMMENT_ID GITHUB_REPOSITORY GITHUB_SERVER_URL GITHUB_RUN_ID
-          seq 567 -1 502 | xargs -P 2 -n 1 bash -c 'run_volume "$1"' _
+          drain_publication() {
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000" >> /tmp/scotus-publication.log 2>&1 || echo "::warning title=SCOTUS publication drain::publication pass will retry"
+            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=10000" >> /tmp/scotus-extraction.log 2>&1 || echo "::warning title=SCOTUS extraction drain::extraction pass will retry"
+          }
+          : > /tmp/scotus-publication.log
+          : > /tmp/scotus-extraction.log
+          seq 567 -1 502 | xargs -P 8 -n 1 bash -c 'run_volume "$1"' _ &
+          STAGING_PID=$!
+          while kill -0 "$STAGING_PID" 2>/dev/null; do
+            drain_publication
+            sleep 30
+          done
+          wait "$STAGING_PID"
+          drain_publication
           FAILED_VOLUMES=""
           for VOLUME in $(seq 567 -1 502); do
             echo "Official U.S. Reports volume $VOLUME" | tee -a /tmp/scotus-ingestion.log
@@ -298,7 +311,9 @@ jobs:
             fi
           done
           printf 'FAILED_BOUND_VOLUMES=%s\n' "${FAILED_VOLUMES# }" >> "$GITHUB_ENV"
-          test -z "$FAILED_VOLUMES"
+          if [ -n "$FAILED_VOLUMES" ]; then
+            echo "::warning title=SCOTUS volume quarantine::Continuing after isolated failures:$FAILED_VOLUMES"
+          fi
 
       - name: Report official-source staging queue
         if: always()

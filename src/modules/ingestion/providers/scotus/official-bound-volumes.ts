@@ -14,6 +14,11 @@ export interface OfficialBoundVolume {
   pdfUrl: string;
 }
 
+export function officialBoundVolumeMirrorFileName(volume: number) {
+  if (!Number.isInteger(volume) || volume < 1) throw new Error(`Invalid official bound volume: ${volume}`);
+  return `${volume}BV.pdf`;
+}
+
 export interface OfficialBoundOpinion {
   sourceRecordId: string;
   releaseNumber: null;
@@ -167,7 +172,7 @@ export async function fetchOfficialBoundVolume(source: OfficialBoundVolume) {
   const url = officialPdfUrl(source.pdfUrl);
   let body: Uint8Array;
   if (MIRROR_DIR) {
-    const fileName = path.posix.basename(new URL(url).pathname);
+    const fileName = officialBoundVolumeMirrorFileName(source.volume);
     body = new Uint8Array(await readFile(path.join(MIRROR_DIR, fileName)));
     if (body.byteLength > MAX_VOLUME_BYTES) throw new Error(`Official source exceeds ${MAX_VOLUME_BYTES} byte cap`);
   } else {

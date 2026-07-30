@@ -49,8 +49,8 @@ jobs:
             ASSEMBLY_ACTION="dispatched"
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: `watchdog dispatched recovery`
-- Target: U.S. Reports Volumes `567 → 502`
+- Phase: **watchdog dispatched recovery**
+- Target: U.S. Reports Volumes **567 → 502**
 - Reason: no active historical assembly and heartbeat was stale
 - PDF-to-text workers: 4 on GitHub runner
 - Production staging workers: 2
