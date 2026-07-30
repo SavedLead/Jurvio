@@ -1,6 +1,11 @@
 name: Appellate ingestion control
 
 on:
+  workflow_run:
+    workflows:
+      - Deploy production
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       court:
@@ -21,6 +26,7 @@ concurrency:
 
 jobs:
   control:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 20
@@ -39,8 +45,8 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
-          COURT: ${{ inputs.court }}
-          WORKERS: ${{ inputs.concurrency }}
+          COURT: ${{ inputs.court || 'all' }}
+          WORKERS: ${{ inputs.concurrency || '13' }}
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && docker compose -f docker-compose.production.yml exec -T app node jobs/run-appellate-ingestion.mjs --court='$COURT' --watch=false --concurrency='$WORKERS'"
 
