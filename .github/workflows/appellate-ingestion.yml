@@ -1,0 +1,48 @@
+name: Appellate ingestion control
+
+on:
+  workflow_dispatch:
+    inputs:
+      court:
+        description: ca1..ca11, cadc, cafc, or all
+        required: true
+        default: all
+      concurrency:
+        description: Bounded circuit discovery concurrency
+        required: true
+        default: "4"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production-appellate
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - name: Configure SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Run one production discovery cycle
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          COURT: ${{ inputs.court }}
+          WORKERS: ${{ inputs.concurrency }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && docker compose -f docker-compose.production.yml exec -T app node jobs/run-appellate-ingestion.mjs --court='$COURT' --watch=false --concurrency='$WORKERS'"
+
+# Intentionally no cron. The five-minute watchdog is a production-resident
+# process, so idle polling consumes no GitHub Actions minutes.
