@@ -36,6 +36,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/db ./db
 COPY --from=builder --chown=nextjs:nodejs /app/dist/migrate.mjs ./scripts/migrate.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/dist/jobs ./jobs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/run-federal-bulk-production.sh ./scripts/run-federal-bulk-production.sh
 RUN mkdir -p /var/lib/jurvio/artifacts && chown -R nextjs:nodejs /var/lib/jurvio
 
 USER nextjs
