@@ -195,20 +195,44 @@ export async function extractOfficialScotusOpinionText(
           extractionArgs.push("-l", String(resolvedPageEnd));
         }
       }
-      extractionArgs.push("-layout", sourcePath, "-");
-      const { stdout } = await execFileAsync("pdftotext", extractionArgs, {
-        encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000,
-      });
-      const structurallyBoundText = trimOfficialScotusBoundVolumeText(
-        stdout,
+      const pageArgs = [...extractionArgs];
+      const { stdout: layoutText } = await execFileAsync(
+        "pdftotext",
+        [...pageArgs, "-layout", sourcePath, "-"],
+        { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000 },
+      );
+      const structurallyBoundLayoutText = trimOfficialScotusBoundVolumeText(
+        layoutText,
         candidate.official_citation,
       );
-      const validation = validateOfficialScotusText(structurallyBoundText, candidate.docket_number);
+      let validation = validateOfficialScotusText(
+        structurallyBoundLayoutText,
+        candidate.docket_number,
+      );
+      let usedRawReadingOrder = false;
       if (!validation.valid) {
-        held += 1;
-        records.push({ caseId: candidate.case_public_id, documentId: candidate.document_public_id,
-          reason: `Native extraction validation failed (${validation.wordCount} words); OCR required` });
-        continue;
+        const { stdout: rawText } = await execFileAsync(
+          "pdftotext",
+          [...pageArgs, "-raw", sourcePath, "-"],
+          { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000 },
+        );
+        const structurallyBoundRawText = trimOfficialScotusBoundVolumeText(
+          rawText,
+          candidate.official_citation,
+        );
+        const rawValidation = validateOfficialScotusText(
+          structurallyBoundRawText,
+          candidate.docket_number,
+        );
+        if (rawValidation.valid) {
+          validation = rawValidation;
+          usedRawReadingOrder = true;
+        } else {
+          held += 1;
+          records.push({ caseId: candidate.case_public_id, documentId: candidate.document_public_id,
+            reason: `Native layout/raw validation failed (${validation.wordCount}/${rawValidation.wordCount} words); OCR required` });
+          continue;
+        }
       }
       const contentHash = createHash("sha256").update(validation.normalized).digest("hex");
       const contentHtml = officialOpinionTextToHtml(validation.normalized);
@@ -252,6 +276,7 @@ export async function extractOfficialScotusOpinionText(
             'publication.changed', 'document', ${candidate.document_id},
             (extract(epoch from clock_timestamp()) * 1000000)::bigint,
             ${tx.json({ source: "scotus_official", extractionMethod: "native_pdf_text",
+              readingOrder: usedRawReadingOrder ? "raw" : "layout",
               wordCount: validation.wordCount, contentHash })}
           )
         `;

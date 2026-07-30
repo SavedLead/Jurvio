@@ -91,8 +91,34 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          set -o pipefail
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit='$LIMIT'" | tee /tmp/scotus-extraction.log
+          set -euo pipefail
+          : > /tmp/scotus-extraction.log
+          BATCH_LIMIT=10
+          if [ "$LIMIT" -lt "$BATCH_LIMIT" ]; then BATCH_LIMIT="$LIMIT"; fi
+          ATTEMPTED=0
+          EXTRACTED=0
+          HELD=0
+          FAILED=0
+          while [ "$ATTEMPTED" -lt "$LIMIT" ]; do
+            RESULT="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit='$BATCH_LIMIT'")"
+            printf '%s\n' "$RESULT" | tee -a /tmp/scotus-extraction.log
+            VALUES="$(printf '%s' "$RESULT" | node -e '
+              let input = "";
+              process.stdin.on("data", (chunk) => input += chunk);
+              process.stdin.on("end", () => {
+                const value = JSON.parse(input.trim().split(/\n/).at(-1));
+                process.stdout.write([value.selected, value.extracted, value.held, value.failed].join(" "));
+              });
+            ')"
+            read -r BATCH_SELECTED BATCH_EXTRACTED BATCH_HELD BATCH_FAILED <<< "$VALUES"
+            ATTEMPTED=$((ATTEMPTED + BATCH_SELECTED))
+            EXTRACTED=$((EXTRACTED + BATCH_EXTRACTED))
+            HELD=$((HELD + BATCH_HELD))
+            FAILED=$((FAILED + BATCH_FAILED))
+            if [ "$BATCH_SELECTED" -eq 0 ] || [ "$BATCH_EXTRACTED" -eq 0 ]; then break; fi
+          done
+          printf '{"attempted":%s,"extracted":%s,"held":%s,"failed":%s,"process_batch_limit":%s}\n' \
+            "$ATTEMPTED" "$EXTRACTED" "$HELD" "$FAILED" "$BATCH_LIMIT" | tee -a /tmp/scotus-extraction.log
 
       - name: Report SCOTUS publication totals
         if: always()
