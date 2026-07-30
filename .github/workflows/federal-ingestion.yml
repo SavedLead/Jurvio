@@ -1,11 +1,6 @@
 name: Federal ingestion loops
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/federal-backfill-kickoff"
   workflow_dispatch:
     inputs:
       loop:
@@ -28,20 +23,13 @@ on:
         required: true
         type: boolean
         default: false
-  schedule:
-    - cron: "17 * * * *"
-    - cron: "27 */6 * * *"
-    - cron: "37 * * * *"
-    - cron: "47 3 * * *"
-    - cron: "57 * * * *"
-
 permissions:
   contents: read
   issues: write
 
 concurrency:
   group: jurvio-production-federal-${{ inputs.loop || github.event.schedule }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:
