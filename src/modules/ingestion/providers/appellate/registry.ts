@@ -37,11 +37,15 @@ export function appellateCourtByCode(code:string): AppellateCourtSource | null {
 }
 
 export function fairAppellateOrder(checkpoints: ReadonlyMap<string,string|null>): AppellateCourtSource[] {
+  const registryPosition = new Map(
+    APPELLATE_COURT_REGISTRY.map((court, index) => [court.code, index]),
+  );
   return [...APPELLATE_COURT_REGISTRY].filter(c=>c.enabled).sort((a,b)=>{
     const av=checkpoints.get(a.code), bv=checkpoints.get(b.code);
-    if (av===bv) return a.code.localeCompare(b.code);
+    const registryOrder = (registryPosition.get(a.code) ?? 0) - (registryPosition.get(b.code) ?? 0);
+    if (av===bv) return registryOrder;
     if (av===null || av===undefined) return -1;
     if (bv===null || bv===undefined) return 1;
-    return av.localeCompare(bv);
+    return av.localeCompare(bv) || registryOrder;
   });
 }
