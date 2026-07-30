@@ -15,7 +15,11 @@ const intervalMs = 5 * 60 * 1000;
 const sql = db();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function heartbeat(stage: string, courtCode: string | null, metadata: unknown = {}) {
+async function heartbeat(
+  stage: string,
+  courtCode: string | null,
+  metadata: Record<string, unknown> = {},
+) {
   await sql`
     INSERT INTO appellate_worker_heartbeat (
       worker_id, stage, court_code, heartbeat_at, metadata
@@ -39,7 +43,7 @@ async function cycle() {
     : [appellateCourtByCode(courtArgument)].filter((court) => court !== null);
   if (order.length === 0) throw new Error(`Unknown appellate court ${courtArgument}`);
 
-  const results: unknown[] = [];
+  const results: Array<Record<string, unknown>> = [];
   let cursor = 0;
   const workers = Array.from({ length: Math.min(concurrency, order.length) }, async () => {
     while (cursor < order.length) {
