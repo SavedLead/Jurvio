@@ -19,7 +19,7 @@ if docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
 fi
 
 export JURVIO_IMAGE="$NEW_IMAGE"
-docker compose -f "$COMPOSE" pull app
+docker compose -f "$COMPOSE" pull app worker
 docker compose -f "$COMPOSE" up -d postgres
 
 DATABASE_READY=0
@@ -37,7 +37,7 @@ if [ "$DATABASE_READY" -ne 1 ]; then
 fi
 
 docker compose -f "$COMPOSE" run --rm --no-deps app node scripts/migrate.mjs
-docker compose -f "$COMPOSE" up -d app
+docker compose -f "$COMPOSE" up -d app worker
 
 READY=0
 for attempt in $(seq 1 30); do
