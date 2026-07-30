@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 const OFFICIAL_ORIGIN = "https://www.supremecourt.gov";
 const INDEX_URL = `${OFFICIAL_ORIGIN}/opinions/USReports.aspx`;
 const MAX_INDEX_BYTES = 3 * 1024 * 1024;
 const MAX_VOLUME_BYTES = 350 * 1024 * 1024;
+const MIRROR_DIR = process.env.SCOTUS_BOUND_MIRROR_DIR;
 
 export interface OfficialBoundVolume {
   volume: number;
@@ -146,9 +149,15 @@ async function boundedBody(response: Response, maximum: number) {
 }
 
 export async function fetchOfficialBoundVolumeIndex() {
-  const response = await fetch(INDEX_URL, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
-  if (!response.ok) throw new Error(`Supreme Court U.S. Reports index returned HTTP ${response.status}`);
-  const body = await boundedBody(response, MAX_INDEX_BYTES);
+  let body: Uint8Array;
+  if (MIRROR_DIR) {
+    body = new Uint8Array(await readFile(path.join(MIRROR_DIR, "USReports.aspx")));
+    if (body.byteLength > MAX_INDEX_BYTES) throw new Error(`Official source exceeds ${MAX_INDEX_BYTES} byte cap`);
+  } else {
+    const response = await fetch(INDEX_URL, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
+    if (!response.ok) throw new Error(`Supreme Court U.S. Reports index returned HTTP ${response.status}`);
+    body = await boundedBody(response, MAX_INDEX_BYTES);
+  }
   const rawBody = new TextDecoder().decode(body);
   return { sourceUri: INDEX_URL, rawBody, contentHash: createHash("sha256").update(body).digest("hex"),
     retrievedAt: new Date().toISOString(), volumes: parseOfficialBoundVolumeIndex(rawBody) };
@@ -156,9 +165,16 @@ export async function fetchOfficialBoundVolumeIndex() {
 
 export async function fetchOfficialBoundVolume(source: OfficialBoundVolume) {
   const url = officialPdfUrl(source.pdfUrl);
-  const response = await fetch(url, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
-  if (!response.ok) throw new Error(`Supreme Court bound volume returned HTTP ${response.status}`);
-  const body = await boundedBody(response, MAX_VOLUME_BYTES);
+  let body: Uint8Array;
+  if (MIRROR_DIR) {
+    const fileName = path.posix.basename(new URL(url).pathname);
+    body = new Uint8Array(await readFile(path.join(MIRROR_DIR, fileName)));
+    if (body.byteLength > MAX_VOLUME_BYTES) throw new Error(`Official source exceeds ${MAX_VOLUME_BYTES} byte cap`);
+  } else {
+    const response = await fetch(url, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
+    if (!response.ok) throw new Error(`Supreme Court bound volume returned HTTP ${response.status}`);
+    body = await boundedBody(response, MAX_VOLUME_BYTES);
+  }
   if (body[0] !== 0x25 || body[1] !== 0x50 || body[2] !== 0x44 || body[3] !== 0x46) throw new Error("Official bound-volume response is not a PDF");
   return { sourceUri: url, body, contentHash: createHash("sha256").update(body).digest("hex"),
     retrievedAt: new Date().toISOString(), mediaType: "application/pdf" };
