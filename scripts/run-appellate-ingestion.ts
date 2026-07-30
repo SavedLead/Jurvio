@@ -173,7 +173,7 @@ async function downloadAndExtract(item: {
 
   const textHash = createHash("sha256").update(validation.normalized).digest("hex");
   const html = textToHtml(validation.normalized);
-  await sql.begin(async (tx) => {
+  const publishedCaseId = await sql.begin(async (tx) => {
     const [artifact] = await tx<{ id: string }[]>`
       INSERT INTO raw_artifact (
         provider_id, source_uri, source_record_id, content_hash, object_key,
@@ -408,8 +408,9 @@ async function downloadAndExtract(item: {
           extractionMethod: "native_pdf_text", wordCount: validation.wordCount })}
       )
     `;
+    return canonical.case_public_id;
   });
-  return { state: "published", caseId: canonical.case_public_id, words: validation.wordCount };
+  return { state: "published", caseId: publishedCaseId, words: validation.wordCount };
 }
 
 async function processQueue() {
