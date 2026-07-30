@@ -15,8 +15,10 @@ const argument = (name: string) =>
   process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const courtArgument = argument("court") ?? "all";
 const watch = (argument("watch") ?? "false") === "true";
-const concurrency = Math.max(1, Math.min(6, Number(argument("concurrency") ?? "4")));
-const processLimit = Math.max(1, Math.min(2_000, Number(argument("limit") ?? "500")));
+const concurrency = Number(argument("concurrency") ?? String(APPELLATE_COURT_REGISTRY.length));
+if (!Number.isInteger(concurrency) || concurrency < 1) {
+  throw new Error("--concurrency must be a positive integer");
+}
 const intervalMs = 5 * 60 * 1000;
 const sql = db();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -239,7 +241,6 @@ async function processQueue() {
     FROM appellate_ingestion_item
     WHERE state IN ('discovered','downloaded','extracted','enriched','publication_ready')
     ORDER BY decided_on DESC NULLS LAST, first_seen_at
-    LIMIT ${processLimit}
   `;
   let cursor = 0;
   const results: Array<Record<string, unknown>> = [];
