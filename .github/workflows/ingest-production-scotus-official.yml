@@ -29,7 +29,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: jurvio-production-scotus-official-ingestion
+  group: ${{ github.event_name == 'schedule' && 'jurvio-production-scotus-official-ingestion' || 'jurvio-production-scotus-bound-assembly' }}
   cancel-in-progress: false
 
 jobs:
@@ -68,6 +68,21 @@ jobs:
           test "$LIMIT" -le 100
           case "$RESUME" in true|false) ;; *) echo "::error::Invalid resume value"; exit 1;; esac
           printf 'TERM_YEARS=%s\nLIMIT=%s\nRESUME=%s\nBOUND_RESUME=%s\n' "$TERM_YEARS" "$LIMIT" "$RESUME" "$BOUND_RESUME" >> "$GITHUB_ENV"
+
+      - name: Start SCOTUS Assembly X-Ray
+        if: github.event_name != 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XRAY_COMMENT_ID: "5133453027"
+        run: |
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+
+- Phase: `runner started`
+- Target: U.S. Reports Volumes `567 → 502`
+- PDF-to-text workers: 4 on GitHub runner
+- Production staging workers: 2
+- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
 
       - name: Configure SSH
         env:
@@ -121,6 +136,7 @@ jobs:
           echo "Resolved the image from the running Jurvio app container."
 
       - name: Enrich canonical SCOTUS opinions from CourtListener
+        if: github.event_name == 'schedule'
         id: enrich
         continue-on-error: true
         env:
@@ -130,6 +146,7 @@ jobs:
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-courtlistener-opinions.mjs --court scotus --since 1791-01-01 --limit 500 --order newest --delay-ms 100"
 
       - name: Relay blocked official dockets into the artifact volume
+        if: github.event_name == 'schedule'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -169,6 +186,7 @@ jobs:
           echo "Relayed $DOWNLOADED official Supreme Court dockets."
 
       - name: Ingest, fully enrich, and publish verified SCOTUS cases
+        if: github.event_name == 'schedule'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
