@@ -90,7 +90,8 @@ jobs:
             .github/workflows/federal-bulk-production.yml \
             scripts/enrich-bulk-federal-cohort.ts \
             scripts/ingest-courtlistener-bulk-federal-dockets.ts \
-            src/modules/ingestion/application/ingest-courtlistener-bulk-federal-dockets.ts)"
+            src/modules/ingestion/application/ingest-courtlistener-bulk-federal-dockets.ts \
+            src/modules/ingestion/providers/courtlistener/bulk.ts)"
           test -n "$REQUIRED_IMAGE_ANCESTOR"
           printf 'REQUIRED_IMAGE_ANCESTOR=%s\n' "$REQUIRED_IMAGE_ANCESTOR" >> "$GITHUB_ENV"
 
