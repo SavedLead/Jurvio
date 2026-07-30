@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: Maximum staged candidates to reconcile and publish (1-100)
+        description: Maximum staged candidates to reconcile and publish
         required: true
-        default: "100"
+        default: "10000"
   workflow_run:
     workflows:
       - "Ingest official Supreme Court opinions"
@@ -44,10 +44,10 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             LIMIT="$INPUT_LIMIT"
           else
-            LIMIT="100"
+            LIMIT="10000"
           fi
           test "$LIMIT" -ge 1
-          test "$LIMIT" -le 100
+          test "$LIMIT" -le 100000
           printf 'LIMIT=%s\n' "$LIMIT" >> "$GITHUB_ENV"
 
       - name: Configure SSH
