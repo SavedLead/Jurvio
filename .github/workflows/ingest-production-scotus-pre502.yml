@@ -16,6 +16,11 @@ on:
         description: Oldest U.S. Reports volume
         required: true
         default: "498"
+      resume:
+        description: Resume from durable volume checkpoints
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -35,6 +40,7 @@ jobs:
         env:
           NEWEST: ${{ inputs.newest_volume || '501' }}
           OLDEST: ${{ inputs.oldest_volume || '498' }}
+          RESUME: ${{ github.event_name == 'push' && 'false' || inputs.resume }}
         run: |
           set -euo pipefail
           test "$NEWEST" -ge 2
@@ -42,7 +48,8 @@ jobs:
           test "$OLDEST" -ge 2
           test "$OLDEST" -le "$NEWEST"
           test $((NEWEST - OLDEST + 1)) -le 25
-          printf 'NEWEST=%s\nOLDEST=%s\n' "$NEWEST" "$OLDEST" >> "$GITHUB_ENV"
+          test "$RESUME" = "true" || test "$RESUME" = "false"
+          printf 'NEWEST=%s\nOLDEST=%s\nRESUME=%s\n' "$NEWEST" "$OLDEST" "$RESUME" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -60,6 +67,7 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           for ATTEMPT in $(seq 1 60); do
@@ -69,7 +77,7 @@ jobs:
               test "$#" -eq 1
               docker inspect --format "{{.Config.Image}}" "$1"
             ' 2>/dev/null || true)"
-            if [ -n "$JURVIO_IMAGE" ] && ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app test -f /app/jobs/ingest-loc-us-reports-volume.mjs" 2>/dev/null; then
+            if [ "$JURVIO_IMAGE" = "ghcr.io/savedlead/jurvio:$EXPECTED_SHA" ] && ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app test -f /app/jobs/ingest-loc-us-reports-volume.mjs" 2>/dev/null; then
               printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
               exit 0
             fi
@@ -88,7 +96,7 @@ jobs:
           trap 'rm -rf "$RESULT_DIR"' EXIT
           run_volume() {
             VOLUME="$1"
-            if ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume='$VOLUME' --limit=1000 --resume=true" > "$RESULT_DIR/$VOLUME.log" 2>&1; then
+            if ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume='$VOLUME' --limit=1000 --resume='$RESUME'" > "$RESULT_DIR/$VOLUME.log" 2>&1; then
               : > "$RESULT_DIR/$VOLUME.ok"
               echo "::notice title=Pre-502 Volume $VOLUME::staged successfully"
             else
@@ -97,7 +105,7 @@ jobs:
             fi
           }
           export -f run_volume
-          export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR
+          export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR RESUME
           seq "$NEWEST" -1 "$OLDEST" | xargs -P 4 -n 1 bash -c 'run_volume "$1"' _ &
           INGEST_PID=$!
           while kill -0 "$INGEST_PID" 2>/dev/null; do
