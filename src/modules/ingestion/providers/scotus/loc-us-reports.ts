@@ -4,6 +4,8 @@ const LOC_ORIGIN = "https://www.loc.gov";
 const COLLECTION_URL = `${LOC_ORIGIN}/collections/united-states-reports/`;
 const MAX_JSON_BYTES = 10 * 1024 * 1024;
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
+const LOC_FETCH_ATTEMPTS = 4;
+const LOC_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export interface LocUsReportsRecord {
   sourceRecordId: string;
@@ -103,6 +105,36 @@ export function parseLocUsReportsResults(payload: unknown, expectedVolume: numbe
     .sort((a, b) => a.reporterPage - b.reporterPage);
 }
 
+function retryAfterMs(response: Response, attempt: number) {
+  const retryAfter = response.headers.get("retry-after");
+  const seconds = retryAfter === null ? Number.NaN : Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 30_000);
+  return Math.min(1_000 * 2 ** (attempt - 1), 8_000) + Math.floor(Math.random() * 250);
+}
+
+async function fetchOfficialLoc(url: string) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= LOC_FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" },
+        redirect: "error",
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (response.ok || !LOC_RETRYABLE_STATUS.has(response.status) || attempt === LOC_FETCH_ATTEMPTS) {
+        return response;
+      }
+      await response.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response, attempt)));
+    } catch (error) {
+      lastError = error;
+      if (attempt === LOC_FETCH_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000 * 2 ** (attempt - 1), 8_000)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Library of Congress request failed");
+}
+
 async function boundedBody(response: Response, maximum: number) {
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > maximum) throw new Error(`Library of Congress response exceeds ${maximum} byte cap`);
@@ -118,10 +150,7 @@ export async function fetchLocUsReportsVolume(volume: number) {
   url.searchParams.set("at", "results,pagination");
   url.searchParams.set("c", "150");
   url.searchParams.set("q", `U.S. Reports Volume ${volume}`);
-  const response = await fetch(url, {
-    headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" },
-    redirect: "error",
-  });
+  const response = await fetchOfficialLoc(url.toString());
   if (!response.ok) throw new Error(`Library of Congress volume index returned HTTP ${response.status}`);
   const body = await boundedBody(response, MAX_JSON_BYTES);
   const rawBody = new TextDecoder().decode(body);
@@ -138,10 +167,7 @@ export async function fetchLocUsReportsVolume(volume: number) {
 export async function fetchLocUsReportsPdf(rawUrl: string) {
   const url = officialLocUrl(rawUrl);
   if (!new URL(url).pathname.toLowerCase().endsWith(".pdf")) throw new Error("Library of Congress resource is not a PDF");
-  const response = await fetch(url, {
-    headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" },
-    redirect: "error",
-  });
+  const response = await fetchOfficialLoc(url.toString());
   if (!response.ok) throw new Error(`Library of Congress PDF returned HTTP ${response.status}`);
   const body = await boundedBody(response, MAX_PDF_BYTES);
   if (body[0] !== 0x25 || body[1] !== 0x50 || body[2] !== 0x44 || body[3] !== 0x46) {

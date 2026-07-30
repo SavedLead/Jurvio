@@ -15,7 +15,11 @@ on:
       oldest_volume:
         description: Oldest U.S. Reports volume
         required: true
-        default: "498"
+        default: "477"
+      volume_workers:
+        description: Concurrent volume workers
+        required: true
+        default: "8"
       resume:
         description: Resume from durable volume checkpoints
         required: true
@@ -28,7 +32,7 @@ permissions:
 
 concurrency:
   group: jurvio-production-scotus-pre502
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   ingest:
@@ -39,7 +43,8 @@ jobs:
       - name: Validate range
         env:
           NEWEST: ${{ inputs.newest_volume || '501' }}
-          OLDEST: ${{ inputs.oldest_volume || '498' }}
+          OLDEST: ${{ inputs.oldest_volume || '477' }}
+          VOLUME_WORKERS: ${{ inputs.volume_workers || '8' }}
           RESUME: ${{ github.event_name == 'push' && 'false' || inputs.resume }}
         run: |
           set -euo pipefail
@@ -48,8 +53,11 @@ jobs:
           test "$OLDEST" -ge 2
           test "$OLDEST" -le "$NEWEST"
           test $((NEWEST - OLDEST + 1)) -le 25
+          test "$VOLUME_WORKERS" -ge 1
+          test "$VOLUME_WORKERS" -le 12
           test "$RESUME" = "true" || test "$RESUME" = "false"
-          printf 'NEWEST=%s\nOLDEST=%s\nRESUME=%s\n' "$NEWEST" "$OLDEST" "$RESUME" >> "$GITHUB_ENV"
+          printf 'NEWEST=%s\nOLDEST=%s\nRESUME=%s\nVOLUME_WORKERS=%s\n' \
+            "$NEWEST" "$OLDEST" "$RESUME" "$VOLUME_WORKERS" >> "$GITHUB_ENV"
 
       - name: Configure SSH
         env:
@@ -96,17 +104,22 @@ jobs:
           trap 'rm -rf "$RESULT_DIR"' EXIT
           run_volume() {
             VOLUME="$1"
-            if ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume='$VOLUME' --limit=1000 --resume='$RESUME'" > "$RESULT_DIR/$VOLUME.log" 2>&1; then
-              : > "$RESULT_DIR/$VOLUME.ok"
-              echo "::notice title=Pre-502 Volume $VOLUME::staged successfully"
-            else
-              : > "$RESULT_DIR/$VOLUME.failed"
-              echo "::warning title=Pre-502 Volume $VOLUME::isolated and skipped; older volumes continue"
-            fi
+            : > "$RESULT_DIR/$VOLUME.log"
+            for ATTEMPT in 1 2; do
+              if timeout --foreground 35m ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume='$VOLUME' --limit=1000 --resume='$RESUME'" >> "$RESULT_DIR/$VOLUME.log" 2>&1; then
+                : > "$RESULT_DIR/$VOLUME.ok"
+                echo "::notice title=Pre-502 Volume $VOLUME::staged successfully"
+                return 0
+              fi
+              printf 'Volume %s attempt %s failed; retrying after backoff\n' "$VOLUME" "$ATTEMPT" >> "$RESULT_DIR/$VOLUME.log"
+              sleep $((ATTEMPT * 15))
+            done
+            : > "$RESULT_DIR/$VOLUME.failed"
+            echo "::warning title=Pre-502 Volume $VOLUME::isolated after two attempts; older volumes continue"
           }
           export -f run_volume
           export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR RESUME
-          seq "$NEWEST" -1 "$OLDEST" | xargs -P 4 -n 1 bash -c 'run_volume "$1"' _ &
+          seq "$NEWEST" -1 "$OLDEST" | xargs -P "$VOLUME_WORKERS" -n 1 bash -c 'run_volume "$1"' _ &
           INGEST_PID=$!
           while kill -0 "$INGEST_PID" 2>/dev/null; do
             if ! ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000"; then
@@ -158,8 +171,8 @@ jobs:
           else
             TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));\"" 2>/dev/null || printf '{"report":"unavailable","reason":"production totals query failed"}')"
           fi
-          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **%s**\n- Exact image: `%s`\n- Range: Volumes `%s → %s`\n- Completed volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```' \
-            "$WORKFLOW_STATUS" "${JURVIO_IMAGE:-unresolved}" "${NEWEST:-unknown}" "${OLDEST:-unknown}" \
+          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **%s**\n- Exact image: `%s`\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```' \
+            "$WORKFLOW_STATUS" "${JURVIO_IMAGE:-unresolved}" "${NEWEST:-unknown}" "${OLDEST:-unknown}" "${VOLUME_WORKERS:-unknown}" \
             "${COMPLETED_VOLUMES:-0}" "${COMPLETED_LIST:-}" "${FAILED_VOLUMES:-0}" "${FAILED_LIST:-}" \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
