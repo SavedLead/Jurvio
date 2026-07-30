@@ -18,8 +18,14 @@ describe("appellate source registry",()=>{
   });
   it("discovers official PDF links idempotently",()=>{
     const court=appellateCourtByCode("ca4")!;
-    const html='<div>07/30/2026 No. 25-1745 Vapor Technology Association v. Wooten <a href="/opinions/251745.P.pdf">Published opinion</a><a href="/opinions/251745.P.pdf">duplicate</a></div>';
+    const html='<div>251745.P Vapor Technology Association v. McKinley Wooten, Jr. Published opinion after argument <a href="/opinions/251745.P.pdf">https://www.ca4.uscourts.gov/opinions/251745.P.pdf</a> July 30, 2026 <a href="/opinions/251745.P.pdf">duplicate</a></div>';
     const rows=parseOfficialAppellateListing(html,court);
-    expect(rows).toHaveLength(1); expect(rows[0]?.docketNumber).toBe("25-1745"); expect(rows[0]?.decidedOn).toBe("2026-07-30"); expect(rows[0]?.documentUrl).toBe("https://www.ca4.uscourts.gov/opinions/251745.P.pdf");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      docketNumber:"25-1745",
+      caption:"Vapor Technology Association v. McKinley Wooten, Jr.",
+      decidedOn:"2026-07-30",
+      documentUrl:"https://www.ca4.uscourts.gov/opinions/251745.P.pdf",
+    });
   });
 });
