@@ -8,9 +8,9 @@ on:
         required: true
         default: all
       concurrency:
-        description: Bounded circuit discovery concurrency
+        description: Concurrent circuit workers
         required: true
-        default: "4"
+        default: "13"
 
 permissions:
   contents: read
