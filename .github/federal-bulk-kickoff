@@ -21,3 +21,5 @@ Retry against image containing publication fix 7d2f987: 2026-07-29.
 Start approved 2026 federal appellate fully enriched production tranche: 1,000 source rows, fail closed above 1%, no paid AI/OCR/PACER/new infrastructure: 2026-07-29.
 
 Retry approved 2026 federal appellate 1,000-case unified tranche after kickoff-race fix PR #142: 2026-07-29.
+
+Retry approved 2026 federal appellate 1,000-case unified tranche after bounded bzip2 close fix PRs #143-#144: 2026-07-29.
