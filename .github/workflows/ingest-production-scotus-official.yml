@@ -172,6 +172,7 @@ jobs:
           done
 
       - name: Mirror official U.S. Reports volumes 502 through 567
+        if: github.event_name != 'schedule'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -195,6 +196,7 @@ jobs:
           ssh "$DO_USER@$DO_HOST" "set -eu; CONTAINER_ID=\$(cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml ps -q app); test -n \"\$CONTAINER_ID\"; docker exec \"\$CONTAINER_ID\" mkdir -p /var/lib/jurvio/artifacts/scotus-bound-mirror; docker exec -i \"\$CONTAINER_ID\" tar -C /var/lib/jurvio/artifacts/scotus-bound-mirror -xf - < /tmp/scotus-bound-mirror.tar; rm -f /tmp/scotus-bound-mirror.tar"
 
       - name: Ingest official pre-2018 U.S. Reports assembly line
+        if: github.event_name != 'schedule'
         id: bound
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
@@ -209,6 +211,7 @@ jobs:
             fi
           done
           printf 'FAILED_BOUND_VOLUMES=%s\n' "${FAILED_VOLUMES# }" >> "$GITHUB_ENV"
+          test -z "$FAILED_VOLUMES"
 
       - name: Report official-source staging queue
         if: always()
