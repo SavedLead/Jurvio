@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
+  bulkCsvProcessCompleted,
   courtListenerBulkCourtSchema,
   parseBulkCsv,
 } from "./bulk";
@@ -21,5 +22,11 @@ describe("CourtListener bulk CSV", () => {
 
     expect(rows).toHaveLength(2);
     expect(rows[1]?.id).toBe("ca1");
+  });
+
+  it("accepts an intentional bounded close without hiding real decompressor failures", () => {
+    expect(bulkCsvProcessCompleted(1, true)).toBe(true);
+    expect(bulkCsvProcessCompleted(1, false)).toBe(false);
+    expect(bulkCsvProcessCompleted(0, false)).toBe(true);
   });
 });
