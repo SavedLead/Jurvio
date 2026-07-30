@@ -86,6 +86,8 @@ export async function ingestLocUsReportsVolume(
   let succeeded = 0;
   let failed = 0;
   const failures: Array<{ sourceRecordId: string; reason: string }> = [];
+  let lastContiguousSourceRecordId: string | null = null;
+  let sawFailure = false;
   try {
     for (const record of selected) {
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
@@ -124,18 +126,22 @@ export async function ingestLocUsReportsVolume(
             last_seen_at = now()
         `;
         await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, documentCount: 1 });
-        await sql `
-          INSERT INTO ingestion_checkpoint (provider_id, stream_name, cursor_value)
-          VALUES (${provider.id}, ${streamName}, ${record.sourceRecordId})
-          ON CONFLICT (provider_id, stream_name) DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = now()
-        `;
+        if (!sawFailure) lastContiguousSourceRecordId = record.sourceRecordId;
         succeeded += 1;
       } catch (error) {
+        sawFailure = true;
         failed += 1;
         const reason = error instanceof Error ? error.message : "Library of Congress case ingestion failed";
         failures.push({ sourceRecordId: record.sourceRecordId, reason });
         await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, error: reason });
       }
+    }
+    if (lastContiguousSourceRecordId !== null) {
+      await sql `
+        INSERT INTO ingestion_checkpoint (provider_id, stream_name, cursor_value)
+        VALUES (${provider.id}, ${streamName}, ${lastContiguousSourceRecordId})
+        ON CONFLICT (provider_id, stream_name) DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = now()
+      `;
     }
     await finishIngestionRun(sql, runId);
     return { runId, volume: options.volume, discovered: index.records.length, selected: selected.length, succeeded, failed, failures };
