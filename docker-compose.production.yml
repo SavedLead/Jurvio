@@ -42,6 +42,23 @@ services:
       start_period: 20s
     networks: [private]
 
+  worker:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    command: ["node", "jobs/run-production-scheduler.mjs"]
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
 volumes:
   jurvio_postgres:
   jurvio_artifacts:
