@@ -82,13 +82,24 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - uses: actions/checkout@v4
+
+      - name: Resolve deployed unified-cohort implementation
+        run: |
+          REQUIRED_IMAGE_ANCESTOR="$(git log -1 --format=%H -- \
+            .github/workflows/federal-bulk-production.yml \
+            scripts/enrich-bulk-federal-cohort.ts \
+            scripts/ingest-courtlistener-bulk-federal-dockets.ts \
+            src/modules/ingestion/application/ingest-courtlistener-bulk-federal-dockets.ts)"
+          test -n "$REQUIRED_IMAGE_ANCESTOR"
+          printf 'REQUIRED_IMAGE_ANCESTOR=%s\n' "$REQUIRED_IMAGE_ANCESTOR" >> "$GITHUB_ENV"
+
       - name: Resolve active production image containing unified cohort jobs
         id: image
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REQUIRED_IMAGE_ANCESTOR: ${{ github.sha }}
         run: |
           previous=
           stable=0
@@ -209,6 +220,19 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          corpus="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('year',$YEAR,'jurisdiction','$JURISDICTION','cases',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'published',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION' AND c.publication='published'),'draft',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION' AND c.publication='draft'),'parties',(SELECT count(*) FROM party_appearance party JOIN legal_case c ON c.id=party.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'docket_entries',(SELECT count(*) FROM docket_entry entry JOIN legal_case c ON c.id=entry.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'documents',(SELECT count(*) FROM document document JOIN legal_case c ON c.id=document.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'));\"")"
+          active_image="$(ssh "$DO_USER@$DO_HOST" '
+            ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
+            set -- $ids
+            test "$#" -eq 1
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ' 2>/dev/null || true)"
+          if [ -n "$active_image" ]; then
+            corpus="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$active_image' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('year',$YEAR,'jurisdiction','$JURISDICTION','cases',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'published',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION' AND c.publication='published'),'draft',(SELECT count(*) FROM legal_case c JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION' AND c.publication='draft'),'parties',(SELECT count(*) FROM party_appearance party JOIN legal_case c ON c.id=party.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'docket_entries',(SELECT count(*) FROM docket_entry entry JOIN legal_case c ON c.id=entry.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION'),'documents',(SELECT count(*) FROM document document JOIN legal_case c ON c.id=document.case_id JOIN court ON court.id=c.court_id WHERE extract(year from c.filed_on)=$YEAR AND upper(coalesce(court.jurisdiction,''))='$JURISDICTION));\"" 2>/dev/null || true)"
+          else
+            corpus=
+          fi
+          if [ -z "$corpus" ]; then
+            corpus='{"error":"production_corpus_query_unavailable"}'
+          fi
           body="$(printf '### Federal unified bulk cohort\n\n- Year: `%s`\n- Jurisdiction: `%s`\n- Snapshot: `%s`\n- Status: **%s**\n- Run: %s\n- Steps: ssh=`%s`, image=`%s`, download=`%s`, courts=`%s`, cohort=`%s`, enrich=`%s`, reconcile=`%s`, publish=`%s`\n\nImporter:\n```json\n%s\n```\n\nEnrichment:\n```json\n%s\n```\n\nProduction:\n```json\n%s\n```' "$YEAR" "$JURISDICTION" "$SNAPSHOT_DATE" "${{ job.status }}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "${{ steps.ssh.outcome }}" "${{ steps.image.outcome }}" "${{ steps.download.outcome }}" "${{ steps.courts.outcome }}" "${{ steps.cohort.outcome }}" "${{ steps.enrich.outcome }}" "${{ steps.reconcile.outcome }}" "${{ steps.publish.outcome }}" "$(tail -n 1 /tmp/federal-bulk-result.json 2>/dev/null || true)" "$(tail -n 1 /tmp/federal-enrichment-result.json 2>/dev/null || true)" "$corpus")"
           gh issue comment 106 --repo "$GITHUB_REPOSITORY" --body "$body"
