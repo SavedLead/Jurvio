@@ -171,6 +171,20 @@ jobs:
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-enriched-official-scotus.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME' --attempts=10" | tee -a /tmp/scotus-ingestion.log /tmp/scotus-publication.log
           done
 
+      - name: Report SCOTUS assembly host capacity
+        if: github.event_name != 'schedule'
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            echo "CPU_COUNT=$(nproc)"
+            free -m
+            docker stats --no-stream --format "CONTAINER={{.Name}} CPU={{.CPUPerc}} MEMORY={{.MemUsage}}"
+            echo "ACTIVE_PDFTOTEXT=$(pgrep -c pdftotext || true)"
+          '
+
       - name: Mirror official U.S. Reports volumes 502 through 567
         if: github.event_name != 'schedule'
         env:
@@ -209,8 +223,10 @@ jobs:
             VOLUME="$1"
             if ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts SCOTUS_BOUND_MIRROR_DIR=/var/lib/jurvio/artifacts/scotus-bound-mirror node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='true'" > "$RESULT_DIR/$VOLUME.log" 2>&1; then
               : > "$RESULT_DIR/$VOLUME.ok"
+              echo "::notice title=SCOTUS volume $VOLUME::staged successfully"
             else
               : > "$RESULT_DIR/$VOLUME.failed"
+              echo "::error title=SCOTUS volume $VOLUME::staging failed; retained for repair"
             fi
           }
           export -f run_volume
