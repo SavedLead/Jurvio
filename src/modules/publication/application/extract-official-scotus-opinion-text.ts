@@ -96,8 +96,8 @@ export async function extractOfficialScotusOpinionText(
   sql: Sql,
   options: { limit: number; artifactRoot: string },
 ) {
-  if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) {
-    throw new Error("Extraction limit must be between 1 and 100");
+  if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100_000) {
+    throw new Error("Extraction limit must be between 1 and 100000");
   }
   const artifactRoot = path.resolve(options.artifactRoot);
   const candidates = await sql<ExtractionCandidate[]>`
