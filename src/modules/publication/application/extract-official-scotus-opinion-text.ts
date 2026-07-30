@@ -209,7 +209,7 @@ export async function extractOfficialScotusOpinionText(
         structurallyBoundLayoutText,
         candidate.docket_number,
       );
-      let extractionMethod = "native_pdf_text";
+      let usedRawReadingOrder = false;
       if (!validation.valid) {
         const { stdout: rawText } = await execFileAsync(
           "pdftotext",
@@ -226,7 +226,7 @@ export async function extractOfficialScotusOpinionText(
         );
         if (rawValidation.valid) {
           validation = rawValidation;
-          extractionMethod = "native_pdf_text_raw";
+          usedRawReadingOrder = true;
         } else {
           held += 1;
           records.push({ caseId: candidate.case_public_id, documentId: candidate.document_public_id,
@@ -243,7 +243,7 @@ export async function extractOfficialScotusOpinionText(
             word_count, source_artifact_id
           ) VALUES (
             ${candidate.document_id}, ${contentHtml}, ${validation.normalized}, ${contentHash},
-            ${extractionMethod}, ${validation.wordCount}, ${candidate.source_artifact_id}
+            'native_pdf_text', ${validation.wordCount}, ${candidate.source_artifact_id}
           )
           ON CONFLICT (document_id) DO UPDATE SET
             content_html = EXCLUDED.content_html, content_text = EXCLUDED.content_text,
@@ -275,7 +275,8 @@ export async function extractOfficialScotusOpinionText(
           ) VALUES (
             'publication.changed', 'document', ${candidate.document_id},
             (extract(epoch from clock_timestamp()) * 1000000)::bigint,
-            ${tx.json({ source: "scotus_official", extractionMethod,
+            ${tx.json({ source: "scotus_official", extractionMethod: "native_pdf_text",
+              readingOrder: usedRawReadingOrder ? "raw" : "layout",
               wordCount: validation.wordCount, contentHash })}
           )
         `;
