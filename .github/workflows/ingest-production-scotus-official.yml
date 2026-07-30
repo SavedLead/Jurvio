@@ -310,4 +310,4 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
           exit "$REPORT_EXIT"
 
-# Retry verified official SCOTUS metadata publication after the v2 image rollout.
+# Trigger the repaired historical SCOTUS assembly after publication blockers were removed.
