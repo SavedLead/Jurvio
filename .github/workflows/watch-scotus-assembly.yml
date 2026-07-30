@@ -1,0 +1,74 @@
+name: Watch SCOTUS historical assembly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/watch-scotus-assembly.yml"
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+concurrency:
+  group: jurvio-scotus-assembly-watchdog
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect and recover SCOTUS assembly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSEMBLY_WORKFLOW: ingest-production-scotus-official.yml
+          PUBLICATION_WORKFLOW: publish-official-scotus-opinions.yml
+          XRAY_COMMENT_ID: "5133453027"
+          PUBLICATION_COMMENT_ID: "5101767945"
+        run: |
+          set -euo pipefail
+          NOW="$(date -u +%s)"
+          XRAY_JSON="$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID")"
+          XRAY_UPDATED="$(jq -r '.updated_at' <<<"$XRAY_JSON")"
+          XRAY_BODY="$(jq -r '.body' <<<"$XRAY_JSON")"
+          UPDATED_EPOCH="$(date -u -d "$XRAY_UPDATED" +%s)"
+          HEARTBEAT_AGE=$((NOW - UPDATED_EPOCH))
+
+          ASSEMBLY_RUNS="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$ASSEMBLY_WORKFLOW/runs?per_page=30")"
+          ASSEMBLY_ACTIVE="$(jq '[.workflow_runs[] | select(.event != "schedule" and (.status == "queued" or .status == "in_progress"))] | length' <<<"$ASSEMBLY_RUNS")"
+
+          ASSEMBLY_ACTION="healthy"
+          if [ "$ASSEMBLY_ACTIVE" -eq 0 ] && { [ "$HEARTBEAT_AGE" -ge 600 ] || grep -q 'release pending' <<<"$XRAY_BODY"; }; then
+            gh workflow run "$ASSEMBLY_WORKFLOW" --ref main -f term=25 -f limit=100 -f resume=true
+            ASSEMBLY_ACTION="dispatched"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+
+- Phase: `watchdog dispatched recovery`
+- Target: U.S. Reports Volumes `567 → 502`
+- Reason: no active historical assembly and heartbeat was stale
+- PDF-to-text workers: 4 on GitHub runner
+- Production staging workers: 2
+- Watchdog run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+          fi
+
+          PUBLICATION_BODY="$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$PUBLICATION_COMMENT_ID" --jq '.body')"
+          PENDING="$(sed -n 's/.*"pending_official_candidates" : \([0-9][0-9]*\).*/\1/p' <<<"$PUBLICATION_BODY" | tail -n 1)"
+          PENDING="${PENDING:-0}"
+          PUBLICATION_RUNS="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$PUBLICATION_WORKFLOW/runs?per_page=20")"
+          PUBLICATION_ACTIVE="$(jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length' <<<"$PUBLICATION_RUNS")"
+          PUBLICATION_ACTION="idle"
+          if [ "$PENDING" -gt 0 ] && [ "$PUBLICATION_ACTIVE" -eq 0 ]; then
+            gh workflow run "$PUBLICATION_WORKFLOW" --ref main -f limit=100
+            PUBLICATION_ACTION="dispatched"
+          elif [ "$PUBLICATION_ACTIVE" -gt 0 ]; then
+            PUBLICATION_ACTION="active"
+          fi
+
+          jq -n             --arg assemblyAction "$ASSEMBLY_ACTION"             --argjson assemblyActive "$ASSEMBLY_ACTIVE"             --argjson heartbeatAgeSeconds "$HEARTBEAT_AGE"             --arg publicationAction "$PUBLICATION_ACTION"             --argjson pendingCandidates "$PENDING"             '{assemblyAction:$assemblyAction,assemblyActive:$assemblyActive,heartbeatAgeSeconds:$heartbeatAgeSeconds,publicationAction:$publicationAction,pendingCandidates:$pendingCandidates}'
