@@ -171,17 +171,44 @@ jobs:
             ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-enriched-official-scotus.mjs --term='$TERM_YEAR' --limit='$LIMIT' --resume='$RESUME' --attempts=10" | tee -a /tmp/scotus-ingestion.log /tmp/scotus-publication.log
           done
 
-      - name: Ingest official pre-2018 U.S. Reports volumes
-        continue-on-error: true
+      - name: Mirror official U.S. Reports volumes 502 through 567
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          MIRROR_DIR="$(mktemp -d)"
+          trap 'rm -rf "$MIRROR_DIR" /tmp/scotus-bound-mirror.tar' EXIT
+          curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+            -A "Mozilla/5.0 (compatible; JurvioBot/1.0; +https://jurvio.com)" \
+            "https://www.supremecourt.gov/opinions/USReports.aspx" \
+            -o "$MIRROR_DIR/USReports.aspx"
+          for VOLUME in $(seq 567 -1 502); do
+            curl --fail --silent --show-error --location --retry 3 --max-time 180 \
+              -A "Mozilla/5.0 (compatible; JurvioBot/1.0; +https://jurvio.com)" \
+              "https://www.supremecourt.gov/opinions/boundvolumes/${VOLUME}BV.pdf" \
+              -o "$MIRROR_DIR/${VOLUME}BV.pdf"
+            test "$(head -c 4 "$MIRROR_DIR/${VOLUME}BV.pdf")" = "%PDF"
+          done
+          tar -C "$MIRROR_DIR" -cf /tmp/scotus-bound-mirror.tar .
+          scp /tmp/scotus-bound-mirror.tar "$DO_USER@$DO_HOST:/tmp/scotus-bound-mirror.tar"
+          ssh "$DO_USER@$DO_HOST" "set -eu; CONTAINER_ID=\$(cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml ps -q app); test -n \"\$CONTAINER_ID\"; docker exec \"\$CONTAINER_ID\" mkdir -p /var/lib/jurvio/artifacts/scotus-bound-mirror; docker exec -i \"\$CONTAINER_ID\" tar -C /var/lib/jurvio/artifacts/scotus-bound-mirror -xf - < /tmp/scotus-bound-mirror.tar; rm -f /tmp/scotus-bound-mirror.tar"
+
+      - name: Ingest official pre-2018 U.S. Reports assembly line
+        id: bound
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -o pipefail
-          for VOLUME in 565 566 567; do
+          FAILED_VOLUMES=""
+          for VOLUME in $(seq 567 -1 502); do
             echo "Ingesting official U.S. Reports volume $VOLUME" | tee -a /tmp/scotus-ingestion.log
-            ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='$BOUND_RESUME'" | tee -a /tmp/scotus-ingestion.log
+            if ! ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts SCOTUS_BOUND_MIRROR_DIR=/var/lib/jurvio/artifacts/scotus-bound-mirror node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='true'" | tee -a /tmp/scotus-ingestion.log; then
+              FAILED_VOLUMES="$FAILED_VOLUMES $VOLUME"
+            fi
           done
+          printf 'FAILED_BOUND_VOLUMES=%s\n' "${FAILED_VOLUMES# }" >> "$GITHUB_ENV"
 
       - name: Report official-source staging queue
         if: always()
