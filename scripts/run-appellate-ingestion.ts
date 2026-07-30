@@ -124,6 +124,7 @@ async function downloadAndExtract(item: {
     return { state: "blocked", reason: blocker };
   }
   const match = matches[0];
+  if (!match?.document_id || !match.cluster_id) throw new Error("Canonical opinion match disappeared");
 
   const response = await fetch(item.document_url, {
     headers: { "User-Agent": process.env.INGESTION_USER_AGENT
