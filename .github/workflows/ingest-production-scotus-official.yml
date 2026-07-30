@@ -133,8 +133,18 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XRAY_COMMENT_ID: "5133453027"
         run: |
           set -euo pipefail
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+
+- Phase: `mirroring 66 official PDFs`
+- Target: U.S. Reports Volumes `567 → 502`
+- PDF-to-text workers: 4 on GitHub runner
+- Production staging workers: 2
+- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           MIRROR_DIR="$(mktemp -d)"
           trap 'rm -rf "$MIRROR_DIR"' EXIT
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT legal_case.docket_number FROM legal_case JOIN court ON court.id = legal_case.court_id LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND (enrichment.completeness->>'docketEvents') IS DISTINCT FROM 'true' ORDER BY legal_case.decided_on DESC NULLS LAST;\"" > "$MIRROR_DIR/dockets.txt"
@@ -190,8 +200,18 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XRAY_COMMENT_ID: "5133453027"
         run: |
           set -euo pipefail
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+
+- Phase: `mirroring and converting 66 official PDFs`
+- Target: U.S. Reports Volumes `567 → 502`
+- PDF-to-text workers: 4 on GitHub runner
+- Production staging workers: 2
+- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           MIRROR_DIR="$(mktemp -d)"
           trap 'rm -rf "$MIRROR_DIR" /tmp/scotus-bound-mirror.tar' EXIT
           curl --fail --silent --show-error --location --retry 3 --max-time 60 \
@@ -205,6 +225,16 @@ jobs:
               -o "$MIRROR_DIR/${VOLUME}BV.pdf"
             test "$(head -c 4 "$MIRROR_DIR/${VOLUME}BV.pdf")" = "%PDF"
           done
+          command -v pdftotext >/dev/null || { sudo apt-get update; sudo apt-get install -y poppler-utils; }
+          convert_volume() {
+            VOLUME="$1"
+            pdftotext -layout "$MIRROR_DIR/${VOLUME}BV.pdf" "$MIRROR_DIR/${VOLUME}BV.txt"
+            test -s "$MIRROR_DIR/${VOLUME}BV.txt"
+            echo "::notice title=SCOTUS PDF-to-text $VOLUME::conversion completed"
+          }
+          export -f convert_volume
+          export MIRROR_DIR
+          seq 567 -1 502 | xargs -P 4 -n 1 bash -c 'convert_volume "$1"' _
           tar -C "$MIRROR_DIR" -cf /tmp/scotus-bound-mirror.tar .
           scp /tmp/scotus-bound-mirror.tar "$DO_USER@$DO_HOST:/tmp/scotus-bound-mirror.tar"
           ssh "$DO_USER@$DO_HOST" "set -eu; CONTAINER_ID=\$(cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml ps -q app); test -n \"\$CONTAINER_ID\"; docker exec \"\$CONTAINER_ID\" mkdir -p /var/lib/jurvio/artifacts/scotus-bound-mirror; docker exec -i \"\$CONTAINER_ID\" tar -C /var/lib/jurvio/artifacts/scotus-bound-mirror -xf - < /tmp/scotus-bound-mirror.tar; rm -f /tmp/scotus-bound-mirror.tar"
@@ -215,22 +245,30 @@ jobs:
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XRAY_COMMENT_ID: "5133453027"
         run: |
           set -o pipefail
           RESULT_DIR="$(mktemp -d)"
           trap 'rm -rf "$RESULT_DIR"' EXIT
           run_volume() {
             VOLUME="$1"
-            if ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts SCOTUS_BOUND_MIRROR_DIR=/var/lib/jurvio/artifacts/scotus-bound-mirror node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='true'" > "$RESULT_DIR/$VOLUME.log" 2>&1; then
+            if ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T --workdir /tmp app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts SCOTUS_BOUND_MIRROR_DIR=/var/lib/jurvio/artifacts/scotus-bound-mirror SCOTUS_BOUND_TEXT_MIRROR_DIR=/var/lib/jurvio/artifacts/scotus-bound-mirror node /app/jobs/ingest-official-scotus-bound-volume.mjs --volume='$VOLUME' --limit=100 --resume='true'" > "$RESULT_DIR/$VOLUME.log" 2>&1; then
               : > "$RESULT_DIR/$VOLUME.ok"
               echo "::notice title=SCOTUS volume $VOLUME::staged successfully"
+              STATUS="success"
             else
               : > "$RESULT_DIR/$VOLUME.failed"
               echo "::error title=SCOTUS volume $VOLUME::staging failed; retained for repair"
+              STATUS="failed"
             fi
+            COMPLETED="$(find "$RESULT_DIR" -name '*.ok' -o -name '*.failed' | wc -l)"
+            FAILURES="$(find "$RESULT_DIR" -name '*.failed' | wc -l)"
+            BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Phase: `parallel staging`\n- Target: U.S. Reports Volumes `567 → 502`\n- PDF mirror and text conversion: complete\n- PDF-to-text workers: 4 on GitHub runner\n- Production staging workers: 2\n- Volumes completed: %s / 66\n- Failures: %s\n- Latest volume: %s (%s)\n- Run: %s/%s/actions/runs/%s\n- Last heartbeat: %s' "$COMPLETED" "$FAILURES" "$VOLUME" "$STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="$BODY" >/dev/null || true
           }
           export -f run_volume
-          export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR
+          export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR GH_TOKEN XRAY_COMMENT_ID GITHUB_REPOSITORY GITHUB_SERVER_URL GITHUB_RUN_ID
           seq 567 -1 502 | xargs -P 2 -n 1 bash -c 'run_volume "$1"' _
           FAILED_VOLUMES=""
           for VOLUME in $(seq 567 -1 502); do
