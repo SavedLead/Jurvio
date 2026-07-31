@@ -60,6 +60,18 @@ function validateAppellateText(text: string, docketNumber: string) {
   return { valid, normalized, wordCount: words.length };
 }
 
+function publicDocumentUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.hostname !== "api.govinfo.gov") return value;
+    const match = /^\/packages\/([^/]+)\/granules\/([^/]+)\/pdf$/.exec(url.pathname);
+    if (!match) return value;
+    return `https://www.govinfo.gov/content/pkg/${encodeURIComponent(decodeURIComponent(match[1]))}/pdf/${encodeURIComponent(decodeURIComponent(match[2]))}.pdf`;
+  } catch {
+    return value;
+  }
+}
+
 async function heartbeat(
   stage: string,
   courtCode: string | null,
@@ -142,7 +154,8 @@ async function downloadAndExtract(item: {
   const courtSource = appellateCourtByCode(item.court_code);
   if (!courtSource) throw new Error(`Unknown appellate court ${item.court_code}`);
 
-  const response = await fetch(item.document_url, {
+  const documentUrl = publicDocumentUrl(item.document_url);
+  const response = await fetch(documentUrl, {
     headers: { "User-Agent": process.env.INGESTION_USER_AGENT
       ?? "Jurvio legal research ingestion contact@jurvio.com" },
     redirect: "follow",
@@ -187,7 +200,7 @@ async function downloadAndExtract(item: {
         provider_id, source_uri, source_record_id, content_hash, object_key,
         media_type, retrieved_at, response_metadata
       ) VALUES (
-        ${providerId}, ${item.document_url}, ${item.id}, ${pdfHash}, ${objectKey},
+        ${providerId}, ${documentUrl}, ${item.id}, ${pdfHash}, ${objectKey},
         'application/pdf', now(),
         ${tx.json({ source: "official_appellate", courtCode: item.court_code })}
       )
@@ -314,7 +327,7 @@ async function downloadAndExtract(item: {
           author_name, per_curiam, source_download_url, source_artifact_id
         ) VALUES (
           ${cluster.id}, ${document.id}, ${providerId}, ${sourceRecordId},
-          'majority', NULL, false, ${item.document_url}, ${artifact.id}
+          'majority', NULL, false, ${documentUrl}, ${artifact.id}
         )
         ON CONFLICT (provider_id, provider_opinion_id)
         DO UPDATE SET cluster_id=EXCLUDED.cluster_id, document_id=EXCLUDED.document_id,
@@ -385,7 +398,7 @@ async function downloadAndExtract(item: {
     `;
     await tx`UPDATE document SET content_hash=${textHash}, source_artifact_id=${artifact.id},
       extraction_confidence=0.980, updated_at=now() WHERE id=${canonical.document_id}`;
-    await tx`UPDATE judicial_opinion SET source_download_url=${item.document_url},
+    await tx`UPDATE judicial_opinion SET source_download_url=${documentUrl},
       source_artifact_id=${artifact.id}, updated_at=now() WHERE document_id=${canonical.document_id}`;
     await tx`
       INSERT INTO opinion_search_projection (
