@@ -160,10 +160,10 @@ REMOTE
           test -n "$SUMMARY"
           for PAIR in $SUMMARY; do
             case "$PAIR" in
-              completed=*) printf 'COMPLETED_VOLUMES=%s\n' "${PAIR#completed=}" >> "$GITHUB_ENV" ;;
-              failed=*) printf 'FAILED_VOLUMES=%s\n' "${PAIR#failed=}" >> "$GITHUB_ENV" ;;
-              completed_list=*) printf 'COMPLETED_LIST=%s\n' "${PAIR#completed_list=}" >> "$GITHUB_ENV" ;;
-              failed_list=*) printf 'FAILED_LIST=%s\n' "${PAIR#failed_list=}" >> "$GITHUB_ENV" ;;
+              completed=*) COMPLETED_VOLUMES="${PAIR#completed=}"; printf 'COMPLETED_VOLUMES=%s\n' "$COMPLETED_VOLUMES" >> "$GITHUB_ENV" ;;
+              failed=*) FAILED_VOLUMES="${PAIR#failed=}"; printf 'FAILED_VOLUMES=%s\n' "$FAILED_VOLUMES" >> "$GITHUB_ENV" ;;
+              completed_list=*) COMPLETED_LIST="${PAIR#completed_list=}"; printf 'COMPLETED_LIST=%s\n' "$COMPLETED_LIST" >> "$GITHUB_ENV" ;;
+              failed_list=*) FAILED_LIST="${PAIR#failed_list=}"; printf 'FAILED_LIST=%s\n' "$FAILED_LIST" >> "$GITHUB_ENV" ;;
             esac
           done
           test "${COMPLETED_VOLUMES:-0}" -gt 0
