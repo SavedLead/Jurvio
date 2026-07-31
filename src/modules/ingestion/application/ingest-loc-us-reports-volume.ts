@@ -28,17 +28,33 @@ function parseDecision(text: string) {
   };
 }
 
-async function extractText(body: Uint8Array, sourceRecordId: string) {
+async function extractDecisionMetadata(body: Uint8Array, sourceRecordId: string) {
   const directory = await mkdtemp(path.join(tmpdir(), "jurvio-loc-usreports-"));
   try {
     const safe = sourceRecordId.replaceAll(/[^a-zA-Z0-9_-]/g, "_");
     const pdfPath = path.join(directory, `${safe}.pdf`);
     const textPath = path.join(directory, `${safe}.txt`);
     await writeFile(pdfPath, body);
-    await execFileAsync("pdftotext", ["-layout", pdfPath, textPath], { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
-    const text = await readFile(textPath, "utf8");
-    if (text.replaceAll(/\s+/g, "").length < 500) throw new Error("Official case PDF native text is unexpectedly thin");
-    return text;
+
+    // Pre-500 case PDFs can be hundreds of pages. Docket and decision date are normally
+    // in the opening pages, so probe only those first and fall back to the full document
+    // for unusual reporter formatting. The public-text worker performs the one full
+    // extraction needed for the reader after metadata publication.
+    for (const pageArgs of [["-f", "1", "-l", "12"], []] as const) {
+      await execFileAsync(
+        "pdftotext",
+        [...pageArgs, "-layout", pdfPath, textPath],
+        { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
+      );
+      const text = await readFile(textPath, "utf8");
+      if (text.replaceAll(/\s+/g, "").length < 500) continue;
+      try {
+        return parseDecision(text);
+      } catch {
+        // Retry once against the complete PDF before holding the official record.
+      }
+    }
+    throw new Error("Official case PDF lacks deterministic docket or decision date");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -93,8 +109,7 @@ export async function ingestLocUsReportsVolume(
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
       try {
         const pdf = await fetchLocUsReportsPdf(record.pdfUrl);
-        const text = await extractText(pdf.body, record.sourceRecordId);
-        const metadata = parseDecision(text);
+        const metadata = await extractDecisionMetadata(pdf.body, record.sourceRecordId);
         const stored = await artifactStore.putIfAbsent({
           key: `scotus/loc-us-reports/${options.volume}/${record.sourceRecordId.replaceAll(":", "-")}-${pdf.contentHash}.pdf`,
           mediaType: pdf.mediaType,

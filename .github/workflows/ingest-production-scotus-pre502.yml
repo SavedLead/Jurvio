@@ -1,4 +1,4 @@
-name: Ingest pre-502 SCOTUS cases
+name: Ingest pre-500 SCOTUS cases
 
 on:
   push:
@@ -6,16 +6,17 @@ on:
     paths:
       - ".github/workflows/ingest-production-scotus-pre502.yml"
       - "src/modules/ingestion/providers/scotus/loc-us-reports.ts"
+      - "src/modules/ingestion/application/ingest-loc-us-reports-volume.ts"
   workflow_dispatch:
     inputs:
       newest_volume:
-        description: Newest U.S. Reports volume
+        description: Newest pre-500 U.S. Reports volume
         required: true
-        default: "501"
+        default: "499"
       oldest_volume:
         description: Oldest U.S. Reports volume
         required: true
-        default: "477"
+        default: "475"
       volume_workers:
         description: Concurrent volume workers
         required: true
@@ -42,14 +43,14 @@ jobs:
     steps:
       - name: Validate range
         env:
-          NEWEST: ${{ inputs.newest_volume || '501' }}
+          NEWEST: ${{ inputs.newest_volume || '499' }}
           OLDEST: ${{ inputs.oldest_volume || '477' }}
           VOLUME_WORKERS: ${{ inputs.volume_workers || '8' }}
           RESUME: ${{ github.event_name == 'push' && 'true' || inputs.resume }}
         run: |
           set -euo pipefail
           test "$NEWEST" -ge 2
-          test "$NEWEST" -le 501
+          test "$NEWEST" -le 499
           test "$OLDEST" -ge 2
           test "$OLDEST" -le "$NEWEST"
           test $((NEWEST - OLDEST + 1)) -le 25
@@ -143,13 +144,17 @@ jobs:
           seq "$NEWEST" -1 "$OLDEST" | xargs -P "$VOLUME_WORKERS" -n 1 bash -c 'run_volume "$1" || true' _ &
           INGEST_PID="$!"
           while kill -0 "$INGEST_PID" 2>/dev/null; do
+            # Metadata-only cases publish immediately. Readable text is an independent
+            # assembly-line stage and no longer waits for every volume to finish.
             $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000 || true
-            sleep 60
+            $COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts \
+              node jobs/extract-official-scotus-opinion-text.mjs --limit=1000 || true
+            sleep 30
           done
           wait "$INGEST_PID"
           $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000
           while true; do
-            EXTRACTION_RESULT="$($COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=10)"
+            EXTRACTION_RESULT="$($COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000)"
             printf '%s\n' "$EXTRACTION_RESULT"
             read -r SELECTED EXTRACTED <<< "$(printf '%s' "$EXTRACTION_RESULT" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const x=JSON.parse(s.trim().split(/\\n/).at(-1));process.stdout.write([x.selected,x.extracted].join(" "))})')"
             [ "$SELECTED" -gt 0 ] && [ "$EXTRACTED" -gt 0 ] || break

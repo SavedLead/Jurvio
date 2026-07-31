@@ -4,6 +4,7 @@ import { ingestOfficialScotusDockets } from "@/modules/ingestion/application/ing
 import { enrichOfficialScotusOpinionMetadata } from "@/modules/ingestion/application/enrich-official-scotus-opinion-metadata";
 import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
 import { publishVerifiedOfficialScotusOpinions } from "@/modules/publication/application/publish-official-scotus-opinions";
+import { extractOfficialScotusOpinionText } from "@/modules/publication/application/extract-official-scotus-opinion-text";
 
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
@@ -33,6 +34,7 @@ try {
   const opinionRuns = [];
   const docketRuns = [];
   const publicationRuns = [];
+  const extractionRuns = [];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const opinion = await enrichOfficialScotusOpinionMetadata(sql, { limit });
     opinionRuns.push(opinion);
@@ -40,7 +42,10 @@ try {
     docketRuns.push(docket);
     const publication = await publishVerifiedOfficialScotusOpinions(sql, { limit });
     publicationRuns.push(publication);
-    if (opinion.selected === 0 && docket.selected === 0 && publication.selected === 0) break;
+    const extraction = await extractOfficialScotusOpinionText(sql, { limit, artifactRoot });
+    extractionRuns.push(extraction);
+    if (opinion.selected === 0 && docket.selected === 0
+      && publication.selected === 0 && extraction.selected === 0) break;
   }
   console.log(JSON.stringify({
     mode: "ingest_enrich_publish",
@@ -48,6 +53,7 @@ try {
     opinions: opinionRuns,
     dockets: docketRuns,
     publications: publicationRuns,
+    extractions: extractionRuns,
   }));
 } finally {
   await closeDb();
