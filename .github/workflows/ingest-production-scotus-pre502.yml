@@ -154,7 +154,7 @@ jobs:
             cat "$RESULT_DIR/$VOLUME.log"
           done
           printf 'ASSEMBLY_SUMMARY completed=%s failed=%s completed_list=%s failed_list=%s\n' "$COMPLETED_VOLUMES" "$FAILED_VOLUMES" "$COMPLETED_LIST" "$FAILED_LIST"
-          [ "$COMPLETED_VOLUMES" -gt 0 ]
+          [ "$COMPLETED_VOLUMES" -gt 0 ] || printf 'ASSEMBLY_ALL_FAILED=1\n'
 REMOTE
           SUMMARY="$(grep '^ASSEMBLY_SUMMARY ' "$ASSEMBLY_LOG" | tail -n1 || true)"
           test -n "$SUMMARY"
@@ -166,6 +166,7 @@ REMOTE
               failed_list=*) printf 'FAILED_LIST=%s\n' "${PAIR#failed_list=}" >> "$GITHUB_ENV" ;;
             esac
           done
+          test "${COMPLETED_VOLUMES:-0}" -gt 0
 
       - name: Report live funnel
         if: always()
@@ -179,7 +180,7 @@ REMOTE
           if [ -z "${JURVIO_IMAGE:-}" ]; then
             TOTALS='{"report":"unavailable","reason":"exact production image unresolved"}'
           else
-            TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=document.id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));\" " 2>/dev/null || printf '{"report":"unavailable","reason":"production totals query failed"}')"
+            TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));\" " 2>/dev/null || printf '{"report":"unavailable","reason":"production totals query failed"}')"
           fi
           BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **%s**\n- Exact image: `%s`\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```' \
             "$WORKFLOW_STATUS" "${JURVIO_IMAGE:-unresolved}" "${NEWEST:-unknown}" "${OLDEST:-unknown}" "${VOLUME_WORKERS:-unknown}" \
