@@ -2,10 +2,10 @@ name: Ingest pre-502 SCOTUS cases
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - ".github/workflows/ingest-production-scotus-pre502.yml"
+      - "src/modules/ingestion/providers/scotus/loc-us-reports.ts"
   workflow_dispatch:
     inputs:
       newest_volume:
@@ -94,68 +94,78 @@ jobs:
           echo "::error::Timed out waiting for the deployed pre-502 ingestion job"
           exit 1
 
-      - name: Ingest newest-to-oldest and drain continuously
+      - name: Ingest with one durable production coordinator
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
+          ASSEMBLY_LOG="$(mktemp)"
+          trap 'rm -f "$ASSEMBLY_LOG"' EXIT
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$DO_USER@$DO_HOST" \
+            "bash -s -- '$JURVIO_IMAGE' '$NEWEST' '$OLDEST' '$VOLUME_WORKERS' '$RESUME'" <<'REMOTE' | tee "$ASSEMBLY_LOG"
+          set -euo pipefail
+          JURVIO_IMAGE="$1"
+          NEWEST="$2"
+          OLDEST="$3"
+          VOLUME_WORKERS="$4"
+          RESUME="$5"
+          export JURVIO_IMAGE
+          cd /opt/jurvio
+          COMPOSE="docker compose -f docker-compose.production.yml"
           RESULT_DIR="$(mktemp -d)"
           trap 'rm -rf "$RESULT_DIR"' EXIT
           run_volume() {
             VOLUME="$1"
             : > "$RESULT_DIR/$VOLUME.log"
             for ATTEMPT in 1 2; do
-              if timeout --foreground 35m ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume='$VOLUME' --limit=1000 --resume='$RESUME'" >> "$RESULT_DIR/$VOLUME.log" 2>&1; then
+              if timeout --foreground 35m $COMPOSE run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume="$VOLUME" --limit=1000 --resume="$RESUME" >> "$RESULT_DIR/$VOLUME.log" 2>&1; then
                 : > "$RESULT_DIR/$VOLUME.ok"
-                echo "::notice title=Pre-502 Volume $VOLUME::staged successfully"
                 return 0
               fi
               printf 'Volume %s attempt %s failed; retrying after backoff\n' "$VOLUME" "$ATTEMPT" >> "$RESULT_DIR/$VOLUME.log"
               sleep $((ATTEMPT * 15))
             done
             : > "$RESULT_DIR/$VOLUME.failed"
-            echo "::warning title=Pre-502 Volume $VOLUME::isolated after two attempts; older volumes continue"
+            return 1
           }
           export -f run_volume
-          export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR RESUME
-          seq "$NEWEST" -1 "$OLDEST" | xargs -P "$VOLUME_WORKERS" -n 1 bash -c 'run_volume "$1"' _ &
-          INGEST_PID=$!
+          export RESULT_DIR JURVIO_IMAGE RESUME COMPOSE
+          seq "$NEWEST" -1 "$OLDEST" | xargs -P "$VOLUME_WORKERS" -n 1 bash -c 'run_volume "$1" || true' _ &
+          INGEST_PID="$!"
           while kill -0 "$INGEST_PID" 2>/dev/null; do
-            if ! ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000"; then
-              echo "::warning title=SCOTUS publication drain::heartbeat failed; ingestion continues and final drain will retry"
-            fi
-            if ! ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=10"; then
-              echo "::warning title=SCOTUS text drain::heartbeat failed; ingestion continues and final drain will retry"
-            fi
-            sleep 30
+            $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000 || true
+            sleep 60
           done
           wait "$INGEST_PID"
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000"
+          $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000
           while true; do
-            EXTRACTION_RESULT="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=10")"
+            EXTRACTION_RESULT="$($COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=10)"
             printf '%s\n' "$EXTRACTION_RESULT"
-            EXTRACTION_PROGRESS="$(printf '%s' "$EXTRACTION_RESULT" | node -e '
-              let input = "";
-              process.stdin.on("data", (chunk) => input += chunk);
-              process.stdin.on("end", () => {
-                const value = JSON.parse(input.trim().split(/\n/).at(-1));
-                process.stdout.write([value.selected, value.extracted].join(" "));
-              });
-            ')"
-            read -r EXTRACTION_SELECTED EXTRACTION_EXTRACTED <<< "$EXTRACTION_PROGRESS"
-            if [ "$EXTRACTION_SELECTED" -eq 0 ] || [ "$EXTRACTION_EXTRACTED" -eq 0 ]; then break; fi
+            read -r SELECTED EXTRACTED <<< "$(printf '%s' "$EXTRACTION_RESULT" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const x=JSON.parse(s.trim().split(/\\n/).at(-1));process.stdout.write([x.selected,x.extracted].join(" "))})')"
+            [ "$SELECTED" -gt 0 ] && [ "$EXTRACTED" -gt 0 ] || break
           done
+          COMPLETED_VOLUMES="$(find "$RESULT_DIR" -name '*.ok' -type f | wc -l)"
+          FAILED_VOLUMES="$(find "$RESULT_DIR" -name '*.failed' -type f | wc -l)"
+          COMPLETED_LIST="$(find "$RESULT_DIR" -name '*.ok' -type f -printf '%f\n' | sed 's/\\.ok$//' | sort -rn | paste -sd, -)"
+          FAILED_LIST="$(find "$RESULT_DIR" -name '*.failed' -type f -printf '%f\n' | sed 's/\\.failed$//' | sort -rn | paste -sd, -)"
           for VOLUME in $(seq "$NEWEST" -1 "$OLDEST"); do
             echo "===== Volume $VOLUME ====="
             cat "$RESULT_DIR/$VOLUME.log"
           done
-          COMPLETED_VOLUMES="$(find "$RESULT_DIR" -name '*.ok' -type f | wc -l)"
-          FAILED_VOLUMES="$(find "$RESULT_DIR" -name '*.failed' -type f | wc -l)"
-          COMPLETED_LIST="$(find "$RESULT_DIR" -name '*.ok' -type f -printf '%f\n' | sed 's/\.ok$//' | sort -rn | paste -sd, -)"
-          FAILED_LIST="$(find "$RESULT_DIR" -name '*.failed' -type f -printf '%f\n' | sed 's/\.failed$//' | sort -rn | paste -sd, -)"
-          printf 'COMPLETED_VOLUMES=%s\nFAILED_VOLUMES=%s\nCOMPLETED_LIST=%s\nFAILED_LIST=%s\n' \
-            "$COMPLETED_VOLUMES" "$FAILED_VOLUMES" "$COMPLETED_LIST" "$FAILED_LIST" >> "$GITHUB_ENV"
+          printf 'ASSEMBLY_SUMMARY completed=%s failed=%s completed_list=%s failed_list=%s\n' "$COMPLETED_VOLUMES" "$FAILED_VOLUMES" "$COMPLETED_LIST" "$FAILED_LIST"
+          [ "$COMPLETED_VOLUMES" -gt 0 ]
+REMOTE
+          SUMMARY="$(grep '^ASSEMBLY_SUMMARY ' "$ASSEMBLY_LOG" | tail -n1 || true)"
+          test -n "$SUMMARY"
+          for PAIR in $SUMMARY; do
+            case "$PAIR" in
+              completed=*) printf 'COMPLETED_VOLUMES=%s\n' "${PAIR#completed=}" >> "$GITHUB_ENV" ;;
+              failed=*) printf 'FAILED_VOLUMES=%s\n' "${PAIR#failed=}" >> "$GITHUB_ENV" ;;
+              completed_list=*) printf 'COMPLETED_LIST=%s\n' "${PAIR#completed_list=}" >> "$GITHUB_ENV" ;;
+              failed_list=*) printf 'FAILED_LIST=%s\n' "${PAIR#failed_list=}" >> "$GITHUB_ENV" ;;
+            esac
+          done
 
       - name: Report live funnel
         if: always()
@@ -169,11 +179,10 @@ jobs:
           if [ -z "${JURVIO_IMAGE:-}" ]; then
             TOTALS='{"report":"unavailable","reason":"exact production image unresolved"}'
           else
-            TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));\"" 2>/dev/null || printf '{"report":"unavailable","reason":"production totals query failed"}')"
+            TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=document.id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));\" " 2>/dev/null || printf '{"report":"unavailable","reason":"production totals query failed"}')"
           fi
           BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **%s**\n- Exact image: `%s`\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```' \
             "$WORKFLOW_STATUS" "${JURVIO_IMAGE:-unresolved}" "${NEWEST:-unknown}" "${OLDEST:-unknown}" "${VOLUME_WORKERS:-unknown}" \
             "${COMPLETED_VOLUMES:-0}" "${COMPLETED_LIST:-}" "${FAILED_VOLUMES:-0}" "${FAILED_LIST:-}" \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
-          printf '%s\n' "$TOTALS"
