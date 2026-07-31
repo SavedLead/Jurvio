@@ -1,4 +1,5 @@
 name: Ingest pre-500 SCOTUS cases
+# Main push launches the durable pre-500 assembly coordinator.
 
 on:
   push:
