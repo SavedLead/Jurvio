@@ -65,8 +65,10 @@ function publicDocumentUrl(value: string): string {
     const url = new URL(value);
     if (url.hostname !== "api.govinfo.gov") return value;
     const match = /^\/packages\/([^/]+)\/granules\/([^/]+)\/pdf$/.exec(url.pathname);
-    if (!match) return value;
-    return `https://www.govinfo.gov/content/pkg/${encodeURIComponent(decodeURIComponent(match[1]))}/pdf/${encodeURIComponent(decodeURIComponent(match[2]))}.pdf`;
+    const packageId = match?.[1];
+    const granuleId = match?.[2];
+    if (!packageId || !granuleId) return value;
+    return `https://www.govinfo.gov/content/pkg/${encodeURIComponent(decodeURIComponent(packageId))}/pdf/${encodeURIComponent(decodeURIComponent(granuleId))}.pdf`;
   } catch {
     return value;
   }
