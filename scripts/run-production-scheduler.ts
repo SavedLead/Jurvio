@@ -30,6 +30,17 @@ const jobs: ScheduledJob[] = [
     command: ["jobs/ingest-direct-court-feeds.mjs", "--court=all"],
   },
   {
+    name: "appellate-official",
+    initialDelayMs: 1 * minute,
+    intervalMs: 5 * minute,
+    command: [
+      "jobs/run-appellate-ingestion.mjs",
+      "--court=all",
+      "--watch=false",
+      "--concurrency=13",
+    ],
+  },
+  {
     name: "scotus-enriched",
     initialDelayMs: 7 * minute,
     intervalMs: 60 * minute,
