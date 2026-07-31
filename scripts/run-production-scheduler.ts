@@ -16,11 +16,11 @@ const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
 const logRoot = join(artifactRoot, "scheduler");
 mkdirSync(logRoot, { recursive: true });
 
-const term = (() => {
+function currentScotusTerm(): string {
   const now = new Date();
   const year = now.getUTCMonth() >= 9 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
   return String(year % 100).padStart(2, "0");
-})();
+}
 
 const jobs: ScheduledJob[] = [
   {
@@ -54,11 +54,11 @@ const jobs: ScheduledJob[] = [
   },
   {
     name: "scotus-enriched",
-    initialDelayMs: 7 * minute,
-    intervalMs: 60 * minute,
+    initialDelayMs: 4 * minute,
+    intervalMs: 5 * minute,
     command: [
       "jobs/ingest-enriched-official-scotus.mjs",
-      `--term=${term}`,
+      "--term=__CURRENT_SCOTUS_TERM__",
       "--limit=100",
       "--resume=true",
       "--attempts=10",
@@ -144,9 +144,12 @@ function run(job: ScheduledJob): void {
   }
 
   running.add(job.name);
-  logStatus(job.name, `started: node ${job.command.join(" ")}`);
+  const command = job.command.map((argument) =>
+    argument === "--term=__CURRENT_SCOTUS_TERM__" ? `--term=${currentScotusTerm()}` : argument
+  );
+  logStatus(job.name, `started: node ${command.join(" ")}`);
   const output = createWriteStream(join(logRoot, `${job.name}.log`), { flags: "a" });
-  const child = spawn("node", job.command, {
+  const child = spawn("node", command, {
     cwd: "/app",
     env: {
       ...process.env,
