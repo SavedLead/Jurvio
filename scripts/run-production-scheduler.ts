@@ -42,6 +42,17 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    name: "appellate-govinfo-backfill",
+    initialDelayMs: 3 * minute,
+    intervalMs: 60 * minute,
+    command: [
+      "jobs/ingest-govinfo-appellate.mjs",
+      "--court=all",
+      "--page-size=100",
+      "--pages-per-court=1",
+    ],
+  },
+  {
     name: "scotus-enriched",
     initialDelayMs: 7 * minute,
     intervalMs: 60 * minute,
