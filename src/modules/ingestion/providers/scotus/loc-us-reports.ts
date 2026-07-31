@@ -62,7 +62,7 @@ function findPdf(value: unknown): string | null {
 }
 
 function parseTitle(title: string, expectedVolume: number) {
-  const normalized = title.replaceAll(/\s+/g, " ").trim();
+  const normalized = title.replaceAll(/\s+/g, " ").trim().replace(/^U\.\s*S\.\s*Reports:\s*/i, "");
   const match = /^(.+?),\s*(\d+)\s+U\.\s*S\.\s*(\d+)\s*\((\d{4})\)\.?$/i.exec(normalized);
   if (!match || Number(match[2]) !== expectedVolume) return null;
   return {
