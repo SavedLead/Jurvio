@@ -37,6 +37,28 @@ const userAgent = process.env.INGESTION_USER_AGENT
 const sql = db();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const GOVINFO_COURT_CODE_BY_JURVIO_CODE: Readonly<Record<string, string>> = Object.freeze({
+  ca1: "ca1",
+  ca2: "ca2",
+  ca3: "ca3",
+  ca4: "ca4",
+  ca5: "ca5",
+  ca6: "ca6",
+  ca7: "ca7",
+  ca8: "ca8",
+  ca9: "ca9",
+  ca10: "ca10",
+  ca11: "ca11",
+  cadc: "caDC",
+  cafc: "ca13",
+});
+
+function govInfoCourtCode(jurvioCourtCode: string): string {
+  const govInfoCode = GOVINFO_COURT_CODE_BY_JURVIO_CODE[jurvioCourtCode];
+  if (!govInfoCode) throw new Error(`No GovInfo court-code mapping for ${jurvioCourtCode}`);
+  return govInfoCode;
+}
+
 function docketFromResult(result: GovInfoSearchResult, courtCode: string): string | null {
   const text = `${result.title ?? ""} ${result.packageId ?? ""} ${result.granuleId ?? ""}`;
   const standard = /\b(?:No\.?\s*)?((?:\d{1,2}-)?\d{2}-\d{3,7})\b/i.exec(text)?.[1];
@@ -62,12 +84,12 @@ function issuedDate(result: GovInfoSearchResult): string | null {
   return match ?? null;
 }
 
-async function fetchPage(courtCode: string, offsetMark: string): Promise<GovInfoSearchResponse> {
+async function fetchPage(govInfoCode: string, offsetMark: string): Promise<GovInfoSearchResponse> {
   const response = await fetch(`https://api.govinfo.gov/search?api_key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": userAgent },
     body: JSON.stringify({
-      query: `collection:uscourts courtCode:${courtCode}`,
+      query: `collection:uscourts courtCode:${govInfoCode}`,
       pageSize: String(pageSize),
       offsetMark,
       resultLevel: "default",
@@ -98,19 +120,20 @@ async function ingestCourt(courtCode: string) {
     return { court: courtCode, state: "complete", discovered: 0 };
   }
 
+  const govInfoCode = govInfoCourtCode(courtCode);
   let offsetMark = checkpoint.offset_mark;
   let discovered = 0;
   let skipped = 0;
   let pages = 0;
   try {
     for (; pages < pagesPerCourt; pages += 1) {
-      const page = await fetchPage(courtCode, offsetMark);
+      const page = await fetchPage(govInfoCode, offsetMark);
       const results = page.results ?? [];
       let pageEnqueued = 0;
       let pageSkipped = 0;
       for (const result of results) {
         const documentUrl = pdfLink(result);
-        const docketNumber = docketFromResult(result, courtCode);
+        const docketNumber = docketFromResult(result, govInfoCode);
         if (!documentUrl || !docketNumber) {
           skipped += 1;
           pageSkipped += 1;
@@ -159,7 +182,7 @@ async function ingestCourt(courtCode: string) {
       offsetMark = next ?? offsetMark;
       if (apiKey === "DEMO_KEY") await sleep(2_000);
     }
-    return { court: courtCode, state: "running", pages, discovered, skipped, offsetMark };
+    return { court: courtCode, govInfoCourtCode: govInfoCode, state: "running", pages, discovered, skipped, offsetMark };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await sql`
@@ -167,7 +190,7 @@ async function ingestCourt(courtCode: string) {
         consecutive_failures=consecutive_failures+1, last_error=${message}, updated_at=now()
       WHERE court_code=${courtCode}
     `;
-    return { court: courtCode, state: "failed", pages, discovered, skipped, error: message };
+    return { court: courtCode, govInfoCourtCode: govInfoCode, state: "failed", pages, discovered, skipped, error: message };
   }
 }
 
