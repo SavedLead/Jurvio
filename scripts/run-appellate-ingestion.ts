@@ -16,9 +16,17 @@ const argument = (name: string) =>
   process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const courtArgument = argument("court") ?? "all";
 const watch = (argument("watch") ?? "false") === "true";
-const concurrency = Number(argument("concurrency") ?? String(APPELLATE_COURT_REGISTRY.length));
-if (!Number.isInteger(concurrency) || concurrency < 1) {
-  throw new Error("--concurrency must be a positive integer");
+const discoveryConcurrency = Number(
+  argument("discovery-concurrency") ?? argument("concurrency") ?? String(APPELLATE_COURT_REGISTRY.length),
+);
+const processingConcurrency = Number(
+  argument("processing-concurrency") ?? argument("concurrency") ?? "52",
+);
+if (!Number.isInteger(discoveryConcurrency) || discoveryConcurrency < 1) {
+  throw new Error("--discovery-concurrency must be a positive integer");
+}
+if (!Number.isInteger(processingConcurrency) || processingConcurrency < 1) {
+  throw new Error("--processing-concurrency must be a positive integer");
 }
 const intervalMs = 5 * 60 * 1000;
 const sql = db();
@@ -426,7 +434,7 @@ async function processQueue() {
   `;
   let cursor = 0;
   const results: Array<Record<string, unknown>> = [];
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+  const workers = Array.from({ length: Math.min(processingConcurrency, items.length) }, async () => {
     while (cursor < items.length) {
       const item = items[cursor++];
       if (!item) continue;
@@ -459,7 +467,7 @@ async function cycle() {
 
   const discovery: Array<Record<string, unknown>> = [];
   let cursor = 0;
-  const workers = Array.from({ length: Math.min(concurrency, order.length) }, async () => {
+  const workers = Array.from({ length: Math.min(discoveryConcurrency, order.length) }, async () => {
     while (cursor < order.length) {
       const court = order[cursor++];
       if (!court) continue;
@@ -491,6 +499,8 @@ async function cycle() {
     lane: "official-appellate",
     historicalOrder: "newest-to-oldest",
     configuredCircuits: APPELLATE_COURT_REGISTRY.length,
+    discoveryConcurrency,
+    processingConcurrency,
     discovery, processed, health,
   }));
 }
