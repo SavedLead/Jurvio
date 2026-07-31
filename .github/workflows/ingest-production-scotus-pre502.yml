@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/ingest-production-scotus-pre502.yml"
       - "src/modules/ingestion/providers/scotus/loc-us-reports.ts"
+      - "src/modules/ingestion/application/ingest-loc-us-reports-volume.ts"
   workflow_dispatch:
     inputs:
       newest_volume:
