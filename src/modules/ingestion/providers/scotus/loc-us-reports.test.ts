@@ -28,6 +28,19 @@ describe("Library of Congress U.S. Reports ingestion", () => {
     ]);
   });
 
+  it("accepts the Library of Congress U.S. Reports title prefix", () => {
+    const payload = {
+      results: [{
+        id: "https://www.loc.gov/item/usrep501001/",
+        title: "U.S. Reports: Connecticut et al. v. Doehr, 501 U.S. 1 (1991).",
+        resources: [{ url: "https://www.loc.gov/resource/usrep501001/usrep501001.pdf" }],
+      }],
+    };
+    expect(parseLocUsReportsResults(payload, 501)).toEqual([
+      expect.objectContaining({ caseName: "Connecticut et al. v. Doehr", citation: "501 U.S. 1" }),
+    ]);
+  });
+
   it("rejects cross-volume, duplicate, and non-PDF records", () => {
     const valid = {
       id: "https://www.loc.gov/item/usrep501529/",
