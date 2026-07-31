@@ -138,6 +138,7 @@ async function main(): Promise<void> {
     async function worker(): Promise<void> {
       while (cursor < volumes.length) {
         const volume = volumes[cursor];
+        if (volume === undefined) return;
         cursor += 1;
         try {
           await runVolume(volume);
