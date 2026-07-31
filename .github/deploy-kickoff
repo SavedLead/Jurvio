@@ -1,3 +1,5 @@
 Recover production deployment after verified federal case-label fix, 2026-07-29.
 
 Retry after GitHub CI runner failed before setup, 2026-07-29.
+
+Deploy GovInfo appellate ingestion with corrected 13-circuit mapping, 2026-07-31.
