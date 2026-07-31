@@ -37,7 +37,8 @@ const jobs: ScheduledJob[] = [
       "jobs/run-appellate-ingestion.mjs",
       "--court=all",
       "--watch=false",
-      "--concurrency=13",
+      "--discovery-concurrency=13",
+      "--processing-concurrency=52",
     ],
   },
   {
