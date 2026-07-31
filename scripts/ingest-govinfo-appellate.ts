@@ -196,8 +196,15 @@ async function ingestCourt(courtCode: string) {
 }
 
 try {
+  const allCourts = APPELLATE_COURT_REGISTRY.map((court) => court.code);
+  // api.data.gov's shared DEMO_KEY allows ten requests per hour. Alternate
+  // complementary circuit batches so no court is permanently starved while
+  // preserving the free, production-resident backfill.
+  const demoBatchIndex = Math.floor(Date.now() / (60 * 60 * 1000)) % 2;
   const courts = courtArgument === "all"
-    ? APPELLATE_COURT_REGISTRY.map((court) => court.code)
+    ? (apiKey === "DEMO_KEY"
+        ? allCourts.filter((_, index) => index % 2 === demoBatchIndex)
+        : allCourts)
     : [courtArgument.toLowerCase()];
   const results = [];
   for (const courtCode of courts) {
@@ -208,7 +215,10 @@ try {
     lane: "govinfo-appellate-backfill",
     apiCredential: apiKey === "DEMO_KEY" ? "demo" : "configured",
     historicalOrder: "newest-to-oldest",
-    pageSize, pagesPerCourt, results,
+    pageSize, pagesPerCourt,
+    scheduledCourts: courts,
+    demoBatchIndex: apiKey === "DEMO_KEY" ? demoBatchIndex : null,
+    results,
   }));
 } finally {
   await closeDb();

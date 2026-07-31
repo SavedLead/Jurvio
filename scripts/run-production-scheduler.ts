@@ -48,7 +48,7 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/ingest-govinfo-appellate.mjs",
       "--court=all",
-      "--page-size=100",
+      "--page-size=1000",
       "--pages-per-court=1",
     ],
   },
