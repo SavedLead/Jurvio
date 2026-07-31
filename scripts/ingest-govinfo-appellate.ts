@@ -72,9 +72,10 @@ function docketFromResult(result: GovInfoSearchResult, courtCode: string): strin
 }
 
 function pdfLink(result: GovInfoSearchResult): string | null {
-  const direct = result.download?.pdfLink ?? result.pdfLink;
-  if (direct) return direct;
   if (!result.packageId || !result.granuleId) return null;
+  // GovInfo search returns api.govinfo.gov PDF URLs that require an API key.
+  // Persist the equivalent public URL so workers can download it without
+  // exposing a credential in the database or on public case pages.
   return `https://www.govinfo.gov/content/pkg/${encodeURIComponent(result.packageId)}/pdf/${encodeURIComponent(result.granuleId)}.pdf`;
 }
 
