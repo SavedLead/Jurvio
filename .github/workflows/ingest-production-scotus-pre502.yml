@@ -45,7 +45,7 @@ jobs:
           NEWEST: ${{ inputs.newest_volume || '501' }}
           OLDEST: ${{ inputs.oldest_volume || '477' }}
           VOLUME_WORKERS: ${{ inputs.volume_workers || '8' }}
-          RESUME: ${{ github.event_name == 'push' && 'false' || inputs.resume }}
+          RESUME: ${{ github.event_name == 'push' && 'true' || inputs.resume }}
         run: |
           set -euo pipefail
           test "$NEWEST" -ge 2
@@ -76,6 +76,7 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
           EXPECTED_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           for ATTEMPT in $(seq 1 60); do
@@ -85,13 +86,21 @@ jobs:
               test "$#" -eq 1
               docker inspect --format "{{.Config.Image}}" "$1"
             ' 2>/dev/null || true)"
-            if [ "$JURVIO_IMAGE" = "ghcr.io/savedlead/jurvio:$EXPECTED_SHA" ] && ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app test -f /app/jobs/ingest-loc-us-reports-volume.mjs" 2>/dev/null; then
+            DEPLOYED_SHA="${JURVIO_IMAGE##*:}"
+            IMAGE_STATUS=""
+            if [ "$DEPLOYED_SHA" = "$EXPECTED_SHA" ]; then
+              IMAGE_STATUS="identical"
+            elif [ -n "$DEPLOYED_SHA" ] && [ "$DEPLOYED_SHA" != "$JURVIO_IMAGE" ]; then
+              IMAGE_STATUS="$(gh api "repos/$GITHUB_REPOSITORY/compare/$EXPECTED_SHA...$DEPLOYED_SHA" --jq .status 2>/dev/null || true)"
+            fi
+            if { [ "$IMAGE_STATUS" = "identical" ] || [ "$IMAGE_STATUS" = "ahead" ]; } && ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app test -f /app/jobs/ingest-loc-us-reports-volume.mjs" 2>/dev/null; then
               printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
+              printf 'Resolved deployed image %s (%s relative to trigger %s)\n' "$JURVIO_IMAGE" "$IMAGE_STATUS" "$EXPECTED_SHA"
               exit 0
             fi
             sleep 30
           done
-          echo "::error::Timed out waiting for the deployed pre-502 ingestion job"
+          echo "::error::Timed out waiting for a deployed image containing trigger commit $EXPECTED_SHA"
           exit 1
 
       - name: Ingest with one durable production coordinator
