@@ -1,11 +1,6 @@
 name: Appellate ingestion control
 
 on:
-  workflow_run:
-    workflows:
-      - Deploy production
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       court:
@@ -26,7 +21,6 @@ concurrency:
 
 jobs:
   control:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 20
@@ -50,5 +44,5 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && docker compose -f docker-compose.production.yml exec -T app node jobs/run-appellate-ingestion.mjs --court='$COURT' --watch=false --concurrency='$WORKERS'"
 
-# Intentionally no cron. The five-minute watchdog is a production-resident
-# process, so idle polling consumes no GitHub Actions minutes.
+# Intentionally manual-only. Continuous five-minute appellate ingestion runs in
+# the production scheduler, so deployment and idle polling consume no Actions minutes.
