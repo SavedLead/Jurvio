@@ -128,7 +128,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
                 <div><dt>Permanent ID</dt><dd>{opinion.documentPublicId}</dd></div>
               </dl>
             </section>
-            {opinion.sourceDownloadUrl ? <section><p className="sectionKicker">Provenance</p><p>Published by the Supreme Court of the United States.</p><a href={opinion.sourceDownloadUrl} rel="nofollow noopener">Official court document</a></section> : null}
+            {opinion.sourceDownloadUrl ? <section><p className="sectionKicker">Provenance</p><p>Published by {opinion.courtName}.</p><a href={opinion.sourceDownloadUrl} rel="nofollow noopener">Official court document</a></section> : null}
           </aside>
         </div>
       </article>
