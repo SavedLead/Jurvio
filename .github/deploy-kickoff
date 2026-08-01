@@ -5,3 +5,5 @@ Retry after GitHub CI runner failed before setup, 2026-07-29.
 Deploy GovInfo appellate ingestion with corrected 13-circuit mapping, 2026-07-31.
 
 Deploy all-circuit GovInfo rotation after verified production stall, 2026-07-31 15:37 ET.
+
+Deploy appellate provenance correction after verified stale production build, 2026-08-01 14:55 ET.
