@@ -5,6 +5,7 @@ DEPLOY_DIR=${DEPLOY_DIR:-/opt/jurvio}
 COMPOSE="$DEPLOY_DIR/docker-compose.production.yml"
 NEW_IMAGE=${JURVIO_IMAGE:?JURVIO_IMAGE is required}
 PREVIOUS_IMAGE=""
+BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-1800}
 PULL_TIMEOUT_SECONDS=${PULL_TIMEOUT_SECONDS:-900}
 MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-300}
 START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-180}
@@ -39,7 +40,8 @@ if docker compose -f "$COMPOSE" ps -q app >/dev/null 2>&1; then
 fi
 
 if docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
-  run_with_timeout "Database backup" 300 "$DEPLOY_DIR/scripts/backup-production.sh"
+  printf 'Starting compressed database backup (deadline: %ss)\n' "$BACKUP_TIMEOUT_SECONDS"
+  run_with_timeout "Database backup" "$BACKUP_TIMEOUT_SECONDS" "$DEPLOY_DIR/scripts/backup-production.sh"
 fi
 
 export JURVIO_IMAGE="$NEW_IMAGE"
