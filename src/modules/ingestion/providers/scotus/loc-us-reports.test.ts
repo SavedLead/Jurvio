@@ -41,6 +41,19 @@ describe("Library of Congress U.S. Reports ingestion", () => {
     ]);
   });
 
+  it("accepts the official United States Reports title prefix", () => {
+    const payload = {
+      results: [{
+        id: "https://www.loc.gov/item/usrep499001/",
+        title: "United States Reports: Alabama v. Smith, 499 U.S. 1 (1991).",
+        resources: [{ url: "https://www.loc.gov/resource/usrep499001/usrep499001.pdf" }],
+      }],
+    };
+    expect(parseLocUsReportsResults(payload, 499)).toEqual([
+      expect.objectContaining({ caseName: "Alabama v. Smith", citation: "499 U.S. 1" }),
+    ]);
+  });
+
   it("rejects cross-volume, duplicate, and non-PDF records", () => {
     const valid = {
       id: "https://www.loc.gov/item/usrep501529/",
