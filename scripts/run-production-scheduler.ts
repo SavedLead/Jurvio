@@ -47,38 +47,18 @@ const jobs: ScheduledJob[] = [
       "--processing-concurrency=52",
     ],
   },
-  // The public GovInfo DEMO_KEY permits ten searches per rolling hour. These
-  // non-overlapping 120-minute groups place at most ten searches in any such
-  // window while every one of the 13 durable circuit cursors advances.
+  // Advance one durable circuit cursor per cycle. Database-backed selection
+  // prevents later circuits from being starved when unrelated deployments
+  // restart this process before long in-memory stagger delays can fire.
+  // Seven-minute spacing stays below the shared DEMO_KEY limit; a configured
+  // free key automatically enables the importer's multi-page mode.
   {
-    name: "appellate-govinfo-backfill-a",
-    initialDelayMs: 3 * minute,
-    intervalMs: 120 * minute,
+    name: "appellate-govinfo-backfill",
+    initialDelayMs: 2 * minute,
+    intervalMs: 7 * minute,
     command: [
       "jobs/ingest-govinfo-appellate.mjs",
-      "--court=ca1,ca2,ca3,ca4,ca5",
-      "--page-size=1000",
-      "--pages-per-court=10",
-    ],
-  },
-  {
-    name: "appellate-govinfo-backfill-b",
-    initialDelayMs: 43 * minute,
-    intervalMs: 120 * minute,
-    command: [
-      "jobs/ingest-govinfo-appellate.mjs",
-      "--court=ca6,ca7,ca8,ca9,ca10",
-      "--page-size=1000",
-      "--pages-per-court=10",
-    ],
-  },
-  {
-    name: "appellate-govinfo-backfill-c",
-    initialDelayMs: 83 * minute,
-    intervalMs: 120 * minute,
-    command: [
-      "jobs/ingest-govinfo-appellate.mjs",
-      "--court=ca11,cadc,cafc",
+      "--court=next",
       "--page-size=1000",
       "--pages-per-court=10",
     ],
