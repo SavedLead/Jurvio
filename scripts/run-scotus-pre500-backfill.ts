@@ -5,7 +5,7 @@ import postgres from "postgres";
 
 const newestVolume = 499;
 const oldestVolume = 477;
-const volumeWorkers = 8;
+const volumeWorkers = 1;
 const leaseKey = "jurvio:scotus-pre500:499-477";
 const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? process.env.RAW_ARTIFACT_DIR
@@ -158,6 +158,9 @@ async function main(): Promise<void> {
           failedVolumes: [...failedVolumes].sort((a, b) => b - a),
         });
         await drainPublication();
+        // Preserve ordering and the durable checkpoint: do not let a later
+        // volume mask the first failed one or compound pressure on production.
+        if (failedVolumes.length > 0) break;
       }
     }
 
@@ -173,7 +176,9 @@ async function main(): Promise<void> {
       newestVolume,
       oldestVolume,
       volumeWorkers,
-      pendingVolumes: [],
+      pendingVolumes: failedVolumes.length === 0
+        ? []
+        : volumes.slice(volumes.indexOf(failedVolumes[0]!)),
       completedVolumes: [...completedVolumes].sort((a, b) => b - a),
       failedVolumes: [...failedVolumes].sort((a, b) => b - a),
     });
