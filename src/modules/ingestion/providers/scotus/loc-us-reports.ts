@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 const LOC_ORIGIN = "https://www.loc.gov";
+const LOC_STORAGE_ORIGIN = "https://tile.loc.gov";
 const COLLECTION_URL = `${LOC_ORIGIN}/collections/united-states-reports/`;
 const MAX_JSON_BYTES = 10 * 1024 * 1024;
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
@@ -32,7 +33,9 @@ function strings(value: unknown): string[] {
 
 function officialLocUrl(raw: string) {
   const url = new URL(raw, LOC_ORIGIN);
-  if (url.origin !== LOC_ORIGIN) throw new Error("Library of Congress resource left the official origin");
+  if (url.origin !== LOC_ORIGIN && url.origin !== LOC_STORAGE_ORIGIN) {
+    throw new Error("Library of Congress resource left the official origin");
+  }
   return url.toString();
 }
 
@@ -54,7 +57,7 @@ function findPdf(value: unknown): string | null {
   }
   const object = asObject(value);
   if (!object) return null;
-  for (const key of ["url", "fulltext_file", "download", "files", "resources"]) {
+  for (const key of ["url", "pdf", "fulltext_file", "download", "files", "resources"]) {
     const found = findPdf(object[key]);
     if (found) return found;
   }
