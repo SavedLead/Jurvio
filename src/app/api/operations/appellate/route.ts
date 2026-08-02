@@ -1,11 +1,16 @@
+import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
+import { requireInternalPrincipal } from "@/modules/identity/cloudflare-access";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
     const sql = db();
+    await requireInternalPrincipal(
+      sql, await headers(), ["viewer", "reviewer", "administrator"],
+    );
     const checkpoints = await sql<{
       court_code: string;
       status: string;
@@ -59,9 +64,6 @@ export async function GET() {
       govInfo: { checkpoints, queue, latestPublishedRecord: latest ?? null },
     });
   } catch {
-    return NextResponse.json(
-      { status: "unavailable", checkedAt: new Date().toISOString() },
-      { status: 503 },
-    );
+    return NextResponse.json({ status: "not_found" }, { status: 404 });
   }
 }
