@@ -12,6 +12,8 @@ const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? "/var/lib/jurvio/artifacts";
 const stateRoot = join(artifactRoot, "scheduler", "scotus-pre500");
 
+type Sql = ReturnType<typeof postgres>;
+
 type VolumeResult = {
   volume: number;
   code: number | null;
@@ -84,7 +86,7 @@ async function drainPublication(volume: number): Promise<Record<string, unknown>
 }
 
 async function verifyPublishedVolume(
-  sql: postgres.Sql,
+  sql: Sql,
   volume: number,
   expectedRecords: number,
 ): Promise<Record<string, unknown>> {
