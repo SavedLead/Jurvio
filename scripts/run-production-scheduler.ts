@@ -47,13 +47,38 @@ const jobs: ScheduledJob[] = [
       "--processing-concurrency=52",
     ],
   },
+  // The public GovInfo DEMO_KEY permits ten searches per rolling hour. These
+  // non-overlapping 120-minute groups place at most ten searches in any such
+  // window while every one of the 13 durable circuit cursors advances.
   {
-    name: "appellate-govinfo-backfill",
+    name: "appellate-govinfo-backfill-a",
     initialDelayMs: 3 * minute,
-    intervalMs: 60 * minute,
+    intervalMs: 120 * minute,
     command: [
       "jobs/ingest-govinfo-appellate.mjs",
-      "--court=all",
+      "--court=ca1,ca2,ca3,ca4,ca5",
+      "--page-size=1000",
+      "--pages-per-court=1",
+    ],
+  },
+  {
+    name: "appellate-govinfo-backfill-b",
+    initialDelayMs: 43 * minute,
+    intervalMs: 120 * minute,
+    command: [
+      "jobs/ingest-govinfo-appellate.mjs",
+      "--court=ca6,ca7,ca8,ca9,ca10",
+      "--page-size=1000",
+      "--pages-per-court=1",
+    ],
+  },
+  {
+    name: "appellate-govinfo-backfill-c",
+    initialDelayMs: 83 * minute,
+    intervalMs: 120 * minute,
+    command: [
+      "jobs/ingest-govinfo-appellate.mjs",
+      "--court=ca11,cadc,cafc",
       "--page-size=1000",
       "--pages-per-court=1",
     ],
