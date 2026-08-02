@@ -73,4 +73,4 @@ jobs:
           $COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000
           find "$RESULTS" -name '*.failed' -printf 'failed volume %f\n'
           test "$(find "$RESULTS" -name '*.ok' | wc -l)" -gt 0
-REMOTE
+          REMOTE

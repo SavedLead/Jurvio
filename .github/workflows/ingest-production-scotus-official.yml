@@ -70,12 +70,12 @@ jobs:
         run: |
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: **runner started**
-- Target: U.S. Reports Volumes **567 → 502**
-- PDF-to-text workers: 4 on GitHub runner
-- Production staging workers: 8
-- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+          - Phase: **runner started**
+          - Target: U.S. Reports Volumes **567 → 502**
+          - PDF-to-text workers: 4 on GitHub runner
+          - Production staging workers: 8
+          - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
 
       - name: Configure SSH
         env:
@@ -149,12 +149,12 @@ jobs:
           set -euo pipefail
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: **mirroring 66 official PDFs**
-- Target: U.S. Reports Volumes **567 → 502**
-- PDF-to-text workers: 4 on GitHub runner
-- Production staging workers: 8
-- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+          - Phase: **mirroring 66 official PDFs**
+          - Target: U.S. Reports Volumes **567 → 502**
+          - PDF-to-text workers: 4 on GitHub runner
+          - Production staging workers: 8
+          - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           MIRROR_DIR="$(mktemp -d)"
           trap 'rm -rf "$MIRROR_DIR"' EXIT
           ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT legal_case.docket_number FROM legal_case JOIN court ON court.id = legal_case.court_id LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id WHERE lower(court.provider_court_id) = 'scotus' AND legal_case.publication = 'published' AND (enrichment.completeness->>'docketEvents') IS DISTINCT FROM 'true' ORDER BY legal_case.decided_on DESC NULLS LAST;\"" > "$MIRROR_DIR/dockets.txt"
@@ -217,12 +217,12 @@ jobs:
           set -euo pipefail
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: **mirroring and converting 66 official PDFs**
-- Target: U.S. Reports Volumes **567 → 502**
-- PDF-to-text workers: 4 on GitHub runner
-- Production staging workers: 8
-- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+          - Phase: **mirroring and converting 66 official PDFs**
+          - Target: U.S. Reports Volumes **567 → 502**
+          - PDF-to-text workers: 4 on GitHub runner
+          - Production staging workers: 8
+          - Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           MIRROR_DIR="$(mktemp -d)"
           trap 'rm -rf "$MIRROR_DIR" /tmp/scotus-bound-mirror.tar' EXIT
           curl --fail --silent --show-error --location --retry 3 --max-time 60 \

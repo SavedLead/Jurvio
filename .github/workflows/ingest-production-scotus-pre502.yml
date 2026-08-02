@@ -50,12 +50,15 @@ jobs:
           set -euo pipefail
           cd /opt/jurvio
           COMPOSE="docker compose -f docker-compose.production.yml"
-          app_id="$($COMPOSE ps -q app)"
-          worker_id="$($COMPOSE ps -q worker)"
+          app_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
+          worker_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=worker" --format "{{.ID}}" | head -n1)"
           test -n "$app_id"
           test -n "$worker_id"
-          printf 'APP_IMAGE=%s\n' "$(docker inspect --format '{{.Config.Image}}' "$app_id")"
-          printf 'WORKER_IMAGE=%s\n' "$(docker inspect --format '{{.Config.Image}}' "$worker_id")"
+          APP_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$app_id")"
+          WORKER_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$worker_id")"
+          export JURVIO_IMAGE="$APP_IMAGE"
+          printf 'APP_IMAGE=%s\n' "$APP_IMAGE"
+          printf 'WORKER_IMAGE=%s\n' "$WORKER_IMAGE"
           printf '%s\n' 'STATE_BEGIN'
           $COMPOSE exec -T worker sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json 2>/dev/null || printf '\''{"status":"waiting-for-worker","pendingVolumes":[],"completedVolumes":[],"failedVolumes":[]}'\'''
           printf '\n%s\n' 'STATE_END'
