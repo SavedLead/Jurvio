@@ -58,7 +58,7 @@ const jobs: ScheduledJob[] = [
       "jobs/ingest-govinfo-appellate.mjs",
       "--court=ca1,ca2,ca3,ca4,ca5",
       "--page-size=1000",
-      "--pages-per-court=1",
+      "--pages-per-court=10",
     ],
   },
   {
@@ -69,7 +69,7 @@ const jobs: ScheduledJob[] = [
       "jobs/ingest-govinfo-appellate.mjs",
       "--court=ca6,ca7,ca8,ca9,ca10",
       "--page-size=1000",
-      "--pages-per-court=1",
+      "--pages-per-court=10",
     ],
   },
   {
@@ -80,8 +80,14 @@ const jobs: ScheduledJob[] = [
       "jobs/ingest-govinfo-appellate.mjs",
       "--court=ca11,cadc,cafc",
       "--page-size=1000",
-      "--pages-per-court=1",
+      "--pages-per-court=10",
     ],
+  },
+  {
+    name: "appellate-backfill-report",
+    initialDelayMs: 8 * minute,
+    intervalMs: 15 * minute,
+    command: ["jobs/report-appellate-backfill.mjs"],
   },
   {
     name: "scotus-enriched",

@@ -26,15 +26,18 @@ const requestedCourts = courtArgument === "all"
   ? APPELLATE_COURT_REGISTRY.map((court) => court.code)
   : [...new Set(courtArgument.split(",").map((court) => court.trim().toLowerCase()).filter(Boolean))];
 const pageSize = Number(argument("page-size") ?? "100");
-const pagesPerCourt = Number(argument("pages-per-court") ?? "1");
+const requestedPagesPerCourt = Number(argument("pages-per-court") ?? "1");
 if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
   throw new Error("--page-size must be an integer from 1 to 1000");
 }
-if (!Number.isInteger(pagesPerCourt) || pagesPerCourt < 1 || pagesPerCourt > 10) {
+if (!Number.isInteger(requestedPagesPerCourt) || requestedPagesPerCourt < 1 || requestedPagesPerCourt > 10) {
   throw new Error("--pages-per-court must be an integer from 1 to 10");
 }
 
 const apiKey = process.env.GOVINFO_API_KEY?.trim() || "DEMO_KEY";
+// The shared key is strictly rate limited. A configured free key safely unlocks
+// multi-page cycles without requiring another deployment.
+const pagesPerCourt = apiKey === "DEMO_KEY" ? 1 : requestedPagesPerCourt;
 const userAgent = process.env.INGESTION_USER_AGENT
   ?? "Jurvio legal research ingestion contact@jurvio.com";
 const sql = db();
@@ -129,10 +132,16 @@ async function ingestCourt(courtCode: string) {
   let discovered = 0;
   let skipped = 0;
   let pages = 0;
+  let totalAvailable: number | null = null;
+  let oldestResultDate: string | null = null;
   try {
     for (; pages < pagesPerCourt; pages += 1) {
       const page = await fetchPage(govInfoCode, offsetMark);
       const results = page.results ?? [];
+      totalAvailable = page.count ?? totalAvailable;
+      const datedResults = results.map(issuedDate).filter((value): value is string => Boolean(value));
+      const pageOldest = datedResults.sort()[0] ?? null;
+      if (pageOldest && (!oldestResultDate || pageOldest < oldestResultDate)) oldestResultDate = pageOldest;
       let pageEnqueued = 0;
       let pageSkipped = 0;
       for (const result of results) {
@@ -186,7 +195,7 @@ async function ingestCourt(courtCode: string) {
       offsetMark = next ?? offsetMark;
       if (apiKey === "DEMO_KEY") await sleep(2_000);
     }
-    return { court: courtCode, govInfoCourtCode: govInfoCode, state: "running", pages, discovered, skipped, offsetMark };
+    return { court: courtCode, govInfoCourtCode: govInfoCode, state: "running", pages, discovered, skipped, totalAvailable, oldestResultDate, offsetMark };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await sql`
@@ -215,7 +224,7 @@ try {
     lane: "govinfo-appellate-backfill",
     apiCredential: apiKey === "DEMO_KEY" ? "demo" : "configured",
     historicalOrder: "newest-to-oldest",
-    pageSize, pagesPerCourt,
+    pageSize, requestedPagesPerCourt, pagesPerCourt,
     scheduledCourts: courts,
     results,
     progress: results.map((result) => ({
@@ -225,6 +234,8 @@ try {
       discovered: result.discovered ?? 0,
       pages: result.pages ?? 0,
       nextCheckpoint: result.offsetMark ?? null,
+      totalAvailable: result.totalAvailable ?? null,
+      oldestResultDate: result.oldestResultDate ?? null,
       blocked: result.state === "failed" ? 1 : 0,
     })),
   }));
