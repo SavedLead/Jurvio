@@ -139,7 +139,7 @@ jobs:
           if [ "$APP_IMAGE" = "$WORKER_IMAGE" ]; then IMAGE_MATCH="yes"; else IMAGE_MATCH="NO"; fi
           FAILURES="$(printf '%s' "$FAILURES_B64" | base64 --decode)"
           DIAGNOSTICS="$(printf '%s' "$DIAGNOSTICS_B64" | base64 --decode)"
-          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Coordinator: **%s**\n- App image: `%s`\n- Worker image: `%s`\n- Images match: **%s**\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Pending volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Coordinator updated: `%s`\n- X-Ray checked: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```\n\nSaved coordinator failure records:\n\n```json\n%s\n```' \
+          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Coordinator: **%s**\n- App image: `%s`\n- Worker image: `%s`\n- Images match: **%s**\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Pending volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Coordinator updated: `%s`\n- X-Ray checked: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```\n\nSaved coordinator failure records:\n\n```json\n%s\n```\n\nSanitized scheduler/coordinator diagnostics:\n\n```text\n%s\n```' \
             "$COORDINATOR_STATUS" "$APP_IMAGE" "$WORKER_IMAGE" "$IMAGE_MATCH" "$NEWEST" "$OLDEST" "$WORKERS" \
             "$COMPLETED_COUNT" "$COMPLETED_LIST" "$PENDING_COUNT" "$PENDING_LIST" "$FAILED_COUNT" "$FAILED_LIST" \
             "$COORDINATOR_UPDATED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS" "${FAILURES:-[]}" "${DIAGNOSTICS:-no diagnostic output captured}")"
