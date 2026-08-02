@@ -24,6 +24,12 @@ function currentScotusTerm(): string {
 
 const jobs: ScheduledJob[] = [
   {
+    name: "scotus-pre500-backfill",
+    initialDelayMs: 30_000,
+    intervalMs: 5 * minute,
+    command: ["jobs/run-scotus-pre500-backfill.mjs"],
+  },
+  {
     name: "direct-court",
     initialDelayMs: 0,
     intervalMs: 5 * minute,
