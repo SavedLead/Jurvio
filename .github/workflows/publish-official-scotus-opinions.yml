@@ -80,6 +80,27 @@ jobs:
           test -n "$JURVIO_IMAGE"
           printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
 
+      - name: Build and run repaired Volume 499 importer once
+        if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Build and run repaired SCOTUS Volume 499 once' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$DO_USER@$DO_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          work=/tmp/jurvio-supreme-volume-499
+          rm -rf "$work"
+          git clone --depth 1 https://github.com/SavedLead/Jurvio.git "$work"
+          cd "$work"
+          git fetch --depth 1 origin 897b3486881fb3ef8501f9c2dcc1d22073bcefe7
+          git checkout --detach 897b3486881fb3ef8501f9c2dcc1d22073bcefe7
+          docker build -t jurvio-supreme-volume-499:one-shot .
+          cd /opt/jurvio
+          JURVIO_IMAGE=jurvio-supreme-volume-499:one-shot timeout --foreground 45m docker compose -f docker-compose.production.yml run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume=499 --limit=1000 --resume=true
+          rm -rf "$work"
+REMOTE
+
       - name: Ingest verified first pre-500 bound volume
         if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Run SCOTUS Volume 499 one-time production launch' }}
         env:
