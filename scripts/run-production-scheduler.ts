@@ -84,6 +84,12 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    name: "appellate-backfill-report",
+    initialDelayMs: 8 * minute,
+    intervalMs: 15 * minute,
+    command: ["jobs/report-appellate-backfill.mjs"],
+  },
+  {
     name: "scotus-enriched",
     initialDelayMs: 4 * minute,
     intervalMs: 5 * minute,
