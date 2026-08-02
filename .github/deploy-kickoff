@@ -18,3 +18,5 @@ Deploy queued LOC parser repair without cancellation, 2026-08-02.
 
 Activate verified SCOTUS pre-500 recovery coordinator and durable X-Ray, 2026-08-02.
 Deploy SCOTUS historical recovery after superseding stale release queue, 2026-08-02.
+
+Deploy staggered GovInfo appellate scheduler from PR #188, 2026-08-02.
