@@ -58,7 +58,7 @@ describe("Library of Congress U.S. Reports ingestion", () => {
     const payload = {
       results: [{
         id: "https://www.loc.gov/item/usrep499001/",
-        title: "U.S. Reports: Alabama v. Smith, 499 U.S. 1 (1991).",
+        title: "U.S. Reports: Alabama v. Smith, 499 US 1 (1991).",
         resources: [{ url: "https://www.loc.gov/resource/usrep499001/usrep499001.pdf" }],
       }],
     };
