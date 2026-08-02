@@ -88,7 +88,7 @@ export function parseLocUsReportsResults(payload: unknown, expectedVolume: numbe
     const title = strings(item.title)[0];
     const id = strings(item.id)[0] ?? strings(item.url)[0];
     const parsed = title ? parseTitle(title, expectedVolume) : null;
-    const pdfUrl = findPdf(item.resources) ?? findPdf(item.files);
+    const pdfUrl = findPdf(item);
     if (!parsed || !id || !pdfUrl || !parsed.caseName || !Number.isInteger(parsed.reporterPage)) continue;
     const itemUrl = officialLocUrl(id);
     const sourceId = new URL(itemUrl).pathname.split("/").filter(Boolean).at(-1);
@@ -148,27 +148,34 @@ async function boundedBody(response: Response, maximum: number) {
 
 export async function fetchLocUsReportsVolume(volume: number) {
   if (!Number.isInteger(volume) || volume < 2 || volume > 501) throw new Error("Unsupported Library of Congress volume");
-  const url = new URL(COLLECTION_URL);
-  url.searchParams.set("fo", "json");
-  url.searchParams.set("at", "results,pagination");
-  url.searchParams.set("c", "150");
-  // The collection's case-item titles carry the reporter citation (for example,
-  // "499 US 1"), not a "Volume 499" phrase.  Searching for the latter
-  // returns an empty result set for historical volumes even though the official
-  // records exist. LOC search is punctuation-sensitive, so use the canonical unpunctuated reporter token.
-  url.searchParams.set("q", `${volume} US`);
-  const response = await fetchOfficialLoc(url.toString());
-  if (!response.ok) throw new Error(`Library of Congress volume index returned HTTP ${response.status}`);
-  const body = await boundedBody(response, MAX_JSON_BYTES);
-  const rawBody = new TextDecoder().decode(body);
-  const records = parseLocUsReportsResults(JSON.parse(rawBody), volume);
-  return {
-    sourceUri: url.toString(),
-    rawBody,
-    contentHash: createHash("sha256").update(body).digest("hex"),
-    retrievedAt: new Date().toISOString(),
-    records,
-  };
+  // LOC's full-text index is inconsistent across historical volumes. Try its
+  // citation spellings first, then a numeric collection search; every result is
+  // still validated against the exact U.S. Reports volume before ingestion.
+  const attempts: Array<{ query: string; url: string; rawBody: string; body: Uint8Array; records: LocUsReportsRecord[] }> = [];
+  for (const query of [`${volume} US`, `${volume} U.S.`, String(volume)]) {
+    const url = new URL(COLLECTION_URL);
+    url.searchParams.set("fo", "json");
+    url.searchParams.set("at", "results,pagination");
+    url.searchParams.set("c", "150");
+    url.searchParams.set("q", query);
+    const response = await fetchOfficialLoc(url.toString());
+    if (!response.ok) throw new Error(`Library of Congress volume index returned HTTP ${response.status}`);
+    const body = await boundedBody(response, MAX_JSON_BYTES);
+    const rawBody = new TextDecoder().decode(body);
+    const records = parseLocUsReportsResults(JSON.parse(rawBody), volume);
+    attempts.push({ query, url: url.toString(), rawBody, body, records });
+    if (records.length > 0) {
+      return {
+        sourceUri: url.toString(),
+        rawBody,
+        contentHash: createHash("sha256").update(body).digest("hex"),
+        retrievedAt: new Date().toISOString(),
+        records,
+      };
+    }
+  }
+  const diagnostics = attempts.map((attempt) => `${JSON.stringify(attempt.query)}=${attempt.records.length}`).join(", ");
+  throw new Error(`Library of Congress returned no matching cases for Volume ${volume}; official queries tried: ${diagnostics}`);
 }
 
 export async function fetchLocUsReportsPdf(rawUrl: string) {
