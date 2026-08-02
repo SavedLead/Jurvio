@@ -13,6 +13,7 @@ const navigation = [
   { href: "/internal/analytics", icon: "↗", label: "Demand analytics" },
   { href: "/internal/governance", icon: "◇", label: "Trust & governance" },
   { href: "/internal/publication", icon: "✓", label: "Publication review" },
+  { href: "/internal/privacy", icon: "⌁", label: "Privacy requests" },
 ] as const;
 
 export default async function InternalLayout({ children }: Readonly<{ children: React.ReactNode }>) {
