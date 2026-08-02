@@ -42,13 +42,13 @@ jobs:
             ASSEMBLY_ACTION="dispatched"
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
-- Phase: **watchdog dispatched recovery**
-- Target: U.S. Reports Volumes **567 → 502**
-- Reason: no active historical assembly and heartbeat was stale
-- PDF-to-text workers: 4 on GitHub runner
-- Production staging workers: 2
-- Watchdog run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-- Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+          - Phase: **watchdog dispatched recovery**
+          - Target: U.S. Reports Volumes **567 → 502**
+          - Reason: no active historical assembly and heartbeat was stale
+          - PDF-to-text workers: 4 on GitHub runner
+          - Production staging workers: 2
+          - Watchdog run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - Last heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
           fi
 
           PUBLICATION_BODY="$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$PUBLICATION_COMMENT_ID" --jq '.body')"
