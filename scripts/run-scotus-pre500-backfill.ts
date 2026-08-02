@@ -88,15 +88,15 @@ async function verifyPublishedVolume(
   volume: number,
   expectedRecords: number,
 ): Promise<Record<string, unknown>> {
-  const [provider] = await sql<{ id: string }[]>\`
+  const [provider] = await sql<{ id: string }[]>`
     SELECT id FROM provider WHERE code = 'scotus_official'
-  \`;
+  `;
   if (!provider) throw new Error("Official Supreme Court provider seed is missing");
   const [proof] = await sql<{
     candidates: number;
     publicCases: number;
     publicOpinions: number;
-  }[]>\`
+  }[]>`
     SELECT
       COUNT(DISTINCT candidate.source_record_id)::int AS candidates,
       COUNT(DISTINCT candidate.source_record_id) FILTER (
@@ -116,7 +116,7 @@ async function verifyPublishedVolume(
     LEFT JOIN document ON document.id = document_identifier.document_id
     WHERE candidate.provider_id = ${provider.id}
       AND candidate.citation LIKE ${`${volume} U.S.%`}
-  \`;
+  `;
   const actual = proof ?? { candidates: 0, publicCases: 0, publicOpinions: 0 };
   if (actual.candidates < expectedRecords
     || actual.publicCases < expectedRecords
