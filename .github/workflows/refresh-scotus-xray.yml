@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/scotus-xray-refresh"
+      - ".github/workflows/refresh-scotus-xray.yml"
   workflow_dispatch:
 
 permissions:
@@ -41,6 +42,13 @@ jobs:
           workers="$(docker ps --format "{{.ID}} {{.Command}}" | grep -c "ingest-loc-us-reports-volume" || true)"
           totals="$(JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc "SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));" )"
           printf 'IMAGE=%s\nWORKERS=%s\nTOTALS=%s\n' "$image" "$workers" "$totals"
+          printf '%s\n' 'SCOTUS_PRE500_STATE_BEGIN'
+          JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T worker sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json 2>/dev/null || printf "{\"status\":\"not-written\"}\n"'
+          printf '%s\n' 'SCOTUS_PRE500_FAILURES_BEGIN'
+          JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T worker sh -c 'for f in /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.failed.json; do test -f "$f" && cat "$f"; done' 2>/dev/null || true
+          printf '%s\n' 'SCOTUS_PRE500_LOG_TAIL_BEGIN'
+          JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T worker sh -c 'tail -c 12000 /var/lib/jurvio/artifacts/scheduler/scotus-pre500-backfill.log 2>/dev/null || true'
+          printf '%s\n' 'SCOTUS_PRE500_DIAGNOSTICS_END'
 REMOTE
 
       - name: Update SCOTUS X-Ray
