@@ -1,0 +1,76 @@
+name: Activate pre-500 SCOTUS publication
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/scotus-pre500-start"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production-scotus-pre500-direct
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 180
+    steps:
+      - name: Configure SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Run direct pre-500 assembly
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$DO_USER@$DO_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          JURVIO_IMAGE="$(docker inspect --format "{{.Config.Image}}" "$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)")"
+          export JURVIO_IMAGE
+          COMPOSE="docker compose -f docker-compose.production.yml"
+          RESULTS="$(mktemp -d)"
+          trap 'rm -rf "$RESULTS"' EXIT
+          run_volume() {
+            volume="$1"
+            for attempt in 1 2; do
+              if timeout --foreground 35m $COMPOSE run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume="$volume" --limit=1000 --resume=true >"$RESULTS/$volume.log" 2>&1; then
+                touch "$RESULTS/$volume.ok"
+                return 0
+              fi
+              sleep $((attempt * 15))
+            done
+            touch "$RESULTS/$volume.failed"
+            return 1
+          }
+          export -f run_volume
+          export RESULTS COMPOSE JURVIO_IMAGE
+          seq 499 -1 477 | xargs -P 8 -n 1 bash -c 'run_volume "$1" || true' _ &
+          workers="$!"
+          while kill -0 "$workers" 2>/dev/null; do
+            $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000 || true
+            $COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000 || true
+            sleep 30
+          done
+          wait "$workers"
+          $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000
+          $COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000
+          find "$RESULTS" -name '*.failed' -printf 'failed volume %f\n'
+          test "$(find "$RESULTS" -name '*.ok' | wc -l)" -gt 0
+REMOTE
