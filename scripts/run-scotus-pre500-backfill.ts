@@ -12,6 +12,8 @@ const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? "/var/lib/jurvio/artifacts";
 const stateRoot = join(artifactRoot, "scheduler", "scotus-pre500");
 
+type Sql = ReturnType<typeof postgres>;
+
 type VolumeResult = {
   volume: number;
   code: number | null;
@@ -80,13 +82,55 @@ async function drainPublication(volume: number): Promise<Record<string, unknown>
   if (publication.code !== 0 || extraction.code !== 0) {
     throw new Error(`volume ${volume} publication/extraction process failed: publish=${publication.code}, extract=${extraction.code}`);
   }
-  if (numberField(published, "published") < 1) {
-    throw new Error(`volume ${volume} produced no public case pages: ${publication.output.slice(-2_000)}`);
-  }
   return { published, extracted };
 }
 
-async function runVolume(volume: number): Promise<void> {
+async function verifyPublishedVolume(
+  sql: Sql,
+  volume: number,
+  expectedRecords: number,
+): Promise<Record<string, unknown>> {
+  const [provider] = await sql<{ id: string }[]>`
+    SELECT id FROM provider WHERE code = 'scotus_official'
+  `;
+  if (!provider) throw new Error("Official Supreme Court provider seed is missing");
+  const [proof] = await sql<{
+    candidates: number;
+    publicCases: number;
+    publicOpinions: number;
+  }[]>`
+    SELECT
+      COUNT(DISTINCT candidate.source_record_id)::int AS candidates,
+      COUNT(DISTINCT candidate.source_record_id) FILTER (
+        WHERE legal_case.publication = 'published'
+      )::int AS "publicCases",
+      COUNT(DISTINCT candidate.source_record_id) FILTER (
+        WHERE document.publication = 'published'
+      )::int AS "publicOpinions"
+    FROM official_opinion_candidate candidate
+    LEFT JOIN case_identifier ON case_identifier.provider_id = candidate.provider_id
+      AND case_identifier.identifier_type = 'scotus_official_opinion'
+      AND case_identifier.identifier_value = candidate.source_record_id
+    LEFT JOIN legal_case ON legal_case.id = case_identifier.case_id
+    LEFT JOIN document_identifier ON document_identifier.provider_id = candidate.provider_id
+      AND document_identifier.identifier_type = 'scotus_official_opinion'
+      AND document_identifier.identifier_value = candidate.source_record_id
+    LEFT JOIN document ON document.id = document_identifier.document_id
+    WHERE candidate.provider_id = ${provider.id}
+      AND candidate.citation LIKE ${`${volume} U.S.%`}
+  `;
+  const actual = proof ?? { candidates: 0, publicCases: 0, publicOpinions: 0 };
+  if (actual.candidates < expectedRecords
+    || actual.publicCases < expectedRecords
+    || actual.publicOpinions < expectedRecords) {
+    throw new Error(`volume ${volume} has not reached durable public proof: ${JSON.stringify({
+      expectedRecords, ...actual,
+    })}`);
+  }
+  return { expectedRecords, ...actual };
+}
+
+async function runVolume(sql: Sql, volume: number): Promise<void> {
   const attempts: Array<{ code: number | null; signal: string | null; output: string }> = [];
   let lastStageFailure: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -116,8 +160,12 @@ async function runVolume(volume: number): Promise<void> {
         throw new Error(`ingestion gate not met: ${result.output.slice(-2_000)}`);
       }
       const publication = await drainPublication(volume);
+      // A retry may legitimately create zero new pages because the prior run
+      // already published them. Completion is based on durable public records,
+      // not the retry's delta, and requires both the case and official opinion.
+      const publicProof = await verifyPublishedVolume(sql, volume, discovered);
       await writeJson(join(stateRoot, `${volume}.stages.json`), {
-        volume, verifiedAt: new Date().toISOString(), attempt, ingestion, publication,
+        volume, verifiedAt: new Date().toISOString(), attempt, ingestion, publication, publicProof,
       });
       await rm(join(stateRoot, `${volume}.failed.json`), { force: true });
       await writeJson(join(stateRoot, `${volume}.complete.json`), {
@@ -194,7 +242,7 @@ async function main(): Promise<void> {
         if (volume === undefined) return;
         cursor += 1;
         try {
-          await runVolume(volume);
+          await runVolume(sql, volume);
           completedVolumes.push(volume);
         } catch (error) {
           failedVolumes.push(volume);
