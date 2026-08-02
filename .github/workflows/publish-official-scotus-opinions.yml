@@ -20,6 +20,7 @@ on:
       - main
     paths:
       - ".github/workflows/publish-official-scotus-opinions.yml"
+      - ".github/scotus-xray-refresh"
 
 permissions:
   contents: read
@@ -147,3 +148,24 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
           exit "$REPORT_EXIT"
 
+      - name: Report live pre-500 X-Ray
+        if: always()
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT_COMMENT_ID: "5133453027"
+          WORKFLOW_STATUS: ${{ job.status }}
+        run: |
+          set -eu
+          IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
+            set -- $ids
+            test "$#" -eq 1
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ')"
+          WORKERS="$(ssh "$DO_USER@$DO_HOST" "docker ps --format '{{.ID}} {{.Command}}' | grep -F 'ingest-loc-us-reports-volume' | wc -l || true" | tr -d '[:space:]')"
+          TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_scotus_cases',(SELECT count(*) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_scotus_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'readable_scotus_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_official_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'approved_official_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='approved'));\"")"
+          BODY="$(printf '### SCOTUS pre-500 X-Ray\n\n- Status: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n- Active production image: `%s`\n- Active direct pre-500 workers: **%s**\n\nLive production totals:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$IMAGE" "$WORKERS" "$TOTALS")"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
