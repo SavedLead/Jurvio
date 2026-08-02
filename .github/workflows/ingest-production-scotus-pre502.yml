@@ -1,5 +1,5 @@
 name: SCOTUS Assembly X-Ray
-# Immediate production probe trigger: 2026-08-01 23:06 ET.
+# Immediate production probe trigger: 2026-08-02 06:02 ET.
 
 on:
   push:
