@@ -101,6 +101,15 @@ jobs:
           rm -rf "$work"
 REMOTE
 
+      - name: Ingest verified Volume 498 while Volume 499 is repaired
+        if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Run SCOTUS Volume 498 now' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' timeout --foreground 35m docker compose -f docker-compose.production.yml run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume=498 --limit=1000 --resume=true" | tee /tmp/scotus-volume-498-ingest.log
+
       - name: Ingest verified first pre-500 bound volume
         if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Run SCOTUS Volume 499 one-time production launch' }}
         env:
