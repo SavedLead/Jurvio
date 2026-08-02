@@ -1,10 +1,6 @@
 name: Deploy production
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/deploy-kickoff"
   workflow_run:
     workflows:
       - CI
@@ -12,11 +8,6 @@ on:
       - main
     types:
       - completed
-  workflow_dispatch:
-    inputs:
-      image_commit:
-        description: "Tested commit SHA to deploy"
-        required: true
 
 permissions:
   checks: read
@@ -24,7 +15,7 @@ permissions:
   packages: write
 
 env:
-  DEPLOY_COMMIT: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'push' && github.sha || inputs.image_commit }}
+  DEPLOY_COMMIT: ${{ github.event.workflow_run.head_sha }}
 
 concurrency:
   group: jurvio-production
@@ -33,7 +24,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     outputs:
@@ -43,23 +34,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ env.DEPLOY_COMMIT }}
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "push" ]; then
-            changed="$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE_SHA...$COMMIT_SHA" --jq '.files[].filename' | sort -u)"
-            test "$changed" = ".github/deploy-kickoff"
-            echo "Validated marker-only deployment kickoff for $COMMIT_SHA"
-            exit 0
-          fi
-          successful=0
-          for attempt in $(seq 1 60); do
-            successful=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT_SHA/check-runs" --jq '[.check_runs[] | select(.name == "verify" and .conclusion == "success")] | length')
-            if [ "$successful" -ge 1 ]; then break; fi
-            sleep 15
-          done
-          test "$successful" -ge 1
+          echo "CI completed successfully for $COMMIT_SHA"
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_COMMIT }}
