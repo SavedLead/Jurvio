@@ -33,7 +33,7 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Run direct pre-500 assembly
+      - name: Run lease-protected pre-500 coordinator
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -42,35 +42,11 @@ jobs:
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$DO_USER@$DO_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
-          JURVIO_IMAGE="$(docker inspect --format "{{.Config.Image}}" "$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)")"
-          export JURVIO_IMAGE
+          app_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
+          test -n "$app_id"
+          export JURVIO_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$app_id")"
           COMPOSE="docker compose -f docker-compose.production.yml"
-          RESULTS="$(mktemp -d)"
-          trap 'rm -rf "$RESULTS"' EXIT
-          run_volume() {
-            volume="$1"
-            for attempt in 1 2; do
-              if timeout --foreground 35m $COMPOSE run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume="$volume" --limit=1000 --resume=true >"$RESULTS/$volume.log" 2>&1; then
-                touch "$RESULTS/$volume.ok"
-                return 0
-              fi
-              sleep $((attempt * 15))
-            done
-            touch "$RESULTS/$volume.failed"
-            return 1
-          }
-          export -f run_volume
-          export RESULTS COMPOSE JURVIO_IMAGE
-          seq 499 -1 477 | xargs -P 8 -n 1 bash -c 'run_volume "$1" || true' _ &
-          workers="$!"
-          while kill -0 "$workers" 2>/dev/null; do
-            $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000 || true
-            $COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000 || true
-            sleep 30
-          done
-          wait "$workers"
-          $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000
-          $COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000
-          find "$RESULTS" -name '*.failed' -printf 'failed volume %f\n'
-          test "$(find "$RESULTS" -name '*.ok' | wc -l)" -gt 0
+          # The coordinator from PR #193 owns ordering, durable checkpoints,
+          # retries, publication drains, and a PostgreSQL advisory lease.
+          timeout --foreground 170m $COMPOSE exec -T worker node jobs/run-scotus-pre500-backfill.mjs
           REMOTE
