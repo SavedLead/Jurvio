@@ -80,13 +80,90 @@ async function drainPublication(volume: number): Promise<Record<string, unknown>
   if (publication.code !== 0 || extraction.code !== 0) {
     throw new Error(`volume ${volume} publication/extraction process failed: publish=${publication.code}, extract=${extraction.code}`);
   }
-  if (numberField(published, "published") < 1) {
-    throw new Error(`volume ${volume} produced no public case pages: ${publication.output.slice(-2_000)}`);
-  }
   return { published, extracted };
 }
 
-async function runVolume(volume: number): Promise<void> {
+type VolumePublicationProof = {
+  candidate_count: number;
+  approved_candidates: number;
+  official_pdfs: number;
+  public_cases: number;
+  public_documents: number;
+  extracted_documents: number;
+};
+
+async function verifyVolumePublicationProof(
+  sql: ReturnType<typeof postgres>,
+  volume: number,
+): Promise<VolumePublicationProof> {
+  const [proof] = await sql<VolumePublicationProof[]>`
+    WITH volume_candidates AS (
+      SELECT candidate.id, candidate.provider_id, candidate.source_record_id,
+        candidate.opinion_artifact_id, candidate.review_status
+      FROM official_opinion_candidate candidate
+      JOIN raw_artifact listing ON listing.id = candidate.listing_artifact_id
+      WHERE COALESCE((listing.response_metadata ->> 'volume')::integer, -1) = ${volume}
+    ),
+    candidate_coverage AS (
+      SELECT candidate.*,
+        EXISTS (
+          SELECT 1 FROM document_identifier identifier
+          JOIN document ON document.id = identifier.document_id
+          JOIN legal_case ON legal_case.id = document.case_id
+          JOIN court ON court.id = legal_case.court_id
+          WHERE identifier.provider_id = candidate.provider_id
+            AND identifier.identifier_type = 'scotus_official_opinion'
+            AND identifier.identifier_value = candidate.source_record_id
+            AND lower(court.provider_court_id) = 'scotus'
+            AND legal_case.publication = 'published'
+        ) AS public_case,
+        EXISTS (
+          SELECT 1 FROM document_identifier identifier
+          JOIN document ON document.id = identifier.document_id
+          WHERE identifier.provider_id = candidate.provider_id
+            AND identifier.identifier_type = 'scotus_official_opinion'
+            AND identifier.identifier_value = candidate.source_record_id
+            AND document.publication = 'published'
+        ) AS public_document,
+        EXISTS (
+          SELECT 1 FROM document_identifier identifier
+          JOIN document_content content ON content.document_id = identifier.document_id
+          WHERE identifier.provider_id = candidate.provider_id
+            AND identifier.identifier_type = 'scotus_official_opinion'
+            AND identifier.identifier_value = candidate.source_record_id
+            AND content.word_count > 0
+        ) AS extracted_document
+      FROM volume_candidates candidate
+    )
+    SELECT
+      count(*)::integer AS candidate_count,
+      count(*) FILTER (WHERE review_status = 'approved')::integer AS approved_candidates,
+      count(*) FILTER (WHERE opinion_artifact_id IS NOT NULL)::integer AS official_pdfs,
+      count(*) FILTER (WHERE public_case)::integer AS public_cases,
+      count(*) FILTER (WHERE public_document)::integer AS public_documents,
+      count(*) FILTER (WHERE extracted_document)::integer AS extracted_documents
+    FROM candidate_coverage
+  `;
+  if (!proof) throw new Error(`volume ${volume} publication proof query returned no result`);
+  return proof;
+}
+
+function assertVolumePublicationProof(
+  volume: number,
+  publication: Record<string, unknown>,
+  proof: VolumePublicationProof,
+): void {
+  const expected = proof.candidate_count;
+  if (expected < 1
+    || proof.official_pdfs !== expected
+    || proof.public_cases !== expected
+    || proof.public_documents !== expected
+    || proof.extracted_documents !== expected) {
+    throw new Error(`volume ${volume} publication/text proof not met: ${JSON.stringify({ proof, publication })}`);
+  }
+}
+
+async function runVolume(volume: number, sql: ReturnType<typeof postgres>): Promise<void> {
   const attempts: Array<{ code: number | null; signal: string | null; output: string }> = [];
   let lastStageFailure: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -116,8 +193,10 @@ async function runVolume(volume: number): Promise<void> {
         throw new Error(`ingestion gate not met: ${result.output.slice(-2_000)}`);
       }
       const publication = await drainPublication(volume);
+      const proof = await verifyVolumePublicationProof(sql, volume);
+      assertVolumePublicationProof(volume, publication, proof);
       await writeJson(join(stateRoot, `${volume}.stages.json`), {
-        volume, verifiedAt: new Date().toISOString(), attempt, ingestion, publication,
+        volume, verifiedAt: new Date().toISOString(), attempt, ingestion, publication, proof,
       });
       await rm(join(stateRoot, `${volume}.failed.json`), { force: true });
       await writeJson(join(stateRoot, `${volume}.complete.json`), {
@@ -194,7 +273,7 @@ async function main(): Promise<void> {
         if (volume === undefined) return;
         cursor += 1;
         try {
-          await runVolume(volume);
+          await runVolume(volume, sql);
           completedVolumes.push(volume);
         } catch (error) {
           failedVolumes.push(volume);
