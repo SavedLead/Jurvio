@@ -19,7 +19,8 @@ env:
 
 concurrency:
   group: jurvio-production
-  cancel-in-progress: true
+  # A queued verified release must not replace an active production deployment.
+  cancel-in-progress: false
 
 jobs:
   build:
