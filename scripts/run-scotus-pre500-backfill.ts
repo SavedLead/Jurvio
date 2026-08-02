@@ -101,10 +101,18 @@ async function runVolume(volume: number): Promise<void> {
     const ingestion = lastJsonObject(result.output);
     try {
       if (result.code !== 0) throw new Error(`ingester exited ${result.code ?? "null"}`);
-      if (numberField(ingestion, "discovered") < 1
-        || numberField(ingestion, "selected") < 1
-        || numberField(ingestion, "succeeded") < 1
-        || numberField(ingestion, "failed") !== 0) {
+      const discovered = numberField(ingestion, "discovered");
+      const selected = numberField(ingestion, "selected");
+      const succeeded = numberField(ingestion, "succeeded");
+      const failed = numberField(ingestion, "failed");
+      // A resumable volume may have already persisted every candidate before an
+      // earlier coordinator stopped at its publication gate. In that state the
+      // ingester correctly selects no new records; proceed to publication, which
+      // remains the required proof before writing the completion checkpoint.
+      const resumedAtEnd = selected === 0 && succeeded === 0 && failed === 0;
+      if (discovered < 1
+        || failed !== 0
+        || (!resumedAtEnd && (selected < 1 || succeeded < 1))) {
         throw new Error(`ingestion gate not met: ${result.output.slice(-2_000)}`);
       }
       const publication = await drainPublication(volume);
