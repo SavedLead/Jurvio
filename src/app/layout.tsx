@@ -7,14 +7,14 @@ import "./scotus-layout.css";
 import { PrivacySafeAnalytics } from "./privacy-safe-analytics";
 
 const primaryNavigation = [
-  ["Research", "/search"], ["Cases", "/cases"], ["Parties", "/parties"],
+  ["Research", "/search"], ["Citation", "/citations"], ["Cases", "/cases"], ["Parties", "/parties"],
   ["Professionals", "/attorneys"], ["Judges & Courts", "/judges"],
   ["Supreme Court", "/supreme-court"], ["Explainers", "/explainers"],
   ["News & Trackers", "/government-litigation"],
 ] as const;
 
 const footerNavigation = [
-  { title: "Research", links: [["Cases", "/cases"], ["Search", "/search"], ["Supreme Court", "/supreme-court"], ["Government litigation", "/government-litigation"]] },
+  { title: "Research", links: [["Cases", "/cases"], ["Search", "/search"], ["Citation", "/citations"], ["Supreme Court", "/supreme-court"], ["Government litigation", "/government-litigation"]] },
   { title: "People & institutions", links: [["Parties", "/parties"], ["Attorneys", "/attorneys"], ["Law firms", "/law-firms"], ["Judges", "/judges"], ["Courts", "/courts"]] },
   { title: "Learn", links: [["Legal explainers", "/explainers"], ["Legal procedure", "/explainers"], ["Jurisdiction", "/explainers"], ["Glossary", "/explainers"]] },
   { title: "Data & trust", links: [["Coverage", "/coverage"], ["Sources & methodology", "/methodology"], ["Editorial standards", "/editorial-standards"], ["Public-records policy", "/public-records-policy"], ["Sitemap", "/sitemap.xml"]] },
