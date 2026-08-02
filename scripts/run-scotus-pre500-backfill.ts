@@ -275,8 +275,9 @@ async function main(): Promise<void> {
     const runningVolumes: number[] = [];
     const alreadyRunningVolumes: number[] = [];
 
-    const writeStatus = async (status: "running" | "complete" | "complete-with-failures"): Promise<void> => {
-      await writeJson(join(stateRoot, "status.json"), {
+    let statusTail: Promise<void> = Promise.resolve();
+    const writeStatus = (status: "running" | "complete" | "complete-with-failures"): Promise<void> => {
+      const snapshot = {
         status,
         updatedAt: new Date().toISOString(),
         newestVolume,
@@ -287,7 +288,9 @@ async function main(): Promise<void> {
         completedVolumes: [...completedVolumes].sort((a, b) => b - a),
         failedVolumes: [...failedVolumes].sort((a, b) => b - a),
         alreadyRunningVolumes: [...alreadyRunningVolumes].sort((a, b) => b - a),
-      });
+      };
+      statusTail = statusTail.then(() => writeJson(join(stateRoot, "status.json"), snapshot));
+      return statusTail;
     };
 
     await writeStatus(volumes.length === 0 ? "complete" : "running");
