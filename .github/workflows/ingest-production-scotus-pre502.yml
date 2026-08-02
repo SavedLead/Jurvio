@@ -49,25 +49,52 @@ jobs:
           ssh "$DO_USER@$DO_HOST" 'bash -s' > live-state.txt <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
-          COMPOSE="docker compose -f docker-compose.production.yml"
           app_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
           worker_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=worker" --format "{{.ID}}" | head -n1)"
+          postgres_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=postgres" --format "{{.ID}}" | head -n1)"
           test -n "$app_id"
           test -n "$worker_id"
+          test -n "$postgres_id"
           APP_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$app_id")"
           WORKER_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$worker_id")"
-          export JURVIO_IMAGE="$APP_IMAGE"
           printf 'APP_IMAGE=%s\n' "$APP_IMAGE"
           printf 'WORKER_IMAGE=%s\n' "$WORKER_IMAGE"
+
+          # Do not call Docker Compose here. Compose interpolation can fail before
+          # exec and previously hid the exact scheduler/coordinator failure.
           printf '%s\n' 'STATE_BEGIN'
-          $COMPOSE exec -T worker sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json 2>/dev/null || printf '\''{"status":"waiting-for-worker","pendingVolumes":[],"completedVolumes":[],"failedVolumes":[]}'\'''
+          if ! state="$(docker exec "$worker_id" sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json' 2>/tmp/scotus-xray-state.err)"; then
+            printf '{"status":"probe-error","pendingVolumes":[],"completedVolumes":[],"failedVolumes":[]}'
+          else
+            printf '%s' "$state"
+          fi
           printf '\n%s\n' 'STATE_END'
+
           printf '%s\n' 'FAILURES_BEGIN'
-          $COMPOSE exec -T worker sh -c 'for f in /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.failed.json; do test -f "$f" && cat "$f"; done' 2>/dev/null || true
+          if ! failures="$(docker exec "$worker_id" sh -c 'for f in /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.failed.json; do test -f "$f" && cat "$f"; done' 2>/tmp/scotus-xray-failures.err)"; then
+            printf '[]'
+          else
+            printf '%s' "$failures"
+          fi
           printf '\n%s\n' 'FAILURES_END'
+
           printf '%s\n' 'TOTALS_BEGIN'
-          $COMPOSE exec -T postgres psql -U jurvio -d jurvio -Atc "SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));"
-          printf '%s\n' 'TOTALS_END'
+          if ! totals="$(docker exec "$postgres_id" psql -U jurvio -d jurvio -Atc "SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));" 2>/tmp/scotus-xray-totals.err)"; then
+            printf '{}'
+          else
+            printf '%s' "$totals"
+          fi
+          printf '\n%s\n' 'TOTALS_END'
+
+          # The report stays internal and redacts URLs and secret-like values.
+          printf '%s\n' 'DIAGNOSTICS_BEGIN'
+          {
+            printf '%s\n' '[scheduler + coordinator tail]'
+            docker exec "$worker_id" sh -c 'tail -c 6144 /var/lib/jurvio/artifacts/scheduler/scotus-pre500-backfill.log 2>/dev/null || true; tail -c 6144 /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.attempt-*.log 2>/dev/null || true'
+            docker logs --tail 100 "$worker_id"
+            cat /tmp/scotus-xray-state.err /tmp/scotus-xray-failures.err /tmp/scotus-xray-totals.err 2>/dev/null || true
+          } 2>&1 | tail -c 6144 | sed -E -e 's#https?://[^[:space:]"'"'"'<>]+#<url>#g' -e 's#(DATABASE_URL|PASSWORD|TOKEN|SECRET|AUTHORIZATION|COOKIE)[=:][^[:space:]]+#\1=<redacted>#gI'
+          printf '\n%s\n' 'DIAGNOSTICS_END'
           REMOTE
 
           node <<'NODE'
@@ -78,6 +105,7 @@ jobs:
           const state = JSON.parse(section('STATE') || '{}');
           const totals = JSON.parse(section('TOTALS') || '{}');
           const failures = section('FAILURES') || '[]';
+          const diagnostics = section('DIAGNOSTICS') || 'no diagnostic output captured';
           const completed = Array.isArray(state.completedVolumes) ? state.completedVolumes : [];
           const failed = Array.isArray(state.failedVolumes) ? state.failedVolumes : [];
           const pending = Array.isArray(state.pendingVolumes) ? state.pendingVolumes : [];
@@ -97,6 +125,7 @@ jobs:
             PENDING_LIST: pending.join(','),
             TOTALS: JSON.stringify(totals),
             FAILURES_B64: Buffer.from(failures).toString('base64'),
+            DIAGNOSTICS_B64: Buffer.from(diagnostics).toString('base64'),
           };
           fs.appendFileSync(process.env.GITHUB_ENV, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''));
           NODE
@@ -109,8 +138,9 @@ jobs:
           set -euo pipefail
           if [ "$APP_IMAGE" = "$WORKER_IMAGE" ]; then IMAGE_MATCH="yes"; else IMAGE_MATCH="NO"; fi
           FAILURES="$(printf '%s' "$FAILURES_B64" | base64 --decode)"
+          DIAGNOSTICS="$(printf '%s' "$DIAGNOSTICS_B64" | base64 --decode)"
           BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Coordinator: **%s**\n- App image: `%s`\n- Worker image: `%s`\n- Images match: **%s**\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Pending volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Coordinator updated: `%s`\n- X-Ray checked: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```\n\nSaved coordinator failure records:\n\n```json\n%s\n```' \
             "$COORDINATOR_STATUS" "$APP_IMAGE" "$WORKER_IMAGE" "$IMAGE_MATCH" "$NEWEST" "$OLDEST" "$WORKERS" \
             "$COMPLETED_COUNT" "$COMPLETED_LIST" "$PENDING_COUNT" "$PENDING_LIST" "$FAILED_COUNT" "$FAILED_LIST" \
-            "$COORDINATOR_UPDATED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS" "${FAILURES:-[]}")"
+            "$COORDINATOR_UPDATED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS" "${FAILURES:-[]}" "${DIAGNOSTICS:-no diagnostic output captured}")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
