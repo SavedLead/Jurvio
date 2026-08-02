@@ -132,7 +132,11 @@ async function verifyPublishedVolume(
   return { expectedRecords, ...actual };
 }
 
-async function runVolume(sql: Sql, volume: number): Promise<void> {
+async function runVolume(
+  sql: Sql,
+  volume: number,
+  drain: (volume: number) => Promise<Record<string, unknown>>,
+): Promise<void> {
   const attempts: Array<{ code: number | null; signal: string | null; output: string }> = [];
   let lastStageFailure: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -161,7 +165,7 @@ async function runVolume(sql: Sql, volume: number): Promise<void> {
         || (!resumedAtEnd && (selected < 1 || succeeded < 1))) {
         throw new Error(`ingestion gate not met: ${result.output.slice(-2_000)}`);
       }
-      const publication = await drainPublication(volume);
+      const publication = await drain(volume);
       // A retry may legitimately create zero new pages because the prior run
       // already published them. Completion is based on durable public records,
       // not the retry's delta, and requires both the case and official opinion.
