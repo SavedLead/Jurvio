@@ -42,7 +42,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ env.DEPLOY_COMMIT }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            changed="$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE_SHA...$COMMIT_SHA" --jq '.files[].filename' | sort -u)"
+            test "$changed" = ".github/deploy-kickoff"
+            echo "Validated marker-only deployment kickoff for $COMMIT_SHA"
+            exit 0
+          fi
           successful=0
           for attempt in $(seq 1 60); do
             successful=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT_SHA/check-runs" --jq '[.check_runs[] | select(.name == "verify" and .conclusion == "success")] | length')
