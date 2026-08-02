@@ -130,7 +130,7 @@ async function verifyPublishedVolume(
   return { expectedRecords, ...actual };
 }
 
-async function runVolume(volume: number): Promise<void> {
+async function runVolume(sql: Sql, volume: number): Promise<void> {
   const attempts: Array<{ code: number | null; signal: string | null; output: string }> = [];
   let lastStageFailure: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -242,7 +242,7 @@ async function main(): Promise<void> {
         if (volume === undefined) return;
         cursor += 1;
         try {
-          await runVolume(volume);
+          await runVolume(sql, volume);
           completedVolumes.push(volume);
         } catch (error) {
           failedVolumes.push(volume);
