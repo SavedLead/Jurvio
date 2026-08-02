@@ -1,71 +1,37 @@
-name: Ingest pre-500 SCOTUS cases
-# Main push launches the durable pre-500 assembly coordinator.
+name: SCOTUS Assembly X-Ray
 
 on:
   push:
     branches: [main]
     paths:
       - ".github/workflows/ingest-production-scotus-pre502.yml"
-      - "src/modules/ingestion/providers/scotus/loc-us-reports.ts"
-      - "src/modules/ingestion/application/ingest-loc-us-reports-volume.ts"
+      - "scripts/run-scotus-pre500-backfill.ts"
+      - "scripts/run-production-scheduler.ts"
   workflow_dispatch:
-    inputs:
-      newest_volume:
-        description: Newest pre-500 U.S. Reports volume
-        required: true
-        default: "499"
-      oldest_volume:
-        description: Oldest U.S. Reports volume
-        required: true
-        default: "475"
-      volume_workers:
-        description: Concurrent volume workers
-        required: true
-        default: "8"
-      resume:
-        description: Resume from durable volume checkpoints
-        required: true
-        type: boolean
-        default: true
+  schedule:
+    # Temporary while the pre-500 recovery is active. Remove after the range completes.
+    - cron: "17 * * * *"
 
 permissions:
   contents: read
   issues: write
 
 concurrency:
-  group: jurvio-production-scotus-pre502
+  group: jurvio-production-scotus-xray
   cancel-in-progress: true
 
 jobs:
-  ingest:
+  report:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 180
+    timeout-minutes: 10
     steps:
-      - name: Validate range
-        env:
-          NEWEST: ${{ inputs.newest_volume || '499' }}
-          OLDEST: ${{ inputs.oldest_volume || '477' }}
-          VOLUME_WORKERS: ${{ inputs.volume_workers || '8' }}
-          RESUME: ${{ github.event_name == 'push' && 'true' || inputs.resume }}
-        run: |
-          set -euo pipefail
-          test "$NEWEST" -ge 2
-          test "$NEWEST" -le 499
-          test "$OLDEST" -ge 2
-          test "$OLDEST" -le "$NEWEST"
-          test $((NEWEST - OLDEST + 1)) -le 25
-          test "$VOLUME_WORKERS" -ge 1
-          test "$VOLUME_WORKERS" -le 12
-          test "$RESUME" = "true" || test "$RESUME" = "false"
-          printf 'NEWEST=%s\nOLDEST=%s\nRESUME=%s\nVOLUME_WORKERS=%s\n' \
-            "$NEWEST" "$OLDEST" "$RESUME" "$VOLUME_WORKERS" >> "$GITHUB_ENV"
-
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
           DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
         run: |
+          set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
@@ -73,132 +39,68 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Resolve deployed image containing the pre-502 job
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-          EXPECTED_SHA: ${{ github.sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          for ATTEMPT in $(seq 1 60); do
-            JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
-              ids="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}")"
-              set -- $ids
-              test "$#" -eq 1
-              docker inspect --format "{{.Config.Image}}" "$1"
-            ' 2>/dev/null || true)"
-            DEPLOYED_SHA="${JURVIO_IMAGE##*:}"
-            IMAGE_STATUS=""
-            if [ "$DEPLOYED_SHA" = "$EXPECTED_SHA" ]; then
-              IMAGE_STATUS="identical"
-            elif [ -n "$DEPLOYED_SHA" ] && [ "$DEPLOYED_SHA" != "$JURVIO_IMAGE" ]; then
-              IMAGE_STATUS="$(gh api "repos/$GITHUB_REPOSITORY/compare/$EXPECTED_SHA...$DEPLOYED_SHA" --jq .status 2>/dev/null || true)"
-            fi
-            if { [ "$IMAGE_STATUS" = "identical" ] || [ "$IMAGE_STATUS" = "ahead" ]; } && ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app test -f /app/jobs/ingest-loc-us-reports-volume.mjs" 2>/dev/null; then
-              printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
-              printf 'Resolved deployed image %s (%s relative to trigger %s)\n' "$JURVIO_IMAGE" "$IMAGE_STATUS" "$EXPECTED_SHA"
-              exit 0
-            fi
-            sleep 30
-          done
-          echo "::error::Timed out waiting for a deployed image containing trigger commit $EXPECTED_SHA"
-          exit 1
-
-      - name: Ingest with one durable production coordinator
+      - name: Read live coordinator state
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           set -euo pipefail
-          ASSEMBLY_LOG="$(mktemp)"
-          trap 'rm -f "$ASSEMBLY_LOG"' EXIT
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$DO_USER@$DO_HOST" \
-            "bash -s -- '$JURVIO_IMAGE' '$NEWEST' '$OLDEST' '$VOLUME_WORKERS' '$RESUME'" <<'REMOTE' | tee "$ASSEMBLY_LOG"
+          ssh "$DO_USER@$DO_HOST" 'bash -s' > live-state.txt <<'REMOTE'
           set -euo pipefail
-          JURVIO_IMAGE="$1"
-          NEWEST="$2"
-          OLDEST="$3"
-          VOLUME_WORKERS="$4"
-          RESUME="$5"
-          export JURVIO_IMAGE
           cd /opt/jurvio
           COMPOSE="docker compose -f docker-compose.production.yml"
-          RESULT_DIR="$(mktemp -d)"
-          trap 'rm -rf "$RESULT_DIR"' EXIT
-          run_volume() {
-            VOLUME="$1"
-            : > "$RESULT_DIR/$VOLUME.log"
-            for ATTEMPT in 1 2; do
-              if timeout --foreground 35m $COMPOSE run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume="$VOLUME" --limit=1000 --resume="$RESUME" >> "$RESULT_DIR/$VOLUME.log" 2>&1; then
-                : > "$RESULT_DIR/$VOLUME.ok"
-                return 0
-              fi
-              printf 'Volume %s attempt %s failed; retrying after backoff\n' "$VOLUME" "$ATTEMPT" >> "$RESULT_DIR/$VOLUME.log"
-              sleep $((ATTEMPT * 15))
-            done
-            : > "$RESULT_DIR/$VOLUME.failed"
-            return 1
-          }
-          export -f run_volume
-          export RESULT_DIR JURVIO_IMAGE RESUME COMPOSE
-          seq "$NEWEST" -1 "$OLDEST" | xargs -P "$VOLUME_WORKERS" -n 1 bash -c 'run_volume "$1" || true' _ &
-          INGEST_PID="$!"
-          while kill -0 "$INGEST_PID" 2>/dev/null; do
-            # Metadata-only cases publish immediately. Readable text is an independent
-            # assembly-line stage and no longer waits for every volume to finish.
-            $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000 || true
-            $COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts \
-              node jobs/extract-official-scotus-opinion-text.mjs --limit=1000 || true
-            sleep 30
-          done
-          wait "$INGEST_PID"
-          $COMPOSE exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000
-          while true; do
-            EXTRACTION_RESULT="$($COMPOSE exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000)"
-            printf '%s\n' "$EXTRACTION_RESULT"
-            read -r SELECTED EXTRACTED <<< "$(printf '%s' "$EXTRACTION_RESULT" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const x=JSON.parse(s.trim().split(/\\n/).at(-1));process.stdout.write([x.selected,x.extracted].join(" "))})')"
-            [ "$SELECTED" -gt 0 ] && [ "$EXTRACTED" -gt 0 ] || break
-          done
-          COMPLETED_VOLUMES="$(find "$RESULT_DIR" -name '*.ok' -type f | wc -l)"
-          FAILED_VOLUMES="$(find "$RESULT_DIR" -name '*.failed' -type f | wc -l)"
-          COMPLETED_LIST="$(find "$RESULT_DIR" -name '*.ok' -type f -printf '%f\n' | sed 's/\\.ok$//' | sort -rn | paste -sd, -)"
-          FAILED_LIST="$(find "$RESULT_DIR" -name '*.failed' -type f -printf '%f\n' | sed 's/\\.failed$//' | sort -rn | paste -sd, -)"
-          for VOLUME in $(seq "$NEWEST" -1 "$OLDEST"); do
-            echo "===== Volume $VOLUME ====="
-            cat "$RESULT_DIR/$VOLUME.log"
-          done
-          printf 'ASSEMBLY_SUMMARY completed=%s failed=%s completed_list=%s failed_list=%s\n' "$COMPLETED_VOLUMES" "$FAILED_VOLUMES" "$COMPLETED_LIST" "$FAILED_LIST"
-          [ "$COMPLETED_VOLUMES" -gt 0 ] || printf 'ASSEMBLY_ALL_FAILED=1\n'
-REMOTE
-          SUMMARY="$(grep '^ASSEMBLY_SUMMARY ' "$ASSEMBLY_LOG" | tail -n1 || true)"
-          test -n "$SUMMARY"
-          for PAIR in $SUMMARY; do
-            case "$PAIR" in
-              completed=*) COMPLETED_VOLUMES="${PAIR#completed=}"; printf 'COMPLETED_VOLUMES=%s\n' "$COMPLETED_VOLUMES" >> "$GITHUB_ENV" ;;
-              failed=*) FAILED_VOLUMES="${PAIR#failed=}"; printf 'FAILED_VOLUMES=%s\n' "$FAILED_VOLUMES" >> "$GITHUB_ENV" ;;
-              completed_list=*) COMPLETED_LIST="${PAIR#completed_list=}"; printf 'COMPLETED_LIST=%s\n' "$COMPLETED_LIST" >> "$GITHUB_ENV" ;;
-              failed_list=*) FAILED_LIST="${PAIR#failed_list=}"; printf 'FAILED_LIST=%s\n' "$FAILED_LIST" >> "$GITHUB_ENV" ;;
-            esac
-          done
-          test "${COMPLETED_VOLUMES:-0}" -gt 0
+          app_id="$($COMPOSE ps -q app)"
+          worker_id="$($COMPOSE ps -q worker)"
+          test -n "$app_id"
+          test -n "$worker_id"
+          printf 'APP_IMAGE=%s\n' "$(docker inspect --format '{{.Config.Image}}' "$app_id")"
+          printf 'WORKER_IMAGE=%s\n' "$(docker inspect --format '{{.Config.Image}}' "$worker_id")"
+          printf '%s\n' 'STATE_BEGIN'
+          $COMPOSE exec -T worker sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json 2>/dev/null || printf '\''{"status":"waiting-for-worker","pendingVolumes":[],"completedVolumes":[],"failedVolumes":[]}'\'''
+          printf '\n%s\n' 'STATE_END'
+          printf '%s\n' 'TOTALS_BEGIN'
+          $COMPOSE exec -T postgres psql -U jurvio -d jurvio -Atc "SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));"
+          printf '%s\n' 'TOTALS_END'
+          REMOTE
 
-      - name: Report live funnel
-        if: always()
+          node <<'NODE'
+          const fs = require('node:fs');
+          const input = fs.readFileSync('live-state.txt', 'utf8');
+          const field = (name) => input.match(new RegExp(`^${name}=(.*)$`, 'm'))?.[1] ?? 'unresolved';
+          const section = (name) => input.match(new RegExp(`${name}_BEGIN\\n([\\s\\S]*?)\\n${name}_END`))?.[1]?.trim();
+          const state = JSON.parse(section('STATE') || '{}');
+          const totals = JSON.parse(section('TOTALS') || '{}');
+          const completed = Array.isArray(state.completedVolumes) ? state.completedVolumes : [];
+          const failed = Array.isArray(state.failedVolumes) ? state.failedVolumes : [];
+          const pending = Array.isArray(state.pendingVolumes) ? state.pendingVolumes : [];
+          const values = {
+            APP_IMAGE: field('APP_IMAGE'),
+            WORKER_IMAGE: field('WORKER_IMAGE'),
+            COORDINATOR_STATUS: state.status || 'unknown',
+            COORDINATOR_UPDATED_AT: state.updatedAt || 'not-yet-written',
+            NEWEST: String(state.newestVolume ?? 499),
+            OLDEST: String(state.oldestVolume ?? 477),
+            WORKERS: String(state.volumeWorkers ?? 8),
+            COMPLETED_COUNT: String(completed.length),
+            COMPLETED_LIST: completed.join(','),
+            FAILED_COUNT: String(failed.length),
+            FAILED_LIST: failed.join(','),
+            PENDING_COUNT: String(pending.length),
+            PENDING_LIST: pending.join(','),
+            TOTALS: JSON.stringify(totals),
+          };
+          fs.appendFileSync(process.env.GITHUB_ENV, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''));
+          NODE
+
+      - name: Update X-Ray comment
         env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPORT_COMMENT_ID: "5133453027"
-          WORKFLOW_STATUS: ${{ job.status }}
         run: |
-          if [ -z "${JURVIO_IMAGE:-}" ]; then
-            TOTALS='{"report":"unavailable","reason":"exact production image unresolved"}'
-          else
-            TOTALS="$(ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));\" " 2>/dev/null || printf '{"report":"unavailable","reason":"production totals query failed"}')"
-          fi
-          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **%s**\n- Exact image: `%s`\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```' \
-            "$WORKFLOW_STATUS" "${JURVIO_IMAGE:-unresolved}" "${NEWEST:-unknown}" "${OLDEST:-unknown}" "${VOLUME_WORKERS:-unknown}" \
-            "${COMPLETED_VOLUMES:-0}" "${COMPLETED_LIST:-}" "${FAILED_VOLUMES:-0}" "${FAILED_LIST:-}" \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS")"
+          set -euo pipefail
+          if [ "$APP_IMAGE" = "$WORKER_IMAGE" ]; then IMAGE_MATCH="yes"; else IMAGE_MATCH="NO"; fi
+          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Coordinator: **%s**\n- App image: `%s`\n- Worker image: `%s`\n- Images match: **%s**\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Pending volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Coordinator updated: `%s`\n- X-Ray checked: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```' \
+            "$COORDINATOR_STATUS" "$APP_IMAGE" "$WORKER_IMAGE" "$IMAGE_MATCH" "$NEWEST" "$OLDEST" "$WORKERS" \
+            "$COMPLETED_COUNT" "$COMPLETED_LIST" "$PENDING_COUNT" "$PENDING_LIST" "$FAILED_COUNT" "$FAILED_LIST" \
+            "$COORDINATOR_UPDATED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
