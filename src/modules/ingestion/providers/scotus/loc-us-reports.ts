@@ -80,6 +80,13 @@ function parseTitle(title: string, expectedVolume: number) {
   };
 }
 
+function isAncillaryVolumeMaterial(caseName: string): boolean {
+  // LOC lists several bound-volume components alongside opinions. They are
+  // authoritative artifacts, but not case records and therefore cannot supply
+  // a case docket or decision date.
+  return /^(?:reporter['’]s note(?:\s*[a-z])?|orders|index)\b/i.test(caseName.trim());
+}
+
 export function parseLocUsReportsResults(payload: unknown, expectedVolume: number): LocUsReportsRecord[] {
   if (!Number.isInteger(expectedVolume) || expectedVolume < 2 || expectedVolume > 501) {
     throw new Error("Library of Congress volume must be between 2 and 501");
@@ -94,7 +101,8 @@ export function parseLocUsReportsResults(payload: unknown, expectedVolume: numbe
     const id = strings(item.id)[0] ?? strings(item.url)[0];
     const parsed = title ? parseTitle(title, expectedVolume) : null;
     const pdfUrl = findPdf(item);
-    if (!parsed || !id || !pdfUrl || !parsed.caseName || !Number.isInteger(parsed.reporterPage)) continue;
+    if (!parsed || !id || !pdfUrl || !parsed.caseName || !Number.isInteger(parsed.reporterPage)
+      || isAncillaryVolumeMaterial(parsed.caseName)) continue;
     const itemUrl = officialLocUrl(id);
     const sourceId = new URL(itemUrl).pathname.split("/").filter(Boolean).at(-1);
     if (!sourceId) continue;
