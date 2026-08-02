@@ -46,8 +46,6 @@ jobs:
           JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T worker sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json 2>/dev/null || printf "{\"status\":\"not-written\"}\n"'
           printf '%s\n' 'SCOTUS_PRE500_FAILURES_BEGIN'
           JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T worker sh -c 'for f in /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.failed.json; do test -f "$f" && cat "$f"; done' 2>/dev/null || true
-          printf '%s\n' 'SCOTUS_PRE500_LOG_TAIL_BEGIN'
-          JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T worker sh -c 'tail -c 12000 /var/lib/jurvio/artifacts/scheduler/scotus-pre500-backfill.log 2>/dev/null || true'
           printf '%s\n' 'SCOTUS_PRE500_DIAGNOSTICS_END'
 REMOTE
 
@@ -56,6 +54,13 @@ REMOTE
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          source /tmp/scotus-xray.txt
-          body="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **live refresh**\n- Exact image: `%s`\n- Active pre-500 volume workers: **%s**\n- Updated: `%s`\n\nLive funnel:\n\n```json\n%s\n```' "$IMAGE" "$WORKERS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TOTALS")"
+          image="$(sed -n 's/^IMAGE=//p' /tmp/scotus-xray.txt | head -n1)"
+          workers="$(sed -n 's/^WORKERS=//p' /tmp/scotus-xray.txt | head -n1)"
+          totals="$(sed -n 's/^TOTALS=//p' /tmp/scotus-xray.txt | head -n1)"
+          state="$(sed -n '/^SCOTUS_PRE500_STATE_BEGIN$/,/^SCOTUS_PRE500_FAILURES_BEGIN$/p' /tmp/scotus-xray.txt | sed '1d;$d')"
+          failures="$(sed -n '/^SCOTUS_PRE500_FAILURES_BEGIN$/,/^SCOTUS_PRE500_DIAGNOSTICS_END$/p' /tmp/scotus-xray.txt | sed '1d;$d')"
+          : "${image:?Missing deployed image from production probe}"
+          : "${workers:?Missing worker count from production probe}"
+          : "${totals:?Missing live funnel totals from production probe}"
+          body="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **live refresh**\n- Exact image: `%s`\n- Active pre-500 volume workers: **%s**\n- Updated: `%s`\n\nLive funnel:\n\n```json\n%s\n```\n\nCoordinator status:\n\n```json\n%s\n```\n\nStructured recoverable failures:\n\n```json\n%s\n```' "$image" "$workers" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$totals" "${state:-{\"status\":\"not-written\"}}" "${failures:-[]}")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/5133453027" --raw-field body="$body"
