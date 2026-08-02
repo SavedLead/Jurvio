@@ -5,6 +5,30 @@ DEPLOY_DIR=${DEPLOY_DIR:-/opt/jurvio}
 COMPOSE="$DEPLOY_DIR/docker-compose.production.yml"
 NEW_IMAGE=${JURVIO_IMAGE:?JURVIO_IMAGE is required}
 PREVIOUS_IMAGE=""
+PULL_TIMEOUT_SECONDS=${PULL_TIMEOUT_SECONDS:-900}
+MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-300}
+START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-180}
+
+diagnose() {
+  printf '\n--- production release diagnostics ---\n' >&2
+  docker compose -f "$COMPOSE" ps >&2 || true
+  docker compose -f "$COMPOSE" logs --tail=150 app worker postgres >&2 || true
+}
+
+fail() {
+  printf '%s\n' "$1" >&2
+  diagnose
+  exit 1
+}
+
+run_with_timeout() {
+  label="$1"
+  seconds="$2"
+  shift 2
+  if ! timeout --signal=TERM --kill-after=30s "${seconds}s" "$@"; then
+    fail "$label did not complete within ${seconds}s"
+  fi
+}
 
 cd "$DEPLOY_DIR"
 if docker compose -f "$COMPOSE" ps -q app >/dev/null 2>&1; then
@@ -15,12 +39,12 @@ if docker compose -f "$COMPOSE" ps -q app >/dev/null 2>&1; then
 fi
 
 if docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
-  "$DEPLOY_DIR/scripts/backup-production.sh"
+  run_with_timeout "Database backup" 300 "$DEPLOY_DIR/scripts/backup-production.sh"
 fi
 
 export JURVIO_IMAGE="$NEW_IMAGE"
-docker compose -f "$COMPOSE" pull app worker
-docker compose -f "$COMPOSE" up -d postgres
+run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker
+run_with_timeout "Postgres startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d postgres
 
 DATABASE_READY=0
 for attempt in $(seq 1 30); do
@@ -30,14 +54,10 @@ for attempt in $(seq 1 30); do
   fi
   sleep 2
 done
+[ "$DATABASE_READY" -eq 1 ] || fail "Database readiness failed before migration"
 
-if [ "$DATABASE_READY" -ne 1 ]; then
-  printf 'Database readiness failed before migration\n' >&2
-  exit 1
-fi
-
-docker compose -f "$COMPOSE" run --rm --no-deps app node scripts/migrate.mjs
-docker compose -f "$COMPOSE" up -d app worker
+run_with_timeout "Database migration" "$MIGRATION_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" run --rm --no-deps app node scripts/migrate.mjs
+run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker
 
 READY=0
 for attempt in $(seq 1 30); do
@@ -57,7 +77,8 @@ fi
 printf 'Readiness failed for %s\n' "$NEW_IMAGE" >&2
 if [ -n "$PREVIOUS_IMAGE" ]; then
   export JURVIO_IMAGE="$PREVIOUS_IMAGE"
-  docker compose -f "$COMPOSE" up -d app
-  printf 'Application rolled back to %s\n' "$PREVIOUS_IMAGE" >&2
+  docker compose -f "$COMPOSE" up -d app worker || true
+  printf 'Application and worker rolled back to %s\n' "$PREVIOUS_IMAGE" >&2
 fi
+diagnose
 exit 1
