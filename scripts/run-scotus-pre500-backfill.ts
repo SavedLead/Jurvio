@@ -4,9 +4,9 @@ import { join } from "node:path";
 import postgres from "postgres";
 
 const newestVolume = 499;
-const oldestVolume = 477;
-const volumeWorkers = 1;
-const leaseKey = "jurvio:scotus-pre500:499-477";
+const oldestVolume = 1;
+const volumeWorkers = 4;
+const leaseKey = "jurvio:scotus-pre500:coordinator";
 const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? process.env.RAW_ARTIFACT_DIR
   ?? "/var/lib/jurvio/artifacts";
@@ -20,6 +20,8 @@ type VolumeResult = {
   signal: string | null;
   output: string;
 };
+
+type VolumeOutcome = "completed" | "failed" | "already-running";
 
 function runNode(args: string[]): Promise<VolumeResult> {
   return new Promise((resolve, reject) => {
@@ -198,6 +200,30 @@ async function runVolume(sql: Sql, volume: number): Promise<void> {
   throw new Error(`volume ${volume} failed after two verified attempts: ${lastStageFailure ?? "no stage diagnostic recorded"}`);
 }
 
+async function runVolumeWithLease(
+  databaseUrl: string,
+  volume: number,
+  drain: (volume: number) => Promise<Record<string, unknown>>,
+): Promise<VolumeOutcome> {
+  const volumeSql = postgres(databaseUrl, { max: 1 });
+  try {
+    const [lease] = await volumeSql<{ acquired: boolean }[]>`
+      SELECT pg_try_advisory_lock(hashtext(${`jurvio:scotus-pre500:volume:${volume}`})) AS acquired
+    `;
+    if (!lease?.acquired) {
+      process.stdout.write(`Volume ${volume} skipped: another lane already holds its lease\n`);
+      return "already-running";
+    }
+    await runVolume(volumeSql, volume, drain);
+    return "completed";
+  } catch (error) {
+    process.stderr.write(`Volume ${volume} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    return "failed";
+  } finally {
+    await volumeSql.end({ timeout: 5 });
+  }
+}
+
 async function main(): Promise<void> {
   await mkdir(stateRoot, { recursive: true });
   const databaseUrl = process.env.DATABASE_URL;
@@ -205,8 +231,9 @@ async function main(): Promise<void> {
 
   const sql = postgres(databaseUrl, { max: 1 });
   try {
-    const [lease] = await sql<{ acquired: boolean }[]>
-      `SELECT pg_try_advisory_lock(hashtext(${leaseKey})) AS acquired`;
+    const [lease] = await sql<{ acquired: boolean }[]>`
+      SELECT pg_try_advisory_lock(hashtext(${leaseKey})) AS acquired
+    `;
     if (!lease?.acquired) {
       process.stdout.write("SCOTUS pre-500 coordinator skipped: another coordinator holds the lease\n");
       return;
@@ -217,75 +244,73 @@ async function main(): Promise<void> {
       if (!await isComplete(volume)) volumes.push(volume);
     }
 
-    await writeJson(join(stateRoot, "status.json"), {
-      status: volumes.length === 0 ? "complete" : "running",
-      updatedAt: new Date().toISOString(),
-      newestVolume,
-      oldestVolume,
-      volumeWorkers,
-      pendingVolumes: volumes,
-      completedVolumes: [],
-      failedVolumes: [],
-    });
+    let publicationTail: Promise<void> = Promise.resolve();
+    const drainSerially = async (volume: number): Promise<Record<string, unknown>> => {
+      let resolveDrain: ((value: Record<string, unknown>) => void) | undefined;
+      let rejectDrain: ((reason?: unknown) => void) | undefined;
+      const current = new Promise<Record<string, unknown>>((resolve, reject) => {
+        resolveDrain = resolve;
+        rejectDrain = reject;
+      });
+      const previous = publicationTail;
+      publicationTail = current.then(() => undefined, () => undefined);
+      try {
+        await previous;
+        const result = await drainPublication(volume);
+        resolveDrain?.(result);
+        return result;
+      } catch (error) {
+        rejectDrain?.(error);
+        throw error;
+      }
+    };
 
+    let cursor = 0;
+    const completedVolumes: number[] = [];
+    const failedVolumes: number[] = [];
+    const runningVolumes: number[] = [];
+    const alreadyRunningVolumes: number[] = [];
+
+    const writeStatus = async (status: "running" | "complete" | "complete-with-failures"): Promise<void> => {
+      await writeJson(join(stateRoot, "status.json"), {
+        status,
+        updatedAt: new Date().toISOString(),
+        newestVolume,
+        oldestVolume,
+        volumeWorkers,
+        pendingVolumes: volumes.slice(cursor),
+        runningVolumes: [...runningVolumes].sort((a, b) => b - a),
+        completedVolumes: [...completedVolumes].sort((a, b) => b - a),
+        failedVolumes: [...failedVolumes].sort((a, b) => b - a),
+        alreadyRunningVolumes: [...alreadyRunningVolumes].sort((a, b) => b - a),
+      });
+    };
+
+    await writeStatus(volumes.length === 0 ? "complete" : "running");
     if (volumes.length === 0) {
       process.stdout.write("SCOTUS pre-500 coordinator complete: no unfinished volumes\n");
       return;
     }
 
-    let cursor = 0;
-    const completedVolumes: number[] = [];
-    const failedVolumes: number[] = [];
     async function worker(): Promise<void> {
-      while (cursor < volumes.length) {
+      while (true) {
         const volume = volumes[cursor];
         if (volume === undefined) return;
         cursor += 1;
-        try {
-          await runVolume(sql, volume);
-          completedVolumes.push(volume);
-        } catch (error) {
-          failedVolumes.push(volume);
-          process.stderr.write(`Volume ${volume} failed: ${error instanceof Error ? error.message : String(error)}\n`);
-        }
-        await writeJson(join(stateRoot, "status.json"), {
-          status: "running",
-          updatedAt: new Date().toISOString(),
-          newestVolume,
-          oldestVolume,
-          volumeWorkers,
-          pendingVolumes: volumes.slice(cursor),
-          completedVolumes: [...completedVolumes].sort((a, b) => b - a),
-          failedVolumes: [...failedVolumes].sort((a, b) => b - a),
-        });
-        // Preserve ordering and the durable checkpoint: do not let a later
-        // volume mask the first failed one or compound pressure on production.
-        if (failedVolumes.length > 0) break;
+        runningVolumes.push(volume);
+        await writeStatus("running");
+        const outcome = await runVolumeWithLease(databaseUrl, volume, drainSerially);
+        runningVolumes.splice(runningVolumes.indexOf(volume), 1);
+        if (outcome === "completed") completedVolumes.push(volume);
+        if (outcome === "failed") failedVolumes.push(volume);
+        if (outcome === "already-running") alreadyRunningVolumes.push(volume);
+        await writeStatus("running");
       }
     }
 
-    try {
-      await Promise.all(Array.from({ length: Math.min(volumeWorkers, volumes.length) }, () => worker()));
-    } finally {
-      // Each volume runs publication synchronously inside runVolume so its stage
-      // record and completion checkpoint cannot get ahead of public visibility.
-    }
-    await writeJson(join(stateRoot, "status.json"), {
-      status: failedVolumes.length === 0 ? "complete" : "needs-retry",
-      updatedAt: new Date().toISOString(),
-      newestVolume,
-      oldestVolume,
-      volumeWorkers,
-      pendingVolumes: failedVolumes.length === 0
-        ? []
-        : volumes.slice(volumes.indexOf(failedVolumes[0]!)),
-      completedVolumes: [...completedVolumes].sort((a, b) => b - a),
-      failedVolumes: [...failedVolumes].sort((a, b) => b - a),
-    });
-
-    if (failedVolumes.length > 0) {
-      throw new Error(`SCOTUS pre-500 coordinator completed with failed volumes: ${failedVolumes.join(",")}`);
-    }
+    await Promise.all(Array.from({ length: Math.min(volumeWorkers, volumes.length) }, () => worker()));
+    await writeStatus(failedVolumes.length === 0 ? "complete" : "complete-with-failures");
+    process.stdout.write(`SCOTUS pre-500 coordinator finished: completed=${completedVolumes.length}, failed=${failedVolumes.length}, alreadyRunning=${alreadyRunningVolumes.length}\n`);
   } finally {
     await sql.end({ timeout: 5 });
   }
