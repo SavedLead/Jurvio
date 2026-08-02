@@ -99,7 +99,7 @@ jobs:
           cd /opt/jurvio
           JURVIO_IMAGE=jurvio-supreme-volume-499:one-shot timeout --foreground 45m docker compose -f docker-compose.production.yml run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume=499 --limit=1000 --resume=true
           rm -rf "$work"
-REMOTE
+          REMOTE
 
       - name: Ingest verified Volume 498 while Volume 499 is repaired
         if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Run SCOTUS Volume 498 now' }}
