@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+type SchedulerLane = "coa" | "core";
+
 type ScheduledJob = {
+  lane: SchedulerLane;
   name: string;
   initialDelayMs: number;
   intervalMs: number;
@@ -24,18 +27,21 @@ function currentScotusTerm(): string {
 
 const jobs: ScheduledJob[] = [
   {
+    lane: "core",
     name: "scotus-pre500-backfill",
     initialDelayMs: 30_000,
     intervalMs: 5 * minute,
     command: ["jobs/run-scotus-pre500-backfill.mjs"],
   },
   {
+    lane: "coa",
     name: "direct-court",
     initialDelayMs: 0,
     intervalMs: 5 * minute,
     command: ["jobs/ingest-direct-court-feeds.mjs", "--court=all"],
   },
   {
+    lane: "coa",
     name: "appellate-official",
     initialDelayMs: 1 * minute,
     intervalMs: 5 * minute,
@@ -53,6 +59,7 @@ const jobs: ScheduledJob[] = [
   // Seven-minute spacing stays below the shared DEMO_KEY limit; a configured
   // free key automatically enables the importer's multi-page mode.
   {
+    lane: "coa",
     name: "appellate-govinfo-backfill",
     initialDelayMs: 2 * minute,
     intervalMs: 7 * minute,
@@ -64,12 +71,14 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    lane: "coa",
     name: "appellate-backfill-report",
     initialDelayMs: 8 * minute,
     intervalMs: 15 * minute,
     command: ["jobs/report-appellate-backfill.mjs"],
   },
   {
+    lane: "core",
     name: "scotus-enriched",
     initialDelayMs: 4 * minute,
     intervalMs: 5 * minute,
@@ -82,6 +91,7 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    lane: "core",
     name: "federal-new-cases",
     initialDelayMs: 2 * minute,
     intervalMs: 60 * minute,
@@ -94,6 +104,7 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    lane: "core",
     name: "federal-material-decisions",
     initialDelayMs: 12 * minute,
     intervalMs: 60 * minute,
@@ -106,6 +117,7 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    lane: "core",
     name: "federal-publication",
     initialDelayMs: 22 * minute,
     intervalMs: 60 * minute,
@@ -118,6 +130,7 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    lane: "core",
     name: "federal-active-cases",
     initialDelayMs: 32 * minute,
     intervalMs: 6 * 60 * minute,
@@ -130,6 +143,7 @@ const jobs: ScheduledJob[] = [
     ],
   },
   {
+    lane: "core",
     name: "federal-history",
     initialDelayMs: 42 * minute,
     intervalMs: 24 * 60 * minute,
@@ -142,6 +156,21 @@ const jobs: ScheduledJob[] = [
     ],
   },
 ];
+
+const configuredLane = process.env.JURVIO_SCHEDULER_LANE ?? "core";
+if (configuredLane !== "coa" && configuredLane !== "core") {
+  throw new Error(`JURVIO_SCHEDULER_LANE must be "coa" or "core"; received ${configuredLane}`);
+}
+const activeJobs = jobs.filter((job) => job.lane === configuredLane);
+if (activeJobs.length === 0) {
+  throw new Error(`No jobs configured for scheduler lane ${configuredLane}`);
+}
+if (
+  configuredLane === "coa"
+  && activeJobs.some((job) => job.name.startsWith("scotus-"))
+) {
+  throw new Error("COA scheduler must never include SCOTUS jobs");
+}
 
 const running = new Set<string>();
 const timers: NodeJS.Timeout[] = [];
@@ -188,7 +217,7 @@ function run(job: ScheduledJob): void {
   });
 }
 
-for (const job of jobs) {
+for (const job of activeJobs) {
   const start = setTimeout(() => {
     run(job);
     const repeating = setInterval(() => run(job), job.intervalMs);
@@ -206,4 +235,4 @@ function shutdown(signal: string): void {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-logStatus("scheduler", `ready with ${jobs.length} server-side schedules`);
+logStatus("scheduler", `ready lane=${configuredLane} with ${activeJobs.length} server-side schedules`);
