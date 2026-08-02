@@ -22,6 +22,9 @@ type GovInfoSearchResponse = {
 const argument = (name: string) =>
   process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const courtArgument = argument("court") ?? "all";
+const requestedCourts = courtArgument === "all"
+  ? APPELLATE_COURT_REGISTRY.map((court) => court.code)
+  : [...new Set(courtArgument.split(",").map((court) => court.trim().toLowerCase()).filter(Boolean))];
 const pageSize = Number(argument("page-size") ?? "100");
 const pagesPerCourt = Number(argument("pages-per-court") ?? "1");
 if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
@@ -196,16 +199,13 @@ async function ingestCourt(courtCode: string) {
 }
 
 try {
-  const allCourts = APPELLATE_COURT_REGISTRY.map((court) => court.code);
-  // api.data.gov's shared DEMO_KEY allows ten requests per hour. Alternate
-  // complementary circuit batches so no court is permanently starved while
-  // preserving the free, production-resident backfill.
-  const demoBatchIndex = Math.floor(Date.now() / (60 * 60 * 1000)) % 2;
-  const courts = courtArgument === "all"
-    ? (apiKey === "DEMO_KEY"
-        ? allCourts.filter((_, index) => index % 2 === demoBatchIndex)
-        : allCourts)
-    : [courtArgument.toLowerCase()];
+  if (requestedCourts.length === 0) throw new Error("--court must name at least one circuit");
+  const unknownCourts = requestedCourts.filter((court) => !appellateCourtByCode(court));
+  if (unknownCourts.length > 0) throw new Error(`Unknown appellate court(s): ${unknownCourts.join(", ")}`);
+  // Scheduler-owned groups deliberately keep DEMO_KEY below GovInfo's ten
+  // searches per rolling hour. Explicit --court values are never silently
+  // rotated: an interrupted group resumes exactly its own circuit cursors.
+  const courts = requestedCourts;
   const results = [];
   for (const courtCode of courts) {
     results.push(await ingestCourt(courtCode));
@@ -217,8 +217,17 @@ try {
     historicalOrder: "newest-to-oldest",
     pageSize, pagesPerCourt,
     scheduledCourts: courts,
-    demoBatchIndex: apiKey === "DEMO_KEY" ? demoBatchIndex : null,
+    scheduledCourts: courts,
     results,
+    progress: results.map((result) => ({
+      court: result.court,
+      govInfoCourtCode: result.govInfoCourtCode,
+      state: result.state,
+      discovered: result.discovered ?? 0,
+      pages: result.pages ?? 0,
+      nextCheckpoint: result.offsetMark ?? null,
+      blocked: result.state === "failed" ? 1 : 0,
+    })),
   }));
 } finally {
   await closeDb();
