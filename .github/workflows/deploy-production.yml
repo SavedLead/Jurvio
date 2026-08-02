@@ -28,7 +28,8 @@ env:
 
 concurrency:
   group: jurvio-production
-  cancel-in-progress: false
+  # Recovery releases supersede queued marker-only deployments; only the latest image is useful.
+  cancel-in-progress: true
 
 jobs:
   build:
