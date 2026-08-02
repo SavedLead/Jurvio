@@ -149,7 +149,11 @@ export async function fetchLocUsReportsVolume(volume: number) {
   url.searchParams.set("fo", "json");
   url.searchParams.set("at", "results,pagination");
   url.searchParams.set("c", "150");
-  url.searchParams.set("q", `U.S. Reports Volume ${volume}`);
+  // The collection's case-item titles carry the reporter citation (for example,
+  // "499 U.S. 1"), not a "Volume 499" phrase.  Searching for the latter
+  // returns an empty result set for historical volumes even though the official
+  // records exist.
+  url.searchParams.set("q", `${volume} U.S.`);
   const response = await fetchOfficialLoc(url.toString());
   if (!response.ok) throw new Error(`Library of Congress volume index returned HTTP ${response.status}`);
   const body = await boundedBody(response, MAX_JSON_BYTES);
