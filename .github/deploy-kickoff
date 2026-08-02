@@ -11,3 +11,5 @@ Deploy appellate provenance correction after verified stale production build, 20
 Deploy merged SCOTUS self-healing pre-500 coordinator, 2026-08-01.
 
 Deploy current main after production handoff repair, 2026-08-02.
+
+Activate current SCOTUS coordinator with priority deployment, 2026-08-02.
