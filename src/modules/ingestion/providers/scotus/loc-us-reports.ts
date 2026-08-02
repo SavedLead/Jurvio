@@ -62,7 +62,7 @@ function findPdf(value: unknown): string | null {
 }
 
 function parseTitle(title: string, expectedVolume: number) {
-  const normalized = title.replaceAll(/\s+/g, " ").trim().replace(/^(?:U\.\s*S\.|United States)\s+Reports:\s*/i, "");
+  const normalized = title.replaceAll(/\s+/g, " ").trim().replace(/^(?:U\.?\s*S\.?|United States)\s+Reports:\s*/i, "");
   const match = /^(.+?),\s*(\d+)\s+U\.\s*S\.\s*(\d+)\s*\((\d{4})\)\.?$/i.exec(normalized);
   if (!match || Number(match[2]) !== expectedVolume) return null;
   return {
@@ -150,10 +150,10 @@ export async function fetchLocUsReportsVolume(volume: number) {
   url.searchParams.set("at", "results,pagination");
   url.searchParams.set("c", "150");
   // The collection's case-item titles carry the reporter citation (for example,
-  // "499 U.S. 1"), not a "Volume 499" phrase.  Searching for the latter
+  // "499 US 1"), not a "Volume 499" phrase.  Searching for the latter
   // returns an empty result set for historical volumes even though the official
-  // records exist.
-  url.searchParams.set("q", `${volume} U.S.`);
+  // records exist. LOC search is punctuation-sensitive, so use the canonical unpunctuated reporter token.
+  url.searchParams.set("q", `${volume} US`);
   const response = await fetchOfficialLoc(url.toString());
   if (!response.ok) throw new Error(`Library of Congress volume index returned HTTP ${response.status}`);
   const body = await boundedBody(response, MAX_JSON_BYTES);
