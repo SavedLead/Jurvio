@@ -62,6 +62,9 @@ jobs:
           printf '%s\n' 'STATE_BEGIN'
           $COMPOSE exec -T worker sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json 2>/dev/null || printf '\''{"status":"waiting-for-worker","pendingVolumes":[],"completedVolumes":[],"failedVolumes":[]}'\'''
           printf '\n%s\n' 'STATE_END'
+          printf '%s\n' 'FAILURES_BEGIN'
+          $COMPOSE exec -T worker sh -c 'for f in /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.failed.json; do test -f "$f" && cat "$f"; done' 2>/dev/null || true
+          printf '\n%s\n' 'FAILURES_END'
           printf '%s\n' 'TOTALS_BEGIN'
           $COMPOSE exec -T postgres psql -U jurvio -d jurvio -Atc "SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'pending_candidates',(SELECT count(*) FROM official_opinion_candidate WHERE review_status='pending_review'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));"
           printf '%s\n' 'TOTALS_END'
@@ -74,6 +77,7 @@ jobs:
           const section = (name) => input.match(new RegExp(`${name}_BEGIN\\n([\\s\\S]*?)\\n${name}_END`))?.[1]?.trim();
           const state = JSON.parse(section('STATE') || '{}');
           const totals = JSON.parse(section('TOTALS') || '{}');
+          const failures = section('FAILURES') || '[]';
           const completed = Array.isArray(state.completedVolumes) ? state.completedVolumes : [];
           const failed = Array.isArray(state.failedVolumes) ? state.failedVolumes : [];
           const pending = Array.isArray(state.pendingVolumes) ? state.pendingVolumes : [];
@@ -92,6 +96,7 @@ jobs:
             PENDING_COUNT: String(pending.length),
             PENDING_LIST: pending.join(','),
             TOTALS: JSON.stringify(totals),
+            FAILURES_B64: Buffer.from(failures).toString('base64'),
           };
           fs.appendFileSync(process.env.GITHUB_ENV, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''));
           NODE
@@ -103,8 +108,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$APP_IMAGE" = "$WORKER_IMAGE" ]; then IMAGE_MATCH="yes"; else IMAGE_MATCH="NO"; fi
-          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Coordinator: **%s**\n- App image: `%s`\n- Worker image: `%s`\n- Images match: **%s**\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Pending volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Coordinator updated: `%s`\n- X-Ray checked: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```' \
+          FAILURES="$(printf '%s' "$FAILURES_B64" | base64 --decode)"
+          BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Coordinator: **%s**\n- App image: `%s`\n- Worker image: `%s`\n- Images match: **%s**\n- Range: Volumes `%s → %s`\n- Concurrent volume workers: **%s**\n- Completed volumes: **%s** [%s]\n- Pending volumes: **%s** [%s]\n- Failed volumes: **%s** [%s]\n- Coordinator updated: `%s`\n- X-Ray checked: `%s`\n- Run: %s/%s/actions/runs/%s\n\nLive funnel:\n\n```json\n%s\n```\n\nSaved coordinator failure records:\n\n```json\n%s\n```' \
             "$COORDINATOR_STATUS" "$APP_IMAGE" "$WORKER_IMAGE" "$IMAGE_MATCH" "$NEWEST" "$OLDEST" "$WORKERS" \
             "$COMPLETED_COUNT" "$COMPLETED_LIST" "$PENDING_COUNT" "$PENDING_LIST" "$FAILED_COUNT" "$FAILED_LIST" \
-            "$COORDINATOR_UPDATED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS")"
+            "$COORDINATOR_UPDATED_AT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$TOTALS" "${FAILURES:-[]}")"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
