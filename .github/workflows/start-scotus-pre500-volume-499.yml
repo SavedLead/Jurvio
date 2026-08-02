@@ -48,4 +48,4 @@ jobs:
           timeout --foreground 35m $compose run --rm -T --no-deps app env RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/ingest-loc-us-reports-volume.mjs --volume=499 --limit=1000 --resume=true
           $compose exec -T app node jobs/publish-official-scotus-opinions.mjs --limit=10000
           $compose exec -T app env JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts node jobs/extract-official-scotus-opinion-text.mjs --limit=1000
-REMOTE
+          REMOTE
