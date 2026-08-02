@@ -28,7 +28,7 @@ env:
 
 concurrency:
   group: jurvio-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
