@@ -88,6 +88,7 @@ async function drainPublication(volume: number): Promise<Record<string, unknown>
 
 async function runVolume(volume: number): Promise<void> {
   const attempts: Array<{ code: number | null; signal: string | null; output: string }> = [];
+  let lastStageFailure: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await runNode([
       "jobs/ingest-loc-us-reports-volume.mjs",
@@ -116,10 +117,15 @@ async function runVolume(volume: number): Promise<void> {
       });
       return;
     } catch (error) {
+      lastStageFailure = error instanceof Error ? error.message : String(error);
       await writeJson(join(stateRoot, `${volume}.stages.json`), {
         volume, checkedAt: new Date().toISOString(), attempt, ingestion,
-        failure: error instanceof Error ? error.message : String(error),
+        failure: lastStageFailure,
       });
+      // This is a controlled operator command. Persist the full diagnostic and
+      // emit a bounded, stage-specific tail so Actions never reduces a real
+      // production failure to only "volume failed".
+      process.stderr.write(`Volume ${volume} attempt ${attempt} stage failure: ${lastStageFailure}\n`);
     }
     await new Promise((resolve) => setTimeout(resolve, attempt * 15_000));
   }
@@ -133,7 +139,7 @@ async function runVolume(volume: number): Promise<void> {
       tail: attempt.output.slice(-4_000),
     })),
   });
-  throw new Error(`volume ${volume} failed after two verified attempts`);
+  throw new Error(`volume ${volume} failed after two verified attempts: ${lastStageFailure ?? "no stage diagnostic recorded"}`);
 }
 
 async function main(): Promise<void> {
