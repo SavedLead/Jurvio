@@ -47,7 +47,7 @@ jobs:
           printf '%s\n' 'SCOTUS_PRE500_FAILURES_BEGIN'
           JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T worker sh -c 'for f in /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.failed.json; do test -f "$f" && cat "$f"; done' 2>/dev/null || true
           printf '%s\n' 'SCOTUS_PRE500_DIAGNOSTICS_END'
-REMOTE
+          REMOTE
 
       - name: Update SCOTUS X-Ray
         env:
