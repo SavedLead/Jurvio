@@ -55,6 +55,37 @@ async function isComplete(volume: number): Promise<boolean> {
   }
 }
 
+function lastJsonObject(output: string): Record<string, unknown> | null {
+  for (const line of output.trim().split("\n").reverse()) {
+    try {
+      const value: unknown = JSON.parse(line);
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+    } catch {
+      // Scheduler output may precede the final machine-readable result.
+    }
+  }
+  return null;
+}
+
+function numberField(value: Record<string, unknown> | null, field: string): number {
+  const raw = value?.[field];
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : -1;
+}
+
+async function drainPublication(volume: number): Promise<Record<string, unknown>> {
+  const publication = await runNode(["jobs/publish-official-scotus-opinions.mjs", "--limit=10000"]);
+  const extraction = await runNode(["jobs/extract-official-scotus-opinion-text.mjs", "--limit=1000"]);
+  const published = lastJsonObject(publication.output);
+  const extracted = lastJsonObject(extraction.output);
+  if (publication.code !== 0 || extraction.code !== 0) {
+    throw new Error(`volume ${volume} publication/extraction process failed: publish=${publication.code}, extract=${extraction.code}`);
+  }
+  if (numberField(published, "published") < 1) {
+    throw new Error(`volume ${volume} produced no public case pages: ${publication.output.slice(-2_000)}`);
+  }
+  return { published, extracted };
+}
+
 async function runVolume(volume: number): Promise<void> {
   const attempts: Array<{ code: number | null; signal: string | null; output: string }> = [];
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -66,14 +97,29 @@ async function runVolume(volume: number): Promise<void> {
     ]);
     attempts.push({ code: result.code, signal: result.signal, output: result.output });
     await writeFile(join(stateRoot, `${volume}.attempt-${attempt}.log`), result.output);
-    if (result.code === 0) {
+    const ingestion = lastJsonObject(result.output);
+    try {
+      if (result.code !== 0) throw new Error(`ingester exited ${result.code ?? "null"}`);
+      if (numberField(ingestion, "discovered") < 1
+        || numberField(ingestion, "selected") < 1
+        || numberField(ingestion, "succeeded") < 1
+        || numberField(ingestion, "failed") !== 0) {
+        throw new Error(`ingestion gate not met: ${result.output.slice(-2_000)}`);
+      }
+      const publication = await drainPublication(volume);
+      await writeJson(join(stateRoot, `${volume}.stages.json`), {
+        volume, verifiedAt: new Date().toISOString(), attempt, ingestion, publication,
+      });
       await rm(join(stateRoot, `${volume}.failed.json`), { force: true });
       await writeJson(join(stateRoot, `${volume}.complete.json`), {
-        volume,
-        completedAt: new Date().toISOString(),
-        attempts: attempt,
+        volume, completedAt: new Date().toISOString(), attempts: attempt, ingestion, publication,
       });
       return;
+    } catch (error) {
+      await writeJson(join(stateRoot, `${volume}.stages.json`), {
+        volume, checkedAt: new Date().toISOString(), attempt, ingestion,
+        failure: error instanceof Error ? error.message : String(error),
+      });
     }
     await new Promise((resolve) => setTimeout(resolve, attempt * 15_000));
   }
@@ -87,12 +133,7 @@ async function runVolume(volume: number): Promise<void> {
       tail: attempt.output.slice(-4_000),
     })),
   });
-  throw new Error(`volume ${volume} failed after two attempts`);
-}
-
-async function drainPublication(): Promise<void> {
-  await runNode(["jobs/publish-official-scotus-opinions.mjs", "--limit=10000"]);
-  await runNode(["jobs/extract-official-scotus-opinion-text.mjs", "--limit=1000"]);
+  throw new Error(`volume ${volume} failed after two verified attempts`);
 }
 
 async function main(): Promise<void> {
