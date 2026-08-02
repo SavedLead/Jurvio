@@ -174,8 +174,6 @@ async function main(): Promise<void> {
     let cursor = 0;
     const completedVolumes: number[] = [];
     const failedVolumes: number[] = [];
-    const publisher = setInterval(() => { void drainPublication(); }, 30_000);
-
     async function worker(): Promise<void> {
       while (cursor < volumes.length) {
         const volume = volumes[cursor];
@@ -198,7 +196,6 @@ async function main(): Promise<void> {
           completedVolumes: [...completedVolumes].sort((a, b) => b - a),
           failedVolumes: [...failedVolumes].sort((a, b) => b - a),
         });
-        await drainPublication();
         // Preserve ordering and the durable checkpoint: do not let a later
         // volume mask the first failed one or compound pressure on production.
         if (failedVolumes.length > 0) break;
@@ -208,9 +205,9 @@ async function main(): Promise<void> {
     try {
       await Promise.all(Array.from({ length: Math.min(volumeWorkers, volumes.length) }, () => worker()));
     } finally {
-      clearInterval(publisher);
+      // Each volume runs publication synchronously inside runVolume so its stage
+      // record and completion checkpoint cannot get ahead of public visibility.
     }
-    await drainPublication();
     await writeJson(join(stateRoot, "status.json"), {
       status: failedVolumes.length === 0 ? "complete" : "needs-retry",
       updatedAt: new Date().toISOString(),
