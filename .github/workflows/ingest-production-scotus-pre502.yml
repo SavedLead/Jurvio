@@ -2,12 +2,12 @@ name: SCOTUS Assembly X-Ray
 # Immediate production probe trigger: 2026-08-02 06:02 ET.
 
 on:
-  push:
+  # A push-level probe can run before its matching production deployment and
+  # report a stale worker image. The workflow-run trigger is the deployment proof.
+  workflow_run:
+    workflows: ["Deploy production"]
     branches: [main]
-    paths:
-      - ".github/workflows/ingest-production-scotus-pre502.yml"
-      - "scripts/run-scotus-pre500-backfill.ts"
-      - "scripts/run-production-scheduler.ts"
+    types: [completed]
   workflow_dispatch:
   schedule:
     # Temporary while the pre-500 recovery is active. Remove after the range completes.
@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   report:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 10
