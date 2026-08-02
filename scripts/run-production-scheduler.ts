@@ -34,7 +34,7 @@ const jobs: ScheduledJob[] = [
     command: ["jobs/run-scotus-pre500-backfill.mjs"],
   },
   {
-    lane: "core",
+    lane: "coa",
     name: "direct-court",
     initialDelayMs: 0,
     intervalMs: 5 * minute,
