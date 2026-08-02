@@ -20,3 +20,5 @@ Activate verified SCOTUS pre-500 recovery coordinator and durable X-Ray, 2026-08
 Deploy SCOTUS historical recovery after superseding stale release queue, 2026-08-02.
 
 Deploy staggered GovInfo appellate scheduler from PR #188, 2026-08-02.
+
+Restart COA and GovInfo ingestion worker with measurable backfill from PR #195, 2026-08-02.
