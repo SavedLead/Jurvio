@@ -81,7 +81,7 @@ jobs:
           printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
 
       - name: Ingest verified first pre-500 bound volume
-        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.modified, '.github/scotus-pre500-volume-499-start') }}
+        if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Run SCOTUS Volume 499 one-time production launch' }}
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
