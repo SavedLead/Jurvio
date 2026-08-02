@@ -24,7 +24,9 @@ const argument = (name: string) =>
 const courtArgument = argument("court") ?? "all";
 const requestedCourts = courtArgument === "all"
   ? APPELLATE_COURT_REGISTRY.map((court) => court.code)
-  : [...new Set(courtArgument.split(",").map((court) => court.trim().toLowerCase()).filter(Boolean))];
+  : courtArgument === "next"
+    ? []
+    : [...new Set(courtArgument.split(",").map((court) => court.trim().toLowerCase()).filter(Boolean))];
 const pageSize = Number(argument("page-size") ?? "100");
 const requestedPagesPerCourt = Number(argument("pages-per-court") ?? "1");
 if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
@@ -112,6 +114,33 @@ async function fetchPage(govInfoCode: string, offsetMark: string): Promise<GovIn
     throw new Error(`GovInfo search returned HTTP ${response.status}: ${detail}`);
   }
   return await response.json() as GovInfoSearchResponse;
+}
+
+async function resolveRequestedCourts(): Promise<string[]> {
+  if (courtArgument !== "next") return requestedCourts;
+
+  const checkpoints = await sql<{
+    court_code: string;
+    last_successful_retrieval: string | null;
+    updated_at: string;
+  }[]>`
+    SELECT court_code, last_successful_retrieval::text, updated_at::text
+    FROM govinfo_appellate_checkpoint
+  `;
+  const progress = new Map(checkpoints.map((row) => [row.court_code, row]));
+  const [next] = APPELLATE_COURT_REGISTRY
+    .map((court, index) => ({
+      code: court.code,
+      index,
+      timestamp: progress.get(court.code)?.last_successful_retrieval
+        ?? progress.get(court.code)?.updated_at
+        ?? "1970-01-01T00:00:00.000Z",
+    }))
+    .sort((left, right) =>
+      left.timestamp.localeCompare(right.timestamp) || left.index - right.index
+    );
+  if (!next) throw new Error("No appellate court is configured for GovInfo");
+  return [next.code];
 }
 
 async function ingestCourt(courtCode: string) {
@@ -208,13 +237,13 @@ async function ingestCourt(courtCode: string) {
 }
 
 try {
-  if (requestedCourts.length === 0) throw new Error("--court must name at least one circuit");
-  const unknownCourts = requestedCourts.filter((court) => !appellateCourtByCode(court));
+  const courts = await resolveRequestedCourts();
+  if (courts.length === 0) throw new Error("--court must name at least one circuit");
+  const unknownCourts = courts.filter((court) => !appellateCourtByCode(court));
   if (unknownCourts.length > 0) throw new Error(`Unknown appellate court(s): ${unknownCourts.join(", ")}`);
-  // Scheduler-owned groups deliberately keep DEMO_KEY below GovInfo's ten
-  // searches per rolling hour. Explicit --court values are never silently
-  // rotated: an interrupted group resumes exactly its own circuit cursors.
-  const courts = requestedCourts;
+  // --court=next is a durable fair rotation based on database checkpoints.
+  // It survives unrelated worker restarts and cannot starve later circuits.
+  // Explicit court groups continue to resume exactly their own cursors.
   const results = [];
   for (const courtCode of courts) {
     results.push(await ingestCourt(courtCode));
