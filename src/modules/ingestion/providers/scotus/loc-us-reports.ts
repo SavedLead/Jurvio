@@ -33,7 +33,12 @@ function strings(value: unknown): string[] {
 
 function officialLocUrl(raw: string) {
   const url = new URL(raw, LOC_ORIGIN);
-  if (url.origin !== LOC_ORIGIN && url.origin !== LOC_STORAGE_ORIGIN) {
+  // LOC's historic collection JSON still emits http item identifiers. Canonicalize
+  // only its two official hosts before enforcing HTTPS for the actual fetch.
+  if (url.protocol === "http:" && (url.hostname === "www.loc.gov" || url.hostname === "tile.loc.gov")) {
+    url.protocol = "https:";
+  }
+  if (url.protocol !== "https:" || (url.origin !== LOC_ORIGIN && url.origin !== LOC_STORAGE_ORIGIN)) {
     throw new Error("Library of Congress resource left the official origin");
   }
   return url.toString();
