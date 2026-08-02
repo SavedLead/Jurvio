@@ -232,8 +232,9 @@ async function main(): Promise<void> {
   await mkdir(stateRoot, { recursive: true });
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required for the SCOTUS backfill lease");
+  const coordinatorDatabaseUrl = databaseUrl;
 
-  const sql = postgres(databaseUrl, { max: 1 });
+  const sql = postgres(coordinatorDatabaseUrl, { max: 1 });
   try {
     const [lease] = await sql<{ acquired: boolean }[]>`
       SELECT pg_try_advisory_lock(hashtext(${leaseKey})) AS acquired
@@ -306,7 +307,7 @@ async function main(): Promise<void> {
         cursor += 1;
         runningVolumes.push(volume);
         await writeStatus("running");
-        const outcome = await runVolumeWithLease(databaseUrl, volume, drainSerially);
+        const outcome = await runVolumeWithLease(coordinatorDatabaseUrl, volume, drainSerially);
         runningVolumes.splice(runningVolumes.indexOf(volume), 1);
         if (outcome === "completed") completedVolumes.push(volume);
         if (outcome === "failed") failedVolumes.push(volume);
