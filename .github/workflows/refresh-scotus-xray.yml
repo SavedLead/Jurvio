@@ -1,0 +1,53 @@
+name: Refresh SCOTUS X-Ray
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/scotus-xray-refresh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  xray:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Read live SCOTUS funnel
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          ssh "$DO_USER@$DO_HOST" 'bash -s' <<'REMOTE' > /tmp/scotus-xray.txt
+          set -euo pipefail
+          cd /opt/jurvio
+          image="$(docker inspect --format "{{.Config.Image}}" "$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)")"
+          workers="$(docker ps --format "{{.ID}} {{.Command}}" | grep -c "ingest-loc-us-reports-volume" || true)"
+          totals="$(JURVIO_IMAGE="$image" docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc "SELECT json_build_object('published_cases',(SELECT count(DISTINCT legal_case.id) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND legal_case.publication='published'),'published_documents',(SELECT count(*) FROM document JOIN judicial_opinion ON judicial_opinion.document_id=document.id JOIN opinion_cluster ON opinion_cluster.id=judicial_opinion.cluster_id JOIN legal_case ON legal_case.id=opinion_cluster.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'),'readable_documents',(SELECT count(*) FROM document_content JOIN document ON document.id=document_content.document_id JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE lower(court.provider_court_id)='scotus' AND document.publication='published'));" )"
+          printf 'IMAGE=%s\nWORKERS=%s\nTOTALS=%s\n' "$image" "$workers" "$totals"
+REMOTE
+
+      - name: Update SCOTUS X-Ray
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          source /tmp/scotus-xray.txt
+          body="$(printf '### SCOTUS Assembly X-Ray\n\n- Status: **live refresh**\n- Exact image: `%s`\n- Active pre-500 volume workers: **%s**\n- Updated: `%s`\n\nLive funnel:\n\n```json\n%s\n```' "$IMAGE" "$WORKERS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TOTALS")"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/5133453027" --raw-field body="$body"
