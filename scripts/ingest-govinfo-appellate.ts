@@ -217,7 +217,6 @@ try {
     historicalOrder: "newest-to-oldest",
     pageSize, pagesPerCourt,
     scheduledCourts: courts,
-    scheduledCourts: courts,
     results,
     progress: results.map((result) => ({
       court: result.court,
