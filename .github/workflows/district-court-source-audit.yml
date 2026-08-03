@@ -1,0 +1,36 @@
+name: Audit district court public feeds
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/audit-federal-district-court-feeds.ts"
+      - ".github/workflows/district-court-source-audit.yml"
+  workflow_dispatch:
+  schedule:
+    # After the PACER-recommended North American off-peak window begins.
+    - cron: "15 00 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: district-court-source-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npx tsx scripts/audit-federal-district-court-feeds.ts > district-court-coverage.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: district-court-coverage
+          path: district-court-coverage.json
+          retention-days: 30
