@@ -11,6 +11,9 @@
  *   pnpm tsx scripts/scout-district-court-sources.ts --limit=10
  *   pnpm tsx scripts/scout-district-court-sources.ts --court=nysd
  */
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+
 const PACER_DIRECTORY = "https://pacer.uscourts.gov/file-case/court-cmecf-lookup/data.json";
 const MAX_HTML_BYTES = 1_000_000;
 const MAX_CANDIDATES_PER_COURT = 12;
@@ -167,13 +170,20 @@ async function main() {
       results[index] = await scout(courts[index]!);
     }
   }));
-  process.stdout.write(JSON.stringify({
+  const report = {
     source: PACER_DIRECTORY,
     directoryUpdatedAt: directory.meta?.last_updated ?? null,
     generatedAt: new Date().toISOString(),
     requestedCourtCount: courts.length,
     verifiedFeedCourtCount: results.filter((court) => court.verifiedFeeds.length > 0).length,
     courts: results,
-  }, null, 2) + "\n");
+  };
+  const serialized = JSON.stringify(report, null, 2) + "\n";
+  const output = argument("output");
+  if (output) {
+    await mkdir(dirname(output), { recursive: true });
+    await writeFile(output, serialized, "utf8");
+  }
+  process.stdout.write(serialized);
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });
