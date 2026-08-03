@@ -5,11 +5,9 @@ const COMMAND_CENTER_HOST = "z.jurvio.com";
 const PUBLIC_HOSTS = new Set(["jurvio.com", "www.jurvio.com"]);
 
 function requestHost(request: NextRequest) {
-  return (request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "")
-    .split(",")[0]
-    .trim()
-    .split(":")[0]
-    .toLowerCase();
+  const forwardedHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+  const firstHost = forwardedHost.split(",").at(0)?.trim() ?? "";
+  return firstHost.split(":").at(0)?.toLowerCase() ?? "";
 }
 
 function isFrameworkOrAssetPath(pathname: string) {
