@@ -183,6 +183,33 @@ export const FEDERAL_COURT_REGISTRY: readonly FederalCourtSource[] = [{
   timeZone: "America/New_York",
   pollingMinutes: 5,
   adapterType: "cmecf-rss-v1",
+}, {
+  name: "United States District Court for the Southern District of Florida",
+  jurvioCourtCode: "flsd", officialCourtCode: "flsd", courtType: "district",
+  circuit: "11", officialWebsite: "https://www.flsd.uscourts.gov",
+  cmecfBaseUrl: "https://ecf.flsd.uscourts.gov",
+  rssUrl: "https://ecf.flsd.uscourts.gov/cgi-bin/rss_outside.pl",
+  rssAvailable: true, rssCoverageWindowHours: 24, includedEventCategories: ["all"],
+  pacerCourtId: "flsd", opinionUrl: null, calendarUrl: null,
+  timeZone: "America/New_York", pollingMinutes: 5, adapterType: "cmecf-rss-v1",
+}, {
+  name: "United States District Court for the Central District of California",
+  jurvioCourtCode: "cacd", officialCourtCode: "cacd", courtType: "district",
+  circuit: "9", officialWebsite: "https://www.cacd.uscourts.gov",
+  cmecfBaseUrl: "https://ecf.cacd.uscourts.gov",
+  rssUrl: "https://ecf.cacd.uscourts.gov/cgi-bin/rss_outside.pl",
+  rssAvailable: true, rssCoverageWindowHours: 24, includedEventCategories: ["all"],
+  pacerCourtId: "cacd", opinionUrl: null, calendarUrl: null,
+  timeZone: "America/Los_Angeles", pollingMinutes: 5, adapterType: "cmecf-rss-v1",
+}, {
+  name: "United States District Court for the Eastern District of Texas",
+  jurvioCourtCode: "txed", officialCourtCode: "txed", courtType: "district",
+  circuit: "5", officialWebsite: "https://www.txed.uscourts.gov",
+  cmecfBaseUrl: "https://ecf.txed.uscourts.gov",
+  rssUrl: "https://ecf.txed.uscourts.gov/cgi-bin/rss_outside.pl",
+  rssAvailable: true, rssCoverageWindowHours: 24, includedEventCategories: ["all"],
+  pacerCourtId: "txed", opinionUrl: null, calendarUrl: null,
+  timeZone: "America/Chicago", pollingMinutes: 5, adapterType: "cmecf-rss-v1",
 }] as const;
 
 export function federalCourtByCode(code: string): FederalCourtSource | null {
