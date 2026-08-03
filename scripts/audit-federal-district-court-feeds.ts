@@ -84,7 +84,7 @@ async function main() {
   if (!response.ok) throw new Error(`PACER court directory returned HTTP ${response.status}`);
   const directory = await response.json() as DirectoryResponse;
   const courts = (directory.data ?? []).filter((court) =>
-    court.type === "District" && Boolean(court.court_id && court.login_url));
+    court.type === "District" && court.court_id?.endsWith("DC") && Boolean(court.login_url));
 
   // There are 94 active federal judicial districts. Stop if PACER changes its
   // classification rather than silently publishing incomplete coverage.
