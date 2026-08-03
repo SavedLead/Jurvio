@@ -27,7 +27,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - run: npm ci
       - run: npx tsx scripts/audit-federal-district-court-feeds.ts > district-court-coverage.json
       - uses: actions/upload-artifact@v4
