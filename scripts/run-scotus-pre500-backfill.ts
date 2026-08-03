@@ -150,11 +150,18 @@ async function runVolume(
     await writeFile(join(stateRoot, `${volume}.attempt-${attempt}.log`), result.output);
     const ingestion = lastJsonObject(result.output);
     try {
-      if (result.code !== 0) throw new Error(`ingester exited ${result.code ?? "null"}`);
-      const discovered = numberField(ingestion, "discovered");
-      const selected = numberField(ingestion, "selected");
-      const succeeded = numberField(ingestion, "succeeded");
-      const failed = numberField(ingestion, "failed");
+      const previousStage = await readFile(join(stateRoot, `${volume}.stages.json`), "utf8")
+        .then((contents) => JSON.parse(contents) as { ingestion?: Record<string, unknown> })
+        .catch(() => null);
+      const priorDiscovered = numberField(previousStage?.ingestion ?? null, "discovered");
+      const exhaustedResume = result.code !== 0
+        && result.output.includes(`Library of Congress returned no cases for Volume ${volume}`)
+        && priorDiscovered > 0;
+      if (result.code !== 0 && !exhaustedResume) throw new Error(`ingester exited ${result.code ?? "null"}`);
+      const discovered = exhaustedResume ? priorDiscovered : numberField(ingestion, "discovered");
+      const selected = exhaustedResume ? 0 : numberField(ingestion, "selected");
+      const succeeded = exhaustedResume ? 0 : numberField(ingestion, "succeeded");
+      const failed = exhaustedResume ? 0 : numberField(ingestion, "failed");
       // A resumable volume may have already persisted every candidate before an
       // earlier coordinator stopped at its publication gate. In that state the
       // ingester correctly selects no new records; proceed to publication, which
@@ -171,11 +178,11 @@ async function runVolume(
       // not the retry's delta, and requires both the case and official opinion.
       const publicProof = await verifyPublishedVolume(sql, volume, discovered);
       await writeJson(join(stateRoot, `${volume}.stages.json`), {
-        volume, verifiedAt: new Date().toISOString(), attempt, ingestion, publication, publicProof,
+        volume, verifiedAt: new Date().toISOString(), attempt, ingestion, exhaustedResume, publication, publicProof,
       });
       await rm(join(stateRoot, `${volume}.failed.json`), { force: true });
       await writeJson(join(stateRoot, `${volume}.complete.json`), {
-        volume, completedAt: new Date().toISOString(), attempts: attempt, ingestion, publication,
+        volume, completedAt: new Date().toISOString(), attempts: attempt, ingestion, exhaustedResume, publication,
       });
       return;
     } catch (error) {
