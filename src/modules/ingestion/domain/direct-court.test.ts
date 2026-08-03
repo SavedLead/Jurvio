@@ -26,7 +26,7 @@ const feed = `<?xml version="1.0"?><rss version="2.0"><channel><item>
 describe("direct federal court ingestion", () => {
   it("covers the approved first direct-court cohort", () => {
     expect(FEDERAL_COURT_REGISTRY.map((entry) => entry.officialCourtCode))
-      .toEqual(["txwd", "nysd", "njd", "cand", "casd", "wawd", "ded", "dcd", "mad"]);
+      .toEqual(["txwd", "nysd", "njd", "cand", "casd", "wawd", "ded", "dcd", "mad", "flsd", "cacd", "txed"]);
     expect(federalCourtByCode("NYSD")).toMatchObject({
       rssCoverageWindowHours: 24,
       pollingMinutes: 5,
