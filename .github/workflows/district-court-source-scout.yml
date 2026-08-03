@@ -1,0 +1,36 @@
+name: Scout district court sources
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Number of courts to scout (use 94 for full run)"
+        required: false
+        default: "10"
+  schedule:
+    - cron: "30 00 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: district-court-source-scout
+  cancel-in-progress: false
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tsx scripts/scout-district-court-sources.ts --limit="${{ inputs.limit || '94' }}" > district-court-scout.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: district-court-scout
+          path: district-court-scout.json
+          retention-days: 30
