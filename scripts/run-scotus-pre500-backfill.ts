@@ -141,7 +141,7 @@ async function runVolume(
   let lastStageFailure: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await runNode([
-      "jobs/ingest-loc-us-reports-volume.mjs",
+      "jobs/ingest-official-scotus-bound-volume.mjs",
       `--volume=${volume}`,
       "--limit=1000",
       "--resume=true",
@@ -155,7 +155,7 @@ async function runVolume(
         .catch(() => null);
       const priorDiscovered = numberField(previousStage?.ingestion ?? null, "discovered");
       const exhaustedResume = result.code !== 0
-        && result.output.includes(`Library of Congress returned no cases for Volume ${volume}`)
+        && result.output.includes(`Official U.S. Reports volume ${volume} produced no case candidates`)
         && priorDiscovered > 0;
       if (result.code !== 0 && !exhaustedResume) throw new Error(`ingester exited ${result.code ?? "null"}`);
       const discovered = exhaustedResume ? priorDiscovered : numberField(ingestion, "discovered");
