@@ -28,6 +28,17 @@ function currentScotusTerm(): string {
 const jobs: ScheduledJob[] = [
   {
     lane: "core",
+    name: "district-court-source-scout",
+    initialDelayMs: 15 * minute,
+    intervalMs: 7 * 24 * 60 * minute,
+    command: [
+      "jobs/scout-district-court-sources.mjs",
+      "--limit=94",
+      "--output=/var/lib/jurvio/artifacts/reports/district-court-scout.json",
+    ],
+  },
+  {
+    lane: "core",
     name: "scotus-pre500-backfill",
     initialDelayMs: 30_000,
     intervalMs: 5 * minute,
