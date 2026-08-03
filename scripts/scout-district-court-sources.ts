@@ -102,7 +102,7 @@ async function pageLinks(url: string): Promise<{ probe: Probe; links: Link[] }> 
   try {
     const { body } = await fetchCapped(url, "text/html");
     const links: Link[] = [];
-    for (const match of body.matchAll(/<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi)) {
+    for (const match of body.matchAll(/<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>([\s\S]*?)<\/a>/gi)) {
       const href = match[1] ?? "";
       const label = clean(match[2] ?? "");
       const signal = `${href} ${label}`;
@@ -123,10 +123,9 @@ async function scout(court: PacerCourt) {
   const code = courtCode(court);
   const cmecfUrl = court.login_url!;
   const standardRss = new URL("/cgi-bin/rss_outside.pl", cmecfUrl).toString();
-  const [official, cmecf, standard] = await Promise.all([
+  const [official, cmecf] = await Promise.all([
     pageLinks(court.web_url ?? cmecfUrl),
     pageLinks(cmecfUrl),
-    probe(standardRss),
   ]);
   const links = [...official.links, ...cmecf.links];
   const feedCandidates = [...new Set([standardRss, ...links.filter((link) => link.category === "feed").map((link) => link.url)])]
