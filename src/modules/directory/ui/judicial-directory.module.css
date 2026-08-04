@@ -1,0 +1,10 @@
+.appointmentList { display: grid; gap: 14px; margin: 18px 0 0; padding: 0; list-style: none; }
+.appointment { padding: 18px; border: 1px solid #dfe3ec; border-radius: 12px; background: #fff; }
+.appointment h3 { margin: 0 0 8px; font-size: 1.05rem; }.appointment p { margin: 5px 0; color: #606b81; line-height: 1.5; }
+.appointment a, .explainers a { color: #304bd4; font-weight: 700; }
+.explainers { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.explainer { padding: 20px; border: 1px solid #dfe3ec; border-radius: 12px; background: #fafbfc; }
+.explainer h3 { margin: 0 0 9px; }.explainer p { margin: 0; color: #5f6980; line-height: 1.65; }
+.policyNote { margin-top: 26px; padding: 18px; border-left: 4px solid #304bd4; border-radius: 10px; background: #f1f4ff; color: #48546c; line-height: 1.6; }
+@media (max-width: 720px) { .explainers { grid-template-columns: 1fr; } }
+
