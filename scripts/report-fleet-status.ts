@@ -54,6 +54,7 @@ try {
         (SELECT max(retrieved_at) FROM raw_artifact)::text AS latest_source_at,
         pg_database_size(current_database())::text AS database_bytes
     `;
+    if (!row) throw new Error("corpus query returned no rows");
     return row;
   });
 
@@ -67,6 +68,7 @@ try {
              min(created_at) FILTER (WHERE published_at IS NULL)::text AS oldest_unpublished
       FROM outbox_event
     `;
+    if (!outbox) throw new Error("outbox query returned no rows");
     return { reviewQueue, outbox };
   });
 
@@ -178,6 +180,7 @@ try {
              coalesce(sum(actual_cost_cents),0)::text AS actual_cents
       FROM pacer_cost_ledger
     `;
+    if (!row) throw new Error("pacer_cost_ledger query returned no rows");
     return row;
   });
 
