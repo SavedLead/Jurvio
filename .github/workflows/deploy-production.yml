@@ -111,6 +111,16 @@ jobs:
           timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" 'mkdir -p /opt/jurvio/scripts'
           timeout --signal=TERM --kill-after=30s 180s scp $SSH_OPTS docker-compose.production.yml "$DO_USER@$DO_HOST:/opt/jurvio/docker-compose.production.yml"
           timeout --signal=TERM --kill-after=30s 180s scp $SSH_OPTS scripts/release-production.sh scripts/backup-production.sh "$DO_USER@$DO_HOST:/opt/jurvio/scripts/"
+          timeout --signal=TERM --kill-after=30s 180s scp $SSH_OPTS ops/nginx-jurvio.conf "$DO_USER@$DO_HOST:/opt/jurvio/nginx-jurvio.conf"
+      - name: Install reverse proxy configuration
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+          timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" \
+            "sudo -n install -m 644 /opt/jurvio/nginx-jurvio.conf /etc/nginx/sites-available/jurvio && sudo -n nginx -t && sudo -n systemctl reload nginx"
       - name: Authenticate image registry
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
