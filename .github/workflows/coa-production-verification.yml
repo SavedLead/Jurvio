@@ -1,4 +1,11 @@
-name: COA production verification
+name: Production read-only evidence
+
+# READ-ONLY production evidence collector.
+# Fixes the prior JURVIO_IMAGE-interpolation defect and removes the write
+# GovInfo cycle. Performs NO writes, NO ingestion, NO publication.
+# Reports credential MODE (never secret values), per-court liveness for
+# SCOTUS + one circuit + one district, backlog/rejection breakdown, PACER
+# cost, and observed CourtListener/GovInfo throttling from recent worker logs.
 
 on:
   workflow_dispatch:
@@ -19,7 +26,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - name: Configure production SSH
         env:
@@ -31,39 +38,52 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
-      - name: Run GovInfo production cycle and report
+      - name: Resolve active production image
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" 'bash -se' <<'REMOTE'
-          set -euo pipefail
-          cd /opt/jurvio
-          compose=(docker compose -f docker-compose.production.yml)
+          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            ids="$(docker ps \
+              --filter "label=com.docker.compose.project=jurvio" \
+              --filter "label=com.docker.compose.service=app" \
+              --format "{{.ID}}")"
+            set -- $ids
+            if [ "$#" -eq 0 ]; then echo "No running Jurvio app container found" >&2; exit 1; fi
+            if [ "$#" -ne 1 ]; then echo "Multiple app containers; ambiguous" >&2; exit 1; fi
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ')"
+          test -n "$JURVIO_IMAGE" || { echo "::error::Running Jurvio app container has no configured image"; exit 1; }
+          case "$JURVIO_IMAGE" in
+            *[!A-Za-z0-9._/@:-]*) echo "::error::Resolved image contains unexpected characters"; exit 1 ;;
+          esac
+          printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
+          echo "Resolved active image from the running app container."
 
-          echo "=== COA worker ==="
-          "${compose[@]}" ps worker-coa
+      - name: Credential modes (no secret values printed)
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T worker-coa sh -lc '
+            if [ -n \"\${GOVINFO_API_KEY:-}\" ] && [ \"\$GOVINFO_API_KEY\" != \"DEMO_KEY\" ]; then echo \"govinfo=configured\"; else echo \"govinfo=demo-or-missing\"; fi
+            if [ -n \"\${COURTLISTENER_API_TOKEN:-}\" ]; then echo \"courtlistener=configured\"; else echo \"courtlistener=unauthenticated\"; fi
+            echo \"courtlistener_base=\${COURTLISTENER_API_BASE_URL:-unset}\"
+          '"
 
-          echo "=== GovInfo credential ==="
-          "${compose[@]}" exec -T worker-coa sh -lc '
-            if [ -n "$${GOVINFO_API_KEY:-}" ] && [ "$GOVINFO_API_KEY" != "DEMO_KEY" ]; then
-              echo "personal-key-configured"
-            else
-              echo "demo-or-missing"
-              exit 2
-            fi
-          '
+      - name: Read-only fleet evidence
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T postgres psql -U jurvio -d jurvio -Atc \"SELECT json_build_object('checked_at',now(),'scotus',json_build_object('last_ingested_artifact',(SELECT max(ra.retrieved_at) FROM raw_artifact ra JOIN provider p ON p.id=ra.provider_id WHERE p.code='scotus_official'),'candidates_by_status',(SELECT json_object_agg(review_status,c) FROM (SELECT review_status::text,count(*) c FROM official_opinion_candidate GROUP BY review_status) t),'last_candidate_seen',(SELECT max(last_seen_at) FROM official_opinion_candidate),'published_cases',(SELECT count(*) FROM legal_case lc JOIN court co ON co.id=lc.court_id WHERE co.provider_court_id='scotus' AND lc.publication='published'),'last_published_update',(SELECT max(lc.updated_at) FROM legal_case lc JOIN court co ON co.id=lc.court_id WHERE co.provider_court_id='scotus' AND lc.publication='published')),'circuit_ca9',json_build_object('health',(SELECT health_state FROM appellate_source_registry WHERE court_code='ca9'),'last_successful_retrieval',(SELECT last_successful_retrieval FROM appellate_source_registry WHERE court_code='ca9'),'next_poll_at',(SELECT next_poll_at FROM appellate_source_registry WHERE court_code='ca9'),'govinfo',(SELECT json_build_object('status',status,'records_discovered',records_discovered,'last_successful_retrieval',last_successful_retrieval) FROM govinfo_appellate_checkpoint WHERE court_code='ca9'),'items_by_state',(SELECT json_object_agg(state,c) FROM (SELECT state,count(*) c FROM appellate_ingestion_item WHERE court_code='ca9' GROUP BY state) t),'last_item_seen',(SELECT max(last_seen_at) FROM appellate_ingestion_item WHERE court_code='ca9'),'last_published',(SELECT max(last_seen_at) FROM appellate_ingestion_item WHERE court_code='ca9' AND state='published')),'district_nysd',json_build_object('health',(SELECT health_state FROM direct_court_registry WHERE court_code='nysd'),'rss_available',(SELECT rss_available FROM direct_court_registry WHERE court_code='nysd'),'last_successful_retrieval',(SELECT last_successful_retrieval FROM direct_court_registry WHERE court_code='nysd'),'events_total',(SELECT count(*) FROM direct_court_event WHERE court_code='nysd'),'events_published',(SELECT count(*) FROM direct_court_event WHERE court_code='nysd' AND publication_state='published'),'last_event_seen',(SELECT max(last_seen_at) FROM direct_court_event WHERE court_code='nysd'),'last_published',(SELECT max(published_at) FROM direct_court_event WHERE court_code='nysd')),'backlog',json_build_object('legal_case',(SELECT json_build_object('published',count(*) FILTER (WHERE publication='published'),'draft',count(*) FILTER (WHERE publication='draft'),'draft_needs_review',count(*) FILTER (WHERE publication='draft' AND verification='needs_review'),'restricted',count(*) FILTER (WHERE publication='restricted'),'suppressed',count(*) FILTER (WHERE publication='suppressed')) FROM legal_case),'appellate_items_by_state',(SELECT json_object_agg(state,c) FROM (SELECT state,count(*) c FROM appellate_ingestion_item GROUP BY state) t),'district_events',(SELECT json_build_object('total',count(*),'pending',count(*) FILTER (WHERE publication_state='pending'),'published',count(*) FILTER (WHERE publication_state='published'),'unmatched',count(*) FILTER (WHERE case_id IS NULL)) FROM direct_court_event),'publication_review',(SELECT json_object_agg(status,c) FROM (SELECT status,count(*) c FROM publication_review GROUP BY status) t),'rejections_unresolved',(SELECT count(*) FROM ingestion_rejection WHERE resolved_at IS NULL),'rejection_reasons_top',(SELECT json_object_agg(reason_code,c) FROM (SELECT reason_code,count(*) c FROM ingestion_rejection WHERE resolved_at IS NULL GROUP BY reason_code ORDER BY count(*) DESC LIMIT 10) t)),'pacer_cost',(SELECT json_build_object('entries',count(*),'estimated_cents',coalesce(sum(estimated_cost_cents),0),'actual_cents',coalesce(sum(actual_cost_cents),0)) FROM pacer_cost_ledger),'failed_run_items_24h',(SELECT count(*) FROM ingestion_run_item WHERE status='failed' AND started_at > now() - interval '24 hours'));\""
 
-          echo "=== Baseline ledger ==="
-          "${compose[@]}" exec -T worker-coa node jobs/report-appellate-backfill.mjs
-
-          echo "=== Personal-key GovInfo cycle ==="
-          timeout 18m "${compose[@]}" exec -T worker-coa node jobs/ingest-govinfo-appellate.mjs --court=all --pages-per-court=1
-
-          echo "=== Updated ledger ==="
-          "${compose[@]}" exec -T worker-coa node jobs/report-appellate-backfill.mjs
-
-          echo "=== Recent GovInfo scheduler evidence ==="
-          "${compose[@]}" logs --since 2h worker-coa 2>&1 | grep -Ei 'govinfo|429|published|staged|inserted|summary' | tail -n 250 || true
-          REMOTE
+      - name: Observed throttling and auth errors (recent logs)
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml logs --since 6h worker-core worker-coa 2>&1 | grep -Ei 'courtlistener|govinfo|429|401|403|throttl|rate.?limit|unauthorized|demo' | tail -n 120" || echo "no matching log lines in window"
