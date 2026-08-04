@@ -88,7 +88,7 @@ async function resolveCourts(): Promise<string[]> {
     WHERE status <> 'complete'
       AND filing_year >= ${minimumYear}
     ORDER BY
-      COALESCE(last_successful_retrieval, updated_at) ASC,
+      updated_at ASC,
       filing_year DESC,
       court_code ASC
     LIMIT 1
