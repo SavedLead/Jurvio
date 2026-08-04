@@ -150,6 +150,34 @@ export async function fetchOpinionClusterIds(input: {
   return ids.slice(0, input.limit);
 }
 
+export async function fetchOpinionClusterPage(input: {
+  courtCode: string;
+  filedAfter: string;
+  filedBefore: string;
+  cursor?: string;
+}): Promise<{
+  clusterIds: number[];
+  next: string | null;
+  total: number | null;
+}> {
+  const url = input.cursor
+    ? new URL(input.cursor)
+    : new URL("clusters/", `${env().COURTLISTENER_API_BASE_URL}/`);
+  if (!input.cursor) {
+    url.searchParams.set("docket__court", input.courtCode);
+    url.searchParams.set("date_filed__gte", input.filedAfter);
+    url.searchParams.set("date_filed__lt", input.filedBefore);
+    url.searchParams.set("order_by", "-date_filed,-id");
+  }
+  const { body } = await retrieve(url);
+  const page = courtListenerOpinionClusterPageSchema.parse(JSON.parse(body));
+  return {
+    clusterIds: page.results.map((cluster) => cluster.id),
+    next: page.next,
+    total: page.count ?? null,
+  };
+}
+
 export async function fetchDocketPage(input: ({
   modifiedAfter: string;
   modifiedBefore: string;

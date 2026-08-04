@@ -83,6 +83,20 @@ const jobs: ScheduledJob[] = [
   },
   {
     lane: "coa",
+    name: "appellate-courtlistener-backfill",
+    initialDelayMs: 6 * minute,
+    intervalMs: 10 * minute,
+    command: [
+      "jobs/ingest-courtlistener-appellate-backfill.mjs",
+      "--court=next",
+      "--batch-size=20",
+      "--delay-ms=1000",
+      "--min-year=1700",
+      "--maximum-attempts=10",
+    ],
+  },
+  {
+    lane: "coa",
     name: "appellate-backfill-report",
     initialDelayMs: 8 * minute,
     intervalMs: 15 * minute,

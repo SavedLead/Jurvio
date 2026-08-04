@@ -43,6 +43,43 @@ try {
     LIMIT 20
   `;
 
+  const courtListenerCheckpoints = await sql<{
+    court_code: string; filing_year: number; status: string;
+    pages_processed: string; records_discovered: string; records_completed: string;
+    last_successful_retrieval: string | null; last_error: string | null;
+  }[]>`
+    SELECT court_code, filing_year, status, pages_processed::text,
+      records_discovered::text, records_completed::text,
+      last_successful_retrieval::text, last_error
+    FROM courtlistener_appellate_checkpoint
+    WHERE status <> 'complete'
+    ORDER BY court_code, filing_year DESC
+  `;
+
+  const courtListenerQueue = await sql<{
+    court_code: string; state: string; count: string;
+    oldest_year: number; updated_at: string;
+  }[]>`
+    SELECT court_code, state, count(*)::text,
+      min(filing_year)::integer AS oldest_year,
+      max(updated_at)::text AS updated_at
+    FROM courtlistener_appellate_backfill_item
+    GROUP BY court_code, state
+    ORDER BY court_code, state
+  `;
+
+  const latestCourtListenerCompletions = await sql<{
+    court_code: string; filing_year: number; cluster_id: string;
+    case_public_id: string | null; document_count: number; updated_at: string;
+  }[]>`
+    SELECT court_code, filing_year, cluster_id::text, case_public_id,
+      document_count, updated_at::text
+    FROM courtlistener_appellate_backfill_item
+    WHERE state = 'complete'
+    ORDER BY updated_at DESC
+    LIMIT 20
+  `;
+
   const byCourt = checkpoints.map((checkpoint) => ({
     ...checkpoint,
     queue: funnel.filter((row) => row.court_code === checkpoint.court_code),
@@ -52,6 +89,11 @@ try {
     checkedAt: new Date().toISOString(),
     checkpoints: byCourt,
     latestGovInfoPublications: latestPublished,
+    courtListener: {
+      checkpoints: courtListenerCheckpoints,
+      queue: courtListenerQueue,
+      latestCompletions: latestCourtListenerCompletions,
+    },
   }));
 } finally {
   await closeDb();
