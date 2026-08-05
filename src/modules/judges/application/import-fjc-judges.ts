@@ -53,14 +53,16 @@ export function parseCsv(input: string): CsvRow[] {
 function parseDate(value: string): string | null {
   if (!value) return null;
   const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (match) return `${match[3]}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
+  const month = match?.[1], day = match?.[2], year = match?.[3];
+  if (month && day && year) return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
 export function parseSeatId(value: string): { courtCode: string; seat: number; succession: number } | null {
   const match = value.trim().match(/^([A-Z0-9]+?)(\d{2})(\d{2})$/i);
-  if (!match) return null;
-  return { courtCode: match[1].toLowerCase(), seat: Number(match[2]), succession: Number(match[3]) };
+  const courtCode = match?.[1], seat = match?.[2], succession = match?.[3];
+  if (!courtCode || !seat || !succession) return null;
+  return { courtCode: courtCode.toLowerCase(), seat: Number(seat), succession: Number(succession) };
 }
 
 function displayName(row: CsvRow): string | null {
