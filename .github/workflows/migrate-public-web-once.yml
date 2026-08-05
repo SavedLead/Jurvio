@@ -72,11 +72,26 @@ jobs:
             for _ in $(seq 1 60); do ssh-keyscan -T 5 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null && break; sleep 5; done
           done
           sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts
-          for _ in $(seq 1 90); do
-            ssh -o BatchMode=yes -o ConnectTimeout=5 "root@$PUBLIC_PRIVATE" 'test -f /var/lib/jurvio-web-bootstrap-complete && docker version >/dev/null && nginx -t >/dev/null 2>&1' && exit 0
-            sleep 5
-          done
-          echo "::error::Public server bootstrap did not complete"; exit 1
+          ssh -o BatchMode=yes -o ConnectTimeout=10 "root@$PUBLIC_PRIVATE" bash -s <<'REMOTE'
+          set -euo pipefail
+          if ! test -f /var/lib/jurvio-web-bootstrap-complete; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y ca-certificates curl nginx
+            install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            chmod a+r /etc/apt/keyrings/docker.asc
+            . /etc/os-release
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+            apt-get update
+            apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            mkdir -p /opt/jurvio
+            systemctl enable --now docker nginx
+            touch /var/lib/jurvio-web-bootstrap-complete
+          fi
+          docker version >/dev/null
+          nginx -t >/dev/null
+          REMOTE
 
       - name: Build and publish verified public image
         env:
