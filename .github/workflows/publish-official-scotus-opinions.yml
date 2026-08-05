@@ -13,8 +13,6 @@ on:
       - "Ingest official Supreme Court opinions"
     types:
       - completed
-  schedule:
-    - cron: "47 * * * *"
   push:
     branches:
       - main
