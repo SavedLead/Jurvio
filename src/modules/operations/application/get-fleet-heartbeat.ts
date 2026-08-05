@@ -40,6 +40,11 @@ export interface CircuitHeartbeat {
   errors: number;
   govinfoStatus: string | null;
   govinfoRecordsDiscovered: number;
+  // Most common machine blocker code among items stuck in the "blocked" state,
+  // plus how many items carry it. This is a short category code (e.g.
+  // "pdf_unavailable"), never a URL, credential, or host name.
+  blockerCode: string | null;
+  blockedCount: number;
 }
 
 export interface DistrictHeartbeat {
@@ -54,6 +59,9 @@ export interface DistrictHeartbeat {
   backlog: number;
   publishedCount: number;
   errors: number;
+  // Count of events awaiting editorial review for this court. Used to explain a
+  // delayed/stalled state when there are no outright retrieval failures.
+  needsReview: number;
 }
 
 export interface FleetHeartbeat {
@@ -176,8 +184,25 @@ async function getCircuitHeartbeats(sql: Sql): Promise<CircuitHeartbeat[]> {
       `,
       [] as { court_code: string; state: string; count: string; last_seen_at: string | null }[],
     );
+    // Blocker categories for items stuck in the "blocked" state. Only the short
+    // machine code is selected (never blocker_detail, which may carry URLs).
+    const blockers = await safe(
+      () => sql<{ court_code: string; blocker_code: string | null; count: string }[]>`
+        SELECT court_code, blocker_code, count(*)::text AS count
+        FROM appellate_ingestion_item
+        WHERE state = 'blocked'
+        GROUP BY court_code, blocker_code
+      `,
+      [] as { court_code: string; blocker_code: string | null; count: string }[],
+    );
 
     const govinfoByCourt = new Map(govinfo.map((row) => [row.court_code, row]));
+    const blockersByCourt = new Map<string, typeof blockers>();
+    for (const row of blockers) {
+      const bucket = blockersByCourt.get(row.court_code) ?? [];
+      bucket.push(row);
+      blockersByCourt.set(row.court_code, bucket);
+    }
     const itemsByCourt = new Map<string, typeof items>();
     for (const row of items) {
       const bucket = itemsByCourt.get(row.court_code) ?? [];
@@ -203,6 +228,18 @@ async function getCircuitHeartbeats(sql: Sql): Promise<CircuitHeartbeat[]> {
         }
       }
       const govinfoRow = govinfoByCourt.get(row.court_code);
+      const courtBlockers = blockersByCourt.get(row.court_code) ?? [];
+      let blockerCode: string | null = null;
+      let blockedCount = 0;
+      let topBlocker = 0;
+      for (const blocker of courtBlockers) {
+        const blockerN = numberValue(blocker.count);
+        blockedCount += blockerN;
+        if (blocker.blocker_code && blockerN > topBlocker) {
+          topBlocker = blockerN;
+          blockerCode = String(blocker.blocker_code);
+        }
+      }
       return {
         courtCode: String(row.court_code),
         courtName: String(row.court_name),
@@ -216,6 +253,8 @@ async function getCircuitHeartbeats(sql: Sql): Promise<CircuitHeartbeat[]> {
         errors: numberValue(row.consecutive_failures),
         govinfoStatus: govinfoRow ? String(govinfoRow.status) : null,
         govinfoRecordsDiscovered: govinfoRow ? numberValue(govinfoRow.records_discovered) : 0,
+        blockerCode,
+        blockedCount,
       };
     });
   }, []);
@@ -242,6 +281,7 @@ async function getDistrictHeartbeats(sql: Sql): Promise<DistrictHeartbeat[]> {
         total: string;
         published: string;
         pending: string;
+        needs_review: string;
         last_event_at: string | null;
         last_published_at: string | null;
       }[]>`
@@ -249,6 +289,7 @@ async function getDistrictHeartbeats(sql: Sql): Promise<DistrictHeartbeat[]> {
                count(*)::text AS total,
                count(*) FILTER (WHERE publication_state = 'published')::text AS published,
                count(*) FILTER (WHERE publication_state = 'pending')::text AS pending,
+               count(*) FILTER (WHERE publication_state = 'needs_review')::text AS needs_review,
                max(last_seen_at)::text AS last_event_at,
                max(published_at)::text AS last_published_at
         FROM direct_court_event GROUP BY court_code
@@ -258,6 +299,7 @@ async function getDistrictHeartbeats(sql: Sql): Promise<DistrictHeartbeat[]> {
         total: string;
         published: string;
         pending: string;
+        needs_review: string;
         last_event_at: string | null;
         last_published_at: string | null;
       }[],
@@ -279,6 +321,7 @@ async function getDistrictHeartbeats(sql: Sql): Promise<DistrictHeartbeat[]> {
         backlog: event ? numberValue(event.pending) : 0,
         publishedCount: event ? numberValue(event.published) : 0,
         errors: numberValue(row.consecutive_failures),
+        needsReview: event ? numberValue(event.needs_review) : 0,
       };
     });
   }, []);
