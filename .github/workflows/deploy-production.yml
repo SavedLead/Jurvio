@@ -101,6 +101,22 @@ jobs:
           ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1 || { rm -f ~/.ssh/id_ed25519; echo "::error::Decoded SSH private key is invalid or passphrase-protected"; exit 1; }
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          # Reuse a single SSH connection across every deploy step (multiplexing)
+          # so the release does not open ~6 separate connections in quick
+          # succession. Bursty connections were being dropped by the droplet
+          # (ssh "Connection timed out" at a later step, after earlier ones
+          # succeeded) — the signature of SSH connection-rate limiting
+          # (fail2ban / sshd MaxStartups). One persistent master connection
+          # stays well under any such limit.
+          {
+            echo "Host *"
+            echo "  ControlMaster auto"
+            echo "  ControlPath ~/.ssh/cm-%r@%h:%p"
+            echo "  ControlPersist 600"
+            echo "  ServerAliveInterval 30"
+            echo "  ServerAliveCountMax 4"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
       - name: Copy release controls
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
