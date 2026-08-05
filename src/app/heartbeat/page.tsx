@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
+import { notFound } from "next/navigation";
 import { db } from "@/db/client";
+import { requireInternalPrincipal } from "@/modules/identity/cloudflare-access";
 import {
   getFleetHeartbeat,
   type CircuitHeartbeat,
@@ -8,11 +11,13 @@ import {
 import styles from "./heartbeat.module.css";
 
 /**
- * PUBLIC, READ-ONLY court coverage status page.
+ * AUTH-GATED, READ-ONLY court coverage status page.
  *
- * This route is intentionally public (owner-approved): unlike the rest of the
- * app's gated surfaces, `/heartbeat` does NOT call `requireInternalPrincipal`
- * and stays reachable for anonymous visitors. It renders ONLY the SELECT-only
+ * This route is intentionally NOT public: it lives at the cleaner `/heartbeat`
+ * URL (instead of `/internal/heartbeat`) but is gated behind the Jurvio
+ * command-center session via `requireInternalPrincipal`, exactly like the
+ * internal pages. Anonymous visitors get `notFound()`; only an authenticated
+ * command-center principal sees the page. It renders ONLY the SELECT-only
  * `getFleetHeartbeat(db())` snapshot and shows public-safe facts: per-court
  * freshness, backlog counts, and a Live / Delayed / Stalled coverage status.
  * It never writes, ingests, or publishes, and it never exposes secrets,
@@ -116,6 +121,15 @@ const columns = (
 );
 
 export default async function CourtCoverageStatusPage() {
+  // Gate behind the Jurvio command-center session, mirroring the internal
+  // pages. Anonymous visitors get notFound(); only an authenticated principal
+  // (viewer / reviewer / administrator) sees any coverage detail.
+  try {
+    await requireInternalPrincipal(db(), await headers(), ["viewer", "reviewer", "administrator"]);
+  } catch {
+    notFound();
+  }
+
   const fleet = await getFleetHeartbeat(db());
   const now = Date.now();
 
