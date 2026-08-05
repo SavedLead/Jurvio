@@ -1,6 +1,9 @@
 name: DigitalOcean inventory (temporary)
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/do-inventory-temporary.yml
   push:
     branches:
       - agent/do-inventory-20260805
