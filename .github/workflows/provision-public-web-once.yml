@@ -1,0 +1,106 @@
+name: Provision public web server once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/provision-public-web-once.yml
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      CURRENT_HOST: ${{ secrets.DO_HOST }}
+      SERVER_NAME: jurvio-public-01
+    steps:
+      - name: Create isolated Jurvio public web droplet
+        id: create
+        shell: bash
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+
+          current="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200" | jq -c --arg host "$CURRENT_HOST" '.droplets[] | select(any(.networks.v4[]; .ip_address == $host))' | head -1)"
+          test -n "$current" || { echo "::error::Current Jurvio droplet was not found"; exit 1; }
+          region="$(jq -r '.region.slug' <<<"$current")"
+          vpc="$(jq -r '.vpc_uuid' <<<"$current")"
+          ssh_key="$(curl -fsS "${auth[@]}" "$api/account/keys?per_page=200" | jq -r '.ssh_keys[0].id')"
+          test "$ssh_key" != null || { echo "::error::No DigitalOcean SSH key exists"; exit 1; }
+
+          existing="$(curl -fsS "${auth[@]}" "$api/droplets?tag_name=jurvio-public-web&per_page=200" | jq -c --arg n "$SERVER_NAME" '.droplets[]? | select(.name == $n)' | head -1)"
+          if [ -n "$existing" ]; then
+            droplet="$existing"
+            created=false
+          else
+            user_data='#!/bin/bash
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y ca-certificates curl nginx
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          . /etc/os-release
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          mkdir -p /opt/jurvio
+          systemctl enable --now docker nginx
+          touch /var/lib/jurvio-web-bootstrap-complete'
+            payload="$(jq -n               --arg name "$SERVER_NAME"               --arg region "$region"               --arg vpc "$vpc"               --argjson key "$ssh_key"               --arg user_data "$user_data"               '{name:$name,region:$region,size:"s-2vcpu-4gb",image:"ubuntu-24-04-x64",vpc_uuid:$vpc,ssh_keys:[$key],tags:["jurvio","jurvio-public-web"],monitoring:true,ipv6:false,backups:false,user_data:$user_data}')"
+            droplet="$(curl -fsS -X POST "${auth[@]}" -d "$payload" "$api/droplets" | jq -c '.droplet')"
+            created=true
+          fi
+
+          id="$(jq -r '.id' <<<"$droplet")"
+          for _ in $(seq 1 60); do
+            droplet="$(curl -fsS "${auth[@]}" "$api/droplets/$id" | jq -c '.droplet')"
+            [ "$(jq -r '.status' <<<"$droplet")" = active ] && break
+            sleep 5
+          done
+          [ "$(jq -r '.status' <<<"$droplet")" = active ] || { echo "::error::Droplet did not become active"; exit 1; }
+
+          public_ip="$(jq -r '.networks.v4[] | select(.type=="public") | .ip_address' <<<"$droplet" | head -1)"
+          private_ip="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$droplet" | head -1)"
+
+          firewall="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200" | jq -r '.firewalls[]? | select(.name=="jurvio-public-web-bootstrap") | .id' | head -1)"
+          if [ -z "$firewall" ]; then
+            fw_payload="$(jq -n --argjson id "$id" '{
+              name:"jurvio-public-web-bootstrap",
+              droplet_ids:[$id],
+              inbound_rules:[],
+              outbound_rules:[
+                {protocol:"tcp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},
+                {protocol:"udp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},
+                {protocol:"icmp",destinations:{addresses:["0.0.0.0/0","::/0"]}}
+              ]
+            }')"
+            curl -fsS -X POST "${auth[@]}" -d "$fw_payload" "$api/firewalls" >/dev/null
+          fi
+
+          project_id="$(curl -fsS "${auth[@]}" "$api/projects?per_page=200" | jq -r '.projects[] | select(.is_default==true) | .id' | head -1)"
+          if [ -n "$project_id" ]; then
+            curl -fsS -X POST "${auth[@]}" -d "$(jq -n --arg urn "do:droplet:$id" '{resources:[$urn]}')" "$api/projects/$project_id/resources" >/dev/null || true
+          fi
+
+          {
+            echo "### Jurvio public web server provisioned"
+            echo "- Name: $SERVER_NAME"
+            echo "- Droplet ID: $id"
+            echo "- Public IP: $public_ip"
+            echo "- Private IP: $private_ip"
+            echo "- Created in this run: $created"
+            echo "- Firewall: zero inbound ports during bootstrap"
+            echo "- Size: 2 vCPU, 4 GB RAM, 80 GB disk ($24/month)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh issue create --repo "$GITHUB_REPOSITORY"             --title "Infrastructure report: Jurvio public web server provisioned"             --body "Provisioning completed for `$SERVER_NAME` (droplet $id). Public IP: `$public_ip`; private IP: `$private_ip`. The bootstrap firewall has zero inbound ports. Next step: private deployment and verification before any DNS change." || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
