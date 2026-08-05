@@ -1,0 +1,49 @@
+name: DigitalOcean inventory (temporary)
+
+on:
+  push:
+    branches:
+      - agent/do-inventory-20260805
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+    steps:
+      - name: Verify scoped token and collect read-only inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DO_TOKEN"
+          mkdir -p inventory
+          for endpoint in account projects droplets vpcs account/keys registry; do
+            file="${endpoint//\//_}.json"
+            status=$(curl --silent --show-error --output "inventory/$file" --write-out '%{http_code}' \
+              --header "Authorization: Bearer $DO_TOKEN" \
+              --header "Content-Type: application/json" \
+              "https://api.digitalocean.com/v2/$endpoint")
+            if [ "$status" != "200" ]; then
+              echo "::error::DigitalOcean endpoint $endpoint returned HTTP $status"
+              jq -r '.message // "Unknown API error"' "inventory/$file" || true
+              exit 1
+            fi
+          done
+          jq '{account:{status:.account.status, droplet_limit:.account.droplet_limit}}' inventory/account.json > inventory/account.safe.json
+          jq '{projects:[.projects[]|{id,name,purpose,environment,is_default,created_at,updated_at}]}' inventory/projects.json > inventory/projects.safe.json
+          jq '{droplets:[.droplets[]|{id,name,memory,vcpus,disk,locked,status,created_at,features,region:{slug:.region.slug,name:.region.name},size:{slug:.size.slug,price_monthly:.size.price_monthly,price_hourly:.size.price_hourly},vpc_uuid,tags}]}' inventory/droplets.json > inventory/droplets.safe.json
+          jq '{vpcs:[.vpcs[]|{id,name,region,ip_range,created_at,default}]}' inventory/vpcs.json > inventory/vpcs.safe.json
+          jq '{ssh_keys:[.ssh_keys[]|{id,name,fingerprint}]}' inventory/account_keys.json > inventory/ssh_keys.safe.json
+          jq '{registry:(if .registry then {name:.registry.name,region:.registry.region,storage_usage_bytes:.registry.storage_usage_bytes,storage_usage_bytes_updated_at:.registry.storage_usage_bytes_updated_at,subscription:.registry.subscription} else null end)}' inventory/registry.json > inventory/registry.safe.json
+          rm inventory/account.json inventory/projects.json inventory/droplets.json inventory/vpcs.json inventory/account_keys.json inventory/registry.json
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: digitalocean-inventory
+          path: inventory/*.safe.json
+          retention-days: 1
