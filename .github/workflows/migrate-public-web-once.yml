@@ -1,0 +1,171 @@
+name: Migrate public website once
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/migrate-public-web-once.yml]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  migrate:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 35
+    environment: production
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve VPC and apply narrow firewall rules
+        id: network
+        shell: bash
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          public="$(jq -c '[.droplets[] | select(.name=="jurvio-public-01")][0] // empty' <<<"$droplets")"
+          builder="$(jq -c '[.droplets[] | select(.name=="jurvio-builder-01")][0] // empty' <<<"$droplets")"
+          ingestion="$(jq -c '([.droplets[] | select(.name!="jurvio-public-01" and .name!="jurvio-builder-01") | select((.tags // []) | index("jurvio"))] | sort_by(.memory) | reverse | .[0]) // ([.droplets[] | select(.size.slug=="s-4vcpu-8gb")][0]) // empty' <<<"$droplets")"
+          test -n "$public" && test -n "$builder" && test -n "$ingestion" || { echo "::error::Could not resolve all three Jurvio droplets"; exit 1; }
+          public_id="$(jq -r .id <<<"$public")"
+          public_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$public")"
+          public_public="$(jq -r '.networks.v4[] | select(.type=="public") | .ip_address' <<<"$public")"
+          builder_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$builder")"
+          ingestion_id="$(jq -r .id <<<"$ingestion")"
+          ingestion_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$ingestion")"
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          public_fw="$(jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
+          test -n "$public_fw" || { echo "::error::Public bootstrap firewall not found"; exit 1; }
+          if ! jq -e --arg id "$public_fw" --arg src "$builder_private/32" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports=="22" and ((.sources.addresses // []) | index($src)))' <<<"$firewalls" >/dev/null; then
+            curl -fsS -X POST "${auth[@]}" "$api/firewalls/$public_fw/rules" -d "$(jq -n --arg src "$builder_private/32" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')" >/dev/null
+          fi
+          data_fw="$(jq -r '.firewalls[] | select(.name=="jurvio-private-data") | .id' <<<"$firewalls" | head -1)"
+          if [ -z "$data_fw" ]; then
+            curl -fsS -X POST "${auth[@]}" "$api/firewalls" -d "$(jq -n --argjson id "$ingestion_id" --arg src "$public_private/32" '{name:"jurvio-private-data",droplet_ids:[$id],inbound_rules:[{protocol:"tcp",ports:"5432",sources:{addresses:[$src]}},{protocol:"tcp",ports:"2049",sources:{addresses:[$src]}}],outbound_rules:[]}')" >/dev/null
+          fi
+          { echo "public_private=$public_private"; echo "public_public=$public_public"; echo "ingestion_private=$ingestion_private"; echo "public_fw=$public_fw"; } >> "$GITHUB_OUTPUT"
+
+      - name: Configure private SSH and wait for bootstrap
+        shell: bash
+        env:
+          PUBLIC_PRIVATE: ${{ steps.network.outputs.public_private }}
+          INGESTION_PRIVATE: ${{ steps.network.outputs.ingestion_private }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          touch ~/.ssh/known_hosts
+          for host in "$PUBLIC_PRIVATE" "$INGESTION_PRIVATE"; do
+            for _ in $(seq 1 60); do ssh-keyscan -T 5 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null && break; sleep 5; done
+          done
+          sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts
+          for _ in $(seq 1 90); do
+            ssh -o BatchMode=yes -o ConnectTimeout=5 "root@$PUBLIC_PRIVATE" 'test -f /var/lib/jurvio-web-bootstrap-complete && docker version >/dev/null && nginx -t >/dev/null 2>&1' && exit 0
+            sleep 5
+          done
+          echo "::error::Public server bootstrap did not complete"; exit 1
+
+      - name: Build and publish verified public image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          lower_image="${IMAGE,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -t "$lower_image" .
+          docker push "$lower_image"
+
+      - name: Expose database and artifacts privately
+        env:
+          INGESTION_PRIVATE: ${{ steps.network.outputs.ingestion_private }}
+          PUBLIC_PRIVATE: ${{ steps.network.outputs.public_private }}
+        run: |
+          set -euo pipefail
+          scp docker-compose.production.yml "root@$INGESTION_PRIVATE:/opt/jurvio/docker-compose.production.yml"
+          ssh "root@$INGESTION_PRIVATE" bash -s -- "$INGESTION_PRIVATE" "$PUBLIC_PRIVATE" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          test -s .env.production
+          if grep -q '^JURVIO_DATABASE_BIND=' .env.production; then sed -i "s/^JURVIO_DATABASE_BIND=.*/JURVIO_DATABASE_BIND=$1/" .env.production; else printf '\nJURVIO_DATABASE_BIND=%s\n' "$1" >> .env.production; fi
+          docker compose -f docker-compose.production.yml up -d postgres
+          postgres_id="$(docker compose -f docker-compose.production.yml ps -q postgres)"
+          for _ in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$postgres_id")" = healthy ] && break; sleep 2; done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$postgres_id")" = healthy ]
+          apt-get update >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server >/dev/null
+          volume="$(docker volume ls --format '{{.Name}}' | grep -E '(^|_)jurvio_artifacts$' | head -1)"
+          test -n "$volume"
+          artifact_path="$(docker volume inspect "$volume" --format '{{.Mountpoint}}')"
+          install -d -m 755 /etc/exports.d
+          printf '%s %s(ro,sync,no_subtree_check,fsid=0)\n' "$artifact_path" "$2" > /etc/exports.d/jurvio-public.exports
+          exportfs -ra && systemctl enable --now nfs-kernel-server
+          REMOTE
+
+      - name: Transfer runtime configuration privately
+        env:
+          INGESTION_PRIVATE: ${{ steps.network.outputs.ingestion_private }}
+          PUBLIC_PRIVATE: ${{ steps.network.outputs.public_private }}
+        run: |
+          set -euo pipefail
+          ssh "root@$INGESTION_PRIVATE" 'cat /opt/jurvio/.env.production' | ssh "root@$PUBLIC_PRIVATE" 'umask 077; cat > /opt/jurvio/.env.production'
+          ssh "root@$INGESTION_PRIVATE" 'tar -C / -czf - etc/ssl/cloudflare' | ssh "root@$PUBLIC_PRIVATE" 'tar -C / -xzf -'
+          scp docker-compose.public.yml "root@$PUBLIC_PRIVATE:/opt/jurvio/docker-compose.public.yml"
+          scp ops/nginx-jurvio.conf "root@$PUBLIC_PRIVATE:/opt/jurvio/nginx-jurvio.conf"
+          ssh "root@$PUBLIC_PRIVATE" bash -s -- "$INGESTION_PRIVATE" <<'REMOTE'
+          set -euo pipefail
+          sed -i -E "s#(@)(postgres|127\.0\.0\.1|localhost)(:5432)?/#\1$1:5432/#" /opt/jurvio/.env.production
+          apt-get update >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-common >/dev/null
+          install -d -m 755 /mnt/jurvio-artifacts
+          sed -i '\# /mnt/jurvio-artifacts nfs4 #d' /etc/fstab
+          printf '%s:/ /mnt/jurvio-artifacts nfs4 ro,nofail,_netdev,x-systemd.automount 0 0\n' "$1" >> /etc/fstab
+          mount /mnt/jurvio-artifacts || mount -a
+          mountpoint -q /mnt/jurvio-artifacts
+          install -m 644 /opt/jurvio/nginx-jurvio.conf /etc/nginx/sites-available/jurvio
+          ln -sfn /etc/nginx/sites-available/jurvio /etc/nginx/sites-enabled/jurvio
+          rm -f /etc/nginx/sites-enabled/default
+          nginx -t
+          REMOTE
+
+      - name: Deploy and verify app privately
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLIC_PRIVATE: ${{ steps.network.outputs.public_private }}
+        run: |
+          set -euo pipefail
+          lower_image="${IMAGE,,}"
+          printf '%s' "$GH_TOKEN" | ssh "root@$PUBLIC_PRIVATE" 'docker login ghcr.io -u SavedLead --password-stdin'
+          ssh "root@$PUBLIC_PRIVATE" bash -s -- "$lower_image" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          docker pull "$1"
+          JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml up -d --remove-orphans
+          app_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app)"
+          for _ in $(seq 1 60); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ] && break; sleep 5; done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
+          curl -fsS http://127.0.0.1:3000/api/ready >/dev/null
+          systemctl reload nginx
+          curl -fkSs --resolve jurvio.com:443:127.0.0.1 https://jurvio.com/api/ready >/dev/null
+          REMOTE
+
+      - name: Open web ports and verify sealed origin
+        env:
+          PUBLIC_FW: ${{ steps.network.outputs.public_fw }}
+          PUBLIC_PUBLIC: ${{ steps.network.outputs.public_public }}
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          if ! jq -e --arg id "$PUBLIC_FW" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports=="80")' <<<"$firewalls" >/dev/null; then
+            curl -fsS -X POST "${auth[@]}" "$api/firewalls/$PUBLIC_FW/rules" -d '{"inbound_rules":[{"protocol":"tcp","ports":"80","sources":{"addresses":["0.0.0.0/0","::/0"]}},{"protocol":"tcp","ports":"443","sources":{"addresses":["0.0.0.0/0","::/0"]}}]}' >/dev/null
+          fi
+          for _ in $(seq 1 20); do curl -fsS --resolve "jurvio.com:443:$PUBLIC_PUBLIC" https://jurvio.com/api/ready >/dev/null && break; sleep 3; done
+          curl -fsS --resolve "jurvio.com:443:$PUBLIC_PUBLIC" https://jurvio.com/api/ready >/dev/null
+          { echo '### Jurvio public origin is ready'; echo '- Public app deployed on jurvio-public-01'; echo '- Database and artifacts use private VPC connections'; echo '- Ports 80/443 are open'; echo '- DNS has not been changed'; echo "- Verified main commit: $GITHUB_SHA"; } >> "$GITHUB_STEP_SUMMARY"
