@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   schedule:
     # After the PACER-recommended North American off-peak window begins.
-    - cron: "15 00 * * *"
+    - cron: "15 00 * * 0"
 
 permissions:
   contents: read
@@ -34,4 +34,4 @@ jobs:
         with:
           name: district-court-coverage
           path: district-court-coverage.json
-          retention-days: 30
+          retention-days: 7
