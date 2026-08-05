@@ -15,10 +15,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  inspect:
+  recover:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Configure SSH
         env:
@@ -33,7 +33,7 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Measure production volumes
+      - name: Release recoverable cache and restore public routes
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -41,19 +41,54 @@ jobs:
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 "$DO_USER@$DO_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
-          app_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
-          postgres_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=postgres" --format "{{.ID}}" | head -n1)"
+          app_id="$(docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
+          postgres_id="$(docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=postgres" --format "{{.ID}}" | head -n1)"
           test -n "$app_id"
           test -n "$postgres_id"
 
-          echo "Filesystem"
+          cache_dir=/var/lib/jurvio/artifacts/courtlistener/bulk
+          docker exec "$app_id" sh -lc 'test -d /var/lib/jurvio/artifacts/courtlistener/bulk'
+          echo "CourtListener bulk cache before cleanup"
+          docker exec "$app_id" sh -lc 'du -sh /var/lib/jurvio/artifacts/courtlistener/bulk'
+          docker exec "$app_id" sh -lc 'find /var/lib/jurvio/artifacts/courtlistener/bulk -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+          echo "CourtListener bulk cache after cleanup"
+          docker exec "$app_id" sh -lc 'du -sh /var/lib/jurvio/artifacts/courtlistener/bulk'
           df -h /
-          echo "Docker volumes"
-          docker system df -v || true
-          echo "Artifact directories"
-          docker exec "$app_id" sh -lc 'du -h -d 2 /var/lib/jurvio/artifacts 2>/dev/null | sort -h | tail -n 80' || true
-          echo "Largest artifact files"
-          docker exec "$app_id" sh -lc 'find /var/lib/jurvio/artifacts -type f -printf "%s %p\n" 2>/dev/null | sort -nr | head -n 60' || true
-          echo "PostgreSQL directories"
-          docker exec "$postgres_id" sh -lc 'du -h -d 2 /var/lib/postgresql/data 2>/dev/null | sort -h | tail -n 40' || true
+
+          echo "Restarting PostgreSQL for clean crash recovery"
+          docker restart --time 60 "$postgres_id" >/dev/null
+          for attempt in $(seq 1 36); do
+            if docker exec "$postgres_id" pg_isready -U jurvio -d jurvio >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+          docker exec "$postgres_id" pg_isready -U jurvio -d jurvio
+          docker exec "$postgres_id" psql -U jurvio -d jurvio -Atc 'SELECT 1'
+
+          echo "Restarting web application"
+          docker restart --time 30 "$app_id" >/dev/null
+          for attempt in $(seq 1 36); do
+            if curl -fsS --max-time 5 http://127.0.0.1:3000/api/ready >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+
+          echo "Route checks"
+          route_ok=1
+          for path in /api/ready /cases /supreme-court; do
+            code="$(curl -sS -o /dev/null --max-time 45 -w '%{http_code}' "http://127.0.0.1:3000$path" || true)"
+            printf '%s %s\n' "$path" "$code"
+            test "$code" = "200" || route_ok=0
+          done
+
+          if [ "$route_ok" -ne 1 ]; then
+            echo "Sanitized app log tail"
+            docker logs --tail 300 "$app_id" 2>&1 |
+              sed -E                 -e 's#https?://[^[:space:]"'\''<>]+#<url>#g'                 -e 's#(DATABASE_URL|PASSWORD|TOKEN|SECRET|AUTHORIZATION|COOKIE)[=:][^[:space:]]+#\1=<redacted>#gI' |
+              tail -n 300
+          fi
+
+          test "$route_ok" -eq 1
           REMOTE
