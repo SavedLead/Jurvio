@@ -113,14 +113,44 @@ jobs:
           timeout --signal=TERM --kill-after=30s 180s scp $SSH_OPTS scripts/release-production.sh scripts/backup-production.sh "$DO_USER@$DO_HOST:/opt/jurvio/scripts/"
           timeout --signal=TERM --kill-after=30s 180s scp $SSH_OPTS ops/nginx-jurvio.conf "$DO_USER@$DO_HOST:/opt/jurvio/nginx-jurvio.conf"
       - name: Install reverse proxy configuration
+        id: nginx
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
-          timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" \
-            "sudo -n install -m 644 /opt/jurvio/nginx-jurvio.conf /etc/nginx/sites-available/jurvio && sudo -n nginx -t && sudo -n systemctl reload nginx"
+          # nginx refresh is best-effort so it can NEVER block the application
+          # image release + worker restart. A failure here is reported LOUDLY
+          # (warning annotation + job summary + full remote output) — it is not
+          # swallowed silently. The proper fix is to restore the deploy user's
+          # limited passwordless sudo for the nginx commands (see PR body).
+          set +e
+          out="$(timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" \
+            "sudo -n install -m 644 /opt/jurvio/nginx-jurvio.conf /etc/nginx/sites-available/jurvio && sudo -n nginx -t && sudo -n systemctl reload nginx" 2>&1)"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "refreshed=true" >> "$GITHUB_OUTPUT"
+            echo "nginx configuration installed, validated, and reloaded."
+          else
+            echo "refreshed=false" >> "$GITHUB_OUTPUT"
+            printf 'nginx refresh FAILED (exit %s):\n%s\n' "$rc" "$out"
+            echo "::warning title=nginx not refreshed::nginx reverse-proxy config could NOT be refreshed (exit ${rc}). The application image and workers still deploy; the running nginx config is left in place. Restore the deploy user's passwordless sudo for the nginx commands to re-enable automatic refresh."
+            {
+              echo "### ⚠️ nginx was NOT refreshed on this release"
+              echo ""
+              echo "The application image release and worker restart proceeded. The nginx reverse-proxy config on the droplet was **left in place** because it could not be updated (exit ${rc})."
+              echo ""
+              echo "**Remote output:**"
+              echo '```'
+              printf '%s\n' "$out"
+              echo '```'
+              echo ""
+              echo "**Consequence:** any pending nginx change (e.g. new \`server_name\` routing) is NOT applied until this is resolved. Public case-page serving is unaffected when its config is unchanged."
+              echo "**Fix:** restore the deploy user's limited passwordless sudo for the nginx commands (\`install\`, \`nginx -t\`, \`systemctl reload nginx\`), then re-run the deploy."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Authenticate image registry
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
