@@ -26,6 +26,7 @@ export interface FederalPublicationCandidate {
   sourceUri: string | null;
   sourceContentHash: string | null;
   sourceRetrievedAt: string | null;
+  hasReadableContent: boolean;
   canonicalIdentifier: string | null;
   canonicalIdentifierCount: number;
   identityCollisionCount: number;
@@ -118,19 +119,15 @@ export function isRestrictedDocketText(value: string): boolean {
   return /\b(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\b/i.test(value);
 }
 
-function isVerifiedCourtListenerDocketSourceUri(
-  sourceUri: string | null,
-  sourceRecordId: string | null,
-): boolean {
-  if (!sourceUri || !sourceRecordId || !/^\d+$/.test(sourceRecordId)) return false;
-  if (sourceUri === `https://www.courtlistener.com/api/rest/v4/dockets/${sourceRecordId}/`) {
-    return true;
+export function isValidHttpSourceUri(sourceUri: string | null): boolean {
+  if (!sourceUri || !sourceUri.trim()) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(sourceUri);
+  } catch {
+    return false;
   }
-  const bulkPrefix = "https://www.courtlistener.com/help/api/bulk-data/#docket-";
-  if (!sourceUri.startsWith(bulkPrefix)) return false;
-  const suffix = sourceUri.slice(bulkPrefix.length);
-  const match = /^(\d{4}-\d{2}-\d{2})-(\d+)$/.exec(suffix);
-  return match?.[2] === sourceRecordId && !Number.isNaN(Date.parse(`${match[1]}T00:00:00Z`));
+  return parsed.protocol === "http:" || parsed.protocol === "https:";
 }
 
 export function evaluateFederalPublicationCandidate(
@@ -147,17 +144,8 @@ export function evaluateFederalPublicationCandidate(
   if (!candidate.courtProviderId) reasons.push("missing_court_provider_identity");
   if (candidate.courtVerification !== "verified") reasons.push("unverified_court_record");
   if (!candidate.sourceArtifactId) reasons.push("missing_source_artifact");
-  if (candidate.sourceProviderCode !== "courtlistener") {
-    reasons.push("unsupported_source_provider");
-  }
-  if (!candidate.sourceRecordId || candidate.sourceRecordId !== candidate.canonicalIdentifier) {
-    reasons.push("source_identifier_mismatch");
-  }
-  if (!isVerifiedCourtListenerDocketSourceUri(
-    candidate.sourceUri,
-    candidate.sourceRecordId,
-  )) {
-    reasons.push("invalid_source_uri");
+  if (!isValidHttpSourceUri(candidate.sourceUri)) {
+    reasons.push("missing_source_url");
   }
   if (!candidate.sourceContentHash || !/^[a-f0-9]{64}$/i.test(candidate.sourceContentHash)) {
     reasons.push("invalid_source_checksum");
@@ -165,9 +153,7 @@ export function evaluateFederalPublicationCandidate(
   if (!candidate.sourceRetrievedAt || Number.isNaN(Date.parse(candidate.sourceRetrievedAt))) {
     reasons.push("missing_retrieval_timestamp");
   }
-  if (candidate.canonicalIdentifierCount !== 1) {
-    reasons.push("ambiguous_canonical_identifier");
-  }
+  if (!candidate.hasReadableContent) reasons.push("missing_readable_content");
   if (candidate.identityCollisionCount > 1) reasons.push("duplicate_identity_collision");
   if (candidate.unresolvedRejections > 0) reasons.push("unresolved_ingestion_rejection");
   if (restricted) reasons.push("restricted_or_sensitive");

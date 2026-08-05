@@ -437,6 +437,7 @@ async function runPublicationAndQuarantine() {
     canonical_identifier_count: number;
     identity_collision_count: number;
     unresolved_rejections: number;
+    has_readable_content: boolean;
     document_count: number;
     restricted_text: string;
   }[]>`
@@ -464,6 +465,18 @@ async function runPublicationAndQuarantine() {
        WHERE rejection.resolved_at IS NULL
          AND rejection.source_record_id = canonical.identifier_value
       ) AS unresolved_rejections,
+      (
+        EXISTS(SELECT 1 FROM docket_entry entry WHERE entry.case_id = legal_case.id)
+        OR EXISTS(SELECT 1 FROM document doc WHERE doc.case_id = legal_case.id)
+        OR EXISTS(
+          SELECT 1 FROM judicial_opinion opinion
+          JOIN document opinion_doc ON opinion_doc.id = opinion.document_id
+          JOIN document_content opinion_content
+            ON opinion_content.document_id = opinion.document_id
+          WHERE opinion_doc.case_id = legal_case.id
+            AND length(btrim(opinion_content.content_text)) > 0
+        )
+      ) AS has_readable_content,
       (SELECT count(*)::int FROM document WHERE case_id = legal_case.id) AS document_count,
       concat_ws(' ', legal_case.caption, legal_case.docket_number,
         (SELECT string_agg(coalesce(entry.description, ''), ' ')
@@ -522,6 +535,7 @@ async function runPublicationAndQuarantine() {
       sourceUri: candidate.source_uri,
       sourceContentHash: candidate.source_content_hash,
       sourceRetrievedAt: candidate.source_retrieved_at,
+      hasReadableContent: candidate.has_readable_content,
       canonicalIdentifier: candidate.canonical_identifier,
       canonicalIdentifierCount: candidate.canonical_identifier_count,
       identityCollisionCount: candidate.identity_collision_count,

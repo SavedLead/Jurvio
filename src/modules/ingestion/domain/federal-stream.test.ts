@@ -22,6 +22,7 @@ const publishable: FederalPublicationCandidate = {
   sourceUri: "https://www.courtlistener.com/api/rest/v4/dockets/123/",
   sourceContentHash: "a".repeat(64),
   sourceRetrievedAt: "2026-07-28T00:00:00.000Z",
+  hasReadableContent: true,
   canonicalIdentifier: "123",
   canonicalIdentifierCount: 1,
   identityCollisionCount: 1,
@@ -88,11 +89,17 @@ describe("federal ingestion stream controls", () => {
     });
   });
 
-  it("accepts checksum-verified bulk snapshot provenance for the same docket", () => {
+  it("publishes an official-source case with no CourtListener linkage", () => {
+    // Verified court/docket/metadata/provenance/url/timestamp/checksum/readable
+    // content, but sourced from a non-CourtListener official provider with no
+    // canonical CourtListener docket id. CourtListener is not a publication gate.
     expect(evaluateFederalPublicationCandidate({
       ...publishable,
-      courtJurisdiction: "Federal Bankruptcy",
-      sourceUri: "https://www.courtlistener.com/help/api/bulk-data/#docket-2026-03-31-123",
+      sourceProviderCode: "pacer",
+      sourceRecordId: "district-court-native-id",
+      sourceUri: "https://ecf.nysd.uscourts.gov/cgi-bin/DktRpt.pl?123456",
+      canonicalIdentifier: null,
+      canonicalIdentifierCount: 0,
     })).toEqual({
       eligible: true,
       restricted: false,
@@ -100,24 +107,62 @@ describe("federal ingestion stream controls", () => {
     });
   });
 
-  it("rejects bulk provenance that names a different docket", () => {
+  it("accepts any syntactically valid http(s) source url", () => {
+    expect(evaluateFederalPublicationCandidate({
+      ...publishable,
+      sourceUri: "http://courts.example.gov/opinions/2026/456",
+    }).eligible).toBe(true);
+    expect(evaluateFederalPublicationCandidate({
+      ...publishable,
+      sourceProviderCode: "govinfo",
+      sourceUri: "https://www.govinfo.gov/app/details/USCOURTS-nysd-1_26-cr-00001",
+    }).eligible).toBe(true);
+  });
+
+  it("no longer gates on CourtListener provider, identity, or docket-id count", () => {
     const decision = evaluateFederalPublicationCandidate({
       ...publishable,
-      sourceUri: "https://www.courtlistener.com/help/api/bulk-data/#docket-2026-03-31-999",
+      sourceProviderCode: "cap",
+      sourceRecordId: "999",
+      canonicalIdentifier: "123",
+      canonicalIdentifierCount: 3,
     });
-    expect(decision.eligible).toBe(false);
-    expect(decision.reasons).toContain("invalid_source_uri");
+    expect(decision.reasons).not.toContain("unsupported_source_provider");
+    expect(decision.reasons).not.toContain("source_identifier_mismatch");
+    expect(decision.reasons).not.toContain("ambiguous_canonical_identifier");
+    expect(decision.reasons).not.toContain("invalid_source_uri");
+    expect(decision.eligible).toBe(true);
   });
 
   it.each([
+    ["missing stable identity", { caption: "  ", docketNumber: "  " }, "missing_stable_identity"],
+    ["unverified federal court", { courtJurisdiction: "State" }, "unverified_federal_court"],
     ["uncertain court", { courtProviderId: null }, "missing_court_provider_identity"],
+    ["unverified court record", { courtVerification: "not_verified" }, "unverified_court_record"],
+    ["missing source artifact", { sourceArtifactId: null }, "missing_source_artifact"],
+    ["missing source url", { sourceUri: null }, "missing_source_url"],
+    ["malformed source url", { sourceUri: "not-a-url" }, "missing_source_url"],
+    ["non-http source url", { sourceUri: "ftp://example.gov/doc" }, "missing_source_url"],
     ["incomplete source", { sourceContentHash: null }, "invalid_source_checksum"],
-    ["contradictory identity", { sourceRecordId: "999" }, "source_identifier_mismatch"],
+    ["malformed checksum", { sourceContentHash: "xyz" }, "invalid_source_checksum"],
+    ["missing timestamp", { sourceRetrievedAt: null }, "missing_retrieval_timestamp"],
+    ["unparseable timestamp", { sourceRetrievedAt: "not-a-date" }, "missing_retrieval_timestamp"],
+    ["empty shell", { hasReadableContent: false }, "missing_readable_content"],
     ["ambiguous duplicate", { identityCollisionCount: 2 }, "duplicate_identity_collision"],
+    ["unresolved rejection", { unresolvedRejections: 1 }, "unresolved_ingestion_rejection"],
     ["restricted matter", { restrictedText: "Sealed grand jury matter" }, "restricted_or_sensitive"],
   ])("quarantines %s", (_label, change, reason) => {
     const decision = evaluateFederalPublicationCandidate({ ...publishable, ...change });
     expect(decision.eligible).toBe(false);
     expect(decision.reasons).toContain(reason);
+  });
+
+  it("marks restricted matters as restricted for publication downgrade", () => {
+    const decision = evaluateFederalPublicationCandidate({
+      ...publishable,
+      restrictedText: "Complaint filed under seal",
+    });
+    expect(decision.restricted).toBe(true);
+    expect(decision.reasons).toContain("restricted_or_sensitive");
   });
 });
