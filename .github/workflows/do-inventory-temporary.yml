@@ -57,6 +57,7 @@ jobs:
           jq '{sizes:[.sizes[]|select((.regions|index("nyc1")) and (.memory>=4096) and (.memory<=8192) and (.vcpus>=2) and (.vcpus<=4) and (.available==true))|{slug,memory,vcpus,disk,transfer,price_monthly,price_hourly,description}]}' inventory/sizes.json > inventory/sizes.safe.json
           jq '{registry:(if .registry then {name:.registry.name,region:.registry.region,storage_usage_bytes:.registry.storage_usage_bytes,subscription:.registry.subscription} else null end)}' inventory/registry.json > inventory/registry.safe.json
           jq -s 'add' inventory/*.safe.json > safe.json
+          cat safe.json
       - name: Write safe inventory to temporary branch
         shell: bash
         run: |
