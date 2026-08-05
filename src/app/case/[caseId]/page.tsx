@@ -15,6 +15,7 @@ import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseNav } from "@/modules/cases/ui/case-nav";
 import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
+import "./case-intelligence.css";
 
 export const dynamic = "force-dynamic";
 
@@ -103,6 +104,59 @@ export default async function CasePage({ params }: CasePageProps) {
   const caption = cleanCaseCaption(legalCase.caption);
   const canonicalPath = `/case/${caseId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
+  const latestEvent = timelineEvents.at(-1) ?? null;
+  const caseAnswers = [
+    {
+      id: "what-happened",
+      question: "What happened in this case?",
+      answer: legalCase.backgroundSummary
+        ?? (verified ? legalCase.statusExplanation : null)
+        ?? `The public record currently confirms this case as ${legalCase.courtName} docket ${legalCase.docketNumber}. A source-backed plain-English summary is not yet available.`,
+      sourceUrl: legalCase.backgroundSourceUrl,
+      available: Boolean(legalCase.backgroundSummary || (verified && legalCase.statusExplanation)),
+    },
+    {
+      id: "case-about",
+      question: "What is this case about?",
+      answer: legalCase.questionPresented
+        ?? "Jurvio has not yet verified a plain-English description of the legal question in this case.",
+      sourceUrl: legalCase.questionSourceUrl,
+      available: Boolean(legalCase.questionPresented),
+    },
+    {
+      id: "current-status",
+      question: "Where does the case stand now?",
+      answer: (verified ? legalCase.statusExplanation : null)
+        ?? (latestEvent ? `The latest dated event currently available is “${latestEvent.label}” on ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}.` : "Jurvio has not yet verified the current procedural posture."),
+      sourceUrl: null,
+      available: Boolean((verified && legalCase.statusExplanation) || latestEvent),
+    },
+    {
+      id: "why-it-matters",
+      question: "Why does this case matter?",
+      answer: legalCase.significanceSummary
+        ?? "A source-backed explanation of this case’s broader significance is not yet available.",
+      sourceUrl: legalCase.significanceSourceUrl,
+      available: Boolean(legalCase.significanceSummary),
+    },
+    {
+      id: "ruling-outcome",
+      question: "What was the ruling or outcome?",
+      answer: legalCase.exactHolding
+        ?? (outcome ? `${outcome}.` : legalCase.decidedOn ? "Jurvio has a decision date but has not yet verified a plain-English holding." : "No verified final ruling is currently available on Jurvio."),
+      sourceUrl: legalCase.holdingSourceUrl ?? legalCase.dispositionSourceUrl,
+      available: Boolean(legalCase.exactHolding || outcome),
+    },
+    {
+      id: "latest-update",
+      question: "What happened most recently?",
+      answer: latestEvent
+        ? `${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}: ${latestEvent.label}`
+        : "No dated docket event is currently available on Jurvio.",
+      sourceUrl: null,
+      available: Boolean(latestEvent),
+    },
+  ] as const;
 
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
@@ -125,6 +179,8 @@ export default async function CasePage({ params }: CasePageProps) {
     ],
     datePublished: legalCase.decidedOn ?? legalCase.filedOn ?? undefined,
     url: permanentUrl,
+    abstract: legalCase.backgroundSummary ?? legalCase.statusExplanation ?? undefined,
+    sameAs: [legalCase.backgroundSourceUrl, legalCase.questionSourceUrl, legalCase.holdingSourceUrl].filter(Boolean),
     isPartOf: { "@type": "WebSite", name: "Jurvio", url: "https://jurvio.com" },
   };
 
@@ -150,6 +206,25 @@ export default async function CasePage({ params }: CasePageProps) {
         </aside>
 
         <div className="caseWorkspaceMain">
+          <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
+            <p className="sectionKicker">Case intelligence</p>
+            <h2 id="case-answers-title">The key questions about this case</h2>
+            <p className="caseAnswerIntro">
+              Direct answers from the verified public record. Missing information is labeled instead of inferred.
+            </p>
+            <div className="caseAnswerGrid">
+              {caseAnswers.map((item) => (
+                <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
+                  <h3>{item.question}</h3>
+                  <p>{item.answer}</p>
+                  <footer>
+                    <span>{item.available ? "Source-backed answer" : "Not yet available"}</span>
+                    {item.sourceUrl ? <a href={item.sourceUrl} rel="nofollow noopener">View source</a> : null}
+                  </footer>
+                </article>
+              ))}
+            </div>
+          </section>
           <section className="caseLeadSection caseFeatureSection" aria-labelledby="understand-case">
             <div className="featureHeading">
               <span className="featureBadge" aria-hidden="true">A</span>
