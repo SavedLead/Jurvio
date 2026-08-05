@@ -27,7 +27,7 @@ jobs:
           set -euo pipefail
           test -n "$DO_TOKEN"
           mkdir -p inventory
-          for endpoint in account projects droplets vpcs account/keys registry; do
+          for endpoint in account projects droplets vpcs account/keys; do
             file="${endpoint//\//_}.json"
             status=$(curl --silent --show-error --output "inventory/$file" --write-out '%{http_code}' \
               --header "Authorization: Bearer $DO_TOKEN" \
@@ -39,6 +39,16 @@ jobs:
               exit 1
             fi
           done
+          registry_status=$(curl --silent --show-error --output inventory/registry.json --write-out '%{http_code}' \
+            --header "Authorization: Bearer $DO_TOKEN" \
+            --header "Content-Type: application/json" \
+            "https://api.digitalocean.com/v2/registry")
+          if [ "$registry_status" = "404" ]; then
+            echo '{"registry":null}' > inventory/registry.json
+          elif [ "$registry_status" != "200" ]; then
+            echo "::error::DigitalOcean endpoint registry returned HTTP $registry_status"
+            exit 1
+          fi
           jq '{account:{status:.account.status, droplet_limit:.account.droplet_limit}}' inventory/account.json > inventory/account.safe.json
           jq '{projects:[.projects[]|{id,name,purpose,environment,is_default}]}' inventory/projects.json > inventory/projects.safe.json
           jq '{droplets:[.droplets[]|{id,name,memory,vcpus,disk,status,features,region:{slug:.region.slug,name:.region.name},size:{slug:.size.slug,price_monthly:.size.price_monthly,price_hourly:.size.price_hourly},vpc_uuid,tags}]}' inventory/droplets.json > inventory/droplets.safe.json
