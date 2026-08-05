@@ -25,7 +25,7 @@ export default async function InternalOverviewPage() {
   const capabilities = [
     { id: "ingestion", title: "Ingestion command center", detail: "Corpus, provider runs, source freshness, storage, failures, and active work.", href: "/internal/operations", state: "Live" },
     { id: "publication", title: "Publication X-ray", detail: "Exact case blockers, next actions, projected unlocks, and SCOTUS A–G enrichment.", href: "/internal/ingestion-report", state: "Live" },
-    { id: "sources", title: "Court source monitoring", detail: "94 district courts, 13 appellate circuits, official-feed coverage, and source health.", href: "/internal/operations", state: "Expanding" },
+    { id: "sources", title: "Court source monitoring", detail: "108-court heartbeat: 94 district courts, 13 appellate circuits, the Supreme Court, and per-court live/stalled health.", href: "/internal/heartbeat", state: "Live" },
     { id: "alerts", title: "Case alerts", detail: "Supported update types, monitorability, subscribers, delivery attempts, and failures.", href: "/internal#alerts", state: "Foundation" },
     { id: "infrastructure", title: "Workers & infrastructure", detail: "Worker runs, failures, leases, scheduler health, processing pressure, and watchdog visibility.", href: "/internal/operations", state: "Read only" },
     { id: "costs", title: "Cost control", detail: "Recorded enrichment cost, storage pressure, demand cost, and approval-bound automation.", href: "/internal/governance#demand", state: "Partial" },
