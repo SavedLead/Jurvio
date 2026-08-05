@@ -10,7 +10,8 @@ CREATE TABLE judge (
   verification verification_state NOT NULL DEFAULT 'not_verified',
   source_artifact_id uuid REFERENCES raw_artifact(id),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE NULLS NOT DISTINCT (court_id, normalized_name)
 );
 
 CREATE TABLE judge_case_assignment (
