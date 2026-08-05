@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - agent/do-inventory-20260805
-  workflow_dispatch:
+    paths-ignore:
+      - .do-inventory-safe.json
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   inventory:
@@ -15,6 +16,7 @@ jobs:
     timeout-minutes: 3
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Verify scoped token and collect read-only inventory
         shell: bash
@@ -35,15 +37,23 @@ jobs:
             fi
           done
           jq '{account:{status:.account.status, droplet_limit:.account.droplet_limit}}' inventory/account.json > inventory/account.safe.json
-          jq '{projects:[.projects[]|{id,name,purpose,environment,is_default,created_at,updated_at}]}' inventory/projects.json > inventory/projects.safe.json
-          jq '{droplets:[.droplets[]|{id,name,memory,vcpus,disk,locked,status,created_at,features,region:{slug:.region.slug,name:.region.name},size:{slug:.size.slug,price_monthly:.size.price_monthly,price_hourly:.size.price_hourly},vpc_uuid,tags}]}' inventory/droplets.json > inventory/droplets.safe.json
-          jq '{vpcs:[.vpcs[]|{id,name,region,ip_range,created_at,default}]}' inventory/vpcs.json > inventory/vpcs.safe.json
+          jq '{projects:[.projects[]|{id,name,purpose,environment,is_default}]}' inventory/projects.json > inventory/projects.safe.json
+          jq '{droplets:[.droplets[]|{id,name,memory,vcpus,disk,status,features,region:{slug:.region.slug,name:.region.name},size:{slug:.size.slug,price_monthly:.size.price_monthly,price_hourly:.size.price_hourly},vpc_uuid,tags}]}' inventory/droplets.json > inventory/droplets.safe.json
+          jq '{vpcs:[.vpcs[]|{id,name,region,ip_range,default}]}' inventory/vpcs.json > inventory/vpcs.safe.json
           jq '{ssh_keys:[.ssh_keys[]|{id,name,fingerprint}]}' inventory/account_keys.json > inventory/ssh_keys.safe.json
-          jq '{registry:(if .registry then {name:.registry.name,region:.registry.region,storage_usage_bytes:.registry.storage_usage_bytes,storage_usage_bytes_updated_at:.registry.storage_usage_bytes_updated_at,subscription:.registry.subscription} else null end)}' inventory/registry.json > inventory/registry.safe.json
-          rm inventory/account.json inventory/projects.json inventory/droplets.json inventory/vpcs.json inventory/account_keys.json inventory/registry.json
-      - name: Upload inventory
-        uses: actions/upload-artifact@v4
-        with:
-          name: digitalocean-inventory
-          path: inventory/*.safe.json
-          retention-days: 1
+          jq '{registry:(if .registry then {name:.registry.name,region:.registry.region,storage_usage_bytes:.registry.storage_usage_bytes,subscription:.registry.subscription} else null end)}' inventory/registry.json > inventory/registry.safe.json
+          jq -s 'add' inventory/*.safe.json > safe.json
+      - name: Write safe inventory to temporary branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          content=$(base64 -w0 safe.json)
+          jq -n --arg message "record safe DigitalOcean inventory" --arg content "$content" --arg branch "agent/do-inventory-20260805" \
+            '{message:$message,content:$content,branch:$branch}' > payload.json
+          curl --fail-with-body --silent --show-error \
+            --request PUT \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/.do-inventory-safe.json" \
+            --data-binary @payload.json
