@@ -78,7 +78,22 @@ try {
       SELECT review_status, count(*)::text
       FROM official_opinion_candidate GROUP BY review_status ORDER BY review_status
     `;
-    return { opinionCandidatesByStatus: candidates };
+    const [freshness] = await sql<{
+      last_ingested_artifact: string | null; last_candidate_seen: string | null;
+      published_cases: string; last_published_update: string | null;
+    }[]>`
+      SELECT
+        (SELECT max(ra.retrieved_at) FROM raw_artifact ra
+           JOIN provider p ON p.id = ra.provider_id
+           WHERE p.code = 'scotus_official')::text AS last_ingested_artifact,
+        (SELECT max(last_seen_at) FROM official_opinion_candidate)::text AS last_candidate_seen,
+        (SELECT count(*) FROM legal_case lc JOIN court co ON co.id = lc.court_id
+           WHERE co.provider_court_id = 'scotus' AND lc.publication = 'published')::text AS published_cases,
+        (SELECT max(lc.updated_at) FROM legal_case lc JOIN court co ON co.id = lc.court_id
+           WHERE co.provider_court_id = 'scotus' AND lc.publication = 'published')::text AS last_published_update
+    `;
+    if (!freshness) throw new Error("scotus freshness query returned no rows");
+    return { opinionCandidatesByStatus: candidates, freshness };
   });
 
   // ---- Courts of Appeals (13 circuits) ------------------------------------
@@ -212,15 +227,32 @@ try {
       `oldest_unpublished=${publishing.data.outbox.oldest_unpublished ?? "n/a"} ` +
       `review_queue=${JSON.stringify(publishing.data.reviewQueue)}`);
   } else line(`publishing: ERROR ${publishing.error}`);
+  if (scotus.ok) {
+    const f = scotus.data.freshness;
+    line(`SCOTUS: last_ingest=${f.last_ingested_artifact ?? "n/a"} last_candidate=${f.last_candidate_seen ?? "n/a"} ` +
+      `published=${f.published_cases} last_publication=${f.last_published_update ?? "n/a"} ` +
+      `candidates=${JSON.stringify(scotus.data.opinionCandidatesByStatus)}`);
+  } else line(`SCOTUS: ERROR ${scotus.error}`);
   if (appellate.ok) {
-    const degraded = appellate.data.registry.filter((r) => r.health_state !== "healthy").map((r) => r.court_code);
-    const govModes = appellate.data.govinfo.map((g) => `${g.court_code}:${g.status}`).join(",");
-    line(`appellate(13): non_healthy=[${degraded.join(",") || "none"}]`);
-    line(`appellate.govinfo_checkpoints: ${govModes || "none"}`);
+    line("---- Circuits (13): code | health | last_check | last_publication | published | consec_fails | govinfo ----");
+    for (const r of appellate.data.registry) {
+      const p = appellate.data.lastPublished.find((x) => x.court_code === r.court_code);
+      const g = appellate.data.govinfo.find((x) => x.court_code === r.court_code);
+      line(`  ${r.court_code} | ${r.health_state} | ${r.last_successful_retrieval ?? "never"} | ` +
+        `${p?.last_published_at ?? "never"} | ${p?.published ?? "0"} | ${r.consecutive_failures} | ` +
+        `govinfo:${g?.status ?? "n/a"}`);
+    }
   } else line(`appellate: ERROR ${appellate.error}`);
   if (district.ok && district.data.summary) {
     const s = district.data.summary;
     line(`district(94): total=${s.total} rss_enabled=${s.rss_enabled} healthy=${s.healthy} degraded=${s.degraded} unknown=${s.unknown}`);
+    line("---- Districts (94): code | health | rss | last_check | last_event | last_publication | published | pending ----");
+    for (const r of district.data.registry) {
+      const e = district.data.events.find((x) => x.court_code === r.court_code);
+      line(`  ${r.court_code} | ${r.health_state} | ${r.rss_available ? "rss" : "no-rss"} | ` +
+        `${r.last_successful_retrieval ?? "never"} | ${e?.last_event_at ?? "none"} | ` +
+        `${e?.last_published_at ?? "none"} | ${e?.published ?? "0"} | ${e?.pending ?? "0"}`);
+    }
   } else if (!district.ok) line(`district: ERROR ${district.error}`);
   if (failures.ok) {
     line(`failures: run_items_24h=${failures.data.failedRunItems24h} ` +
