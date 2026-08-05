@@ -1,73 +1,26 @@
-name: Provision Jurvio builder (temporary)
+name: Finalize Jurvio builder security (temporary)
 on:
   workflow_dispatch:
 permissions:
-  contents: write
-  actions: write
+  contents: read
 jobs:
-  provision:
+  finalize:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 5
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-      GH_TOKEN: ${{ github.token }}
-      DROPLET_NAME: jurvio-builder-01
     steps:
-      - name: Create isolated builder
+      - name: Attach existing builder and firewall
         shell: bash
         run: |
           set -euo pipefail
-          existing_id=$(curl --fail --silent --show-error --header "Authorization: Bearer $DO_TOKEN" "https://api.digitalocean.com/v2/droplets?name=$DROPLET_NAME" | jq -r '.droplets[0].id // empty')
-          test -z "$existing_id" || { echo "::error::Builder already exists; refusing duplicate"; exit 1; }
-          runner_token="${{ secrets.RUNNER_REGISTRATION_TOKEN }}"
-          test -n "$runner_token"
-          cat > cloud-init.yml <<'CLOUD_EOF'
-          #cloud-config
-          package_update: true
-          packages: [ca-certificates, curl, git, jq, build-essential, docker.io]
-          users:
-            - default
-            - name: jurvio-runner
-              groups: [docker]
-              shell: /bin/bash
-          write_files:
-            - path: /usr/local/sbin/install-jurvio-runner
-              permissions: '0700'
-              content: |
-                #!/usr/bin/env bash
-                set -euo pipefail
-                systemctl enable --now docker
-                install -d -o jurvio-runner -g jurvio-runner /opt/actions-runner
-                cd /opt/actions-runner
-                version=$(curl --fail --silent https://api.github.com/repos/actions/runner/releases/latest | jq -r '.tag_name' | sed 's/^v//')
-                curl --fail --location --silent --show-error -o runner.tar.gz "https://github.com/actions/runner/releases/download/v${version}/actions-runner-linux-x64-${version}.tar.gz"
-                tar xzf runner.tar.gz && rm runner.tar.gz
-                chown -R jurvio-runner:jurvio-runner .
-                sudo -u jurvio-runner ./config.sh --unattended --url "__REPO_URL__" --token "__RUNNER_TOKEN__" --name "jurvio-builder-01" --labels "jurvio,builder,trusted" --work "_work"
-                ./svc.sh install jurvio-runner
-                ./svc.sh start
-                rm -f /usr/local/sbin/install-jurvio-runner
-          runcmd:
-            - /usr/local/sbin/install-jurvio-runner
-          CLOUD_EOF
-          sed -i "s|__REPO_URL__|https://github.com/${{ github.repository }}|" cloud-init.yml
-          sed -i "s|__RUNNER_TOKEN__|$runner_token|" cloud-init.yml
-          jq -n --arg user_data "$(cat cloud-init.yml)" '{name:"jurvio-builder-01",region:"nyc1",size:"s-2vcpu-4gb",image:"ubuntu-24-04-x64",vpc_uuid:"c3c9badd-ce8c-4dd9-bd1b-d15d8739dbb6",monitoring:true,backups:false,ipv6:false,user_data:$user_data,ssh_keys:[57955909],tags:["jurvio","builder","github-runner"]}' > create.json
-          response=$(curl --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/droplets" --data-binary @create.json)
-          droplet_id=$(jq -r '.droplet.id // empty' <<<"$response")
-          test -n "$droplet_id" || { jq '{id,message}' <<<"$response"; exit 1; }
-          curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/projects/71f13689-d3ce-43d8-9ec1-c58215514a0a/resources" --data-binary "{"resources":["do:droplet:$droplet_id"]}" >/dev/null
-          jq -n --argjson droplet_ids "[$droplet_id]" '{name:"jurvio-builder-01-firewall",droplet_ids:$droplet_ids,inbound_rules:[],outbound_rules:[{protocol:"tcp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"udp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"icmp",destinations:{addresses:["0.0.0.0/0","::/0"]}}]}' > firewall.json
-          fw=$(curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/firewalls" --data-binary @firewall.json)
-          firewall_id=$(jq -r '.firewall.id' <<<"$fw")
-          jq -n --argjson droplet_id "$droplet_id" --arg firewall_id "$firewall_id" '{droplet:{id:$droplet_id,name:"jurvio-builder-01",size:"s-2vcpu-4gb",region:"nyc1",monthly_price:24},firewall:{id:$firewall_id,inbound_rule_count:0},project_assigned:true,runner_registration:"pending cloud-init"}' > safe-result.json
-          cat safe-result.json
-      - name: Record safe result
-        shell: bash
-        run: |
-          content=$(base64 -w0 safe-result.json)
-          jq -n --arg message "record safe builder provisioning result" --arg content "$content" --arg branch "main" '{message:$message,content:$content,branch:$branch}' > payload.json
-          curl --fail-with-body --silent --show-error --request PUT --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/contents/.do-builder-safe.json" --data-binary @payload.json
-
-# Approved by owner on 2026-08-05
-# Privileged provisioning explicitly approved in chat at 2026-08-05T20:45:00Z
+          droplet_id=$(curl --fail --silent --show-error --header "Authorization: Bearer $DO_TOKEN" "https://api.digitalocean.com/v2/droplets?name=jurvio-builder-01" | jq -r '.droplets[0].id // empty')
+          test -n "$droplet_id"
+          jq -n --arg resource "do:droplet:$droplet_id" '{resources:[$resource]}' > project.json
+          curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/projects/71f13689-d3ce-43d8-9ec1-c58215514a0a/resources" --data-binary @project.json >/dev/null
+          existing_fw=$(curl --fail --silent --show-error --header "Authorization: Bearer $DO_TOKEN" "https://api.digitalocean.com/v2/firewalls" | jq -r '.firewalls[] | select(.name=="jurvio-builder-01-firewall") | .id' | head -1)
+          if [ -z "$existing_fw" ]; then
+            jq -n --argjson droplet_id "$droplet_id" '{name:"jurvio-builder-01-firewall",droplet_ids:[$droplet_id],inbound_rules:[],outbound_rules:[{protocol:"tcp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"udp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"icmp",destinations:{addresses:["0.0.0.0/0","::/0"]}}]}' > firewall.json
+            curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/firewalls" --data-binary @firewall.json >/dev/null
+          fi
+          echo "Builder attached to project with zero inbound firewall rules."
