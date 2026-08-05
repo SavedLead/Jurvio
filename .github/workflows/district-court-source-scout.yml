@@ -7,8 +7,6 @@ on:
         description: "Number of courts to scout (use 94 for full run)"
         required: false
         default: "10"
-  schedule:
-    - cron: "30 00 * * *"
 
 permissions:
   contents: read
