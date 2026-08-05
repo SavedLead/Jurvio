@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareFederalCourtPriority,
   decodeStreamCursor,
   encodeStreamCursor,
   evaluateFederalPublicationCandidate,
+  federalCourtServiceRank,
   isFederalJurisdiction,
   isNonBankruptcyFederalJurisdiction,
   isRestrictedDocketText,
-  nextBatchSize,
+  orderFederalCourtsByPriority,
   type FederalPublicationCandidate,
 } from "./federal-stream";
 
@@ -31,15 +33,6 @@ const publishable: FederalPublicationCandidate = {
 };
 
 describe("federal ingestion stream controls", () => {
-  it("requires a clean, explicit, single-stage promotion", () => {
-    expect(nextBatchSize(100, 1_000, 0, 0, false)).toBe(100);
-    expect(nextBatchSize(100, 1_000, 0, 0, true)).toBe(1_000);
-    expect(nextBatchSize(1_000, 10_000, 0, 0, true)).toBe(10_000);
-    expect(nextBatchSize(100, 1_000, 1, 0, true)).toBe(100);
-    expect(nextBatchSize(1_000, 10_000, 0, 1, true)).toBe(1_000);
-    expect(() => nextBatchSize(100, 10_000, 0, 0, true)).toThrow(/100 -> 1000/);
-  });
-
   it("round trips durable cursors", () => {
     const cursor = {
       version: 1 as const,
@@ -61,6 +54,70 @@ describe("federal ingestion stream controls", () => {
       batchSize: 100,
       completedWindows: 0,
     })).toThrow(/malformed/);
+  });
+
+  it("decodes legacy checkpoints regardless of the retired batchSize value", () => {
+    const fallback = {
+      version: 1 as const,
+      windowStart: "2026-07-01T00:00:00.000Z",
+      windowEnd: "2026-07-02T00:00:00.000Z",
+      next: null,
+      batchSize: 100,
+      completedWindows: 0,
+    };
+    // A checkpoint written by the old throttle at the top batch step still decodes;
+    // the value is retained verbatim but no longer limits how much a cycle processes.
+    expect(
+      decodeStreamCursor(
+        JSON.stringify({ ...fallback, batchSize: 10_000, completedWindows: 7 }),
+        fallback,
+      ),
+    ).toMatchObject({ batchSize: 10_000, completedWindows: 7 });
+    // A checkpoint missing the legacy field entirely is tolerated and defaulted.
+    const { batchSize, ...withoutBatch } = fallback;
+    void batchSize;
+    expect(decodeStreamCursor(JSON.stringify(withoutBatch), fallback).batchSize).toBe(100);
+  });
+
+  it("ranks courts SCOTUS -> circuits -> districts -> other", () => {
+    expect(federalCourtServiceRank({ providerCourtId: "scotus", jurisdiction: "F" })).toBe(0);
+    expect(federalCourtServiceRank({ providerCourtId: "ca9", jurisdiction: "F" })).toBe(1);
+    expect(
+      federalCourtServiceRank({ providerCourtId: "ca9", jurisdiction: "Federal Appellate" }),
+    ).toBe(1);
+    expect(
+      federalCourtServiceRank({ providerCourtId: "nysd", jurisdiction: "Federal District" }),
+    ).toBe(2);
+    expect(federalCourtServiceRank({ providerCourtId: "nysd", jurisdiction: "FD" })).toBe(2);
+    expect(federalCourtServiceRank({ providerCourtId: "nyeb", jurisdiction: "State" })).toBe(3);
+  });
+
+  it("orders circuits ahead of districts and districts busiest-first", () => {
+    const ordered = orderFederalCourtsByPriority([
+      { providerCourtId: "txsd", jurisdiction: "Federal District", recentEventVolume: 40 },
+      { providerCourtId: "scotus", jurisdiction: "F", recentEventVolume: 1 },
+      { providerCourtId: "cand", jurisdiction: "Federal District", recentEventVolume: 900 },
+      { providerCourtId: "ca9", jurisdiction: "Federal Appellate", recentEventVolume: 5 },
+      { providerCourtId: "nysd", jurisdiction: "Federal District", recentEventVolume: 900 },
+    ]);
+    expect(ordered.map((court) => court.providerCourtId)).toEqual([
+      "scotus", // SCOTUS first
+      "ca9", // then the circuit
+      "cand", // districts busiest-first; tie broken by provider id
+      "nysd",
+      "txsd",
+    ]);
+  });
+
+  it("does not mutate the input array when ordering courts", () => {
+    const input = [
+      { providerCourtId: "txsd", jurisdiction: "Federal District", recentEventVolume: 1 },
+      { providerCourtId: "ca9", jurisdiction: "Federal Appellate", recentEventVolume: 1 },
+    ];
+    const snapshot = input.map((court) => court.providerCourtId);
+    orderFederalCourtsByPriority(input);
+    expect(input.map((court) => court.providerCourtId)).toEqual(snapshot);
+    expect(compareFederalCourtPriority(input[0]!, input[1]!)).toBeGreaterThan(0);
   });
 
   it("keeps bankruptcy separate from district and appellate coverage", () => {

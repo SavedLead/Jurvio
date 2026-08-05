@@ -9,13 +9,24 @@ import {
   startIngestionRunItem,
 } from "@/modules/ingestion/application/ingestion-run";
 import {
+  classifyFailureSignal,
+  runAdaptiveWorkerPool,
+} from "@/modules/ingestion/application/adaptive-worker-pool";
+import {
+  initialConcurrencyState,
+  resolveAdaptiveConfig,
+  type AdaptiveConcurrencyConfig,
+  type AdaptiveConcurrencyState,
+  type OutcomeSignal,
+} from "@/modules/ingestion/domain/adaptive-concurrency";
+import {
   decodeStreamCursor,
   encodeStreamCursor,
   evaluateFederalPublicationCandidate,
   isNonBankruptcyFederalJurisdiction,
   isRestrictedDocketText,
-  nextBatchSize,
-  normalizeBatchSize,
+  LEGACY_CURSOR_BATCH_SIZE,
+  orderFederalCourtsByPriority,
   type FederalLoop,
   type StreamCursor,
 } from "@/modules/ingestion/domain/federal-stream";
@@ -32,11 +43,68 @@ function option(name: string, fallback: string): string {
   return index >= 0 ? (process.argv[index + 1] ?? fallback) : fallback;
 }
 
+/** Resolve an integer from a CLI flag, then an env var, then a default. */
+function intSetting(flag: string, envName: string, fallback: number): number {
+  const raw = option(flag, process.env[envName] ?? String(fallback));
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+}
+
+// --- Adaptive concurrency + runaway safety bounds -------------------------------
+//
+// The federal loops used to be throttled by a fixed 100-item ceiling and a forced
+// 1s sleep per item. That is replaced by a bounded, self-throttling worker pool.
+//
+// Concurrency starts conservative and is governed at runtime by the adaptive
+// controller (halves on distress, recovers +1 after clean windows). We additionally
+// clamp the pool's ceiling to an absolute hard max so no env/flag can push the small
+// production droplet toward the OOM (exit 137) failures it has hit before.
+const FEDERAL_HARD_MAX_CONCURRENCY = 16;
+const FEDERAL_DEFAULT_MAX_CONCURRENCY = 8;
+const FEDERAL_DEFAULT_START_CONCURRENCY = 6;
+// Runaway guard: an upper bound on items processed per cycle so a huge eligible queue
+// can never run unbounded. This is a high, finite safety net, NOT an artificial batch
+// limit — the loop normally stops when the eligible queue for the cycle is drained.
+const FEDERAL_DEFAULT_RUNAWAY_ITEM_LIMIT = 5_000;
+const FEDERAL_ABSOLUTE_RUNAWAY_ITEM_LIMIT = 100_000;
+
+// Per-court discovery cap for material-decisions so no single busy court can hoard the
+// whole cycle before other (lower-priority but still eligible) courts get any service.
+const MATERIAL_PER_COURT_DISCOVERY_CAP = 250;
+// Publication is pure DB work; drain it in bounded chunks so we never hold thousands of
+// rich candidate rows in memory at once.
+const PUBLICATION_CHUNK_SIZE = 250;
+
 const loop = option("loop", "new-case-discovery") as FederalLoop;
-const requestedLimit = normalizeBatchSize(Number(option("limit", "100")));
-const promotionApproved = option("approve-scale-up", "false") === "true";
-const delayMs = Number(option("delay-ms", "1000"));
 const lookbackDays = Number(option("lookback-days", "2"));
+
+const maxConcurrency = Math.max(
+  1,
+  Math.min(
+    FEDERAL_HARD_MAX_CONCURRENCY,
+    intSetting("max-concurrency", "FEDERAL_MAX_CONCURRENCY", FEDERAL_DEFAULT_MAX_CONCURRENCY),
+  ),
+);
+const startConcurrency = Math.max(
+  1,
+  Math.min(
+    maxConcurrency,
+    intSetting("start-concurrency", "FEDERAL_START_CONCURRENCY", FEDERAL_DEFAULT_START_CONCURRENCY),
+  ),
+);
+const runawayItemLimit = Math.max(
+  1,
+  Math.min(
+    FEDERAL_ABSOLUTE_RUNAWAY_ITEM_LIMIT,
+    intSetting("max-items", "FEDERAL_RUNAWAY_ITEM_LIMIT", FEDERAL_DEFAULT_RUNAWAY_ITEM_LIMIT),
+  ),
+);
+
+const adaptiveConfig: AdaptiveConcurrencyConfig = resolveAdaptiveConfig({
+  start: startConcurrency,
+  max: maxConcurrency,
+});
+
 const allowedLoops: FederalLoop[] = [
   "new-case-discovery",
   "active-case-updates",
@@ -45,12 +113,6 @@ const allowedLoops: FederalLoop[] = [
   "publication-quarantine",
 ];
 if (!allowedLoops.includes(loop)) throw new Error("--loop is invalid");
-if (promotionApproved && loop !== "historical-backfill") {
-  throw new Error("--approve-scale-up is only valid for historical-backfill");
-}
-if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
-  throw new Error("--delay-ms must be 0-60000");
-}
 if (!Number.isInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > 365) {
   throw new Error("--lookback-days must be 1-365");
 }
@@ -59,6 +121,12 @@ const sql = db();
 const artifactStore = new LocalArtifactStore(
   process.env.RAW_ARTIFACT_DIR ?? process.env.JURVIO_ARTIFACT_ROOT ?? ".data/raw",
 );
+
+const concurrencySelection = {
+  startConcurrency: adaptiveConfig.start,
+  maxConcurrency: adaptiveConfig.max,
+  runawayItemLimit,
+};
 
 function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
@@ -101,6 +169,22 @@ async function courtIsFederal(courtUri: string): Promise<boolean> {
   return isNonBankruptcyFederalJurisdiction(court?.jurisdiction ?? null);
 }
 
+/** Iterate an in-memory array through the adaptive pool, threading controller state. */
+async function processArrayWithPool<T>(
+  items: readonly T[],
+  handle: (item: T) => Promise<OutcomeSignal>,
+  state: AdaptiveConcurrencyState,
+): Promise<AdaptiveConcurrencyState> {
+  let cursor = 0;
+  const result = await runAdaptiveWorkerPool<T>({
+    config: adaptiveConfig,
+    initialState: state,
+    pull: async () => (cursor < items.length ? items[cursor++] : undefined),
+    handle,
+  });
+  return result.finalState;
+}
+
 async function runDocketStream(kind: "new-case-discovery" | "historical-backfill") {
   const now = new Date().toISOString();
   const fallback: StreamCursor = kind === "new-case-discovery"
@@ -109,7 +193,7 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
         windowStart: isoDaysAgo(lookbackDays),
         windowEnd: now,
         next: null,
-        batchSize: 100,
+        batchSize: LEGACY_CURSOR_BATCH_SIZE,
         completedWindows: 0,
       }
     : {
@@ -117,24 +201,18 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
         windowStart: "2000-01-01T00:00:00.000Z",
         windowEnd: "2001-01-01T00:00:00.000Z",
         next: null,
-        batchSize: 100,
+        batchSize: LEGACY_CURSOR_BATCH_SIZE,
         completedWindows: 0,
       };
   const streamName = kind === "historical-backfill"
     ? "federal:historical-backfill:v2:filed"
     : "federal:new-case-discovery:v1";
   const checkpoint = await readCheckpoint(streamName, fallback);
-  const limit = Math.min(requestedLimit, checkpoint.batchSize);
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: kind,
-    selection: {
-      ...checkpoint,
-      requestedLimit,
-      effectiveLimit: limit,
-      promotionApproved,
-    },
-    selectedCount: limit,
+    selection: { ...checkpoint, ...concurrencySelection },
+    selectedCount: runawayItemLimit,
   });
 
   let discovered = 0;
@@ -146,9 +224,74 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
   let documents = 0;
   let next = checkpoint.next;
   let sourceTotal: number | null = null;
+  // Adaptive concurrency state is threaded across pages so distress on page N carries
+  // into page N+1 (the controller does not reset just because a page boundary is crossed).
+  let controllerState = initialConcurrencyState(adaptiveConfig);
+
+  async function processDocketRecord(
+    retrieved: Awaited<ReturnType<typeof fetchDocketPage>>["records"][number],
+  ): Promise<OutcomeSignal> {
+    discovered += 1;
+    const sourceId = String(retrieved.record.id);
+    try {
+      await startIngestionRunItem(sql, runId, sourceId);
+      if (!(await courtIsFederal(retrieved.record.court))) {
+        held += 1;
+        await finishIngestionRunItem(sql, {
+          runId,
+          sourceRecordId: sourceId,
+          error: "Held: court is not a verified non-bankruptcy federal jurisdiction",
+        });
+        return { ok: true };
+      }
+      if (isRestrictedDocketText(
+        `${retrieved.record.case_name} ${retrieved.record.docket_number}`,
+      )) {
+        held += 1;
+        await finishIngestionRunItem(sql, {
+          runId,
+          sourceRecordId: sourceId,
+          error: "Held: restricted or sensitive docket marker",
+        });
+        return { ok: true };
+      }
+
+      const [existing] = await sql<{ id: string }[]>`
+        SELECT legal_case.id
+        FROM case_identifier
+        JOIN legal_case ON legal_case.id = case_identifier.case_id
+        WHERE case_identifier.provider_id =
+          (SELECT id FROM provider WHERE code = 'courtlistener')
+          AND case_identifier.identifier_type = 'courtlistener_docket_id'
+          AND case_identifier.identifier_value = ${sourceId}
+      `;
+      const result = await ingestCourtListenerDocket(sql, artifactStore, retrieved.record.id);
+      if (existing) updated += 1;
+      else inserted += 1;
+      docketEntries += result.docketEntries.accepted;
+      documents += result.docketEntries.documents;
+      await finishIngestionRunItem(sql, {
+        runId,
+        sourceRecordId: sourceId,
+        casePublicId: result.caseId,
+        documentCount: result.docketEntries.documents,
+      });
+      return { ok: true };
+    } catch (error) {
+      failed += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      await finishIngestionRunItem(sql, { runId, sourceRecordId: sourceId, error: message })
+        .catch(() => undefined);
+      return { ok: false, ...classifyFailureSignal(error) };
+    }
+  }
 
   try {
-    while (discovered < limit) {
+    // Process page-by-page: each page is drained through the adaptive pool before the
+    // durable cursor advances, so a crash never skips an unprocessed page (upserts are
+    // idempotent, so at-least-once re-processing is safe). We keep going until the source
+    // window is exhausted OR the runaway safety bound is reached.
+    while (discovered < runawayItemLimit) {
       const page = await fetchDocketPage(kind === "historical-backfill"
         ? {
             filedAfter: checkpoint.windowStart.slice(0, 10),
@@ -166,67 +309,9 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
         break;
       }
 
-      for (const retrieved of page.records) {
-        if (discovered >= limit) break;
-        discovered += 1;
-        const sourceId = String(retrieved.record.id);
-        await startIngestionRunItem(sql, runId, sourceId);
-        try {
-          if (!(await courtIsFederal(retrieved.record.court))) {
-            held += 1;
-            await finishIngestionRunItem(sql, {
-              runId,
-              sourceRecordId: sourceId,
-              error: "Held: court is not a verified non-bankruptcy federal jurisdiction",
-            });
-            continue;
-          }
-          if (isRestrictedDocketText(
-            `${retrieved.record.case_name} ${retrieved.record.docket_number}`,
-          )) {
-            held += 1;
-            await finishIngestionRunItem(sql, {
-              runId,
-              sourceRecordId: sourceId,
-              error: "Held: restricted or sensitive docket marker",
-            });
-            continue;
-          }
-
-          const [existing] = await sql<{ id: string }[]>`
-            SELECT legal_case.id
-            FROM case_identifier
-            JOIN legal_case ON legal_case.id = case_identifier.case_id
-            WHERE case_identifier.provider_id =
-              (SELECT id FROM provider WHERE code = 'courtlistener')
-              AND case_identifier.identifier_type = 'courtlistener_docket_id'
-              AND case_identifier.identifier_value = ${sourceId}
-          `;
-          const result = await ingestCourtListenerDocket(
-            sql,
-            artifactStore,
-            retrieved.record.id,
-          );
-          if (existing) updated += 1;
-          else inserted += 1;
-          docketEntries += result.docketEntries.accepted;
-          documents += result.docketEntries.documents;
-          await finishIngestionRunItem(sql, {
-            runId,
-            sourceRecordId: sourceId,
-            casePublicId: result.caseId,
-            documentCount: result.docketEntries.documents,
-          });
-        } catch (error) {
-          failed += 1;
-          await finishIngestionRunItem(sql, {
-            runId,
-            sourceRecordId: sourceId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
+      const remaining = runawayItemLimit - discovered;
+      const pageItems = page.records.slice(0, remaining);
+      controllerState = await processArrayWithPool(pageItems, processDocketRecord, controllerState);
 
       next = page.next;
       await writeCheckpoint(streamName, { ...checkpoint, next });
@@ -234,13 +319,6 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
     }
 
     const completedWindow = next === null;
-    const batchSize = nextBatchSize(
-      checkpoint.batchSize,
-      requestedLimit,
-      failed,
-      held,
-      promotionApproved,
-    );
     const nextCursor: StreamCursor = completedWindow
       ? kind === "new-case-discovery"
         ? {
@@ -248,7 +326,7 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
             windowStart: checkpoint.windowEnd,
             windowEnd: new Date().toISOString(),
             next: null,
-            batchSize,
+            batchSize: LEGACY_CURSOR_BATCH_SIZE,
             completedWindows: checkpoint.completedWindows + 1,
           }
         : {
@@ -258,10 +336,10 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
               new Date(checkpoint.windowEnd).getTime() + 365 * 86_400_000,
             ).toISOString(),
             next: null,
-            batchSize,
+            batchSize: LEGACY_CURSOR_BATCH_SIZE,
             completedWindows: checkpoint.completedWindows + 1,
           }
-      : { ...checkpoint, next, batchSize };
+      : { ...checkpoint, next };
     await writeCheckpoint(streamName, nextCursor);
     await finishIngestionRun(sql, runId);
     return {
@@ -277,6 +355,7 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
       documents,
       sourceTotal,
       checkpoint: nextCursor,
+      finalConcurrency: controllerState.concurrency,
       remainingEstimate: sourceTotal == null ? null : Math.max(0, sourceTotal - discovered),
       costs: 0,
     };
@@ -305,26 +384,23 @@ async function runActiveUpdates() {
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
       )
     ORDER BY legal_case.source_updated_at ASC NULLS FIRST
-    LIMIT ${requestedLimit}
+    LIMIT ${runawayItemLimit}
   `;
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: "active-case-updates",
-    selection: { requestedLimit },
+    selection: concurrencySelection,
     selectedCount: rows.length,
   });
   let updated = 0;
   let failed = 0;
   let docketEntries = 0;
   let documents = 0;
-  for (const row of rows) {
-    await startIngestionRunItem(sql, runId, row.docket_id);
+
+  async function handle(row: { docket_id: string }): Promise<OutcomeSignal> {
     try {
-      const result = await ingestCourtListenerDocket(
-        sql,
-        artifactStore,
-        Number(row.docket_id),
-      );
+      await startIngestionRunItem(sql, runId, row.docket_id);
+      const result = await ingestCourtListenerDocket(sql, artifactStore, Number(row.docket_id));
       updated += 1;
       docketEntries += result.docketEntries.accepted;
       documents += result.docketEntries.documents;
@@ -334,16 +410,21 @@ async function runActiveUpdates() {
         casePublicId: result.caseId,
         documentCount: result.docketEntries.documents,
       });
+      return { ok: true };
     } catch (error) {
       failed += 1;
-      await finishIngestionRunItem(sql, {
-        runId,
-        sourceRecordId: row.docket_id,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const message = error instanceof Error ? error.message : String(error);
+      await finishIngestionRunItem(sql, { runId, sourceRecordId: row.docket_id, error: message })
+        .catch(() => undefined);
+      return { ok: false, ...classifyFailureSignal(error) };
     }
-    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
+
+  const finalState = await processArrayWithPool(
+    rows,
+    handle,
+    initialConcurrencyState(adaptiveConfig),
+  );
   await finishIngestionRun(sql, runId);
   return {
     loop,
@@ -353,94 +434,139 @@ async function runActiveUpdates() {
     docketEntries,
     documents,
     failed,
+    finalConcurrency: finalState.concurrency,
     costs: 0,
   };
 }
 
 async function runMaterialDecisions() {
-  const courts = await sql<{ provider_court_id: string }[]>`
-    SELECT provider_court_id
+  // Rank courts SCOTUS -> circuits -> districts (busiest-first). SCOTUS also has its own
+  // dedicated lane; ranking it first here is defensive. "Busiest" = recent docket-entry
+  // volume, computed in one pass so a hot district is serviced before a quiet one.
+  const courts = await sql<{
+    provider_court_id: string;
+    jurisdiction: string | null;
+    recent_event_volume: number;
+  }[]>`
+    WITH recent AS (
+      SELECT legal_case.court_id, count(*)::int AS volume
+      FROM docket_entry
+      JOIN legal_case ON legal_case.id = docket_entry.case_id
+      WHERE docket_entry.created_at >= now() - interval '30 days'
+      GROUP BY legal_case.court_id
+    )
+    SELECT court.provider_court_id,
+      court.jurisdiction,
+      coalesce(recent.volume, 0) AS recent_event_volume
     FROM court
-    WHERE provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
-      AND provider_court_id IS NOT NULL
+    LEFT JOIN recent ON recent.court_id = court.id
+    WHERE court.provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
+      AND court.provider_court_id IS NOT NULL
       AND (
-        lower(coalesce(jurisdiction, '')) IN ('f', 'fd', 'federal')
-        OR lower(coalesce(jurisdiction, '')) LIKE '%federal district%'
-        OR lower(coalesce(jurisdiction, '')) LIKE '%federal appellate%'
+        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
+        OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
+        OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
       )
-    ORDER BY provider_court_id
   `;
+  const orderedCourts = orderFederalCourtsByPriority(
+    courts.map((court) => ({
+      providerCourtId: court.provider_court_id,
+      jurisdiction: court.jurisdiction,
+      recentEventVolume: court.recent_event_volume,
+    })),
+  );
+
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: "material-decisions",
     selection: {
-      requestedLimit,
+      ...concurrencySelection,
       since: isoDaysAgo(lookbackDays),
-      courtCount: courts.length,
+      courtCount: orderedCourts.length,
     },
-    selectedCount: requestedLimit,
+    selectedCount: runawayItemLimit,
   });
-  let discovered = 0;
-  let opinions = 0;
-  let failed = 0;
-  for (const court of courts) {
-    if (discovered >= requestedLimit) break;
+
+  // Discover cluster ids in priority order, capped per court and by the runaway bound.
+  const filedAfter = isoDaysAgo(lookbackDays).slice(0, 10);
+  const clusterIds: number[] = [];
+  for (const court of orderedCourts) {
+    if (clusterIds.length >= runawayItemLimit) break;
+    const remaining = runawayItemLimit - clusterIds.length;
     const ids = await fetchOpinionClusterIds({
-      courtCode: court.provider_court_id,
-      filedAfter: isoDaysAgo(lookbackDays).slice(0, 10),
-      limit: Math.min(100, requestedLimit - discovered),
+      courtCode: court.providerCourtId,
+      filedAfter,
+      limit: Math.min(MATERIAL_PER_COURT_DISCOVERY_CAP, remaining),
       order: "newest",
     });
-    for (const id of ids) {
-      if (discovered >= requestedLimit) break;
-      discovered += 1;
+    for (const id of ids) clusterIds.push(id);
+  }
+
+  let opinions = 0;
+  let failed = 0;
+
+  async function handle(id: number): Promise<OutcomeSignal> {
+    try {
       await startIngestionRunItem(sql, runId, String(id));
-      try {
-        const result = await ingestCourtListenerOpinionCluster(sql, artifactStore, id);
-        opinions += result.documents.length;
-        await finishIngestionRunItem(sql, {
-          runId,
-          sourceRecordId: String(id),
-          casePublicId: result.caseId,
-          documentCount: result.documents.length,
-        });
-      } catch (error) {
-        failed += 1;
-        await finishIngestionRunItem(sql, {
-          runId,
-          sourceRecordId: String(id),
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const result = await ingestCourtListenerOpinionCluster(sql, artifactStore, id);
+      opinions += result.documents.length;
+      await finishIngestionRunItem(sql, {
+        runId,
+        sourceRecordId: String(id),
+        casePublicId: result.caseId,
+        documentCount: result.documents.length,
+      });
+      return { ok: true };
+    } catch (error) {
+      failed += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      await finishIngestionRunItem(sql, { runId, sourceRecordId: String(id), error: message })
+        .catch(() => undefined);
+      return { ok: false, ...classifyFailureSignal(error) };
     }
   }
+
+  const finalState = await processArrayWithPool(
+    clusterIds,
+    handle,
+    initialConcurrencyState(adaptiveConfig),
+  );
   await finishIngestionRun(sql, runId);
-  return { loop, runId, discovered, opinions, failed, costs: 0 };
+  return {
+    loop,
+    runId,
+    discovered: clusterIds.length,
+    opinions,
+    failed,
+    finalConcurrency: finalState.concurrency,
+    costs: 0,
+  };
 }
 
-async function runPublicationAndQuarantine() {
-  const candidates = await sql<{
-    id: string;
-    caption: string;
-    docket_number: string;
-    source_artifact_id: string | null;
-    court_jurisdiction: string | null;
-    court_provider_id: string | null;
-    court_verification: string | null;
-    source_provider_code: string | null;
-    source_record_id: string | null;
-    source_uri: string | null;
-    source_content_hash: string | null;
-    source_retrieved_at: string | null;
-    canonical_identifier: string | null;
-    canonical_identifier_count: number;
-    identity_collision_count: number;
-    unresolved_rejections: number;
-    has_readable_content: boolean;
-    document_count: number;
-    restricted_text: string;
-  }[]>`
+type PublicationCandidate = {
+  id: string;
+  caption: string;
+  docket_number: string;
+  source_artifact_id: string | null;
+  court_jurisdiction: string | null;
+  court_provider_id: string | null;
+  court_verification: string | null;
+  source_provider_code: string | null;
+  source_record_id: string | null;
+  source_uri: string | null;
+  source_content_hash: string | null;
+  source_retrieved_at: string | null;
+  canonical_identifier: string | null;
+  canonical_identifier_count: number;
+  identity_collision_count: number;
+  unresolved_rejections: number;
+  has_readable_content: boolean;
+  document_count: number;
+  restricted_text: string;
+};
+
+async function selectPublicationCandidates(limit: number): Promise<PublicationCandidate[]> {
+  return await sql<PublicationCandidate[]>`
     SELECT legal_case.id, legal_case.caption, legal_case.docket_number,
       legal_case.source_artifact_id,
       court.jurisdiction AS court_jurisdiction,
@@ -510,104 +636,137 @@ async function runPublicationAndQuarantine() {
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%bankruptcy%'
       )
     ORDER BY legal_case.created_at
-    LIMIT ${requestedLimit}
+    LIMIT ${limit}
   `;
+}
+
+async function runPublicationAndQuarantine() {
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: "publication-quarantine",
-    selection: { requestedLimit, policy: "federal-publication-v2" },
-    selectedCount: candidates.length,
+    selection: { ...concurrencySelection, policy: "federal-publication-v2" },
+    selectedCount: runawayItemLimit,
   });
+  let discovered = 0;
   let published = 0;
   let held = 0;
+  let failed = 0;
   const holdReasons: Record<string, number> = {};
-  for (const candidate of candidates) {
-    await startIngestionRunItem(sql, runId, candidate.id);
-    const decision = evaluateFederalPublicationCandidate({
-      caption: candidate.caption,
-      docketNumber: candidate.docket_number,
-      courtJurisdiction: candidate.court_jurisdiction,
-      courtProviderId: candidate.court_provider_id,
-      courtVerification: candidate.court_verification,
-      sourceArtifactId: candidate.source_artifact_id,
-      sourceProviderCode: candidate.source_provider_code,
-      sourceRecordId: candidate.source_record_id,
-      sourceUri: candidate.source_uri,
-      sourceContentHash: candidate.source_content_hash,
-      sourceRetrievedAt: candidate.source_retrieved_at,
-      hasReadableContent: candidate.has_readable_content,
-      canonicalIdentifier: candidate.canonical_identifier,
-      canonicalIdentifierCount: candidate.canonical_identifier_count,
-      identityCollisionCount: candidate.identity_collision_count,
-      unresolvedRejections: candidate.unresolved_rejections,
-      restrictedText: candidate.restricted_text,
-    });
-    if (!decision.eligible) {
-      held += 1;
-      for (const reason of decision.reasons) {
-        holdReasons[reason] = (holdReasons[reason] ?? 0) + 1;
+  let controllerState = initialConcurrencyState(adaptiveConfig);
+
+  async function handle(candidate: PublicationCandidate): Promise<OutcomeSignal> {
+    try {
+      await startIngestionRunItem(sql, runId, candidate.id);
+      const decision = evaluateFederalPublicationCandidate({
+        caption: candidate.caption,
+        docketNumber: candidate.docket_number,
+        courtJurisdiction: candidate.court_jurisdiction,
+        courtProviderId: candidate.court_provider_id,
+        courtVerification: candidate.court_verification,
+        sourceArtifactId: candidate.source_artifact_id,
+        sourceProviderCode: candidate.source_provider_code,
+        sourceRecordId: candidate.source_record_id,
+        sourceUri: candidate.source_uri,
+        sourceContentHash: candidate.source_content_hash,
+        sourceRetrievedAt: candidate.source_retrieved_at,
+        hasReadableContent: candidate.has_readable_content,
+        canonicalIdentifier: candidate.canonical_identifier,
+        canonicalIdentifierCount: candidate.canonical_identifier_count,
+        identityCollisionCount: candidate.identity_collision_count,
+        unresolvedRejections: candidate.unresolved_rejections,
+        restrictedText: candidate.restricted_text,
+      });
+      if (!decision.eligible) {
+        held += 1;
+        for (const reason of decision.reasons) {
+          holdReasons[reason] = (holdReasons[reason] ?? 0) + 1;
+        }
+        await sql`
+          UPDATE legal_case SET verification = 'needs_review',
+            publication = CASE WHEN ${decision.restricted}
+              THEN 'restricted'::publication_state ELSE publication END,
+            updated_at = now()
+          WHERE id = ${candidate.id}
+        `;
+        await finishIngestionRunItem(sql, {
+          runId,
+          sourceRecordId: candidate.id,
+          error: `Held: ${decision.reasons.join(",")}`,
+        });
+        return { ok: true };
       }
-      await sql`
-        UPDATE legal_case SET verification = 'needs_review',
-          publication = CASE WHEN ${decision.restricted}
-            THEN 'restricted'::publication_state ELSE publication END,
-          updated_at = now()
-        WHERE id = ${candidate.id}
-      `;
+      await sql.begin(async (tx) => {
+        await tx`
+          UPDATE legal_case SET verification = 'verified', publication = 'published',
+            updated_at = now()
+          WHERE id = ${candidate.id}
+        `;
+        await tx`
+          INSERT INTO publication_decision (
+            object_type, object_id, displayable, indexable, machine_accessible,
+            downloadable, summary_eligible, reason_code, rule_version
+          )
+          SELECT 'legal_case', ${candidate.id}, true, true, true, false, false,
+            'deterministic_federal_source_validation', 'federal-publication-v2'
+          WHERE NOT COALESCE((
+            SELECT displayable FROM publication_decision
+            WHERE object_type = 'legal_case' AND object_id = ${candidate.id}
+            ORDER BY decided_at DESC, id DESC LIMIT 1
+          ), false)
+        `;
+        await tx`
+          INSERT INTO outbox_event (
+            topic, aggregate_type, aggregate_id, aggregate_version, payload
+          ) VALUES (
+            'publication.changed', 'legal_case', ${candidate.id},
+            (extract(epoch from clock_timestamp()) * 1000000)::bigint,
+            ${tx.json({ source: "courtlistener", policy: "federal-publication-v2" })}
+          )
+        `;
+      });
+      published += 1;
       await finishIngestionRunItem(sql, {
         runId,
         sourceRecordId: candidate.id,
-        error: `Held: ${decision.reasons.join(",")}`,
+        documentCount: candidate.document_count,
       });
-      continue;
+      return { ok: true };
+    } catch (error) {
+      failed += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      await finishIngestionRunItem(sql, { runId, sourceRecordId: candidate.id, error: message })
+        .catch(() => undefined);
+      return { ok: false, ...classifyFailureSignal(error) };
     }
-    await sql.begin(async (tx) => {
-      await tx`
-        UPDATE legal_case SET verification = 'verified', publication = 'published',
-          updated_at = now()
-        WHERE id = ${candidate.id}
-      `;
-      await tx`
-        INSERT INTO publication_decision (
-          object_type, object_id, displayable, indexable, machine_accessible,
-          downloadable, summary_eligible, reason_code, rule_version
-        )
-        SELECT 'legal_case', ${candidate.id}, true, true, true, false, false,
-          'deterministic_federal_source_validation', 'federal-publication-v2'
-        WHERE NOT COALESCE((
-          SELECT displayable FROM publication_decision
-          WHERE object_type = 'legal_case' AND object_id = ${candidate.id}
-          ORDER BY decided_at DESC, id DESC LIMIT 1
-        ), false)
-      `;
-      await tx`
-        INSERT INTO outbox_event (
-          topic, aggregate_type, aggregate_id, aggregate_version, payload
-        ) VALUES (
-          'publication.changed', 'legal_case', ${candidate.id},
-          (extract(epoch from clock_timestamp()) * 1000000)::bigint,
-          ${tx.json({ source: "courtlistener", policy: "federal-publication-v2" })}
-        )
-      `;
-    });
-    published += 1;
-    await finishIngestionRunItem(sql, {
-      runId,
-      sourceRecordId: candidate.id,
-      documentCount: candidate.document_count,
-    });
   }
-  await finishIngestionRun(sql, runId);
-  return {
-    loop,
-    runId,
-    discovered: candidates.length,
-    published,
-    held,
-    holdReasons,
-    failed: 0,
-    costs: 0,
-  };
+
+  try {
+    // Drain in bounded chunks. Every processed row leaves the draft/not-needs_review
+    // predicate (it becomes published or needs_review), so the same LIMITed query
+    // returns the next slice each pass until the queue is empty or the runaway cap hits.
+    while (discovered < runawayItemLimit) {
+      const chunkSize = Math.min(PUBLICATION_CHUNK_SIZE, runawayItemLimit - discovered);
+      const candidates = await selectPublicationCandidates(chunkSize);
+      if (candidates.length === 0) break;
+      discovered += candidates.length;
+      controllerState = await processArrayWithPool(candidates, handle, controllerState);
+    }
+    await finishIngestionRun(sql, runId);
+    return {
+      loop,
+      runId,
+      discovered,
+      published,
+      held,
+      holdReasons,
+      failed,
+      finalConcurrency: controllerState.concurrency,
+      costs: 0,
+    };
+  } catch (error) {
+    await finishIngestionRun(sql, runId, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 }
 
 try {
