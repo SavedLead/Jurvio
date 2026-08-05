@@ -19,7 +19,7 @@ jobs:
           set -euo pipefail
           existing_id=$(curl --fail --silent --show-error --header "Authorization: Bearer $DO_TOKEN" "https://api.digitalocean.com/v2/droplets?name=$DROPLET_NAME" | jq -r '.droplets[0].id // empty')
           test -z "$existing_id" || { echo "::error::Builder already exists; refusing duplicate"; exit 1; }
-          runner_token=$(curl --fail --silent --show-error --request POST --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token" | jq -r '.token')
+          runner_token="${{ secrets.RUNNER_REGISTRATION_TOKEN }}"
           test -n "$runner_token"
           cat > cloud-init.yml <<'CLOUD_EOF'
           #cloud-config
