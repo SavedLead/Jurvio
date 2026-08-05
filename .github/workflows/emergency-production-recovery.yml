@@ -15,10 +15,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  recover:
+  inspect:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Configure SSH
         env:
@@ -33,7 +33,7 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Free disposable Docker space and recover web app
+      - name: Measure production volumes
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -41,68 +41,19 @@ jobs:
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 "$DO_USER@$DO_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
-
-          echo "Disk before cleanup"
-          df -h /
-          docker system df || true
-
-          # Intentionally do not prune volumes. PostgreSQL and artifact volumes remain intact.
-          docker image prune -af || true
-          docker builder prune -af || true
-          docker container prune -f || true
-
-          echo "Disk after disposable cleanup"
-          df -h /
-          docker system df || true
-
-          app_id="$(docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
-          postgres_id="$(docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=postgres" --format "{{.ID}}" | head -n1)"
+          app_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
+          postgres_id="$(docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=postgres" --format "{{.ID}}" | head -n1)"
           test -n "$app_id"
           test -n "$postgres_id"
 
-          echo "Pausing Jurvio ingestion workers"
-          mapfile -t worker_ids < <(docker ps -a --filter "label=com.docker.compose.project=jurvio" --format "{{.ID}} {{.Label \"com.docker.compose.service\"}}" | awk '$2 ~ /^worker/ {print $1}')
-          for worker_id in "${worker_ids[@]}"; do
-            docker stop --time 30 "$worker_id" >/dev/null || true
-            docker update --restart=no "$worker_id" >/dev/null || true
-          done
-
-          echo "PostgreSQL readiness"
-          docker start "$postgres_id" >/dev/null
-          for attempt in $(seq 1 24); do
-            if docker exec "$postgres_id" pg_isready -U jurvio -d jurvio >/dev/null 2>&1; then
-              break
-            fi
-            sleep 5
-          done
-          docker exec "$postgres_id" pg_isready -U jurvio -d jurvio
-
-          echo "Restarting web application"
-          docker update --restart=unless-stopped "$app_id" >/dev/null
-          docker restart --time 30 "$app_id" >/dev/null
-
-          ready=0
-          for attempt in $(seq 1 36); do
-            if curl -fsS --max-time 5 http://127.0.0.1:3000/api/ready >/dev/null; then
-              ready=1
-              break
-            fi
-            sleep 5
-          done
-
-          echo "Route checks"
-          route_ok=1
-          for path in /api/ready /cases /supreme-court; do
-            code="$(curl -sS -o /dev/null --max-time 30 -w '%{http_code}' "http://127.0.0.1:3000$path" || true)"
-            printf '%s %s\n' "$path" "$code"
-            test "$code" = "200" || route_ok=0
-          done
-
-          echo "Sanitized app log tail"
-          docker logs --tail 250 "$app_id" 2>&1 |
-            sed -E               -e 's#https?://[^[:space:]"'\''<>]+#<url>#g'               -e 's#(DATABASE_URL|PASSWORD|TOKEN|SECRET|AUTHORIZATION|COOKIE)[=:][^[:space:]]+#\1=<redacted>#gI' |
-            tail -n 250
-
-          test "$ready" -eq 1
-          test "$route_ok" -eq 1
+          echo "Filesystem"
+          df -h /
+          echo "Docker volumes"
+          docker system df -v || true
+          echo "Artifact directories"
+          docker exec "$app_id" sh -lc 'du -h -d 2 /var/lib/jurvio/artifacts 2>/dev/null | sort -h | tail -n 80' || true
+          echo "Largest artifact files"
+          docker exec "$app_id" sh -lc 'find /var/lib/jurvio/artifacts -type f -printf "%s %p\n" 2>/dev/null | sort -nr | head -n 60' || true
+          echo "PostgreSQL directories"
+          docker exec "$postgres_id" sh -lc 'du -h -d 2 /var/lib/postgresql/data 2>/dev/null | sort -h | tail -n 40' || true
           REMOTE
