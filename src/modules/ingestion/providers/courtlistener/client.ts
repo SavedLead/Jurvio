@@ -40,9 +40,7 @@ export function courtListenerRetryDelayMs(retryAfter: string | null, attempt: nu
     : 1_000 * (2 ** (attempt - 1));
 }
 
-let useConfiguredApiToken = true;
-
-function headers(): HeadersInit {
+function headers(useConfiguredApiToken: boolean): HeadersInit {
   const config = env();
   return {
     Accept: "application/json",
@@ -55,19 +53,23 @@ function headers(): HeadersInit {
 
 async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
   const maximumAttempts = 4;
+  // Token fallback is scoped to THIS request. A single transient 401 must not
+  // permanently downgrade the whole worker to unauthenticated access, which
+  // would silently throttle every later request until a restart. Each new
+  // request starts with the configured token, so a newly set or rotated token
+  // takes effect immediately without a restart.
+  let useConfiguredApiToken = Boolean(env().COURTLISTENER_API_TOKEN);
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
-    const sentConfiguredToken = Boolean(
-      useConfiguredApiToken && env().COURTLISTENER_API_TOKEN,
-    );
+    const sentConfiguredToken = useConfiguredApiToken;
     const response = await fetch(url, {
-      headers: headers(),
+      headers: headers(useConfiguredApiToken),
       signal: AbortSignal.timeout(30_000),
     });
     if (response.ok) return { response, body: await response.text() };
     if (response.status === 401 && sentConfiguredToken) {
       useConfiguredApiToken = false;
       process.stderr.write(
-        "CourtListener rejected the configured API token; retrying public access.\n",
+        "CourtListener rejected the configured API token; retrying this request unauthenticated.\n",
       );
       continue;
     }
