@@ -1,8 +1,6 @@
 name: Provision Jurvio builder (temporary)
 on:
-  push:
-    branches: [agent/do-inventory-20260805]
-    paths: [.github/workflows/provision-builder-temporary.yml]
+  workflow_dispatch:
 permissions:
   contents: write
   actions: write
@@ -67,7 +65,7 @@ jobs:
         shell: bash
         run: |
           content=$(base64 -w0 safe-result.json)
-          jq -n --arg message "record safe builder provisioning result" --arg content "$content" --arg branch "agent/do-inventory-20260805" '{message:$message,content:$content,branch:$branch}' > payload.json
+          jq -n --arg message "record safe builder provisioning result" --arg content "$content" --arg branch "main" '{message:$message,content:$content,branch:$branch}' > payload.json
           curl --fail-with-body --silent --show-error --request PUT --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/contents/.do-builder-safe.json" --data-binary @payload.json
 
 # Approved by owner on 2026-08-05
