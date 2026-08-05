@@ -27,8 +27,23 @@ jobs:
           api=https://api.digitalocean.com/v2
           auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
 
-          current="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200" | jq -c --arg host "$CURRENT_HOST" '.droplets[] | select(any(.networks.v4[]; .ip_address == $host))' | head -1)"
-          test -n "$current" || { echo "::error::Current Jurvio droplet was not found"; exit 1; }
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          current="$(jq -c --arg host "$CURRENT_HOST" --arg server "$SERVER_NAME" '
+            ([.droplets[] | select(any(.networks.v4[]?; .ip_address == $host))][0]) //
+            ([.droplets[]
+              | select(.name != $server and .name != "jurvio-builder-01")
+              | select((.tags // []) | index("jurvio"))
+            ] | sort_by(.memory) | reverse | .[0]) //
+            ([.droplets[]
+              | select(.name != $server and .name != "jurvio-builder-01")
+              | select(.size.slug == "s-4vcpu-8gb")
+            ][0]) //
+            empty
+          ' <<<"$droplets")"
+          test -n "$current" || {
+            echo "::error::Jurvio ingestion droplet was not found by configured IP, Jurvio tag, or approved 4 vCPU/8 GB size"
+            exit 1
+          }
           region="$(jq -r '.region.slug' <<<"$current")"
           vpc="$(jq -r '.vpc_uuid' <<<"$current")"
           ssh_key="$(curl -fsS "${auth[@]}" "$api/account/keys?per_page=200" | jq -r '.ssh_keys[0].id')"
