@@ -28,6 +28,13 @@ function currentScotusTerm(): string {
 const jobs: ScheduledJob[] = [
   {
     lane: "core",
+    name: "judge-population",
+    initialDelayMs: 3 * minute,
+    intervalMs: 15 * minute,
+    command: ["jobs/populate-judges.mjs", "--limit=5000"],
+  },
+  {
+    lane: "core",
     name: "district-court-source-scout",
     initialDelayMs: 15 * minute,
     intervalMs: 7 * 24 * 60 * minute,
