@@ -7,16 +7,17 @@ import styles from "./cases.module.css";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
-  title: "Browse public cases",
-  description: "Browse verified, published court cases on Jurvio.",
+  title: "Find a court case",
+  description: "Search verified, published court cases by case name, party, docket number, or court.",
   alternates: { canonical: "/cases" },
 };
 
-type Params = { page?: string; court?: string };
+type Params = { page?: string; court?: string; q?: string };
 
-function pageHref(page: number, court?: string | null) {
+function pageHref(page: number, court?: string | null, query?: string | null) {
   const params = new URLSearchParams({ page: String(page) });
   if (court) params.set("court", court);
+  if (query) params.set("q", query);
   return `/cases?${params}` as Route;
 }
 
@@ -31,45 +32,53 @@ export default async function CasesPage({
     page,
     pageSize: 50,
     court: raw.court,
+    query: raw.q,
   });
   const pages = Math.max(1, Math.ceil(result.total / result.pageSize));
+  const showingSearch = Boolean(result.query);
 
   return (
     <main className={styles.page}>
       <section className={styles.hero}>
         <div className={styles.inner}>
           <p className={styles.eyebrow}>Public case library</p>
-          <h1>Browse verified court cases.</h1>
+          <h1>Find a federal court case.</h1>
           <p>
-            {result.total.toLocaleString()} source-backed case {result.total === 1 ? "page is" : "pages are"} currently live.
-            Opinion text and documents appear separately after extraction and verification.
+            Search published cases by case name, party, or docket number. Results only include source-backed court records that Jurvio has cleared for public display.
           </p>
         </div>
       </section>
 
       <div className={styles.inner}>
         <form className={styles.filters} action="/cases">
-          <label htmlFor="court">Court</label>
-          <select id="court" name="court" defaultValue={result.court ?? ""}>
-            <option value="">All courts</option>
-            {result.courts.map((court) => (
-              <option key={court.value} value={court.value}>
-                {court.label} ({court.count.toLocaleString()})
-              </option>
-            ))}
-          </select>
-          <button type="submit">Apply</button>
-          {result.court ? <Link href="/cases">Clear</Link> : null}
+          <div className={styles.searchField}>
+            <label htmlFor="q">Search cases</label>
+            <input id="q" name="q" type="search" defaultValue={result.query ?? ""} placeholder="Case name, party, or docket number" />
+          </div>
+          <div className={styles.courtField}>
+            <label htmlFor="court">Court</label>
+            <select id="court" name="court" defaultValue={result.court ?? ""}>
+              <option value="">All courts</option>
+              {result.courts.map((court) => (
+                <option key={court.value} value={court.value}>
+                  {court.label} ({court.count.toLocaleString()})
+                </option>
+              ))}
+            </select>
+          </div>
+          <button type="submit">Search</button>
+          {(result.court || result.query) ? <Link href="/cases">Clear</Link> : null}
         </form>
 
         <div className={styles.resultHead}>
-          <h2>{result.total.toLocaleString()} published {result.total === 1 ? "case" : "cases"}</h2>
-          <p>Showing newest filed cases first.</p>
+          <h2>{result.total.toLocaleString()} {showingSearch ? "matching" : "published"} {result.total === 1 ? "case" : "cases"}</h2>
+          <p>{showingSearch ? `Results for “${result.query}”` : "Showing newest filed cases first."}</p>
         </div>
 
         {result.cases.length === 0 ? (
           <section className={styles.empty}>
-            <h2>No published cases match this court.</h2>
+            <h2>No public cases match that search yet.</h2>
+            <p>Try a different spelling, a shorter party name, or the docket number.</p>
             <Link href="/cases">Browse all public cases</Link>
           </section>
         ) : (
@@ -95,9 +104,9 @@ export default async function CasesPage({
 
         {pages > 1 ? (
           <nav className={styles.pagination} aria-label="Case directory pages">
-            {result.page > 1 ? <Link href={pageHref(result.page - 1, result.court)}>← Previous</Link> : <span />}
+            {result.page > 1 ? <Link href={pageHref(result.page - 1, result.court, result.query)}>← Previous</Link> : <span />}
             <span>Page {result.page} of {pages}</span>
-            {result.page < pages ? <Link href={pageHref(result.page + 1, result.court)}>Next →</Link> : <span />}
+            {result.page < pages ? <Link href={pageHref(result.page + 1, result.court, result.query)}>Next →</Link> : <span />}
           </nav>
         ) : null}
       </div>
