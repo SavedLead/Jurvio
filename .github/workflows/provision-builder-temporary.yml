@@ -53,8 +53,9 @@ jobs:
           sed -i "s|__REPO_URL__|https://github.com/${{ github.repository }}|" cloud-init.yml
           sed -i "s|__RUNNER_TOKEN__|$runner_token|" cloud-init.yml
           jq -n --arg user_data "$(cat cloud-init.yml)" '{name:"jurvio-builder-01",region:"nyc1",size:"s-2vcpu-4gb",image:"ubuntu-24-04-x64",vpc_uuid:"c3c9badd-ce8c-4dd9-bd1b-d15d8739dbb6",monitoring:true,backups:false,ipv6:false,user_data:$user_data,ssh_keys:[57955909],tags:["jurvio","builder","github-runner"]}' > create.json
-          response=$(curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/droplets" --data-binary @create.json)
-          droplet_id=$(jq -r '.droplet.id' <<<"$response")
+          response=$(curl --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/droplets" --data-binary @create.json)
+          droplet_id=$(jq -r '.droplet.id // empty' <<<"$response")
+          test -n "$droplet_id" || { jq '{id,message}' <<<"$response"; exit 1; }
           curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/projects/71f13689-d3ce-43d8-9ec1-c58215514a0a/resources" --data-binary "{"resources":["do:droplet:$droplet_id"]}" >/dev/null
           jq -n --argjson droplet_ids "[$droplet_id]" '{name:"jurvio-builder-01-firewall",droplet_ids:$droplet_ids,inbound_rules:[],outbound_rules:[{protocol:"tcp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"udp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"icmp",destinations:{addresses:["0.0.0.0/0","::/0"]}}]}' > firewall.json
           fw=$(curl --fail-with-body --silent --show-error --request POST --header "Authorization: Bearer $DO_TOKEN" --header "Content-Type: application/json" "https://api.digitalocean.com/v2/firewalls" --data-binary @firewall.json)
