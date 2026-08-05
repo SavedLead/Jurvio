@@ -15,8 +15,9 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Fork PRs stay on isolated GitHub-hosted runners; only Jurvio-owned code reaches the persistent builder.
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'self-hosted' }}
+    timeout-minutes: 20
     env:
       DATABASE_URL: postgresql://jurvio:jurvio@localhost:5432/jurvio
       COURTLISTENER_API_BASE_URL: https://www.courtlistener.com/api/rest/v4
