@@ -113,7 +113,7 @@ jobs:
             echo "- Private IP: $private_ip"
             echo "- Created in this run: $created"
             echo "- Firewall: zero inbound ports during bootstrap"
-            echo "- Size: 2 vCPU, 4 GB RAM, 80 GB disk ($24/month)"
+            echo "- Size: 2 vCPU, 4 GB RAM, 80 GB disk (\$24/month)"
           } >> "$GITHUB_STEP_SUMMARY"
 
           gh issue create --repo "$GITHUB_REPOSITORY" \
