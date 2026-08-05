@@ -122,6 +122,12 @@ const jobs: ScheduledJob[] = [
       "--attempts=10",
     ],
   },
+  // Federal loops no longer carry the artificial throttle (fixed --limit=100 ceiling,
+  // forced --approve-scale-up=false, and 1s/item --delay-ms). They now self-throttle via
+  // a bounded adaptive worker pool: conservative --start-concurrency that climbs only after
+  // clean windows and halves on distress, capped by --max-concurrency (hard max 16), and a
+  // finite --max-items runaway guard rather than an hourly ceiling. Defaults are OOM-safe
+  // for the small droplet; per-loop overrides below stay well inside those bounds.
   {
     lane: "core",
     name: "federal-new-cases",
@@ -130,9 +136,9 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=new-case-discovery",
-      "--limit=100",
-      "--approve-scale-up=false",
-      "--delay-ms=1000",
+      "--start-concurrency=6",
+      "--max-concurrency=8",
+      "--max-items=5000",
     ],
   },
   {
@@ -143,9 +149,9 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=material-decisions",
-      "--limit=100",
-      "--approve-scale-up=false",
-      "--delay-ms=1000",
+      "--start-concurrency=6",
+      "--max-concurrency=8",
+      "--max-items=5000",
     ],
   },
   {
@@ -153,12 +159,14 @@ const jobs: ScheduledJob[] = [
     name: "federal-publication",
     initialDelayMs: 22 * minute,
     intervalMs: 60 * minute,
+    // Publication is pure DB work (each publish opens a transaction); keep concurrency
+    // lower so it never starves the shared Postgres pool (max 10 connections).
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=publication-quarantine",
-      "--limit=100",
-      "--approve-scale-up=false",
-      "--delay-ms=0",
+      "--start-concurrency=4",
+      "--max-concurrency=6",
+      "--max-items=5000",
     ],
   },
   {
@@ -169,9 +177,9 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=active-case-updates",
-      "--limit=100",
-      "--approve-scale-up=false",
-      "--delay-ms=1000",
+      "--start-concurrency=6",
+      "--max-concurrency=8",
+      "--max-items=5000",
     ],
   },
   {
@@ -182,9 +190,9 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=historical-backfill",
-      "--limit=100",
-      "--approve-scale-up=false",
-      "--delay-ms=1000",
+      "--start-concurrency=6",
+      "--max-concurrency=8",
+      "--max-items=5000",
     ],
   },
 ];

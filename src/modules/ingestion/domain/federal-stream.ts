@@ -10,9 +10,21 @@ export interface StreamCursor {
   windowStart: string;
   windowEnd: string;
   next: string | null;
+  /**
+   * Legacy field retained only for wire-compatibility with checkpoints written by
+   * the old fixed-batch throttle. It no longer limits how much a cycle processes —
+   * adaptive concurrency plus the runaway safety bound govern that now — but keeping
+   * it lets already-stored production cursors decode without a migration.
+   */
   batchSize: number;
   completedWindows: number;
 }
+
+/**
+ * Nominal value stamped onto newly written cursors for the retained `batchSize`
+ * field. It is informational only; nothing throttles on it anymore.
+ */
+export const LEGACY_CURSOR_BATCH_SIZE = 100;
 
 export interface FederalPublicationCandidate {
   caption: string;
@@ -26,6 +38,7 @@ export interface FederalPublicationCandidate {
   sourceUri: string | null;
   sourceContentHash: string | null;
   sourceRetrievedAt: string | null;
+  hasReadableContent: boolean;
   canonicalIdentifier: string | null;
   canonicalIdentifierCount: number;
   identityCollisionCount: number;
@@ -37,37 +50,6 @@ export interface FederalPublicationDecision {
   eligible: boolean;
   restricted: boolean;
   reasons: string[];
-}
-
-export const FEDERAL_BATCH_STEPS = [100, 1_000, 10_000] as const;
-
-export function normalizeBatchSize(value: number): number {
-  if (!Number.isInteger(value) || value < 1 || value > 10_000) {
-    throw new Error("Federal batch size must be between 1 and 10000");
-  }
-  return value;
-}
-
-export function nextBatchSize(
-  current: number,
-  requested: number,
-  failed: number,
-  held: number,
-  promotionApproved: boolean,
-): number {
-  normalizeBatchSize(current);
-  normalizeBatchSize(requested);
-  if (!promotionApproved || failed > 0 || held > 0 || requested <= current) return current;
-  const currentIndex = FEDERAL_BATCH_STEPS.indexOf(
-    current as (typeof FEDERAL_BATCH_STEPS)[number],
-  );
-  const requestedIndex = FEDERAL_BATCH_STEPS.indexOf(
-    requested as (typeof FEDERAL_BATCH_STEPS)[number],
-  );
-  if (currentIndex < 0 || requestedIndex !== currentIndex + 1) {
-    throw new Error("Federal batch promotion must follow 100 -> 1000 -> 10000");
-  }
-  return requested;
 }
 
 export function encodeStreamCursor(cursor: StreamCursor): string {
@@ -82,17 +64,22 @@ export function decodeStreamCursor(value: string | null, fallback: StreamCursor)
     typeof parsed.windowStart !== "string" ||
     typeof parsed.windowEnd !== "string" ||
     !(typeof parsed.next === "string" || parsed.next === null) ||
-    typeof parsed.batchSize !== "number" ||
     typeof parsed.completedWindows !== "number"
   ) {
     throw new Error("Stored federal ingestion checkpoint is malformed");
   }
+  // `batchSize` is legacy and no longer throttles anything; accept whatever a stored
+  // cursor carried (or default it) so old checkpoints keep decoding.
+  const batchSize =
+    typeof parsed.batchSize === "number" && Number.isFinite(parsed.batchSize)
+      ? parsed.batchSize
+      : LEGACY_CURSOR_BATCH_SIZE;
   return {
     version: 1,
     windowStart: parsed.windowStart,
     windowEnd: parsed.windowEnd,
     next: parsed.next,
-    batchSize: normalizeBatchSize(parsed.batchSize),
+    batchSize,
     completedWindows: parsed.completedWindows,
   };
 }
@@ -118,19 +105,62 @@ export function isRestrictedDocketText(value: string): boolean {
   return /\b(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\b/i.test(value);
 }
 
-function isVerifiedCourtListenerDocketSourceUri(
-  sourceUri: string | null,
-  sourceRecordId: string | null,
-): boolean {
-  if (!sourceUri || !sourceRecordId || !/^\d+$/.test(sourceRecordId)) return false;
-  if (sourceUri === `https://www.courtlistener.com/api/rest/v4/dockets/${sourceRecordId}/`) {
-    return true;
+export function isValidHttpSourceUri(sourceUri: string | null): boolean {
+  if (!sourceUri || !sourceUri.trim()) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(sourceUri);
+  } catch {
+    return false;
   }
-  const bulkPrefix = "https://www.courtlistener.com/help/api/bulk-data/#docket-";
-  if (!sourceUri.startsWith(bulkPrefix)) return false;
-  const suffix = sourceUri.slice(bulkPrefix.length);
-  const match = /^(\d{4}-\d{2}-\d{2})-(\d+)$/.exec(suffix);
-  return match?.[2] === sourceRecordId && !Number.isNaN(Date.parse(`${match[1]}T00:00:00Z`));
+  return parsed.protocol === "http:" || parsed.protocol === "https:";
+}
+
+/**
+ * A federal court awaiting decision/opinion ingestion, annotated with how much recent
+ * activity it has seen so districts can be serviced busiest-first.
+ */
+export interface FederalCourtWorkload {
+  providerCourtId: string;
+  jurisdiction: string | null;
+  /** Recent docket-entry volume for this court; higher == busier == higher priority. */
+  recentEventVolume: number;
+}
+
+/**
+ * Service-priority tier for a federal court. Lower rank is serviced first:
+ *   0 = SCOTUS, 1 = circuit/appellate courts, 2 = district courts, 3 = anything else.
+ *
+ * SCOTUS additionally runs on its own dedicated scheduler lane; ranking it first here
+ * is belt-and-suspenders for any loop that happens to see it alongside other courts.
+ */
+export function federalCourtServiceRank(court: {
+  providerCourtId: string;
+  jurisdiction: string | null;
+}): number {
+  if (court.providerCourtId.trim().toLowerCase() === "scotus") return 0;
+  const normalized = court.jurisdiction?.trim().toLowerCase() ?? "";
+  if (normalized === "f" || normalized.includes("appellate")) return 1;
+  if (normalized === "fd" || normalized.includes("district")) return 2;
+  return 3;
+}
+
+/**
+ * Total ordering for federal court work: by service rank first (SCOTUS -> circuits ->
+ * districts -> other), then busiest-first within a rank (recent event volume, desc), then
+ * a stable provider-id tiebreak so the order is deterministic.
+ */
+export function compareFederalCourtPriority(a: FederalCourtWorkload, b: FederalCourtWorkload): number {
+  const rankDelta = federalCourtServiceRank(a) - federalCourtServiceRank(b);
+  if (rankDelta !== 0) return rankDelta;
+  const volumeDelta = b.recentEventVolume - a.recentEventVolume;
+  if (volumeDelta !== 0) return volumeDelta;
+  return a.providerCourtId.localeCompare(b.providerCourtId);
+}
+
+/** Returns a new array of courts ordered by {@link compareFederalCourtPriority}. */
+export function orderFederalCourtsByPriority<T extends FederalCourtWorkload>(courts: readonly T[]): T[] {
+  return [...courts].sort(compareFederalCourtPriority);
 }
 
 export function evaluateFederalPublicationCandidate(
@@ -147,17 +177,8 @@ export function evaluateFederalPublicationCandidate(
   if (!candidate.courtProviderId) reasons.push("missing_court_provider_identity");
   if (candidate.courtVerification !== "verified") reasons.push("unverified_court_record");
   if (!candidate.sourceArtifactId) reasons.push("missing_source_artifact");
-  if (candidate.sourceProviderCode !== "courtlistener") {
-    reasons.push("unsupported_source_provider");
-  }
-  if (!candidate.sourceRecordId || candidate.sourceRecordId !== candidate.canonicalIdentifier) {
-    reasons.push("source_identifier_mismatch");
-  }
-  if (!isVerifiedCourtListenerDocketSourceUri(
-    candidate.sourceUri,
-    candidate.sourceRecordId,
-  )) {
-    reasons.push("invalid_source_uri");
+  if (!isValidHttpSourceUri(candidate.sourceUri)) {
+    reasons.push("missing_source_url");
   }
   if (!candidate.sourceContentHash || !/^[a-f0-9]{64}$/i.test(candidate.sourceContentHash)) {
     reasons.push("invalid_source_checksum");
@@ -165,9 +186,7 @@ export function evaluateFederalPublicationCandidate(
   if (!candidate.sourceRetrievedAt || Number.isNaN(Date.parse(candidate.sourceRetrievedAt))) {
     reasons.push("missing_retrieval_timestamp");
   }
-  if (candidate.canonicalIdentifierCount !== 1) {
-    reasons.push("ambiguous_canonical_identifier");
-  }
+  if (!candidate.hasReadableContent) reasons.push("missing_readable_content");
   if (candidate.identityCollisionCount > 1) reasons.push("duplicate_identity_collision");
   if (candidate.unresolvedRejections > 0) reasons.push("unresolved_ingestion_rejection");
   if (restricted) reasons.push("restricted_or_sensitive");
