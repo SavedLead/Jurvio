@@ -301,3 +301,59 @@ button:hover { background: var(--brand-dark); }
   .caseSectionCard { min-height: 104px; padding: 17px; }
   .caseSectionCard strong { font-size: 29px; }
 }
+
+
+/* Homepage discovery and live activity */
+.startingPaths { padding-top: 72px; padding-bottom: 24px; }
+.startingPathsGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.startingPathCard {
+  display: flex; min-height: 260px; flex-direction: column; padding: 28px;
+  border: 1px solid var(--border); border-top: 3px solid var(--brand);
+  border-radius: 4px; background: var(--surface); color: var(--ink);
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+.startingPathCard:hover {
+  transform: translateY(-3px); border-color: #afc0df;
+  box-shadow: 0 16px 38px rgba(11,23,48,.08); text-decoration: none;
+}
+.startingPathCard > span {
+  color: #8995a8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; font-weight: 750;
+}
+.startingPathCard > strong { margin-top: 32px; font-size: 24px; letter-spacing: -.025em; }
+.startingPathCard > small { margin-top: 14px; color: var(--muted); font-size: 15px; line-height: 1.6; }
+.startingPathCard > b { margin-top: auto; padding-top: 28px; color: var(--brand); font-size: 14px; }
+
+.recentBand { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: #f1f4f8; }
+.recentBand > .shell { padding-top: 88px; padding-bottom: 96px; }
+.recentCaseGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.recentCaseCard {
+  display: flex; min-height: 290px; flex-direction: column; padding: 26px;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--surface);
+}
+.recentCaseCard > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; }
+.recentCaseCard > div span {
+  color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+}
+.recentCaseCard time { color: var(--muted); font-size: 12px; }
+.recentCaseCard h3 { margin: 30px 0 12px; font-size: 22px; line-height: 1.3; letter-spacing: -.025em; }
+.recentCaseCard h3 a { color: var(--ink); }
+.recentCaseCard h3 a:hover { color: var(--brand); }
+.recentCaseCard > p { margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.recentCaseCard footer {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 18px;
+  margin-top: auto; padding-top: 28px; border-top: 1px solid var(--border);
+}
+.recentCaseCard footer span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.recentCaseCard footer a { white-space: nowrap; font-size: 13px; font-weight: 760; }
+
+@media (max-width: 900px) {
+  .recentCaseGrid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 720px) {
+  .startingPaths { padding-top: 48px; padding-bottom: 8px; }
+  .startingPathsGrid, .recentCaseGrid { grid-template-columns: 1fr; }
+  .startingPathCard { min-height: 220px; }
+  .recentBand > .shell { padding-top: 56px; padding-bottom: 64px; }
+  .recentCaseCard { min-height: 260px; }
+}
