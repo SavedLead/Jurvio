@@ -18,7 +18,7 @@ jobs:
   recover:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Configure SSH
         env:
@@ -33,7 +33,7 @@ jobs:
           printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Pause ingestion and recover web app
+      - name: Free disposable Docker space and recover web app
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -41,6 +41,19 @@ jobs:
           set -euo pipefail
           ssh -o BatchMode=yes -o ConnectTimeout=20 "$DO_USER@$DO_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
+
+          echo "Disk before cleanup"
+          df -h /
+          docker system df || true
+
+          # Intentionally do not prune volumes. PostgreSQL and artifact volumes remain intact.
+          docker image prune -af || true
+          docker builder prune -af || true
+          docker container prune -f || true
+
+          echo "Disk after disposable cleanup"
+          df -h /
+          docker system df || true
 
           app_id="$(docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=app" --format "{{.ID}}" | head -n1)"
           postgres_id="$(docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=postgres" --format "{{.ID}}" | head -n1)"
@@ -50,8 +63,8 @@ jobs:
           echo "Pausing Jurvio ingestion workers"
           mapfile -t worker_ids < <(docker ps -a --filter "label=com.docker.compose.project=jurvio" --format "{{.ID}} {{.Label \"com.docker.compose.service\"}}" | awk '$2 ~ /^worker/ {print $1}')
           for worker_id in "${worker_ids[@]}"; do
-            docker update --restart=no "$worker_id" >/dev/null
             docker stop --time 30 "$worker_id" >/dev/null || true
+            docker update --restart=no "$worker_id" >/dev/null || true
           done
 
           echo "PostgreSQL readiness"
@@ -78,14 +91,12 @@ jobs:
           done
 
           echo "Route checks"
+          route_ok=1
           for path in /api/ready /cases /supreme-court; do
             code="$(curl -sS -o /dev/null --max-time 30 -w '%{http_code}' "http://127.0.0.1:3000$path" || true)"
             printf '%s %s\n' "$path" "$code"
+            test "$code" = "200" || route_ok=0
           done
-
-          if [ "$ready" -ne 1 ]; then
-            echo "::error::Jurvio app did not become ready"
-          fi
 
           echo "Sanitized app log tail"
           docker logs --tail 250 "$app_id" 2>&1 |
@@ -93,4 +104,5 @@ jobs:
             tail -n 250
 
           test "$ready" -eq 1
+          test "$route_ok" -eq 1
           REMOTE
