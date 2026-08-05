@@ -1,5 +1,8 @@
 import Link from "next/link";
 import type { Route } from "next";
+import { db } from "@/db/client";
+import { listRecentlyUpdatedPublicCases } from "@/modules/cases/application/list-recently-updated-public-cases";
+import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 const browseItems = [
   ["Cases", "Search opinions, dockets, filings, and decisions", "/cases", "01"],
@@ -8,6 +11,27 @@ const browseItems = [
   ["Judges", "Explore judicial records, courts, and written opinions", "/judges", "04"],
   ["Courts", "Browse jurisdictions and understand how they work", "/courts", "05"],
   ["Explainers", "Understand legal terms, procedure, jurisdiction, and doctrine", "/explainers", "06"],
+] as const;
+
+const startingPaths = [
+  {
+    label: "Find a case",
+    description: "Search by case name, party, docket number, court, citation, or legal issue.",
+    href: "/cases",
+    action: "Search federal cases",
+  },
+  {
+    label: "Research a person or company",
+    description: "Follow a name across verified cases, parties, attorneys, and connected records.",
+    href: "/parties",
+    action: "Explore parties",
+  },
+  {
+    label: "Understand a legal issue",
+    description: "Start with a plain-English question and reach the source-backed law and record.",
+    href: "/search",
+    action: "Ask Jurvio",
+  },
 ] as const;
 
 const activityItems = [
@@ -38,7 +62,20 @@ const audienceItems = [
   ["The public", "Read court activity in clear language without removing the legal context.", "/explainers"],
 ] as const;
 
-export default function HomePage() {
+export const dynamic = "force-dynamic";
+
+function formatActivityDate(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(value));
+}
+
+export default async function HomePage() {
+  const recentlyUpdated = await listRecentlyUpdatedPublicCases(db(), 6);
+
   return (
     <main>
       <section className="homeHero">
@@ -82,6 +119,25 @@ export default function HomePage() {
         </div>
       </section>
 
+      <section className="startingPaths shell" aria-labelledby="starting-paths-title">
+        <div className="sectionHeading">
+          <div>
+            <p className="eyebrow">Choose your starting point</p>
+            <h2 id="starting-paths-title">What do you want to find out?</h2>
+          </div>
+        </div>
+        <div className="startingPathsGrid">
+          {startingPaths.map((item, index) => (
+            <Link className="startingPathCard" href={item.href} key={item.label}>
+              <span aria-hidden="true">0{index + 1}</span>
+              <strong>{item.label}</strong>
+              <small>{item.description}</small>
+              <b>{item.action} <span aria-hidden="true">→</span></b>
+            </Link>
+          ))}
+        </div>
+      </section>
+
       <section className="homeSection shell" aria-labelledby="browse-title">
         <div className="sectionHeading">
           <div><p className="eyebrow">Research the legal system</p><h2 id="browse-title">Start with any entity. Follow every connection.</h2></div>
@@ -97,6 +153,42 @@ export default function HomePage() {
           ))}
         </div>
       </section>
+
+      {recentlyUpdated.length > 0 ? (
+        <section className="recentBand" aria-labelledby="recently-updated-title">
+          <div className="shell">
+            <div className="sectionHeading">
+              <div>
+                <p className="eyebrow">Live from the public record</p>
+                <h2 id="recently-updated-title">Recently updated cases</h2>
+              </div>
+              <Link href="/cases">Browse every published case →</Link>
+            </div>
+            <div className="recentCaseGrid">
+              {recentlyUpdated.map((legalCase) => (
+                <article className="recentCaseCard" key={legalCase.publicId}>
+                  <div>
+                    <span>{legalCase.courtName}</span>
+                    <time dateTime={legalCase.activityDate}>
+                      Updated {formatActivityDate(legalCase.activityDate)}
+                    </time>
+                  </div>
+                  <h3>
+                    <Link href={`/case/${legalCase.publicId}` as Route}>
+                      <BrandedCaseCaption caption={legalCase.caption} />
+                    </Link>
+                  </h3>
+                  <p>Docket {legalCase.docketNumber}</p>
+                  <footer>
+                    <span>{legalCase.hasPublicDocument ? "Readable opinion available" : "Verified case record"}</span>
+                    <Link href={`/case/${legalCase.publicId}` as Route}>Open case →</Link>
+                  </footer>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="activityBand">
         <div className="shell">
