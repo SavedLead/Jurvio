@@ -27,7 +27,7 @@ jobs:
           set -euo pipefail
           test -n "$DO_TOKEN"
           mkdir -p inventory
-          for endpoint in account projects droplets vpcs account/keys; do
+          for endpoint in account projects droplets vpcs account/keys sizes; do
             file="${endpoint//\//_}.json"
             status=$(curl --silent --show-error --output "inventory/$file" --write-out '%{http_code}' \
               --header "Authorization: Bearer $DO_TOKEN" \
@@ -54,6 +54,7 @@ jobs:
           jq '{droplets:[.droplets[]|{id,name,memory,vcpus,disk,status,features,region:{slug:.region.slug,name:.region.name},size:{slug:.size.slug,price_monthly:.size.price_monthly,price_hourly:.size.price_hourly},vpc_uuid,tags}]}' inventory/droplets.json > inventory/droplets.safe.json
           jq '{vpcs:[.vpcs[]|{id,name,region,ip_range,default}]}' inventory/vpcs.json > inventory/vpcs.safe.json
           jq '{ssh_keys:[.ssh_keys[]|{id,name,fingerprint}]}' inventory/account_keys.json > inventory/ssh_keys.safe.json
+          jq '{sizes:[.sizes[]|select((.regions|index("nyc1")) and (.memory>=4096) and (.memory<=8192) and (.vcpus>=2) and (.vcpus<=4) and (.available==true))|{slug,memory,vcpus,disk,transfer,price_monthly,price_hourly,description}]}' inventory/sizes.json > inventory/sizes.safe.json
           jq '{registry:(if .registry then {name:.registry.name,region:.registry.region,storage_usage_bytes:.registry.storage_usage_bytes,subscription:.registry.subscription} else null end)}' inventory/registry.json > inventory/registry.safe.json
           jq -s 'add' inventory/*.safe.json > safe.json
       - name: Write safe inventory to temporary branch
