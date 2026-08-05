@@ -485,6 +485,11 @@ async function runPublicationAndQuarantine() {
       LIMIT 1
     ) canonical ON true
     WHERE legal_case.publication = 'draft'
+      -- Skip cases already evaluated and held for review so the publisher keeps
+      -- reaching newer, unevaluated, publishable drafts instead of re-scanning
+      -- the same held head-of-queue on every run. Eligibility itself is
+      -- unchanged; held cases still surface in the review queue.
+      AND legal_case.verification <> 'needs_review'
       AND (
         lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'federal')
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
