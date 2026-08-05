@@ -101,6 +101,8 @@ jobs:
             echo "- Size: 2 vCPU, 4 GB RAM, 80 GB disk ($24/month)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          gh issue create --repo "$GITHUB_REPOSITORY"             --title "Infrastructure report: Jurvio public web server provisioned"             --body "Provisioning completed for `$SERVER_NAME` (droplet $id). Public IP: `$public_ip`; private IP: `$private_ip`. The bootstrap firewall has zero inbound ports. Next step: private deployment and verification before any DNS change." || true
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Infrastructure report: Jurvio public web server provisioned" \
+            --body "Provisioning completed for ${SERVER_NAME} (droplet ${id}). Public IP: ${public_ip}; private IP: ${private_ip}. The bootstrap firewall has zero inbound ports. Next step: private deployment and verification before any DNS change."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
