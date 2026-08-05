@@ -24,6 +24,7 @@ interface ListPublicCasesOptions {
   page: number;
   pageSize: number;
   court?: string;
+  query?: string;
 }
 
 export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions) {
@@ -31,6 +32,7 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
   const pageSize = Math.min(100, Math.max(1, options.pageSize));
   const offset = (page - 1) * pageSize;
   const courtFilter = options.court?.trim() || null;
+  const query = options.query?.trim().replace(/\s+/g, " ") || null;
 
   const publicationGate = sql`
     legal_case.publication = 'published'
@@ -44,12 +46,31 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
     ), false)
   `;
 
+  const searchGate = sql`
+    (
+      ${query}::text IS NULL
+      OR legal_case.caption ILIKE '%' || ${query} || '%'
+      OR legal_case.docket_number ILIKE '%' || ${query} || '%'
+      OR EXISTS (
+        SELECT 1
+        FROM party_appearance
+        JOIN entity ON entity.id = party_appearance.entity_id
+        WHERE party_appearance.case_id = legal_case.id
+          AND (
+            party_appearance.party_name_as_filed ILIKE '%' || ${query} || '%'
+            OR entity.display_name ILIKE '%' || ${query} || '%'
+          )
+      )
+    )
+  `;
+
   const [totals, cases, courts] = await Promise.all([
     sql<Array<{ total: number }>>`
       SELECT count(*)::int AS total
       FROM legal_case
       JOIN court ON court.id = legal_case.court_id
       WHERE ${publicationGate}
+        AND ${searchGate}
         AND (${courtFilter}::text IS NULL OR court.public_id = ${courtFilter})
     `,
     sql<PublicCaseRow[]>`
@@ -78,8 +99,11 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
       FROM legal_case
       JOIN court ON court.id = legal_case.court_id
       WHERE ${publicationGate}
+        AND ${searchGate}
         AND (${courtFilter}::text IS NULL OR court.public_id = ${courtFilter})
-      ORDER BY COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST,
+      ORDER BY
+        CASE WHEN ${query}::text IS NOT NULL AND legal_case.docket_number ILIKE ${query} THEN 0 ELSE 1 END,
+        COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST,
         legal_case.caption, legal_case.id
       LIMIT ${pageSize} OFFSET ${offset}
     `,
@@ -100,5 +124,6 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
     page,
     pageSize,
     court: courtFilter,
+    query,
   };
 }
