@@ -16,8 +16,10 @@ jobs:
     timeout-minutes: 15
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       CURRENT_HOST: ${{ secrets.DO_HOST }}
       SERVER_NAME: jurvio-public-01
+      REPLACE_DROPLET_ID: "590270408"
     steps:
       - name: Create isolated Jurvio public web droplet
         id: create
@@ -28,6 +30,19 @@ jobs:
           auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
 
           droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          target="$(jq -c --argjson id "$REPLACE_DROPLET_ID" '.droplets[]? | select(.id==$id)' <<<"$droplets" | head -1)"
+          if [ -n "$target" ]; then
+            [ "$(jq -r .name <<<"$target")" = "$SERVER_NAME" ] || { echo "::error::Refusing to delete: droplet ID name mismatch"; exit 1; }
+            jq -e '(.tags // []) | index("jurvio-public-web")' <<<"$target" >/dev/null || { echo "::error::Refusing to delete: target lacks jurvio-public-web tag"; exit 1; }
+            curl -fsS -X DELETE "${auth[@]}" "$api/droplets/$REPLACE_DROPLET_ID"
+            for _ in $(seq 1 60); do
+              status="$(curl -sS -o /dev/null -w '%{http_code}' "${auth[@]}" "$api/droplets/$REPLACE_DROPLET_ID")"
+              [ "$status" = 404 ] && break
+              sleep 5
+            done
+            [ "$status" = 404 ] || { echo "::error::Replacement target was not deleted within timeout"; exit 1; }
+            droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          fi
           current="$(jq -c --arg host "$CURRENT_HOST" --arg server "$SERVER_NAME" '
             ([.droplets[] | select(any(.networks.v4[]?; .ip_address == $host))][0]) //
             ([.droplets[]
@@ -46,8 +61,13 @@ jobs:
           }
           region="$(jq -r '.region.slug' <<<"$current")"
           vpc="$(jq -r '.vpc_uuid' <<<"$current")"
-          ssh_key="$(curl -fsS "${auth[@]}" "$api/account/keys?per_page=200" | jq -r '.ssh_keys[0].id')"
-          test "$ssh_key" != null || { echo "::error::No DigitalOcean SSH key exists"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          deployment_public_key="$(ssh-keygen -y -f ~/.ssh/id_ed25519)"
+          ssh_keys="$(curl -fsS "${auth[@]}" "$api/account/keys?per_page=200")"
+          ssh_key="$(jq -r --arg key "$deployment_public_key" '.ssh_keys[] | select((.public_key | split(" ")[0:2] | join(" ")) == ($key | split(" ")[0:2] | join(" "))) | .id' <<<"$ssh_keys" | head -1)"
+          test -n "$ssh_key" && test "$ssh_key" != null || { echo "::error::No DigitalOcean SSH key matches DO_SSH_KEY_B64"; exit 1; }
 
           existing="$(curl -fsS "${auth[@]}" "$api/droplets?tag_name=jurvio-public-web&per_page=200" | jq -c --arg n "$SERVER_NAME" '.droplets[]? | select(.name == $n)' | head -1)"
           if [ -n "$existing" ]; then
