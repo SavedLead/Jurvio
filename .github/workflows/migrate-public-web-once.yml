@@ -40,8 +40,12 @@ jobs:
           ingestion_id="$(jq -r .id <<<"$ingestion")"
           ingestion_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$ingestion")"
           firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
-          public_fw="$(jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
+          public_fw="$(jq -r --argjson id "$public_id" '([.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty) // ([.firewalls[] | select(.name=="jurvio-public-web-bootstrap")][0].id // empty)' <<<"$firewalls")"
           test -n "$public_fw" || { echo "::error::Public bootstrap firewall not found"; exit 1; }
+          if ! jq -e --arg id "$public_fw" --argjson droplet "$public_id" '.firewalls[] | select(.id==$id) | (.droplet_ids // []) | index($droplet)' <<<"$firewalls" >/dev/null; then
+            curl -fsS -X POST "${auth[@]}" "$api/firewalls/$public_fw/droplets" -d "$(jq -n --argjson id "$public_id" '{droplet_ids:[$id]}')" >/dev/null
+            firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          fi
           if ! jq -e --arg id "$public_fw" --arg src "$builder_private/32" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports=="22" and ((.sources.addresses // []) | index($src)))' <<<"$firewalls" >/dev/null; then
             curl -fsS -X POST "${auth[@]}" "$api/firewalls/$public_fw/rules" -d "$(jq -n --arg src "$builder_private/32" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')" >/dev/null
           fi
