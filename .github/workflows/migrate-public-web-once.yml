@@ -123,27 +123,34 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          # Select a working builder->ingestion management SSH route (prefer the private VPC IP,
-          # fall back to the public IP). Both are locked to the builder by the jurvio-private-data
-          # firewall; the database/artifact data path stays on the private VPC regardless of transport.
-          touch ~/.ssh/known_hosts
-          # One low-noise SSH probe per host per round (no separate keyscan; ignore the persisted
-          # known_hosts) so we neither trip host-key mismatches nor hammer sshd. Retry with backoff
-          # to ride over a flapping/rate-limited sshd on jurvio-web-01.
-          tryssh() { ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "$INGESTION_USER@$1" true 2>&1; }
+          : > ~/.ssh/known_hosts
+          rm -f ~/.ssh/cm-* 2>/dev/null || true
+          # Multiplex ALL SSH over a single persistent connection per host. jurvio-web-01 rate-limits
+          # rapid successive connections on :22 (accepts one, refuses the next), so scp/ssh must reuse
+          # one connection instead of opening several. ControlMaster does exactly that.
+          cat > ~/.ssh/config <<'EOF'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 12
+            StrictHostKeyChecking accept-new
+            ControlMaster auto
+            ControlPath ~/.ssh/cm-%r@%h:%p
+            ControlPersist 600
+          EOF
+          chmod 600 ~/.ssh/config
+          # Select a working builder->ingestion route (prefer private VPC IP, fall back to public).
+          # The first successful ssh opens the shared master that scp/ssh then reuse; retry with
+          # backoff to ride over a transient/rate-limited refusal. Data path stays on the private VPC.
           ING=""
           for attempt in 1 2 3 4 5 6; do
             for h in "$INGESTION_PRIVATE" "$INGESTION_SSH"; do
-              if out="$(tryssh "$h")"; then ING="$h"; echo "Selected ingestion SSH route: $h (attempt $attempt)"; break; fi
-              echo "attempt $attempt route $h: SSH FAIL: ${out##*$'\n'}"
+              if out="$(ssh "$INGESTION_USER@$h" true 2>&1)"; then ING="$h"; echo "Selected ingestion SSH route: $h (attempt $attempt)"; break; fi
+              echo "attempt $attempt route $h: ${out##*$'\n'}"
             done
             [ -n "$ING" ] && break
             [ "$attempt" -lt 6 ] && { echo "backing off $((attempt*10))s"; sleep "$((attempt*10))"; }
           done
-          if [ -n "$ING" ]; then
-            ssh-keygen -R "$ING" >/dev/null 2>&1 || true
-            ssh-keyscan -T 8 -H "$ING" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
           test -n "$ING" || { echo "::error::No working builder->ingestion SSH route after retries (private $INGESTION_PRIVATE and public $INGESTION_SSH both refused). On jurvio-web-01: ensure sshd ListenAddress includes 0.0.0.0 so the private VPC IP answers, sshd is active and NOT restart-looping, /run/sshd exists, and the builder IPs (10.116.0.3 private, 198.211.113.171 public) are not rate-limited/banned by fail2ban/ufw."; exit 1; }
           echo "INGESTION_HOST=$ING" >> "$GITHUB_ENV"
           scp docker-compose.production.yml "$INGESTION_USER@$ING:/opt/jurvio/docker-compose.production.yml"
