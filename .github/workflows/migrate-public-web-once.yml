@@ -127,19 +127,24 @@ jobs:
           # fall back to the public IP). Both are locked to the builder by the jurvio-private-data
           # firewall; the database/artifact data path stays on the private VPC regardless of transport.
           touch ~/.ssh/known_hosts
+          # One low-noise SSH probe per host per round (no separate keyscan; ignore the persisted
+          # known_hosts) so we neither trip host-key mismatches nor hammer sshd. Retry with backoff
+          # to ride over a flapping/rate-limited sshd on jurvio-web-01.
+          tryssh() { ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "$INGESTION_USER@$1" true 2>&1; }
           ING=""
-          for h in "$INGESTION_PRIVATE" "$INGESTION_SSH"; do
-            if timeout 6 bash -c "exec 3<>/dev/tcp/$h/22" 2>/dev/null; then tcp=open; else tcp=closed; fi
-            # Drop any stale/persisted host key for this address (self-hosted ~/.ssh persists across
-            # runs; jurvio-web-01's host key can change after a rebuild/repair -> mismatch), then re-add.
-            ssh-keygen -R "$h" >/dev/null 2>&1 || true
-            ssh-keyscan -T 6 -H "$h" >> ~/.ssh/known_hosts 2>/dev/null || true
-            if out="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$INGESTION_USER@$h" true 2>&1)"; then
-              ING="$h"; echo "Route $h: TCP22=$tcp SSH=OK -> selected"; break
-            fi
-            echo "Route $h: TCP22=$tcp SSH=FAIL: ${out:-<no output>}"
+          for attempt in 1 2 3 4 5 6; do
+            for h in "$INGESTION_PRIVATE" "$INGESTION_SSH"; do
+              if out="$(tryssh "$h")"; then ING="$h"; echo "Selected ingestion SSH route: $h (attempt $attempt)"; break; fi
+              echo "attempt $attempt route $h: SSH FAIL: ${out##*$'\n'}"
+            done
+            [ -n "$ING" ] && break
+            [ "$attempt" -lt 6 ] && { echo "backing off $((attempt*10))s"; sleep "$((attempt*10))"; }
           done
-          test -n "$ING" || { echo "::error::No working builder->ingestion SSH route (tried private $INGESTION_PRIVATE and public $INGESTION_SSH). Confirm sshd on jurvio-web-01 and the jurvio-private-data firewall :22 rules for the builder."; exit 1; }
+          if [ -n "$ING" ]; then
+            ssh-keygen -R "$ING" >/dev/null 2>&1 || true
+            ssh-keyscan -T 8 -H "$ING" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          test -n "$ING" || { echo "::error::No working builder->ingestion SSH route after retries (private $INGESTION_PRIVATE and public $INGESTION_SSH both refused). On jurvio-web-01: ensure sshd ListenAddress includes 0.0.0.0 so the private VPC IP answers, sshd is active and NOT restart-looping, /run/sshd exists, and the builder IPs (10.116.0.3 private, 198.211.113.171 public) are not rate-limited/banned by fail2ban/ufw."; exit 1; }
           echo "INGESTION_HOST=$ING" >> "$GITHUB_ENV"
           scp docker-compose.production.yml "$INGESTION_USER@$ING:/opt/jurvio/docker-compose.production.yml"
           ssh "$INGESTION_USER@$ING" bash -s -- "$INGESTION_PRIVATE" "$PUBLIC_PRIVATE" <<'REMOTE'
