@@ -1,6 +1,7 @@
 name: Migrate public website once
 
 on:
+  workflow_dispatch: {}
   push:
     branches: [main]
     paths: [.github/workflows/migrate-public-web-once.yml]
@@ -55,13 +56,24 @@ jobs:
           fi
           data_fw="$(jq -r '.firewalls[] | select(.name=="jurvio-private-data") | .id' <<<"$firewalls" | head -1)"
           if [ -z "$data_fw" ]; then
-            curl -fsS -X POST "${auth[@]}" "$api/firewalls" -d "$(jq -n --argjson id "$ingestion_id" --arg src "$public_private/32" '{name:"jurvio-private-data",droplet_ids:[$id],inbound_rules:[{protocol:"tcp",ports:"5432",sources:{addresses:[$src]}},{protocol:"tcp",ports:"2049",sources:{addresses:[$src]}}],outbound_rules:[]}')" >/dev/null
+            curl -fsS -X POST "${auth[@]}" "$api/firewalls" -d "$(jq -n --argjson id "$ingestion_id" --arg src "$public_private/32" '{name:"jurvio-private-data",droplet_ids:[$id],inbound_rules:[{protocol:"tcp",ports:"5432",sources:{addresses:[$src]}},{protocol:"tcp",ports:"2049",sources:{addresses:[$src]}}],outbound_rules:[{protocol:"tcp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"udp",ports:"all",destinations:{addresses:["0.0.0.0/0","::/0"]}},{protocol:"icmp",destinations:{addresses:["0.0.0.0/0","::/0"]}}]}')" >/dev/null
           fi
           firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
           data_fw="$(jq -r '.firewalls[] | select(.name=="jurvio-private-data") | .id' <<<"$firewalls" | head -1)"
-          if ! jq -e --arg id "$data_fw" --argjson src "$builder_id" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports=="22" and ((.sources.droplet_ids // []) | index($src)))' <<<"$firewalls" >/dev/null; then
-            curl -fsS -X POST "${auth[@]}" "$api/firewalls/$data_fw/rules" -d "$(jq -n --argjson src "$builder_id" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{droplet_ids:[$src]}}]}')" >/dev/null
+          if ! jq -e --arg id "$data_fw" --arg src "$builder_private/32" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports=="22" and ((.sources.addresses // []) | index($src)))' <<<"$firewalls" >/dev/null; then
+            curl -fsS -X POST "${auth[@]}" "$api/firewalls/$data_fw/rules" -d "$(jq -n --arg src "$builder_private/32" --argjson bid "$builder_id" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src],droplet_ids:[$bid]}}]}')" >/dev/null
           fi
+          # Self-heal an existing jurvio-private-data firewall: restore egress (empty outbound blocks the
+          # ingestion server) and ensure the CURRENT public-server private IP may reach Postgres/NFS.
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          if [ "$(jq -r --arg id "$data_fw" '.firewalls[] | select(.id==$id) | (.outbound_rules // []) | length' <<<"$firewalls")" -eq 0 ]; then
+            curl -fsS -X POST "${auth[@]}" "$api/firewalls/$data_fw/rules" -d '{"outbound_rules":[{"protocol":"tcp","ports":"all","destinations":{"addresses":["0.0.0.0/0","::/0"]}},{"protocol":"udp","ports":"all","destinations":{"addresses":["0.0.0.0/0","::/0"]}},{"protocol":"icmp","destinations":{"addresses":["0.0.0.0/0","::/0"]}}]}' >/dev/null
+          fi
+          for dport in 5432 2049; do
+            if ! jq -e --arg id "$data_fw" --arg p "$dport" --arg src "$public_private/32" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports==$p and ((.sources.addresses // []) | index($src)))' <<<"$firewalls" >/dev/null; then
+              curl -fsS -X POST "${auth[@]}" "$api/firewalls/$data_fw/rules" -d "$(jq -n --arg p "$dport" --arg src "$public_private/32" '{inbound_rules:[{protocol:"tcp",ports:$p,sources:{addresses:[$src]}}]}')" >/dev/null
+            fi
+          done
           { echo "public_private=$public_private"; echo "public_public=$public_public"; echo "ingestion_private=$ingestion_private"; echo "ingestion_ssh=$ingestion_public"; echo "public_fw=$public_fw"; } >> "$GITHUB_OUTPUT"
 
       - name: Configure private SSH and wait for bootstrap
@@ -77,7 +89,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
           touch ~/.ssh/known_hosts
-          for host in "$PUBLIC_PRIVATE" "$INGESTION_SSH"; do
+          for host in "$PUBLIC_PRIVATE" "$INGESTION_PRIVATE"; do
             for _ in $(seq 1 60); do ssh-keyscan -T 5 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null && break; sleep 5; done
           done
           sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts
@@ -119,8 +131,15 @@ jobs:
           INGESTION_SSH: ${{ steps.network.outputs.ingestion_ssh }}
         run: |
           set -euo pipefail
-          scp docker-compose.production.yml "$INGESTION_USER@$INGESTION_SSH:/opt/jurvio/docker-compose.production.yml"
-          ssh "$INGESTION_USER@$INGESTION_SSH" bash -s -- "$INGESTION_PRIVATE" "$PUBLIC_PRIVATE" <<'REMOTE'
+          echo "Preflight: builder -> ingestion private VPC ($INGESTION_PRIVATE:22)"
+          if timeout 10 bash -c ">/dev/tcp/$INGESTION_PRIVATE/22" 2>/dev/null; then
+            echo "Preflight OK: TCP 22 on $INGESTION_PRIVATE reachable from the builder over the private VPC"
+          else
+            echo "::error::Builder cannot reach ingestion $INGESTION_PRIVATE:22 over the private VPC (connection refused or timed out). Confirm sshd is listening on the private interface (ss -tlnp | grep :22) and that the jurvio-private-data firewall allows the builder droplet on port 22."
+            exit 1
+          fi
+          scp docker-compose.production.yml "$INGESTION_USER@$INGESTION_PRIVATE:/opt/jurvio/docker-compose.production.yml"
+          ssh "$INGESTION_USER@$INGESTION_PRIVATE" bash -s -- "$INGESTION_PRIVATE" "$PUBLIC_PRIVATE" <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
           test -s .env.production
@@ -145,8 +164,8 @@ jobs:
           INGESTION_SSH: ${{ steps.network.outputs.ingestion_ssh }}
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$INGESTION_SSH" 'cat /opt/jurvio/.env.production' | ssh "root@$PUBLIC_PRIVATE" 'umask 077; cat > /opt/jurvio/.env.production'
-          ssh "$INGESTION_USER@$INGESTION_SSH" 'sudo -n tar -C / -czf - etc/ssl/cloudflare' | ssh "root@$PUBLIC_PRIVATE" 'tar -C / -xzf -'
+          ssh "$INGESTION_USER@$INGESTION_PRIVATE" 'cat /opt/jurvio/.env.production' | ssh "root@$PUBLIC_PRIVATE" 'umask 077; cat > /opt/jurvio/.env.production'
+          ssh "$INGESTION_USER@$INGESTION_PRIVATE" 'sudo -n tar -C / -czf - etc/ssl/cloudflare' | ssh "root@$PUBLIC_PRIVATE" 'tar -C / -xzf -'
           scp docker-compose.public.yml "root@$PUBLIC_PRIVATE:/opt/jurvio/docker-compose.public.yml"
           scp ops/nginx-jurvio.conf "root@$PUBLIC_PRIVATE:/opt/jurvio/nginx-jurvio.conf"
           ssh "root@$PUBLIC_PRIVATE" bash -s -- "$INGESTION_PRIVATE" <<'REMOTE'
