@@ -1,0 +1,42 @@
+name: Reboot Jurvio ingestion server once
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/reboot-ingestion-once.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  reboot:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 12
+    environment: production
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+    steps:
+      - name: Resolve and reboot only jurvio-web-01
+        shell: bash
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          target="$(jq -c '[.droplets[] | select(.name=="jurvio-web-01") | select(.size.slug=="s-4vcpu-8gb") | select((.tags // []) | index("jurvio"))][0] // empty' <<<"$droplets")"
+          test -n "$target" || { echo "::error::Exact Jurvio $48 ingestion server not found"; exit 1; }
+          target_id="$(jq -r .id <<<"$target")"
+          test "$target_id" != "590318692"
+          test "$(jq -r .name <<<"$target")" = "jurvio-web-01"
+          curl -fsS -X POST "${auth[@]}" "$api/droplets/$target_id/actions" -d '{"type":"power_cycle"}' >/dev/null
+          for _ in $(seq 1 90); do
+            status="$(curl -fsS "${auth[@]}" "$api/droplets/$target_id" | jq -r .droplet.status)"
+            [ "$status" = active ] && break
+            sleep 5
+          done
+          [ "$status" = active ]
+          sleep 20
+          echo "### Controlled reboot complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: jurvio-web-01" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Droplet ID: $target_id" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Status: $status" >> "$GITHUB_STEP_SUMMARY"
