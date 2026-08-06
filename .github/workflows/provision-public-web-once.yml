@@ -68,7 +68,12 @@ jobs:
           deployment_public_key="$(ssh-keygen -y -f ~/.ssh/id_ed25519)"
           ssh_keys="$(curl -fsS "${auth[@]}" "$api/account/keys?per_page=200")"
           ssh_key="$(jq -r --arg key "$deployment_public_key" '.ssh_keys[] | select((.public_key | split(" ")[0:2] | join(" ")) == ($key | split(" ")[0:2] | join(" "))) | .id' <<<"$ssh_keys" | head -1)"
-          test -n "$ssh_key" && test "$ssh_key" != null || { echo "::error::No DigitalOcean SSH key matches DO_SSH_KEY_B64"; exit 1; }
+          if [ -z "$ssh_key" ] || [ "$ssh_key" = null ]; then
+            key_suffix="$(printf '%s' "$deployment_public_key" | sha256sum | cut -c1-12)"
+            key_payload="$(jq -n --arg name "jurvio-deployment-$key_suffix" --arg public_key "$deployment_public_key" '{name:$name,public_key:$public_key}')"
+            ssh_key="$(curl -fsS -X POST "${auth[@]}" -d "$key_payload" "$api/account/keys" | jq -r '.ssh_key.id')"
+          fi
+          test -n "$ssh_key" && test "$ssh_key" != null || { echo "::error::Could not resolve or register the Jurvio deployment SSH key"; exit 1; }
 
           existing="$(curl -fsS "${auth[@]}" "$api/droplets?tag_name=jurvio-public-web&per_page=200" | jq -c --arg n "$SERVER_NAME" '.droplets[]? | select(.name == $n)' | head -1)"
           if [ -n "$existing" ]; then
