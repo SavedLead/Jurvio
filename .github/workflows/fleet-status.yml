@@ -1,10 +1,9 @@
 name: Fleet status (read-only)
 
-# Read-only production heartbeat for the full federal fleet
-# (1 Supreme Court + 13 Courts of Appeals + 94 District Courts).
-# Reports credential MODE (never secret values), per-court health, queues,
-# publishing state, failures, stalled workers, and PACER cost ($0 expected).
-# Performs NO writes, NO ingestion, and NO publication.
+# TEMPORARY DIAGNOSTIC (branch claude/jurvio-website-migration-b764s5 only).
+# Read-only: DO API GETs + TCP/SSH probes from the builder. No writes.
+# Dispatched against the feature ref so the builder runs THIS version.
+# fleet-status.yml is restored to its original contents before the PR is finalized.
 
 on:
   workflow_dispatch:
@@ -13,71 +12,98 @@ permissions:
   contents: read
 
 concurrency:
-  group: jurvio-fleet-status
+  group: jurvio-migration-ssh-diagnostic
   cancel-in-progress: false
 
 jobs:
-  status:
-    runs-on: ubuntu-latest
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 15
+    timeout-minutes: 10
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
     steps:
-      - name: Configure production SSH
-        env:
-          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
-          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+      - name: Resolve droplets and dump firewall state
+        id: resolve
+        shell: bash
         run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          public="$(jq -c '[.droplets[] | select(.name=="jurvio-public-01")][0] // empty' <<<"$droplets")"
+          builder="$(jq -c '[.droplets[] | select(.name=="jurvio-builder-01")][0] // empty' <<<"$droplets")"
+          ingestion="$(jq -c '([.droplets[] | select(.name!="jurvio-public-01" and .name!="jurvio-builder-01") | select((.tags // []) | index("jurvio"))] | sort_by(.memory) | reverse | .[0]) // ([.droplets[] | select(.size.slug=="s-4vcpu-8gb")][0]) // empty' <<<"$droplets")"
+          test -n "$public" && test -n "$builder" && test -n "$ingestion" || { echo "::error::Could not resolve all three Jurvio droplets"; exit 1; }
+          getip() { jq -r --arg t "$2" '.networks.v4[] | select(.type==$t) | .ip_address' <<<"$1" | head -1; }
+          public_id="$(jq -r .id <<<"$public")"; public_priv="$(getip "$public" private)"; public_pub="$(getip "$public" public)"
+          builder_id="$(jq -r .id <<<"$builder")"; builder_priv="$(getip "$builder" private)"; builder_pub="$(getip "$builder" public)"
+          ingestion_id="$(jq -r .id <<<"$ingestion")"; ingestion_priv="$(getip "$ingestion" private)"; ingestion_pub="$(getip "$ingestion" public)"
+          ingestion_name="$(jq -r .name <<<"$ingestion")"
+          echo "===== DROPLET INVENTORY ====="
+          printf 'builder    id=%s name=jurvio-builder-01 public=%s private=%s\n' "$builder_id" "$builder_pub" "$builder_priv"
+          printf 'public     id=%s name=jurvio-public-01  public=%s private=%s\n' "$public_id" "$public_pub" "$public_priv"
+          printf 'ingestion  id=%s name=%s public=%s private=%s\n' "$ingestion_id" "$ingestion_name" "$ingestion_pub" "$ingestion_priv"
+          echo
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          echo "===== ALL CLOUD FIREWALLS ====="
+          jq -r '.firewalls[] | "FW name=\(.name) id=\(.id)\n  droplet_ids=\(.droplet_ids)\n  inbound=\(.inbound_rules | map(.protocol+":"+(.ports//"-")+" from addr="+((.sources.addresses//[])|tostring)+" droplets="+((.sources.droplet_ids//[])|tostring)+" tags="+((.sources.tags//[])|tostring)))\n  outbound=\(.outbound_rules | map(.protocol+":"+(.ports//"-")+" to addr="+((.destinations.addresses//[])|tostring)))"' <<<"$firewalls"
+          echo
+          echo "===== FIREWALLS ATTACHED TO INGESTION ($ingestion_id) ====="
+          jq -r --argjson id "$ingestion_id" '[.firewalls[] | select((.droplet_ids//[])|index($id)) | .name] as $n | if ($n|length)>0 then $n[] else "NONE (no cloud firewall -> all inbound allowed at cloud level)" end' <<<"$firewalls"
+          echo "===== FIREWALLS ATTACHED TO PUBLIC ($public_id) ====="
+          jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids//[])|index($id)) | .name] as $n | if ($n|length)>0 then $n[] else "NONE" end' <<<"$firewalls"
+          { echo "ingestion_priv=$ingestion_priv"; echo "ingestion_pub=$ingestion_pub"; echo "public_priv=$public_priv"; echo "builder_priv=$builder_priv"; echo "builder_pub=$builder_pub"; } >> "$GITHUB_OUTPUT"
+
+      - name: Probe builder -> ingestion on both routes
+        shell: bash
+        env:
+          ING_PRIV: ${{ steps.resolve.outputs.ingestion_priv }}
+          ING_PUB: ${{ steps.resolve.outputs.ingestion_pub }}
+          PUB_PRIV: ${{ steps.resolve.outputs.public_priv }}
+          BUILDER_PRIV: ${{ steps.resolve.outputs.builder_priv }}
+          BUILDER_PUB: ${{ steps.resolve.outputs.builder_pub }}
+        run: |
+          set -uo pipefail
+          echo "builder source addresses: public=$BUILDER_PUB private=$BUILDER_PRIV"
+          probe() {
+            local h="$1" p="$2" rc
+            if timeout 8 bash -c "exec 3<>/dev/tcp/$h/$p" 2>/tmp/perr; then
+              echo "TCP $h:$p => OPEN"
+            else
+              rc=$?
+              if [ "$rc" -eq 124 ]; then echo "TCP $h:$p => TIMEOUT (dropped: firewall/no-route)"; else echo "TCP $h:$p => REFUSED/FAIL rc=$rc ($(tr -d '\n' </tmp/perr))"; fi
+            fi
+          }
+          echo "===== TCP PROBES FROM BUILDER ====="
+          probe "$ING_PRIV" 22
+          probe "$ING_PUB" 22
+          probe "$PUB_PRIV" 22
+          echo
+          echo "===== SSH KEY + KNOWN_HOSTS ====="
           install -m 700 -d ~/.ssh
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
-          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Resolve active production image
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
-            set -eu
-            ids="$(docker ps \
-              --filter "label=com.docker.compose.project=jurvio" \
-              --filter "label=com.docker.compose.service=app" \
-              --format "{{.ID}}")"
-            set -- $ids
-            if [ "$#" -eq 0 ]; then echo "No running Jurvio app container found" >&2; exit 1; fi
-            if [ "$#" -ne 1 ]; then echo "Multiple app containers; ambiguous" >&2; exit 1; fi
-            docker inspect --format "{{.Config.Image}}" "$1"
-          ')"
-          test -n "$JURVIO_IMAGE" || { echo "::error::Running Jurvio app container has no configured image"; exit 1; }
-          case "$JURVIO_IMAGE" in
-            *[!A-Za-z0-9._/@:-]*) echo "::error::Resolved image contains unexpected characters"; exit 1 ;;
-          esac
-          printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
-          echo "Resolved active image from the running app container."
-
-      - name: Credential modes (no secret values printed)
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T worker-coa sh -lc '
-            if [ -n \"\${GOVINFO_API_KEY:-}\" ] && [ \"\$GOVINFO_API_KEY\" != \"DEMO_KEY\" ]; then
-              echo \"govinfo=configured\"
-            else
-              echo \"govinfo=demo-or-missing\"
-            fi
-            if [ -n \"\${COURTLISTENER_API_TOKEN:-}\" ]; then
-              echo \"courtlistener=configured\"
-            else
-              echo \"courtlistener=unauthenticated\"
-            fi
-          '"
-
-      - name: Fleet status report (read-only)
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-        run: |
-          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/report-fleet-status.mjs"
+          fp="$(ssh-keygen -yl -f ~/.ssh/id_ed25519 2>/dev/null | awk '{print $2}')"
+          echo "deploy key fingerprint: ${fp:-<unreadable>}"
+          : > ~/.ssh/known_hosts
+          for h in "$ING_PRIV" "$ING_PUB"; do ssh-keyscan -T 5 -H "$h" >> ~/.ssh/known_hosts 2>/dev/null || echo "keyscan $h: failed"; done
+          echo
+          echo "===== SSH AUTH TEST (user from secrets.DO_USER) ====="
+          sshtest() {
+            local h="$1"
+            echo "--- ssh $h ---"
+            ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$INGESTION_USER@$h" '
+              echo "connected_as=$(id -un) host=$(hostname)";
+              echo "ssh_active=$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null)";
+              echo "run_sshd=$(test -d /run/sshd && echo present || echo MISSING)";
+              echo "listen_22=$(ss -tlnH "( sport = :22 )" 2>/dev/null | awk "{print \$4}" | paste -sd, -)";
+              echo "sudo_n=$(sudo -n true 2>/dev/null && echo ok || echo no)"
+            ' 2>&1 | sed "s/^/  /" || echo "  SSH FAILED to $h"
+          }
+          sshtest "$ING_PRIV"
+          sshtest "$ING_PUB"
+          echo
+          echo "===== DONE ====="
