@@ -126,13 +126,18 @@ jobs:
           # Select a working builder->ingestion management SSH route (prefer the private VPC IP,
           # fall back to the public IP). Both are locked to the builder by the jurvio-private-data
           # firewall; the database/artifact data path stays on the private VPC regardless of transport.
+          touch ~/.ssh/known_hosts
           ING=""
           for h in "$INGESTION_PRIVATE" "$INGESTION_SSH"; do
+            if timeout 6 bash -c "exec 3<>/dev/tcp/$h/22" 2>/dev/null; then tcp=open; else tcp=closed; fi
+            # Drop any stale/persisted host key for this address (self-hosted ~/.ssh persists across
+            # runs; jurvio-web-01's host key can change after a rebuild/repair -> mismatch), then re-add.
+            ssh-keygen -R "$h" >/dev/null 2>&1 || true
             ssh-keyscan -T 6 -H "$h" >> ~/.ssh/known_hosts 2>/dev/null || true
-            if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$INGESTION_USER@$h" true 2>/dev/null; then
-              ING="$h"; echo "Selected ingestion SSH route: $h"; break
+            if out="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$INGESTION_USER@$h" true 2>&1)"; then
+              ING="$h"; echo "Route $h: TCP22=$tcp SSH=OK -> selected"; break
             fi
-            echo "Ingestion SSH route $h not available; trying next"
+            echo "Route $h: TCP22=$tcp SSH=FAIL: ${out:-<no output>}"
           done
           test -n "$ING" || { echo "::error::No working builder->ingestion SSH route (tried private $INGESTION_PRIVATE and public $INGESTION_SSH). Confirm sshd on jurvio-web-01 and the jurvio-private-data firewall :22 rules for the builder."; exit 1; }
           echo "INGESTION_HOST=$ING" >> "$GITHUB_ENV"
