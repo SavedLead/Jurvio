@@ -1,11 +1,10 @@
 name: Fleet status (read-only)
 
-# TEMPORARY (branch claude/jurvio-website-migration-b764s5 only).
-# Safe, additive firewall remediation on jurvio-private-data:
-#   - restore all-outbound on the ingestion server (empty outbound blocks it)
-#   - allow Postgres(5432)/NFS(2049) inbound from the CURRENT jurvio-public-01 private IP
-# Adds only; removes nothing. Never touches inbound SSH openness used by production.
-# Restored to original contents before the migration PR is finalized.
+# Read-only production heartbeat for the full federal fleet
+# (1 Supreme Court + 13 Courts of Appeals + 94 District Courts).
+# Reports credential MODE (never secret values), per-court health, queues,
+# publishing state, failures, stalled workers, and PACER cost ($0 expected).
+# Performs NO writes, NO ingestion, and NO publication.
 
 on:
   workflow_dispatch:
@@ -14,53 +13,71 @@ permissions:
   contents: read
 
 concurrency:
-  group: jurvio-migration-ssh-diagnostic
-  cancel-in-progress: true
+  group: jurvio-fleet-status
+  cancel-in-progress: false
 
 jobs:
-  remediate:
-    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
-    timeout-minutes: 8
-    env:
-      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+  status:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
     steps:
-      - name: Fix jurvio-private-data outbound + public data-path inbound
-        shell: bash
+      - name: Configure production SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
         run: |
-          set -euo pipefail
-          [ -n "${DO_TOKEN:-}" ] || { echo "::error::DO_TOKEN empty"; exit 1; }
-          api=https://api.digitalocean.com/v2
-          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
-          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
-          pub_priv="$(jq -r '.droplets[] | select(.name=="jurvio-public-01") | (.networks.v4[]|select(.type=="private")|.ip_address)' <<<"$droplets")"
-          [ -n "$pub_priv" ] || { echo "::error::could not resolve jurvio-public-01 private IP"; exit 1; }
-          echo "jurvio-public-01 private IP = $pub_priv"
-          fws="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
-          fid="$(jq -r '.firewalls[] | select(.name=="jurvio-private-data") | .id' <<<"$fws" | head -1)"
-          [ -n "$fid" ] || { echo "::error::jurvio-private-data firewall not found"; exit 1; }
-          echo "firewall id = $fid"
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
-          echo "----- BEFORE -----"
-          jq -r --arg id "$fid" '.firewalls[] | select(.id==$id) | "in=\(.inbound_rules|map(.protocol+":"+((.ports//"-")|tostring)+"<-"+((.sources.addresses//[])|tostring)))\nout=\(.outbound_rules|map(.protocol+":"+((.ports//"-")|tostring)))"' <<<"$fws"
+      - name: Resolve active production image
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          JURVIO_IMAGE="$(ssh "$DO_USER@$DO_HOST" '
+            set -eu
+            ids="$(docker ps \
+              --filter "label=com.docker.compose.project=jurvio" \
+              --filter "label=com.docker.compose.service=app" \
+              --format "{{.ID}}")"
+            set -- $ids
+            if [ "$#" -eq 0 ]; then echo "No running Jurvio app container found" >&2; exit 1; fi
+            if [ "$#" -ne 1 ]; then echo "Multiple app containers; ambiguous" >&2; exit 1; fi
+            docker inspect --format "{{.Config.Image}}" "$1"
+          ')"
+          test -n "$JURVIO_IMAGE" || { echo "::error::Running Jurvio app container has no configured image"; exit 1; }
+          case "$JURVIO_IMAGE" in
+            *[!A-Za-z0-9._/@:-]*) echo "::error::Resolved image contains unexpected characters"; exit 1 ;;
+          esac
+          printf 'JURVIO_IMAGE=%s\n' "$JURVIO_IMAGE" >> "$GITHUB_ENV"
+          echo "Resolved active image from the running app container."
 
-          out_count="$(jq -r --arg id "$fid" '.firewalls[] | select(.id==$id) | (.outbound_rules // []) | length' <<<"$fws")"
-          if [ "$out_count" -eq 0 ]; then
-            echo "Adding allow-all outbound to jurvio-private-data (was empty -> blocking ingestion egress)"
-            curl -fsS -X POST "${auth[@]}" "$api/firewalls/$fid/rules" -d '{"outbound_rules":[{"protocol":"tcp","ports":"all","destinations":{"addresses":["0.0.0.0/0","::/0"]}},{"protocol":"udp","ports":"all","destinations":{"addresses":["0.0.0.0/0","::/0"]}},{"protocol":"icmp","destinations":{"addresses":["0.0.0.0/0","::/0"]}}]}' >/dev/null
-          else
-            echo "Outbound rules already present ($out_count); leaving as-is"
-          fi
-
-          for port in 5432 2049; do
-            if jq -e --arg id "$fid" --arg p "$port" --arg src "$pub_priv/32" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports==$p and ((.sources.addresses // []) | index($src)))' <<<"$fws" >/dev/null; then
-              echo "inbound tcp:$port from $pub_priv already present"
+      - name: Credential modes (no secret values printed)
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T worker-coa sh -lc '
+            if [ -n \"\${GOVINFO_API_KEY:-}\" ] && [ \"\$GOVINFO_API_KEY\" != \"DEMO_KEY\" ]; then
+              echo \"govinfo=configured\"
             else
-              echo "Adding inbound tcp:$port from $pub_priv/32"
-              curl -fsS -X POST "${auth[@]}" "$api/firewalls/$fid/rules" -d "$(jq -n --arg p "$port" --arg src "$pub_priv/32" '{inbound_rules:[{protocol:"tcp",ports:$p,sources:{addresses:[$src]}}]}')" >/dev/null
+              echo \"govinfo=demo-or-missing\"
             fi
-          done
+            if [ -n \"\${COURTLISTENER_API_TOKEN:-}\" ]; then
+              echo \"courtlistener=configured\"
+            else
+              echo \"courtlistener=unauthenticated\"
+            fi
+          '"
 
-          echo "----- AFTER -----"
-          fws2="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
-          jq -r --arg id "$fid" '.firewalls[] | select(.id==$id) | "droplets=\(.droplet_ids)\nin=\(.inbound_rules|map(.protocol+":"+((.ports//"-")|tostring)+"<-addr"+((.sources.addresses//[])|tostring)+"+drop"+((.sources.droplet_ids//[])|tostring)))\nout=\(.outbound_rules|map(.protocol+":"+((.ports//"-")|tostring)+"->"+((.destinations.addresses//[])|tostring)))"' <<<"$fws2"
-          echo "REMEDIATION COMPLETE"
+      - name: Fleet status report (read-only)
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" "cd /opt/jurvio && JURVIO_IMAGE='$JURVIO_IMAGE' docker compose -f docker-compose.production.yml exec -T app node jobs/report-fleet-status.mjs"
