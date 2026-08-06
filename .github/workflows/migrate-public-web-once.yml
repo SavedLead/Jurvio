@@ -159,8 +159,13 @@ jobs:
           cd /opt/jurvio
           test -s .env.production
           if grep -q '^JURVIO_DATABASE_BIND=' .env.production; then sed -i "s/^JURVIO_DATABASE_BIND=.*/JURVIO_DATABASE_BIND=$1/" .env.production; else printf '\nJURVIO_DATABASE_BIND=%s\n' "$1" >> .env.production; fi
-          docker compose -f docker-compose.production.yml up -d postgres
-          postgres_id="$(docker compose -f docker-compose.production.yml ps -q postgres)"
+          # Only postgres is (re)started here and it does not use JURVIO_IMAGE, but docker compose
+          # interpolates the whole production file, so provide a placeholder image and load
+          # .env.production so JURVIO_DATABASE_BIND (and any other vars) resolve.
+          export JURVIO_IMAGE="${JURVIO_IMAGE:-localhost/jurvio-postgres-only:latest}"
+          dc() { docker compose --env-file .env.production -f docker-compose.production.yml "$@"; }
+          dc up -d postgres
+          postgres_id="$(dc ps -q postgres)"
           for _ in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$postgres_id")" = healthy ] && break; sleep 2; done
           [ "$(docker inspect -f '{{.State.Health.Status}}' "$postgres_id")" = healthy ]
           sudo -n apt-get update >/dev/null && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server >/dev/null
