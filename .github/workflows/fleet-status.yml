@@ -1,9 +1,8 @@
 name: Fleet status (read-only)
 
 # TEMPORARY DIAGNOSTIC (branch claude/jurvio-website-migration-b764s5 only).
-# Read-only: DO API GETs + a public-route SSH sanity check. No writes.
-# Runs on ubuntu-latest so it does not depend on the builder being powered on.
-# Restored to its original contents before the migration PR is finalized.
+# Read-only. Runs on the builder. Core TCP route test needs no secrets, so it
+# works the moment the builder runner is online. Restored before PR is finalized.
 
 on:
   workflow_dispatch:
@@ -13,73 +12,70 @@ permissions:
 
 concurrency:
   group: jurvio-migration-ssh-diagnostic
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   diagnose:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 8
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
     steps:
-      - name: Secret scope + droplet inventory + firewall state
-        id: resolve
+      - name: Builder identity (proves runner online)
         shell: bash
         run: |
           set -uo pipefail
-          echo "===== SECRET SCOPE (no values printed) ====="
-          [ -n "${DO_TOKEN:-}" ] && echo "DO_TOKEN: present" || echo "DO_TOKEN: EMPTY"
-          [ -n "${DO_SSH_KEY_B64:-}" ] && echo "DO_SSH_KEY_B64: present" || echo "DO_SSH_KEY_B64: EMPTY"
-          [ -n "${INGESTION_USER:-}" ] && echo "DO_USER: present" || echo "DO_USER: EMPTY"
-          if [ -z "${DO_TOKEN:-}" ]; then
-            echo "::warning::DO_TOKEN empty without environment: production -> secrets are environment-scoped and gated to main."
-            exit 0
-          fi
-          set -e
-          api=https://api.digitalocean.com/v2
-          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
-          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
-          echo
-          echo "===== DROPLET INVENTORY (name / id / status / public / private / size) ====="
-          jq -r '.droplets[] | [.name, (.id|tostring), .status, ((.networks.v4[]|select(.type=="public")|.ip_address)//"-"), ((.networks.v4[]|select(.type=="private")|.ip_address)//"-"), .size.slug, (.size_monthly_price|tostring)] | @tsv' <<<"$droplets" | sort
-          echo
-          builder_status="$(jq -r '.droplets[] | select(.name=="jurvio-builder-01") | .status' <<<"$droplets")"
-          echo "BUILDER POWER STATUS: ${builder_status:-<not found>}"
-          ingestion="$(jq -c '([.droplets[] | select(.name!="jurvio-public-01" and .name!="jurvio-builder-01") | select((.tags // []) | index("jurvio"))] | sort_by(.memory) | reverse | .[0]) // ([.droplets[] | select(.size.slug=="s-4vcpu-8gb")][0]) // empty' <<<"$droplets")"
-          ingestion_id="$(jq -r .id <<<"$ingestion")"
-          public_id="$(jq -r '.droplets[] | select(.name=="jurvio-public-01") | .id' <<<"$droplets")"
-          echo "Resolved ingestion droplet: $(jq -r .name <<<"$ingestion") id=$ingestion_id"
-          echo
-          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
-          echo "===== ALL CLOUD FIREWALLS ====="
-          jq -r '.firewalls[] | "FW name=\(.name) id=\(.id)\n  droplet_ids=\(.droplet_ids)\n  inbound=\(.inbound_rules | map(.protocol+":"+((.ports//"-")|tostring)+" from addr="+((.sources.addresses//[])|tostring)+" droplets="+((.sources.droplet_ids//[])|tostring)+" tags="+((.sources.tags//[])|tostring)))\n  outbound=\(.outbound_rules | map(.protocol+":"+((.ports//"-")|tostring)+" to addr="+((.destinations.addresses//[])|tostring)))"' <<<"$firewalls"
-          echo
-          echo "===== FIREWALLS ATTACHED TO INGESTION (id=$ingestion_id) ====="
-          jq -r --argjson id "$ingestion_id" '[.firewalls[] | select((.droplet_ids//[])|index($id)) | .name] as $n | if ($n|length)>0 then ($n|join(", ")) else "NONE (no cloud firewall -> all inbound open at cloud level)" end' <<<"$firewalls"
-          echo "===== FIREWALLS ATTACHED TO PUBLIC jurvio-public-01 (id=$public_id) ====="
-          jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids//[])|index($id)) | .name] as $n | if ($n|length)>0 then ($n|join(", ")) else "NONE" end' <<<"$firewalls"
-          ing_pub="$(jq -r '(.networks.v4[]|select(.type=="public")|.ip_address)' <<<"$ingestion")"
-          echo "ingestion_public=$ing_pub" >> "$GITHUB_OUTPUT"
+          echo "BUILDER ONLINE: host=$(hostname) user=$(whoami) time=$(date -u +%FT%TZ)"
+          echo "secret_scope: DO_TOKEN=$([ -n "${DO_TOKEN:-}" ] && echo present || echo empty) DO_SSH_KEY=$([ -n "${DO_SSH_KEY_B64:-}" ] && echo present || echo empty) DO_USER=$([ -n "${INGESTION_USER:-}" ] && echo present || echo empty)"
 
-      - name: Public-route SSH sanity check (ubuntu -> ingestion)
-        if: ${{ env.DO_TOKEN != '' && steps.resolve.outputs.ingestion_public != '' }}
+      - name: TCP route probes builder -> ingestion (no secrets needed)
         shell: bash
-        env:
-          ING_PUB: ${{ steps.resolve.outputs.ingestion_public }}
+        run: |
+          set -uo pipefail
+          probe() {
+            local h="$1" p="$2" rc
+            if timeout 8 bash -c "exec 3<>/dev/tcp/$h/$p" 2>/tmp/perr; then echo "TCP $h:$p => OPEN";
+            else rc=$?; if [ "$rc" -eq 124 ]; then echo "TCP $h:$p => TIMEOUT (dropped)"; else echo "TCP $h:$p => REFUSED/FAIL rc=$rc ($(tr -d '\n' </tmp/perr))"; fi; fi
+          }
+          echo "===== builder -> ingestion route probes ====="
+          probe 10.116.0.2 22       # ingestion PRIVATE VPC
+          probe 104.248.239.68 22   # ingestion PUBLIC
+          probe 10.116.0.5 22       # jurvio-public-01 PRIVATE (sanity)
+
+      - name: SSH auth test over each route (needs DO_SSH_KEY + DO_USER)
+        if: ${{ env.DO_SSH_KEY_B64 != '' && env.INGESTION_USER != '' }}
+        shell: bash
         run: |
           set -uo pipefail
           install -m 700 -d ~/.ssh
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          echo "TCP $ING_PUB:22:"
-          if timeout 8 bash -c "exec 3<>/dev/tcp/$ING_PUB/22" 2>/tmp/e; then echo "  OPEN"; else rc=$?; [ "$rc" -eq 124 ] && echo "  TIMEOUT" || echo "  REFUSED/FAIL rc=$rc ($(tr -d '\n' </tmp/e))"; fi
-          ssh-keyscan -T 6 -H "$ING_PUB" >> ~/.ssh/known_hosts 2>/dev/null || echo "keyscan failed"
-          echo "SSH auth as \$DO_USER over public route:"
-          ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$INGESTION_USER@$ING_PUB" '
-            echo "  connected_as=$(id -un) host=$(hostname)";
-            echo "  ssh_active=$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null)";
-            echo "  run_sshd=$(test -d /run/sshd && echo present || echo MISSING)";
-            echo "  listen_22=$(ss -tlnH "( sport = :22 )" 2>/dev/null | awk "{print \$4}" | paste -sd, -)"
-          ' 2>&1 | sed "s/^/  /" || echo "  SSH FAILED over public route"
+          : > ~/.ssh/known_hosts
+          for h in 10.116.0.2 104.248.239.68; do ssh-keyscan -T 6 -H "$h" >> ~/.ssh/known_hosts 2>/dev/null || echo "keyscan $h failed"; done
+          sshtest() {
+            echo "--- ssh $INGESTION_USER@$1 ---"
+            ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$INGESTION_USER@$1" '
+              echo "  ok connected_as=$(id -un) host=$(hostname)";
+              echo "  listen_22=$(ss -tlnH "( sport = :22 )" 2>/dev/null | awk "{print \$4}" | paste -sd, -)";
+              echo "  run_sshd=$(test -d /run/sshd && echo present || echo MISSING)";
+              echo "  sudo_n=$(sudo -n true 2>/dev/null && echo ok || echo no)"
+            ' 2>&1 | sed "s/^/  /" || echo "  SSH FAILED to $1"
+          }
+          echo "===== SSH auth: PRIVATE route ====="; sshtest 10.116.0.2
+          echo "===== SSH auth: PUBLIC route ====="; sshtest 104.248.239.68
+
+      - name: Firewall + droplet power state (needs DO_TOKEN)
+        if: ${{ env.DO_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          echo "===== DROPLETS (name/id/status/public/private) ====="
+          jq -r '.droplets[] | [.name,(.id|tostring),.status,((.networks.v4[]|select(.type=="public")|.ip_address)//"-"),((.networks.v4[]|select(.type=="private")|.ip_address)//"-")]|@tsv' <<<"$droplets" | sort
+          fw="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          echo "===== FIREWALLS ====="
+          jq -r '.firewalls[] | "FW \(.name) id=\(.id) droplets=\(.droplet_ids)\n  in=\(.inbound_rules|map(.protocol+":"+((.ports//"-")|tostring)+" addr="+((.sources.addresses//[])|tostring)+" drop="+((.sources.droplet_ids//[])|tostring)))\n  out=\(.outbound_rules|map(.protocol+":"+((.ports//"-")|tostring)+"->"+((.destinations.addresses//[])|tostring)))"' <<<"$fw"
