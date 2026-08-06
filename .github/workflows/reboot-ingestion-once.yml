@@ -23,8 +23,8 @@ jobs:
           api=https://api.digitalocean.com/v2
           auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
           droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
-          target="$(jq -c '[.droplets[] | select(.name=="jurvio-web-01") | select((.tags // []) | index("jurvio"))][0] // empty' <<<"$droplets")"
-          test -n "$target" || { echo "::error::Exact tagged Jurvio ingestion server not found"; exit 1; }
+          target="$(jq -c '[.droplets[] | select(.name=="jurvio-web-01")][0] // empty' <<<"$droplets")"
+          test -n "$target" || { echo "::error::Exact Jurvio ingestion server not found"; exit 1; }
           target_id="$(jq -r .id <<<"$target")"
           public_id="$(jq -r '[.droplets[] | select(.name=="jurvio-public-01")][0].id // empty' <<<"$droplets")"
           builder_id="$(jq -r '[.droplets[] | select(.name=="jurvio-builder-01")][0].id // empty' <<<"$droplets")"
