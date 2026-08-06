@@ -23,9 +23,14 @@ jobs:
           api=https://api.digitalocean.com/v2
           auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
           droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
-          target="$(jq -c '[.droplets[] | select(.name=="jurvio-web-01") | select(.size.slug=="s-4vcpu-8gb") | select((.tags // []) | index("jurvio"))][0] // empty' <<<"$droplets")"
-          test -n "$target" || { echo "::error::Exact Jurvio 48-dollar ingestion server not found"; exit 1; }
+          target="$(jq -c '[.droplets[] | select(.name=="jurvio-web-01") | select((.tags // []) | index("jurvio"))][0] // empty' <<<"$droplets")"
+          test -n "$target" || { echo "::error::Exact tagged Jurvio ingestion server not found"; exit 1; }
           target_id="$(jq -r .id <<<"$target")"
+          public_id="$(jq -r '[.droplets[] | select(.name=="jurvio-public-01")][0].id // empty' <<<"$droplets")"
+          builder_id="$(jq -r '[.droplets[] | select(.name=="jurvio-builder-01")][0].id // empty' <<<"$droplets")"
+          test -n "$public_id" && test -n "$builder_id"
+          test "$target_id" != "$public_id"
+          test "$target_id" != "$builder_id"
           test "$target_id" != "590318692"
           test "$(jq -r .name <<<"$target")" = "jurvio-web-01"
           curl -fsS -X POST "${auth[@]}" "$api/droplets/$target_id/actions" -d '{"type":"power_cycle"}' >/dev/null
