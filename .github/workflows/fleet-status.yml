@@ -18,7 +18,6 @@ concurrency:
 jobs:
   diagnose:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
-    environment: production
     timeout-minutes: 10
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
@@ -29,7 +28,9 @@ jobs:
         id: resolve
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          if [ -n "${DO_TOKEN:-}" ]; then echo "DO_TOKEN: present"; else echo "DO_TOKEN: EMPTY (env-scoped secret not available without environment: production)"; exit 78; fi
+          set -e
           api=https://api.digitalocean.com/v2
           auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
           droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
