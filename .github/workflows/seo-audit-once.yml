@@ -1,0 +1,51 @@
+name: SEO audit once
+
+# Hosted (ubuntu-latest) read-only audit of indexing protection on the live
+# site. For each public page type it reports the X-Robots-Tag response header
+# and the <meta name="robots"> content, plus robots.txt and a sitemap. No
+# writes, no server access, no DNS change.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-seo-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Audit robots protection across page types
+        run: |
+          set +e
+          base="https://jurvio.com"
+          paths=(
+            "/" "/cases" "/courts" "/judges" "/parties" "/attorneys" "/law-firms"
+            "/supreme-court" "/scotus" "/search" "/government-litigation" "/explainers"
+            "/case/jv-ohq4teedmj"
+            "/case/jv-ohq4teedmj/documents/jd-y3d1rv46h4"
+            "/cases?page=2"
+          )
+          printf '%-52s %-6s %s\n' "PATH" "CODE" "X-Robots-Tag | meta-robots"
+          for p in "${paths[@]}"; do
+            body="$(mktemp)"
+            hdrs="$(curl -sS -D - -o "$body" --max-time 45 "$base$p" 2>/dev/null)"
+            code="$(printf '%s' "$hdrs" | awk 'toupper($1) ~ /^HTTP/ {c=$2} END{print c}')"
+            xrobots="$(printf '%s' "$hdrs" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-robots-tag"{print $2}' | paste -sd'~' -)"
+            meta="$(grep -io '<meta[^>]*name="robots"[^>]*>' "$body" 2>/dev/null | head -1 | sed 's/.*content="//; s/".*//')"
+            printf '%-52s %-6s %s | %s\n' "$p" "${code:-ERR}" "${xrobots:-<none>}" "${meta:-<none>}"
+            rm -f "$body"
+          done
+          echo
+          echo "===== /robots.txt ====="
+          curl -sS --max-time 30 "$base/robots.txt" 2>/dev/null; echo
+          echo "===== /sitemap.xml (first 400 bytes) ====="
+          curl -sS --max-time 30 "$base/sitemap.xml" 2>/dev/null | head -c 400; echo
+          echo "===== X-Robots-Tag on /api/ready (health checks must not be blocked) ====="
+          curl -sS -D - -o /dev/null --max-time 20 "$base/api/ready" 2>/dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="x-robots-tag" || toupper($1) ~ /^HTTP/'
+          exit 0
