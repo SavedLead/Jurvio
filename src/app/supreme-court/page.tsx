@@ -1,5 +1,6 @@
 import type { Metadata, Route } from "next";
 import Link from "next/link";
+import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
 import { listPublicScotusOpinions } from "@/modules/scotus/application/list-public-scotus-opinions";
@@ -7,7 +8,13 @@ import { currentJustices, officialScotusLinks } from "@/modules/scotus/domain/co
 import { scotusTermLabel } from "@/modules/scotus/domain/term";
 import styles from "./supreme-court.module.css";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 300;
+
+const getCachedScotusDiscovery = unstable_cache(
+  async () => listPublicScotusOpinions(db()),
+  ["public-scotus-discovery"],
+  { revalidate: 300, tags: ["public-cases", "public-scotus"] },
+);
 
 export const metadata: Metadata = {
   title: "U.S. Supreme Court Cases, Justices, Calendar and Opinions",
@@ -32,7 +39,7 @@ function Term({ slug, children }: { slug: string; children: React.ReactNode }) {
 }
 
 export default async function SupremeCourtPage() {
-  const discovery = await listPublicScotusOpinions(db());
+  const discovery = await getCachedScotusDiscovery();
   const origin = siteOrigin();
   const jsonLd = {
     "@context": "https://schema.org", "@type": "CollectionPage",
