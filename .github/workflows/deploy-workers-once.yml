@@ -1,0 +1,98 @@
+name: Deploy workers once
+
+# Self-hosted (builder) targeted deploy of ONLY the ingestion workers to
+# jurvio-web-01 over the private VPC. The standard deploy-production deploy job
+# runs on a hosted runner and SSHes to the public host, which the firewall
+# (management SSH from the builder only) now blocks. This job pulls the already
+# built image and recreates just worker-core and worker-coa with the updated
+# compose (real heartbeat healthcheck), then proves health + processing. It
+# does NOT touch postgres, the app, or ingestion data.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: jurvio-deploy-workers
+  cancel-in-progress: false
+
+jobs:
+  deploy-workers:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE: ghcr.io/savedlead/jurvio:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+            ControlMaster auto
+            ControlPath ~/.ssh/cm-%r@%h:%p
+            ControlPersist 300
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Recreate workers with new image + heartbeat healthcheck
+        run: |
+          set -euo pipefail
+          echo "Deploying workers with image: $IMAGE"
+          scp docker-compose.production.yml "$INGESTION_USER@$DB_HOST:/opt/jurvio/docker-compose.production.yml"
+          printf '%s' "$GH_TOKEN" | ssh "$INGESTION_USER@$DB_HOST" 'sudo -n docker login ghcr.io -u SavedLead --password-stdin'
+          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "$IMAGE" <<'REMOTE'
+          set -euo pipefail
+          IMAGE="$1"
+          cd /opt/jurvio
+          export JURVIO_IMAGE="$IMAGE"
+          dc() { sudo -n docker compose -f docker-compose.production.yml "$@"; }
+          echo "--- pull worker image ---"
+          dc pull worker-core worker-coa
+          echo "--- recreate only the workers (postgres/app untouched) ---"
+          dc up -d worker-core worker-coa
+          REMOTE
+      - name: Wait for heartbeat + prove sustained health and processing
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set +e
+          cd /opt/jurvio
+          echo "waiting up to 150s for workers to become healthy ..."
+          for i in $(seq 1 30); do
+            core="$(sudo -n docker inspect -f '{{.State.Health.Status}}' jurvio-worker-core-1 2>/dev/null)"
+            coa="$(sudo -n docker inspect -f '{{.State.Health.Status}}' jurvio-worker-coa-1 2>/dev/null)"
+            echo "t=$((i*5))s core=$core coa=$coa"
+            [ "$core" = "healthy" ] && [ "$coa" = "healthy" ] && break
+            sleep 5
+          done
+          echo "--- docker ps (worker status) ---"
+          sudo -n docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'worker|postgres|app'
+          echo "--- heartbeat files (epoch + age) ---"
+          now=$(date +%s)
+          for lane in core coa; do
+            f=/var/lib/jurvio/artifacts/scheduler/$lane.alive
+            hb=$(sudo -n cat "$f" 2>/dev/null || echo NA)
+            [ "$hb" != "NA" ] && echo "$lane.alive=$hb age=$((now-hb))s" || echo "$lane.alive missing"
+          done
+          echo "--- recent scheduler activity (proves processing) ---"
+          sudo -n docker logs --tail 8 jurvio-worker-core-1 2>&1 | tail -8
+          sudo -n docker logs --tail 8 jurvio-worker-coa-1 2>&1 | tail -8
+          echo "--- ingestion freshness (latest docket entry) ---"
+          cid="$(sudo -n docker ps --format '{{.ID}} {{.Image}}' | awk '/postgres/{print $1; exit}')"
+          [ -n "$cid" ] && sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio -c "SELECT now() AS db_time, max(created_at) AS latest_docket_entry FROM docket_entry;"
+          REMOTE
