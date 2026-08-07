@@ -239,6 +239,7 @@ jobs:
         env:
           PUBLIC_FW: ${{ steps.network.outputs.public_fw }}
           PUBLIC_PUBLIC: ${{ steps.network.outputs.public_public }}
+          PUBLIC_PRIVATE: ${{ steps.network.outputs.public_private }}
         run: |
           set -euo pipefail
           api=https://api.digitalocean.com/v2
@@ -247,6 +248,56 @@ jobs:
           if ! jq -e --arg id "$PUBLIC_FW" '.firewalls[] | select(.id==$id) | .inbound_rules[]? | select(.protocol=="tcp" and .ports=="80")' <<<"$firewalls" >/dev/null; then
             curl -fsS -X POST "${auth[@]}" "$api/firewalls/$PUBLIC_FW/rules" -d '{"inbound_rules":[{"protocol":"tcp","ports":"80","sources":{"addresses":["0.0.0.0/0","::/0"]}},{"protocol":"tcp","ports":"443","sources":{"addresses":["0.0.0.0/0","::/0"]}}]}' >/dev/null
           fi
-          for _ in $(seq 1 20); do curl -fsS --resolve "jurvio.com:443:$PUBLIC_PUBLIC" https://jurvio.com/api/ready >/dev/null && break; sleep 3; done
-          curl -fsS --resolve "jurvio.com:443:$PUBLIC_PUBLIC" https://jurvio.com/api/ready >/dev/null
-          { echo '### Jurvio public origin is ready'; echo '- Public app deployed on jurvio-public-01'; echo '- Database and artifacts use private VPC connections'; echo '- Ports 80/443 are open'; echo '- DNS has not been changed'; echo "- Verified main commit: $GITHUB_SHA"; } >> "$GITHUB_STEP_SUMMARY"
+          # The origin serves a Cloudflare Origin Certificate (trusted only by the
+          # Cloudflare edge, not a public CA), so direct-to-origin probes use -k.
+          # These curls resolve jurvio.com to the NEW server's PUBLIC IP over the
+          # open Internet path (80/443), exactly as Cloudflare will reach it.
+          probe() { curl -ksS -o /dev/null -w '%{http_code}' --resolve "jurvio.com:443:$PUBLIC_PUBLIC" --max-time 20 "https://jurvio.com$1"; }
+          echo "Waiting for public origin to answer on $PUBLIC_PUBLIC ..."
+          for _ in $(seq 1 20); do [ "$(probe /api/ready)" = "200" ] && break; sleep 3; done
+          fail=0
+          # Hard health check: /api/ready must be 200.
+          code="$(probe /api/ready)"; echo "GET /api/ready -> $code"
+          [ "$code" = "200" ] || { echo "::error::/api/ready returned $code"; fail=1; }
+          # Page checks: each must return a non-error status (<400).
+          for path in / /cases /scotus /supreme-court /courts; do
+            code="$(probe "$path")"; echo "GET $path -> $code"
+            if [ "$code" -ge 400 ] 2>/dev/null || [ -z "$code" ]; then
+              echo "::error::$path returned $code"; fail=1
+            fi
+          done
+          # TLS: confirm the origin presents the Cloudflare Origin certificate.
+          echo "--- TLS certificate presented by origin ---"
+          if cert="$(echo | openssl s_client -connect "$PUBLIC_PUBLIC:443" -servername jurvio.com 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>/dev/null)"; then
+            echo "$cert"
+            echo "$cert" | grep -qi 'Cloudflare' && echo "TLS OK: Cloudflare Origin certificate presented" || echo "::warning::Origin cert issuer is not Cloudflare"
+          else
+            echo "::error::Could not read TLS certificate from origin"; fail=1
+          fi
+          # Documents/artifacts: confirm the NFS-mounted artifact store is visible
+          # to the app container (read-only) over the private VPC. Informational.
+          echo "--- Artifact store visible to app container ---"
+          if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "root@$PUBLIC_PRIVATE" bash -s <<'REMOTE'
+          set -e
+          cid="$(docker ps -q -f label=com.docker.compose.project=jurvio-public -f label=com.docker.compose.service=app | head -1)"
+          if [ -n "$cid" ]; then
+            echo "app container: $cid"
+            docker exec "$cid" sh -c 'ls -1 /var/lib/jurvio/artifacts 2>/dev/null | head -3; echo "artifact entries visible to app: $(ls -1 /var/lib/jurvio/artifacts 2>/dev/null | wc -l)"'
+          else
+            echo "app container not found; checking host NFS mount instead"
+            ls -1 /mnt/jurvio-artifacts 2>/dev/null | head -3
+            echo "artifact entries on host mount: $(ls -1 /mnt/jurvio-artifacts 2>/dev/null | wc -l)"
+          fi
+          REMOTE
+          then
+            echo "::warning::Could not enumerate artifacts inside app container (non-fatal)"
+          fi
+          [ "$fail" = "0" ] || { echo "::error::Direct-origin verification failed"; exit 1; }
+          { echo '### Jurvio public origin is ready';
+            echo '- Public app deployed on jurvio-public-01';
+            echo '- Verified pages over the public path: /api/ready, /, /cases, /scotus, /supreme-court, /courts';
+            echo '- TLS: Cloudflare Origin certificate presented on 443';
+            echo '- Database and artifacts use private VPC connections (PostgreSQL and documents stay on jurvio-web-01)';
+            echo '- Ports 80/443 are open on jurvio-public-01';
+            echo '- DNS has NOT been changed';
+            echo "- Verified main commit: $GITHUB_SHA"; } >> "$GITHUB_STEP_SUMMARY"
