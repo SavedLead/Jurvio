@@ -1,0 +1,56 @@
+name: Diag P3/P4 (read-only)
+
+# One-off, READ-ONLY production diagnostic run from the self-hosted builder over
+# the private VPC to jurvio-web-01 (10.116.0.2). Runs EXPLAIN ANALYZE for the
+# public /cases and /courts queries (P4) and gathers outbox_event composition
+# (P3). It executes no mutations. Delete after use.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diag-p3p4
+  cancel-in-progress: false
+
+jobs:
+  diag:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Run read-only diagnostic
+        run: |
+          set -euo pipefail
+          scp scripts/diag/p3p4-readonly.sql "$INGESTION_USER@$DB_HOST:/tmp/p3p4-readonly.sql"
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cid="$(sudo -n docker ps --format '{{.ID}} {{.Names}}' | awk '/postgres/{print $1; exit}')"
+          if [ -z "$cid" ]; then echo "no postgres container found"; exit 1; fi
+          sudo -n docker cp /tmp/p3p4-readonly.sql "$cid:/tmp/p3p4-readonly.sql"
+          # ON_ERROR_STOP so any accidental write / error fails loudly; the file is SELECT/EXPLAIN only.
+          sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -f /tmp/p3p4-readonly.sql
+          sudo -n docker exec -i "$cid" rm -f /tmp/p3p4-readonly.sql
+          rm -f /tmp/p3p4-readonly.sql
+          REMOTE
