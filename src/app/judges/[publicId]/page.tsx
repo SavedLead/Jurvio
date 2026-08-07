@@ -5,6 +5,7 @@ import { db } from "@/db/client";
 import { calculateOutcomeRates, getPublicJudge } from "@/modules/judges/application/public-judge-analytics";
 import directory from "@/modules/directory/ui/directory.module.css";
 import styles from "@/modules/judges/ui/judge-analytics.module.css";
+import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ export async function generateMetadata({ params }: { params: Promise<{ publicId:
     title: `${judge.displayName} — Federal Judge Analytics`,
     description: `Source-backed case volume, outcomes, case mix, timing, awards, and recent federal cases for ${judge.displayName}.`,
     alternates: { canonical: `/judges/${publicId}` },
-    robots: { index: judge.indexable, follow: true },
+    robots: robotsFor(judge.indexable),
   };
 }
 

@@ -9,6 +9,10 @@ const schema = z.object({
   SITE_URL: z.string().url().default("https://jurvio.com"),
   CF_ACCESS_TEAM_DOMAIN: z.string().url().optional(),
   CF_ACCESS_AUDIENCE: z.string().min(16).optional(),
+  // Pre-launch indexing lockdown switch. Only the literal "true" opens the
+  // public site to search-engine indexing; anything else (including unset)
+  // keeps the site fully noindex/nofollow. See src/lib/seo/indexing.ts.
+  JURVIO_PUBLIC_LAUNCH: z.string().optional(),
 });
 
 let cached: z.infer<typeof schema> | undefined;

@@ -6,6 +6,7 @@ import { siteOrigin } from "@/lib/config/site-url";
 import { getPublicGovernmentLead } from "@/modules/government-tracker/application/list-public-government-leads";
 import { allegationNotice } from "@/modules/government-tracker/domain/publication-policy";
 import styles from "../tracker.module.css";
+import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { leadId } = await params;
   const lead = await getPublicGovernmentLead(db(), leadId);
   if (!lead) return { title: "Source lead not found | Jurvio", robots: { index: false, follow: false } };
-  return { title: `${lead.sourceTitle} | Jurvio`, description: lead.attributedSummary, alternates: { canonical: `/government-litigation/${lead.publicId}` }, robots: { index: true, follow: true } };
+  return { title: `${lead.sourceTitle} | Jurvio`, description: lead.attributedSummary, alternates: { canonical: `/government-litigation/${lead.publicId}` }, robots: robotsFor(true) };
 }
 
 export default async function GovernmentLeadPage({ params }: Props) {

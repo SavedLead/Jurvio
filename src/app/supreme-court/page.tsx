@@ -7,6 +7,7 @@ import { listPublicScotusOpinions } from "@/modules/scotus/application/list-publ
 import { currentJustices, officialScotusLinks } from "@/modules/scotus/domain/court-reference";
 import { scotusTermLabel } from "@/modules/scotus/domain/term";
 import styles from "./supreme-court.module.css";
+import { robotsFor } from "@/lib/seo/indexing";
 
 // Keep database access at runtime; unstable_cache still shares the five-minute result.\nexport const dynamic = "force-dynamic";\nexport const revalidate = 300;
 
@@ -20,7 +21,7 @@ export const metadata: Metadata = {
   title: "U.S. Supreme Court Cases, Justices, Calendar and Opinions",
   description: "Follow the U.S. Supreme Court: current Justices, cases and opinions, argument calendar, orders, history, statistics, and a clear guide to the Court's process.",
   alternates: { canonical: "/supreme-court" },
-  robots: { index: true, follow: true },
+  robots: robotsFor(true),
   openGraph: {
     title: "The U.S. Supreme Court, organized and explained",
     description: "Cases, opinions, Justices, schedules, history, statistics, and source-backed explanations.",

@@ -9,6 +9,7 @@ import { OpinionReaderTools } from "@/modules/cases/ui/opinion-reader-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { distinguishReportersNote, extractCitationLabels, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
 import { AnnotatedLegalText } from "@/modules/legal-context/ui/annotated-legal-text";
+import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,7 @@ export async function generateMetadata({ params }: OpinionPageProps): Promise<Me
     description,
     alternates: { canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` },
     openGraph: { title: `${caption} — Judicial Opinion`, description, type: "article" },
-    robots: opinion.indexable ? { index: true, follow: true } : { index: false, follow: true },
+    robots: robotsFor(opinion.indexable),
   };
 }
 

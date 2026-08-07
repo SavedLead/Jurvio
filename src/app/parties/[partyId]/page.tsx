@@ -5,6 +5,7 @@ import { db } from "@/db/client";
 import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicEntity } from "@/modules/directory/application/public-directory";
 import styles from "@/modules/directory/ui/directory.module.css";
+import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ partyId: string }> }
@@ -21,7 +22,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: `${party.displayName} — Public Court Cases`,
     description: `Public court cases involving ${party.displayName}, with source-backed court and docket information.`,
     alternates: { canonical: `/parties/${party.publicId}` },
-    robots: canIndexDirectoryProfile(party) ? { index: true, follow: true } : { index: false, follow: true },
+    robots: robotsFor(canIndexDirectoryProfile(party)),
   };
 }
 
