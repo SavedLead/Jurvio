@@ -1,8 +1,20 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { NOINDEX_HEADER_VALUE, sitePubliclyLaunched } from "@/lib/seo/indexing";
 
 const COMMAND_CENTER_HOST = "z.jurvio.com";
 const PUBLIC_HOSTS = new Set(["jurvio.com", "www.jurvio.com"]);
+
+// Force noindex on every response until the site is explicitly launched. This
+// is the header half of the pre-launch lockdown (the meta half lives in page
+// metadata via robotsFor). Applied to all hosts/paths — a noindex header on API
+// or health-check responses does not affect their status codes or bodies.
+function withLockdownHeaders(response: NextResponse): NextResponse {
+  if (!sitePubliclyLaunched()) {
+    response.headers.set("X-Robots-Tag", NOINDEX_HEADER_VALUE);
+  }
+  return response;
+}
 
 function requestHost(request: NextRequest) {
   const forwardedHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
@@ -34,14 +46,14 @@ export function middleware(request: NextRequest) {
     if (cleanPath !== null) {
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = cleanPath;
-      return NextResponse.redirect(redirectUrl, 308);
+      return withLockdownHeaders(NextResponse.redirect(redirectUrl, 308));
     }
 
-    if (isFrameworkOrAssetPath(pathname)) return NextResponse.next();
+    if (isFrameworkOrAssetPath(pathname)) return withLockdownHeaders(NextResponse.next());
 
     const rewriteUrl = request.nextUrl.clone();
     rewriteUrl.pathname = pathname === "/" ? "/internal" : `/internal${pathname}`;
-    return NextResponse.rewrite(rewriteUrl);
+    return withLockdownHeaders(NextResponse.rewrite(rewriteUrl));
   }
 
   if (PUBLIC_HOSTS.has(host) && (pathname === "/internal" || pathname.startsWith("/internal/"))) {
@@ -54,7 +66,7 @@ export function middleware(request: NextRequest) {
     });
   }
 
-  return NextResponse.next();
+  return withLockdownHeaders(NextResponse.next());
 }
 
 export const config = {

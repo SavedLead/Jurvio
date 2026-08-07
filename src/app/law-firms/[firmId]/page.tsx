@@ -5,6 +5,7 @@ import { db } from "@/db/client";
 import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicEntity } from "@/modules/directory/application/public-directory";
 import styles from "@/modules/directory/ui/directory.module.css";
+import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ firmId: string }> }
@@ -19,7 +20,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return { title: `${firm.displayName} — Cases and Court Records`,
     description: `Published court cases connected to ${firm.displayName} on Jurvio.`,
     alternates: { canonical: `/law-firms/${firm.publicId}` },
-    robots: canIndexDirectoryProfile(firm) ? { index: true, follow: true } : { index: false, follow: true } };
+    robots: robotsFor(canIndexDirectoryProfile(firm)) };
 }
 export default async function LawFirmPage({ params }: Props) {
   const firm = await load(params); if (!firm) notFound();

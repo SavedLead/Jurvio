@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
 import { listPublicGovernmentLeads } from "@/modules/government-tracker/application/list-public-government-leads";
 import styles from "./tracker.module.css";
+import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export const metadata: Metadata = {
   title: "Federal Agency Litigation Tracker | Jurvio",
   description: "Follow reviewed, source-backed litigation leads from official DOJ, SEC, FTC, OSHA, and executive-order sources.",
   alternates: { canonical: "/government-litigation" },
-  robots: { index: true, follow: true },
+  robots: robotsFor(true),
 };
 
 const agencies = [

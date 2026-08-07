@@ -5,6 +5,7 @@ import { db } from "@/db/client";
 import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicCourt } from "@/modules/directory/application/public-directory";
 import styles from "@/modules/directory/ui/directory.module.css";
+import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ courtId: string }> }
@@ -17,7 +18,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return { title: `${court.name} — Cases and Court Information`,
     description: `Browse published cases and source-backed information for ${court.name}.`,
     alternates: { canonical: `/courts/${court.publicId}` },
-    robots: canIndexDirectoryProfile(court) ? { index: true, follow: true } : { index: false, follow: true } };
+    robots: robotsFor(canIndexDirectoryProfile(court)) };
 }
 export default async function CourtPage({ params }: Props) {
   const court = await load(params); if (!court) notFound();
