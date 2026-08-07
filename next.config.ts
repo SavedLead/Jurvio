@@ -17,12 +17,13 @@ const nextConfig: NextConfig = {
     ];
   },
   async headers() {
-    // Public pages must remain indexable. Only authenticated/internal surfaces
-    // receive a noindex response header.
+    // Jurvio is intentionally pre-launch. Block every route from indexing until
+    // go-live is explicitly approved.
     return [
-      { source: "/internal/:path*", headers: [noIndexHeader] },
-      { source: "/in/:path*", headers: [noIndexHeader] },
-      { source: "/heartbeat", headers: [noIndexHeader] },
+      {
+        source: "/:path*",
+        headers: [noIndexHeader],
+      },
     ];
   },
 };
