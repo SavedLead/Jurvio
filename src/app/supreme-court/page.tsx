@@ -9,7 +9,8 @@ import { scotusTermLabel } from "@/modules/scotus/domain/term";
 import styles from "./supreme-court.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
 
-// Keep database access at runtime; unstable_cache still shares the five-minute result.\nexport const dynamic = "force-dynamic";\nexport const revalidate = 300;
+// Keep database access at runtime; unstable_cache still shares the five-minute result.
+export const dynamic = "force-dynamic";
 
 const getCachedScotusDiscovery = unstable_cache(
   async () => listPublicScotusOpinions(db()),
