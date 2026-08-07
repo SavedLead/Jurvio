@@ -1,0 +1,75 @@
+name: Fix builder runner restart once
+
+# Self-hosted (builder) job. The runner's systemd unit has no Restart=, so when
+# the runner process exits after a job it is never restarted and the droplet
+# sits idle-but-runnerless until a reboot. This job first prints the decisive
+# config (.runner ephemeral flag, runsvc.sh, service journal, Restart property),
+# then — only if the runner is NOT ephemeral and passwordless sudo is available
+# — installs a systemd drop-in adding Restart=always so the runner comes back
+# immediately after every job. Touches only the builder's runner service unit;
+# no ingestion, no public server, no DNS change. Does not print secrets
+# (.credentials is never read).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-fix-builder-runner-restart
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 10
+    steps:
+      - name: Diagnose runner restart config and fix if safe
+        run: |
+          set +e
+          RUNNER_DIR=/opt/actions-runner
+          unit="actions.runner.SavedLead-Jurvio.jurvio-builder-01.service"
+          SUDO=""; if [ "$(id -u)" != "0" ]; then sudo -n true 2>/dev/null && SUDO="sudo -n"; fi
+          echo "whoami=$(whoami) sudo='${SUDO:-<none>}'"
+          echo
+          echo "===== .runner ephemeral flag ====="
+          eph="$(grep -o '\"[Ee]phemeral\"[^,}]*' "$RUNNER_DIR/.runner" 2>/dev/null)"
+          echo "ephemeral entry: ${eph:-<not present>}"
+          echo
+          echo "===== runsvc.sh ====="
+          cat "$RUNNER_DIR/runsvc.sh" 2>/dev/null
+          echo
+          echo "===== run-helper (how run.sh is invoked) ====="
+          sed -n '1,40p' "$RUNNER_DIR/run-helper.sh.template" 2>/dev/null
+          echo
+          echo "===== current Restart props ====="
+          systemctl show "$unit" -p Restart -p RestartUSec -p ExecStart 2>/dev/null
+          echo
+          echo "===== recent runner service journal (exit codes / restarts) ====="
+          ${SUDO} journalctl -u "$unit" -n 60 --no-pager 2>/dev/null | tail -60
+          echo
+          # Decide.
+          is_ephemeral=0
+          echo "$eph" | grep -qiE 'ephemeral"[[:space:]]*:[[:space:]]*true' && is_ephemeral=1
+          if [ "$is_ephemeral" = "1" ]; then
+            echo "::warning::Runner is EPHEMERAL. A persistent fix needs re-registration (a token); not applying Restart=always blindly. Reporting only."
+            exit 0
+          fi
+          if [ -z "$SUDO" ] && [ "$(id -u)" != "0" ]; then
+            echo "::warning::No passwordless sudo for $(whoami); cannot edit the unit from here. Reporting only."
+            exit 0
+          fi
+          echo "===== applying Restart=always drop-in ====="
+          dropdir="/etc/systemd/system/${unit}.d"
+          ${SUDO} mkdir -p "$dropdir"
+          ${SUDO} tee "$dropdir/restart.conf" >/dev/null <<'CONF'
+          [Service]
+          Restart=always
+          RestartSec=5
+          CONF
+          ${SUDO} systemctl daemon-reload
+          echo "--- drop-in written ---"; ${SUDO} cat "$dropdir/restart.conf"
+          echo "--- effective Restart now ---"; systemctl show "$unit" -p Restart -p RestartUSec 2>/dev/null
+          echo "Note: the new Restart policy takes effect for the next runner exit; the service stays enabled at boot (WantedBy=multi-user.target)."
+          echo "done"
