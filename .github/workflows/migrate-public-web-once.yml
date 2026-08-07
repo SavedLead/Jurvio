@@ -185,7 +185,15 @@ jobs:
         run: |
           set -euo pipefail
           ssh "$INGESTION_USER@${INGESTION_HOST:-$INGESTION_PRIVATE}" 'cat /opt/jurvio/.env.production' | ssh "root@$PUBLIC_PRIVATE" 'umask 077; cat > /opt/jurvio/.env.production'
-          ssh "$INGESTION_USER@${INGESTION_HOST:-$INGESTION_PRIVATE}" 'sudo -n tar -C / -czf - etc/ssl/cloudflare' | ssh "root@$PUBLIC_PRIVATE" 'tar -C / -xzf -'
+          # Copy the Cloudflare origin cert/key. Verify the source first, dereference symlinks (-h) so the
+          # real files (not dangling links) land on the new server, then verify the destination.
+          if ! ssh "$INGESTION_USER@${INGESTION_HOST:-$INGESTION_PRIVATE}" 'sudo -n sh -c "test -s /etc/ssl/cloudflare/jurvio.pem && test -s /etc/ssl/cloudflare/jurvio.key"'; then
+            echo "::error::Cloudflare origin cert/key not found (or empty) at /etc/ssl/cloudflare/jurvio.pem and jurvio.key on jurvio-web-01. Place the Cloudflare Origin Certificate + key there. Current contents:"
+            ssh "$INGESTION_USER@${INGESTION_HOST:-$INGESTION_PRIVATE}" 'sudo -n ls -la /etc/ssl/cloudflare/ 2>&1 || echo "(directory missing)"'
+            exit 1
+          fi
+          ssh "$INGESTION_USER@${INGESTION_HOST:-$INGESTION_PRIVATE}" 'sudo -n tar -C / -chzf - etc/ssl/cloudflare' | ssh "root@$PUBLIC_PRIVATE" 'tar -C / -xzf -'
+          ssh "root@$PUBLIC_PRIVATE" 'test -s /etc/ssl/cloudflare/jurvio.pem && test -s /etc/ssl/cloudflare/jurvio.key' || { echo "::error::Cert/key did not land on jurvio-public-01 after copy"; exit 1; }
           scp docker-compose.public.yml "root@$PUBLIC_PRIVATE:/opt/jurvio/docker-compose.public.yml"
           scp ops/nginx-jurvio.conf "root@$PUBLIC_PRIVATE:/opt/jurvio/nginx-jurvio.conf"
           ssh "root@$PUBLIC_PRIVATE" bash -s -- "$INGESTION_PRIVATE" <<'REMOTE'
