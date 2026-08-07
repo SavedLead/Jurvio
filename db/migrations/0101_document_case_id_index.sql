@@ -1,0 +1,15 @@
+-- Index the document.case_id foreign key.
+--
+-- In 0001_foundation the sibling foreign keys docket_entry.case_id and
+-- party_appearance.case_id were indexed, but document.case_id was not.
+-- PostgreSQL does not create indexes for foreign keys automatically, so every
+-- correlated "documents belonging to this case" lookup (the homepage activity
+-- ranking, public case lists, sitemaps, SCOTUS opinion joins) had to
+-- sequentially scan the entire document table once per case. At production
+-- scale (document ~162k rows, legal_case ~186k rows) that made the homepage
+-- query exceed the request timeout and return nothing.
+--
+-- Leading with case_id serves every "by case" access path; the trailing
+-- updated_at DESC directly answers the max(updated_at) per case used by the
+-- homepage's "recently updated" ordering.
+CREATE INDEX IF NOT EXISTS document_case_idx ON document (case_id, updated_at DESC);
