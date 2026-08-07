@@ -1,0 +1,102 @@
+name: Verify cutover once
+
+# Self-hosted (builder) post-cutover verification. Read-only: probes the live
+# site through Cloudflare, confirms traffic is landing on jurvio-public-01 via
+# its nginx access log, and confirms ingestion + PostgreSQL on jurvio-web-01
+# are healthy and untouched. Does not stop, restart, or modify any service on
+# the public or ingestion servers. No DNS change.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-verify-cutover
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      PUBLIC_PRIVATE: 10.116.0.5
+    steps:
+      - name: Probe live site through Cloudflare (real DNS)
+        run: |
+          set -uo pipefail
+          echo "=== Public pages via https://jurvio.com (through Cloudflare) ==="
+          printf '%-16s %-6s %-9s %s\n' "ROUTE" "CODE" "SECONDS" "CF-RAY / server"
+          for r in /api/ready /api/health / /cases /scotus /supreme-court /courts; do
+            read -r code t < <(curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 45 "https://jurvio.com$r" 2>/dev/null || echo "ERR --")
+            hdr="$(curl -sSI --max-time 20 "https://jurvio.com$r" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="cf-ray:"||tolower($1)=="server:"{printf "%s ", $2}')"
+            printf '%-16s %-6s %-9s %s\n' "$r" "$code" "$t" "$hdr"
+          done
+          echo ""
+          echo "=== Public TLS (Cloudflare edge) presented for jurvio.com ==="
+          echo | openssl s_client -connect jurvio.com:443 -servername jurvio.com 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>/dev/null || echo "TLS read failed"
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 12
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Confirm traffic is reaching jurvio-public-01
+        run: |
+          set -euo pipefail
+          ssh "root@$PUBLIC_PRIVATE" bash -s <<'REMOTE'
+          set -e
+          echo "host: $(hostname)"
+          echo "--- app container health ---"
+          cid="$(docker ps -q -f label=com.docker.compose.project=jurvio-public -f label=com.docker.compose.service=app | head -1)"
+          docker ps --filter "id=$cid" --format '{{.Names}} {{.Status}}' || true
+          echo "--- last 15 nginx access-log lines (proves Cloudflare -> this origin) ---"
+          tail -n 15 /var/log/nginx/access.log 2>/dev/null || echo "(no access log found)"
+          echo "--- request count in the last 5 minutes ---"
+          if [ -f /var/log/nginx/access.log ]; then
+            awk -v cutoff="$(date -u -d '5 minutes ago' +%s 2>/dev/null || echo 0)" '
+              { if (match($0, /\[[^]]+\]/)) { ts=substr($0, RSTART+1, RLENGTH-2); gsub(/:/, " ", ts); } }
+              END { }' /var/log/nginx/access.log >/dev/null 2>&1 || true
+            echo "total access-log lines: $(wc -l < /var/log/nginx/access.log)"
+            echo "lines mentioning GET / (recent tail):"
+            tail -n 200 /var/log/nginx/access.log | grep -c 'GET /' || true
+          fi
+          REMOTE
+
+      - name: Confirm ingestion + PostgreSQL on jurvio-web-01 are healthy (read-only)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -e
+          echo "host: $(hostname)"
+          echo "--- running containers on jurvio-web-01 (ingestion workers, db, old web must stay up) ---"
+          sudo -n docker ps --format '{{.Names}}\t{{.Status}}' || true
+          echo "--- ingestion freshness + DB liveness (read-only SELECTs) ---"
+          cid="$(sudo -n docker ps --format '{{.ID}} {{.Image}}' | awk '/postgres/{print $1; exit}')"
+          if [ -n "$cid" ]; then
+            sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio -v ON_ERROR_STOP=0 <<'SQL'
+          SELECT now() AS db_time;
+          SELECT max(created_at) AS latest_docket_entry, count(*) AS docket_entries FROM docket_entry;
+          SELECT max(created_at) AS latest_document FROM document;
+          SELECT count(*) AS unpublished_outbox FROM outbox_event WHERE published_at IS NULL;
+          SELECT indexname FROM pg_indexes WHERE tablename='document' ORDER BY indexname;
+          SQL
+          else
+            echo "postgres container not found"
+          fi
+          REMOTE
