@@ -78,7 +78,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
           touch ~/.ssh/known_hosts
-          for host in "$PUBLIC_PRIVATE" "$INGESTION_PRIVATE"; do
+          for host in "$PUBLIC_PRIVATE"; do
             for _ in $(seq 1 60); do ssh-keyscan -T 5 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null && break; sleep 5; done
           done
           sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts
@@ -100,6 +100,9 @@ jobs:
             touch /var/lib/jurvio-web-bootstrap-complete
           fi
           docker version >/dev/null
+          # Drop any half-installed jurvio site from a prior failed run so base nginx validates here;
+          # it is (re)installed together with its TLS cert in the runtime-configuration step.
+          rm -f /etc/nginx/sites-enabled/jurvio
           nginx -t >/dev/null
           REMOTE
 
