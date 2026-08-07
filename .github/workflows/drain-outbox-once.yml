@@ -1,0 +1,99 @@
+name: Drain outbox (verified) once (P3)
+
+# One-off, GATED, REVERSIBLE drain of the write-only outbox_event backlog. Marks
+# published_at only for events whose aggregate is currently published+displayable
+# (verified); leaves everything else HELD. Prints exact before/after counts and a
+# sample of affected live cases. Requires manual dispatch. Delete after use.
+#
+# Safety: outbox_event has no consumer, so this has no public-facing effect; the
+# affected cases are already live. Batched (autocommit per batch) to avoid long
+# locks / ingestion contention.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DRAIN to confirm the verified drain'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-drain-outbox
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    if: ${{ inputs.confirm == 'DRAIN' }}
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Verified drain (batched) with before/after proof
+        run: |
+          set -euo pipefail
+          scp scripts/ops/drain-outbox-verified.sql "$INGESTION_USER@$DB_HOST:/tmp/drain-outbox-verified.sql"
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cid="$(sudo -n docker ps --format '{{.ID}} {{.Names}}' | awk '/postgres/{print $1; exit}')"
+          if [ -z "$cid" ]; then echo "no postgres container found"; exit 1; fi
+          sudo -n docker cp /tmp/drain-outbox-verified.sql "$cid:/tmp/drain-outbox-verified.sql"
+          psql() { sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio "$@"; }
+
+          echo "=== BEFORE ==="
+          psql -c "SELECT count(*) AS total, count(*) FILTER (WHERE published_at IS NULL) AS unpublished FROM outbox_event;"
+
+          echo "=== eligible (verified) vs held preview ==="
+          psql -c "
+            SELECT
+              count(*) FILTER (WHERE published_at IS NULL) AS unpublished,
+              count(*) FILTER (WHERE published_at IS NULL AND (
+                (aggregate_type='legal_case' AND EXISTS (SELECT 1 FROM legal_case lc WHERE lc.id=aggregate_id AND lc.publication='published' AND COALESCE((SELECT d.displayable FROM publication_decision d WHERE d.object_type='legal_case' AND d.object_id=lc.id ORDER BY d.decided_at DESC,d.id DESC LIMIT 1),false)))
+                OR (aggregate_type='document' AND EXISTS (SELECT 1 FROM document doc WHERE doc.id=aggregate_id AND doc.publication='published' AND COALESCE((SELECT d.displayable FROM publication_decision d WHERE d.object_type='document' AND d.object_id=doc.id ORDER BY d.decided_at DESC,d.id DESC LIMIT 1),false)))
+              )) AS eligible_verified
+            FROM outbox_event;"
+
+          echo "=== draining in batches of 20000 ==="
+          total=0
+          for i in $(seq 1 40); do
+            n=$(psql -tA -v batch=20000 -f /tmp/drain-outbox-verified.sql | grep -c '^[0-9a-f]' || true)
+            total=$((total + n))
+            echo "batch $i drained=$n cumulative=$total"
+            [ "$n" -eq 0 ] && break
+          done
+          echo "total drained: $total"
+
+          echo "=== AFTER ==="
+          psql -c "SELECT count(*) AS total, count(*) FILTER (WHERE published_at IS NULL) AS unpublished, count(*) FILTER (WHERE published_at IS NOT NULL) AS published FROM outbox_event;"
+
+          echo "=== sample of newly-relayed cases (already-live public pages) ==="
+          psql -c "
+            SELECT lc.public_id, left(lc.caption, 60) AS caption
+            FROM outbox_event oe JOIN legal_case lc ON lc.id = oe.aggregate_id
+            WHERE oe.aggregate_type='legal_case' AND oe.published_at IS NOT NULL
+            ORDER BY oe.published_at DESC LIMIT 10;"
+
+          sudo -n docker exec -i "$cid" rm -f /tmp/drain-outbox-verified.sql
+          rm -f /tmp/drain-outbox-verified.sql
+          REMOTE
