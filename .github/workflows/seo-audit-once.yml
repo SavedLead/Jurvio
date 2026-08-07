@@ -48,4 +48,18 @@ jobs:
           curl -sS --max-time 30 "$base/sitemap.xml" 2>/dev/null | head -c 400; echo
           echo "===== X-Robots-Tag on /api/ready (health checks must not be blocked) ====="
           curl -sS -D - -o /dev/null --max-time 20 "$base/api/ready" 2>/dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="x-robots-tag" || toupper($1) ~ /^HTTP/'
+          echo
+          echo "===== DIRECT-TO-ORIGIN (bypassing Cloudflare) — proves the origin itself emits noindex ====="
+          origin=104.248.237.187
+          for p in "/" "/supreme-court" "/government-litigation" "/case/jv-ohq4teedmj/documents/jd-y3d1rv46h4" "/cases"; do
+            body="$(mktemp)"
+            hdrs="$(curl -ksS -D - -o "$body" --resolve "jurvio.com:443:$origin" --max-time 45 "https://jurvio.com$p" 2>/dev/null)"
+            code="$(printf '%s' "$hdrs" | awk 'toupper($1) ~ /^HTTP/ {c=$2} END{print c}')"
+            xr="$(printf '%s' "$hdrs" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-robots-tag"{print $2}')"
+            meta="$(grep -io '<meta[^>]*name="robots"[^>]*>' "$body" 2>/dev/null | head -1 | sed 's/.*content="//; s/".*//')"
+            printf 'origin %-46s %-4s %s | %s\n' "$p" "${code:-ERR}" "${xr:-<none>}" "${meta:-<none>}"
+            rm -f "$body"
+          done
+          echo "===== Origin /robots.txt (direct) ====="
+          curl -ksS --resolve "jurvio.com:443:$origin" --max-time 30 "https://jurvio.com/robots.txt" 2>/dev/null
           exit 0
