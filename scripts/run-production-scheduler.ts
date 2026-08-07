@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 type SchedulerLane = "coa" | "core";
@@ -282,4 +282,22 @@ function shutdown(signal: string): void {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Liveness heartbeat. The container's Docker healthcheck reads this file and
+// considers the worker healthy only while it is being refreshed. Workers run
+// the scheduler (no HTTP server), so the image's default HTTP healthcheck can
+// never pass for them — this gives a health signal that reflects the scheduler
+// loop actually being alive. Not unref'd, so it also keeps the daemon alive
+// between job cycles.
+const heartbeatFile = join(logRoot, `${configuredLane}.alive`);
+function writeHeartbeat(): void {
+  try {
+    writeFileSync(heartbeatFile, String(Math.floor(Date.now() / 1000)));
+  } catch (error) {
+    logStatus("scheduler", `heartbeat write failed: ${(error as Error).message}`);
+  }
+}
+writeHeartbeat();
+timers.push(setInterval(writeHeartbeat, 30_000));
+
 logStatus("scheduler", `ready lane=${configuredLane} with ${activeJobs.length} server-side schedules`);

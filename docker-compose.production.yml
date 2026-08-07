@@ -57,6 +57,15 @@ services:
       JURVIO_SCHEDULER_LANE: core
       RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
       JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    # Workers run the scheduler, not the web server, so the image's default HTTP
+    # healthcheck can never pass. Check the scheduler's liveness heartbeat file
+    # instead (refreshed every 30s); healthy when it is under 3 minutes old.
+    healthcheck:
+      test: ["CMD-SHELL", "hb=$$(cat /var/lib/jurvio/artifacts/scheduler/core.alive 2>/dev/null || echo 0); [ $$(( $$(date +%s) - hb )) -lt 180 ]"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,6 +84,13 @@ services:
       JURVIO_SCHEDULER_LANE: coa
       RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
       JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    # See worker-core: health is the scheduler heartbeat, not an HTTP endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "hb=$$(cat /var/lib/jurvio/artifacts/scheduler/coa.alive 2>/dev/null || echo 0); [ $$(( $$(date +%s) - hb )) -lt 180 ]"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     depends_on:
       postgres:
         condition: service_healthy
