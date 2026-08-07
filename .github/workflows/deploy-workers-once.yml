@@ -29,7 +29,7 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      IMAGE: ghcr.io/savedlead/jurvio:${{ github.sha }}
+      IMAGE: ghcr.io/savedlead/jurvio:a3213ed5e3e0f019a0c909b7f6249adda19d4426
     steps:
       - uses: actions/checkout@v4
       - name: Configure SSH
