@@ -1,0 +1,65 @@
+name: Apply perf indexes once (P4)
+
+# One-off: build the public-directory performance indexes on the live production
+# database CONCURRENTLY (no ingestion write-lock), ANALYZE, then re-run the P4
+# EXPLAIN ANALYZE queries to prove the before/after improvement. Runs from the
+# self-hosted builder over the private VPC to jurvio-web-01. Delete after use.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-apply-perf-indexes
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Build indexes CONCURRENTLY + ANALYZE + re-measure
+        run: |
+          set -euo pipefail
+          scp scripts/diag/apply-perf-indexes.sql "$INGESTION_USER@$DB_HOST:/tmp/apply-perf-indexes.sql"
+          scp scripts/diag/p4-measure.sql          "$INGESTION_USER@$DB_HOST:/tmp/p4-measure.sql"
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cid="$(sudo -n docker ps --format '{{.ID}} {{.Names}}' | awk '/postgres/{print $1; exit}')"
+          if [ -z "$cid" ]; then echo "no postgres container found"; exit 1; fi
+          sudo -n docker cp /tmp/apply-perf-indexes.sql "$cid:/tmp/apply-perf-indexes.sql"
+          sudo -n docker cp /tmp/p4-measure.sql "$cid:/tmp/p4-measure.sql"
+          echo "=== building indexes CONCURRENTLY (autocommit; may take ~1 min) ==="
+          # No ON_ERROR_STOP wrapper transaction: CONCURRENTLY needs autocommit.
+          sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio -f /tmp/apply-perf-indexes.sql
+          echo "=== ANALYZE (refresh planner stats) ==="
+          sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio -c "ANALYZE legal_case; ANALYZE document; ANALYZE court;"
+          echo "=== check for any INVALID indexes (failed concurrent builds) ==="
+          sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio -c "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE NOT i.indisvalid;"
+          echo "=== RE-MEASURE (after) ==="
+          sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio -f /tmp/p4-measure.sql
+          sudo -n docker exec -i "$cid" rm -f /tmp/apply-perf-indexes.sql /tmp/p4-measure.sql
+          rm -f /tmp/apply-perf-indexes.sql /tmp/p4-measure.sql
+          REMOTE
