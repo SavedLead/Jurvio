@@ -60,7 +60,7 @@ jobs:
           IMAGE="$1"
           cd /opt/jurvio
           export JURVIO_IMAGE="$IMAGE"
-          dc() { sudo -n docker compose -f docker-compose.production.yml "$@"; }
+          dc() { sudo -n env JURVIO_IMAGE="$IMAGE" docker compose -f docker-compose.production.yml "$@"; }
           echo "--- pull worker image ---"
           dc pull worker-core worker-coa
           echo "--- recreate only the workers (postgres/app untouched) ---"
