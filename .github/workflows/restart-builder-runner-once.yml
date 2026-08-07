@@ -18,6 +18,7 @@ concurrency:
 jobs:
   restart-runner:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
@@ -66,18 +67,41 @@ jobs:
           done
           ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
             "root@$BUILDER_IP" bash -s <<'REMOTE'
-          set -e
-          echo "runner services present:"
-          systemctl list-units --type=service --all 2>/dev/null | grep -i 'actions.runner' || echo "(none listed)"
-          if systemctl list-units --all 2>/dev/null | grep -qi 'actions.runner'; then
-            systemctl restart 'actions.runner.*' 2>/dev/null || true
-            sleep 2
-            systemctl status 'actions.runner.*' --no-pager 2>/dev/null | head -20 || true
+          set +e
+          echo "===== whoami / uptime ====="
+          whoami; uptime
+          echo "===== runner service unit ====="
+          unit="$(systemctl list-units --type=service --all 2>/dev/null | awk '/actions\.runner/{print $1; exit}')"
+          echo "unit=${unit:-<none>}"
+          [ -n "$unit" ] && systemctl cat "$unit" 2>/dev/null
+          echo "===== ExecStopPost/hook props ====="
+          [ -n "$unit" ] && systemctl show "$unit" -p ExecStopPost -p ExecStartPost -p ExecStartPre -p Restart 2>/dev/null
+          echo "===== runner dir + .env + hooks ====="
+          for d in /opt/actions-runner /root/actions-runner /home/*/actions-runner; do
+            [ -d "$d" ] || continue
+            echo "dir=$d"; ls -la "$d" 2>/dev/null | head -30
+            echo "--- .env ---"; cat "$d/.env" 2>/dev/null
+            echo "--- ACTIONS_RUNNER_HOOK refs ---"; grep -rIn 'ACTIONS_RUNNER_HOOK' "$d" 2>/dev/null | head
+            echo "--- poweroff/shutdown refs ---"; grep -rIlnE 'poweroff|shutdown|halt|init 0' "$d" 2>/dev/null | head
+          done
+          echo "===== systemd timers + shutdown-ish units ====="
+          systemctl list-timers --all 2>/dev/null | head -30
+          systemctl list-unit-files 2>/dev/null | grep -iE 'shutdown|poweroff|idle|autostop|auto-stop|stop-runner'
+          echo "===== cron/at ====="
+          crontab -l 2>/dev/null; ls -la /etc/cron.d 2>/dev/null; grep -rIsnE 'poweroff|shutdown|halt' /etc/cron* /var/spool/cron 2>/dev/null | head; atq 2>/dev/null
+          echo "===== shutdown scripts anywhere obvious ====="
+          grep -rIlnE 'poweroff|shutdown -h|halt|init 0' /usr/local/bin /usr/local/sbin /etc/rc.local /etc/systemd/system 2>/dev/null | head
+          echo "===== recent shutdown journal ====="
+          journalctl --no-pager 2>/dev/null | grep -iE 'poweroff|Powering off|shutdown|reached target Power-Off|systemd-halt' | tail -20
+          last -x -n 15 2>/dev/null | grep -iE 'shutdown|reboot' | head
+          echo "===== START the runner so queued jobs land ====="
+          if [ -n "$unit" ]; then
+            systemctl start "$unit" 2>/dev/null; sleep 2
+            systemctl is-active "$unit"; systemctl status "$unit" --no-pager 2>/dev/null | head -12
           elif [ -x /opt/actions-runner/svc.sh ]; then
-            ( cd /opt/actions-runner && ./svc.sh status || true; ./svc.sh stop || true; ./svc.sh start || true; ./svc.sh status || true )
+            ( cd /opt/actions-runner && ./svc.sh start; ./svc.sh status )
           else
-            echo "::warning::Could not locate the runner service or /opt/actions-runner/svc.sh"
-            ls -la /opt/actions-runner 2>/dev/null | head || true
+            echo "::warning::runner service not found"
           fi
           echo "done"
           REMOTE
