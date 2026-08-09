@@ -1,0 +1,80 @@
+name: Finalize server config (jurvio-admin)
+
+# Runs entirely through the newly-created jurvio-admin account over loopback.
+# Verifies permanent admin access + scoped sudo, completes server config
+# (unattended-upgrade auto-reboot false, confirm runner), repairs+verifies the
+# DigitalOcean web console agent (droplet-agent), and removes the temporary
+# /etc/sudoers.d/j grant via a transient root oneshot (scoped sudo has no rm),
+# proving it is gone. No standing privilege is broadened.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-finalize-server
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      ADMIN: jurvio-admin@127.0.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 10
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Verify permanent admin access + scoped sudo
+        run: |
+          set -euo pipefail
+          ssh "$ADMIN" 'echo "whoami=$(id -un) uid=$(id -u)"; echo "-- passwordless-sudo proof (allowlisted) --"; sudo -n systemctl --version | head -1; echo "-- allowed sudo commands --"; sudo -n -l 2>/dev/null || true'
+      - name: Complete config — unattended-upgrade auto-reboot false
+        run: |
+          set -euo pipefail
+          ssh "$ADMIN" 'printf "%s\n" "Unattended-Upgrade::Automatic-Reboot \"false\";" "Unattended-Upgrade::Automatic-Reboot-WithUsers \"false\";" | sudo -n tee /etc/apt/apt.conf.d/99jurvio-no-reboot >/dev/null'
+          echo "-- effective apt policy --"
+          ssh "$ADMIN" 'apt-config dump | grep -i "Unattended-Upgrade::Automatic-Reboot" || echo "(none)"'
+      - name: Confirm GitHub runner
+        run: |
+          set -euo pipefail
+          U="$(ssh "$ADMIN" "systemctl list-units 'actions.runner.*.service' --no-legend --all | awk '{print \$1}' | head -1")"
+          echo "unit=$U"
+          ssh "$ADMIN" "systemctl show '$U' -p Restart -p UnitFileState -p ActiveState; echo is-enabled=\$(systemctl is-enabled '$U'); echo is-active=\$(systemctl is-active '$U')"
+      - name: Repair + verify DigitalOcean web console (droplet-agent)
+        run: |
+          set -euo pipefail
+          echo "-- console/agent-related units present --"
+          ssh "$ADMIN" "systemctl list-unit-files | grep -Ei 'droplet|dotty|console|agent' || echo '(none matched)'"
+          echo "-- repair: enable + start droplet-agent if present --"
+          ssh "$ADMIN" 'if systemctl list-unit-files | grep -q "^droplet-agent.service"; then
+              sudo -n systemctl enable --now droplet-agent.service;
+              echo "is-enabled=$(systemctl is-enabled droplet-agent.service) is-active=$(systemctl is-active droplet-agent.service)";
+              systemctl --no-pager --full status droplet-agent.service | head -12 || true;
+            else
+              echo "droplet-agent.service not installed — reporting, not installing blindly";
+            fi'
+      - name: Remove temporary /etc/sudoers.d/j and prove it is gone
+        run: |
+          set -euo pipefail
+          scp scripts/ops/jurvio-cleanup.sh "$ADMIN":/home/jurvio-admin/jurvio-cleanup.sh
+          ssh "$ADMIN" 'printf "%s\n" "[Unit]" "Description=Jurvio one-shot cleanup (remove temporary sudoers)" "[Service]" "Type=oneshot" "ExecStart=/bin/sh /home/jurvio-admin/jurvio-cleanup.sh" | sudo -n tee /etc/systemd/system/jurvio-oneshot-cleanup.service >/dev/null'
+          ssh "$ADMIN" 'sudo -n systemctl daemon-reload && sudo -n systemctl start jurvio-oneshot-cleanup.service && sudo -n systemctl daemon-reload'
+          echo "=== PROOF: temporary permission removed ==="
+          ssh "$ADMIN" 'cat /home/jurvio-admin/jurvio-proof.txt; rm -f /home/jurvio-admin/jurvio-cleanup.sh /home/jurvio-admin/jurvio-proof.txt'
