@@ -1,4 +1,5 @@
 name: Deploy public web app
+# Release trigger: research administrator password rotation
 
 on:
   workflow_dispatch: {}
