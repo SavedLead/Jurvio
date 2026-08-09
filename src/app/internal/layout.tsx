@@ -1,7 +1,7 @@
 import type { Route } from "next";
 import Link from "next/link";
 import { headers } from "next/headers";
-import { notFound } from "next/navigation";
+import { redirect } from "next/navigation";
 import { db } from "@/db/client";
 import { requireInternalPrincipal } from "@/modules/identity/cloudflare-access";
 import styles from "./internal.module.css";
@@ -25,7 +25,7 @@ export default async function InternalLayout({ children }: Readonly<{ children: 
     principal = await requireInternalPrincipal(
       db(), await headers(), ["viewer", "reviewer", "administrator"],
     );
-  } catch { notFound(); }
+  } catch { redirect("/login"); }
   return <div className={styles.frame}>
     <aside className={styles.sidebar}>
       <Link href={"/internal" as Route} className={styles.brand}>
