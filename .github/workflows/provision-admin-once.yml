@@ -2,10 +2,11 @@ name: Provision admin access (jurvio-admin)
 
 # Establish a permanent, audited administrative account (jurvio-admin) on
 # jurvio-builder-01, authenticated with the existing CI-managed SSH key and
-# granted passwordless sudo. Runs on the builder itself and escalates via an
-# existing root SSH route over loopback (bypasses the cloud firewall; no new
-# inbound exposure). If no root route exists it fails with the single manual
-# command to run. Non-destructive except for creating the additive admin user.
+# granted passwordless sudo. Runs on the builder itself. It first checks whether
+# jurvio-admin already works over loopback (re-run after a one-time manual
+# bootstrap), else tries an existing root SSH route to bootstrap it. If neither
+# exists it fails with the single manual command to run. Non-destructive except
+# for creating the additive admin user; no new inbound network exposure.
 
 on:
   workflow_dispatch: {}
@@ -42,34 +43,37 @@ jobs:
             StrictHostKeyChecking accept-new
           CFG
           chmod 600 ~/.ssh/config
-      - name: Probe for an existing root route (non-destructive)
-        id: root
+      - name: Probe admin + root routes (non-destructive)
+        id: probe
         run: |
           set -uo pipefail
-          targets="127.0.0.1 $(hostname -I 2>/dev/null || true)"
-          echo "candidate targets: $targets"
-          found=""
-          for h in $targets; do
-            out="$(ssh -o ConnectTimeout=8 "root@$h" 'id -u' 2>/dev/null || true)"
-            if [ "$out" = "0" ]; then echo "root route OK via $h"; found="$h"; break; fi
+          # (1) Is jurvio-admin already provisioned with passwordless sudo over loopback?
+          admin_ok=no
+          if [ "$(ssh -o ConnectTimeout=8 "$ADMIN_USER@127.0.0.1" 'sudo -n id -u' 2>/dev/null || true)" = "0" ]; then
+            admin_ok=yes; echo "admin route OK ($ADMIN_USER@127.0.0.1 with passwordless sudo)"
+          else
+            echo "no working $ADMIN_USER route yet"
+          fi
+          # (2) Is there a root route to bootstrap from?
+          root_host=""
+          for h in 127.0.0.1 $(hostname -I 2>/dev/null || true); do
+            if [ "$(ssh -o ConnectTimeout=8 "root@$h" 'id -u' 2>/dev/null || true)" = "0" ]; then
+              echo "root route OK via $h"; root_host="$h"; break
+            fi
             echo "no root via $h"
           done
-          if [ -n "$found" ]; then
-            { echo "have_root=yes"; echo "root_host=$found"; } >> "$GITHUB_OUTPUT"
-          else
-            echo "have_root=no" >> "$GITHUB_OUTPUT"
-          fi
+          { echo "admin_ok=$admin_ok"; echo "root_host=$root_host"; } >> "$GITHUB_OUTPUT"
       - name: Bootstrap jurvio-admin (as root)
-        if: steps.root.outputs.have_root == 'yes'
+        if: steps.probe.outputs.admin_ok != 'yes' && steps.probe.outputs.root_host != ''
         env:
-          RH: ${{ steps.root.outputs.root_host }}
+          RH: ${{ steps.probe.outputs.root_host }}
         run: |
           set -euo pipefail
           PUB="$(cat ~/.ssh/id_ed25519.pub)"
           scp scripts/ops/bootstrap-admin.sh "root@$RH:/tmp/bootstrap-admin.sh"
           ssh "root@$RH" "ADMIN_USER='$ADMIN_USER' bash /tmp/bootstrap-admin.sh '$PUB'; rm -f /tmp/bootstrap-admin.sh"
       - name: Verify access, set no-auto-reboot, confirm runner
-        if: steps.root.outputs.have_root == 'yes'
+        if: steps.probe.outputs.admin_ok == 'yes' || steps.probe.outputs.root_host != ''
         run: |
           set -euo pipefail
           A="$ADMIN_USER@127.0.0.1"
@@ -85,9 +89,9 @@ jobs:
           ssh "$A" "systemctl show '$U' -p Restart -p UnitFileState -p ActiveState && echo is-enabled=\$(systemctl is-enabled '$U') && echo is-active=\$(systemctl is-active '$U')"
           echo "=== record for GitHub production environment ==="
           echo "JURVIO_ADMIN_USER=$ADMIN_USER"
-          echo "builder addresses (choose the VPC/private one for JURVIO_ADMIN_HOST): $(ssh "$A" 'hostname -I')"
-      - name: No root route — emit single manual bootstrap command
-        if: steps.root.outputs.have_root != 'yes'
+          echo "builder addresses (VPC 10.116.x is JURVIO_ADMIN_HOST): $(ssh "$A" 'hostname -I')"
+      - name: No route yet — emit single manual bootstrap command
+        if: steps.probe.outputs.admin_ok != 'yes' && steps.probe.outputs.root_host == ''
         run: |
           set -euo pipefail
           PUB="$(cat ~/.ssh/id_ed25519.pub)"
