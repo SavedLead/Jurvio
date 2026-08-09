@@ -28,9 +28,7 @@ async function verifyPassword(password: string, encoded: string | null) {
 }
 
 export async function POST(request: NextRequest) {
-  if (!isCommandCenterHost(request)) {
-    return new NextResponse(null, { status: 404 });
-  }
+  if (!isCommandCenterHost(request)) return new NextResponse(null, { status: 404 });
 
   const form = await request.formData();
   const email = String(form.get("email") ?? "").trim().toLowerCase();
@@ -58,8 +56,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.redirect(new URL("/login?error=locked", request.url), 303);
   }
 
-  const [user] = await sql<Array<{ id: string; passwordHash: string | null }>>`
-    SELECT id, password_hash AS "passwordHash"
+  const [user] = await sql<Array<{ id: string; passwordHash: string | null; mustChangePassword: boolean }>>`
+    SELECT id, password_hash AS "passwordHash", must_change_password AS "mustChangePassword"
     FROM internal_user
     WHERE email = ${email} AND active AND role = 'administrator'
   `;
@@ -77,18 +75,13 @@ export async function POST(request: NextRequest) {
       INSERT INTO internal_session (token_hash, internal_user_id, expires_at)
       VALUES (${tokenHash}, ${user.id}, now() + interval '12 hours')
     `;
-    await transaction`
-      UPDATE internal_user SET last_authenticated_at = now() WHERE id = ${user.id}
-    `;
+    await transaction`UPDATE internal_user SET last_authenticated_at = now() WHERE id = ${user.id}`;
   });
 
-  const response = NextResponse.redirect(new URL("/", request.url), 303);
+  const destination = user.mustChangePassword ? "/change-password" : "/";
+  const response = NextResponse.redirect(new URL(destination, request.url), 303);
   response.cookies.set(INTERNAL_SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "strict",
-    path: "/",
-    maxAge: SESSION_SECONDS,
+    httpOnly: true, secure: true, sameSite: "strict", path: "/", maxAge: SESSION_SECONDS,
   });
   response.headers.set("Cache-Control", "private, no-store");
   return response;

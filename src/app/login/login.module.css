@@ -1,44 +1,49 @@
 .main {
-  min-height: 100vh;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
+  overflow: auto;
   background:
-    radial-gradient(circle at top, rgba(30, 75, 122, .2), transparent 38%),
+    radial-gradient(circle at 50% -10%, rgba(57, 101, 145, .2), transparent 42%),
     #07111f;
   color: #eef4fa;
 }
 .card {
-  width: min(100%, 430px);
-  padding: 42px;
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 18px;
-  background: rgba(12, 27, 45, .96);
-  box-shadow: 0 28px 80px rgba(0,0,0,.38);
+  width: min(100%, 400px);
+  padding: 40px;
+  border: 1px solid rgba(255,255,255,.11);
+  border-radius: 16px;
+  background: #0d1c2e;
+  box-shadow: 0 24px 70px rgba(0,0,0,.38);
 }
 .brand {
-  width: 48px;
-  height: 48px;
+  width: 46px;
+  height: 46px;
   display: grid;
   place-items: center;
-  margin-bottom: 28px;
-  border-radius: 12px;
+  margin-bottom: 26px;
+  border-radius: 11px;
   background: #f2f6fa;
   color: #0b1b2d;
-  font: 700 28px/1 Georgia, serif;
+  font: 700 27px/1 Georgia, serif;
 }
 .brand span { color: #b69355; }
 .eyebrow {
   margin: 0 0 8px;
-  color: #b9c9d9;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .12em;
+  color: #aebfd1;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .14em;
   text-transform: uppercase;
 }
 .card h1 { margin: 0; font: 600 32px/1.2 Georgia, serif; }
-.intro { margin: 10px 0 28px; color: #aebed0; }
+.intro { margin: 10px 0 26px; color: #aebed0; line-height: 1.5; }
 .error {
+  margin: 0 0 18px;
   padding: 12px 14px;
   border: 1px solid #a94949;
   border-radius: 8px;
@@ -46,13 +51,13 @@
   color: #ffd3d3;
   font-size: 14px;
 }
-.form { display: grid; gap: 18px; }
+.form { display: grid; gap: 17px; }
 .form label {
   display: grid;
   gap: 7px;
   color: #d6e0ea;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 650;
 }
 .form input {
   width: 100%;
@@ -65,13 +70,14 @@
   font: inherit;
   outline: none;
 }
+.form input::placeholder { color: #6f8499; }
 .form input:focus { border-color: #c1a46e; box-shadow: 0 0 0 3px rgba(193,164,110,.14); }
 .form button {
-  margin-top: 4px;
+  margin-top: 5px;
   padding: 13px 18px;
   border: 0;
   border-radius: 8px;
-  background: #e7edf3;
+  background: #edf2f7;
   color: #0a1929;
   font: inherit;
   font-weight: 750;

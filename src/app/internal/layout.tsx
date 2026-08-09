@@ -22,10 +22,9 @@ const navigation = [
 export default async function InternalLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   let principal;
   try {
-    principal = await requireInternalPrincipal(
-      db(), await headers(), ["viewer", "reviewer", "administrator"],
-    );
+    principal = await requireInternalPrincipal(db(), await headers(), ["viewer", "reviewer", "administrator"]);
   } catch { redirect("/login"); }
+  if (principal.mustChangePassword) redirect("/change-password");
   return <div className={styles.frame}>
     <aside className={styles.sidebar}>
       <Link href={"/internal" as Route} className={styles.brand}>
