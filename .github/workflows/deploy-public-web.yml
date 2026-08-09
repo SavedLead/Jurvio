@@ -73,6 +73,7 @@ jobs:
           test -s .env.production
           test -s docker-compose.public.yml
           docker pull "$1"
+          docker run --rm --env-file .env.production "$1" node scripts/migrate.mjs
           JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml up -d --no-deps app
           app_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app)"
           for _ in $(seq 1 60); do
