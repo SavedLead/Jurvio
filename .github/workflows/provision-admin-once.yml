@@ -49,7 +49,7 @@ jobs:
           set -uo pipefail
           # (1) Is jurvio-admin already provisioned with passwordless sudo over loopback?
           admin_ok=no
-          if [ "$(ssh -o ConnectTimeout=8 "$ADMIN_USER@127.0.0.1" 'sudo -n id -u' 2>/dev/null || true)" = "0" ]; then
+          if [ "$(ssh -o ConnectTimeout=8 "$ADMIN_USER@127.0.0.1" 'sudo -n -l >/dev/null 2>&1 && echo OK' 2>/dev/null || true)" = "OK" ]; then
             admin_ok=yes; echo "admin route OK ($ADMIN_USER@127.0.0.1 with passwordless sudo)"
           else
             echo "no working $ADMIN_USER route yet"
@@ -77,8 +77,8 @@ jobs:
         run: |
           set -euo pipefail
           A="$ADMIN_USER@127.0.0.1"
-          echo "=== identity + passwordless sudo (as $ADMIN_USER) ==="
-          ssh "$A" 'id && echo "-- sudo -n id --" && sudo -n id'
+          echo "=== identity + scoped passwordless sudo (as $ADMIN_USER) ==="
+          ssh "$A" 'id && echo "-- sudo -n -l (allowed commands) --" && sudo -n -l'
           echo "=== set unattended-upgrade auto-reboot values to false ==="
           ssh "$A" 'printf "%s\n" "Unattended-Upgrade::Automatic-Reboot \"false\";" "Unattended-Upgrade::Automatic-Reboot-WithUsers \"false\";" | sudo -n tee /etc/apt/apt.conf.d/99jurvio-no-reboot >/dev/null'
           echo "-- effective apt policy --"
