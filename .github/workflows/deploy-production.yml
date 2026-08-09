@@ -1,6 +1,10 @@
 name: Deploy production
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "ops/deploy-hosted-login.trigger"
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -185,3 +189,17 @@ jobs:
           set -euo pipefail
           SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
           timeout --signal=TERM --kill-after=30s 1500s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
+      - name: Verify hosted command-center login externally
+        run: |
+          set -euo pipefail
+          login_body="$(curl --fail --silent --show-error --retry 8 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
+          printf '%s' "$login_body" | grep -Fq "Sign in to Jurvio" || {
+            echo "::error::z.jurvio.com/login did not return the hosted Jurvio login page"
+            exit 1
+          }
+          public_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 30 https://jurvio.com/login)"
+          test "$public_status" = "404" || {
+            echo "::error::jurvio.com/login must remain hidden; received HTTP $public_status"
+            exit 1
+          }
+          echo "Hosted login is live and the public-domain admin boundary remains closed."
