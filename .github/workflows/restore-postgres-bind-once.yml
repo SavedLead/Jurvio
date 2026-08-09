@@ -1,0 +1,104 @@
+name: Restore postgres bind (recover public site)
+
+# EMERGENCY: a deploy-production run recreated postgres with the compose default
+# bind (127.0.0.1) instead of the private VPC IP, so jurvio-public-01 lost its
+# database connection (homepage/courts 500, /api/ready 503). This rebinds
+# postgres to the ingestion private IP using .env.production and verifies the
+# public site recovers through Cloudflare. Ingestion data is untouched (named
+# volume); only the postgres port publication changes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-restore-postgres-bind
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Rebind postgres to the private VPC address
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "$DB_HOST" <<'REMOTE'
+          set -euo pipefail
+          WANT_BIND="$1"
+          cd /opt/jurvio
+          test -s .env.production
+          dc() { sudo -n env JURVIO_IMAGE="localhost/jurvio-postgres-only:latest" docker compose --env-file .env.production -f docker-compose.production.yml "$@"; }
+          pgid() { dc ps -q postgres; }
+
+          echo "--- current postgres port bind (BEFORE) ---"
+          cur="$(pgid)"; [ -n "$cur" ] && sudo -n docker inspect -f '{{json .HostConfig.PortBindings}}' "$cur" || echo "(postgres not running)"
+
+          cur_bind="$(grep -E '^JURVIO_DATABASE_BIND=' .env.production | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+          echo "current .env JURVIO_DATABASE_BIND='$cur_bind'"
+          if [ "$cur_bind" != "$WANT_BIND" ]; then
+            if grep -q '^JURVIO_DATABASE_BIND=' .env.production; then
+              sudo -n sed -i "s/^JURVIO_DATABASE_BIND=.*/JURVIO_DATABASE_BIND=$WANT_BIND/" .env.production
+            else
+              printf 'JURVIO_DATABASE_BIND=%s\n' "$WANT_BIND" | sudo -n tee -a .env.production >/dev/null
+            fi
+            echo "set JURVIO_DATABASE_BIND=$WANT_BIND"
+          fi
+
+          echo "--- recreating postgres with correct bind (data volume preserved) ---"
+          dc up -d postgres
+
+          echo "--- wait for healthy ---"
+          for _ in $(seq 1 30); do
+            st="$(sudo -n docker inspect -f '{{.State.Health.Status}}' "$(pgid)" 2>/dev/null || echo starting)"
+            [ "$st" = healthy ] && break; sleep 2
+          done
+          echo "postgres health: ${st:-unknown}"
+
+          echo "--- new postgres port bind (AFTER) ---"
+          sudo -n docker inspect -f '{{json .HostConfig.PortBindings}}' "$(pgid)"
+          echo "--- listening sockets on 5432 ---"
+          sudo -n ss -ltn 2>/dev/null | grep 5432 || true
+
+          echo "--- verify VPC reachability from ingestion host ---"
+          (exec 3<>/dev/tcp/$WANT_BIND/5432 && echo "TCP $WANT_BIND:5432 OPEN" && exec 3>&-) || echo "TCP $WANT_BIND:5432 NOT reachable"
+          REMOTE
+      - name: Verify public site recovers (through Cloudflare)
+        run: |
+          set -euo pipefail
+          probe() { curl -s -o /dev/null -w '%{http_code}' --max-time 25 "https://jurvio.com$1" || echo 000; }
+          echo "waiting for /api/ready to return 200 ..."
+          code=000
+          for _ in $(seq 1 40); do code="$(probe /api/ready)"; echo "/api/ready -> $code"; [ "$code" = 200 ] && break; sleep 3; done
+          fail=0
+          [ "$code" = 200 ] || { echo "::error::/api/ready did not recover ($code)"; fail=1; }
+          for p in / /cases /courts /supreme-court; do
+            c="$(probe "$p")"; echo "$p -> $c"
+            { [ "$c" -ge 200 ] && [ "$c" -lt 400 ]; } 2>/dev/null || { echo "::error::$p returned $c"; fail=1; }
+          done
+          echo "--- confirm still deindexed (X-Robots-Tag) ---"
+          curl -sI --max-time 25 https://jurvio.com/ | grep -i 'x-robots-tag' || echo "::warning::no X-Robots-Tag header seen on /"
+          [ "$fail" = 0 ] || { echo "::error::public verification failed"; exit 1; }
+          echo "RECOVERED: public site healthy through Cloudflare."
