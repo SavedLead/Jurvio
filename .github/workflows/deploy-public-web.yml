@@ -80,14 +80,14 @@ jobs:
           done
           [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
           curl -fsS -H 'Host: z.jurvio.com' http://127.0.0.1:3000/login |
-            grep -Fq 'Sign in to Jurvio'
+            grep -Fq 'Private command center'
           REMOTE
 
       - name: Verify hosted login through Cloudflare
         run: |
           set -euo pipefail
           login_body="$(curl -fsS --retry 12 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
-          printf '%s' "$login_body" | grep -Fq 'Sign in to Jurvio'
+          printf '%s' "$login_body" | grep -Fq 'Private command center'
           public_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://jurvio.com/login)"
           test "$public_status" = 404
           echo "Hosted login is live at https://z.jurvio.com/login"
