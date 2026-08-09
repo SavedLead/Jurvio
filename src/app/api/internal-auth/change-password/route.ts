@@ -15,6 +15,10 @@ function isCommandCenterHost(request: NextRequest) {
     normalizedHost(request.headers.get("x-forwarded-host")),
   ].includes("z.jurvio.com");
 }
+function commandCenterUrl(path: string) {
+  return new URL(path, "https://z.jurvio.com");
+}
+
 async function hashPassword(password: string) {
   const salt = randomBytes(16);
   const derived = await scrypt(password, salt, 64) as Buffer;
@@ -27,15 +31,15 @@ export async function POST(request: NextRequest) {
   const password = String(form.get("password") ?? "");
   const confirmation = String(form.get("confirmation") ?? "");
   if (password !== confirmation) {
-    return NextResponse.redirect(new URL("/change-password?error=mismatch", request.url), 303);
+    return NextResponse.redirect(commandCenterUrl("/change-password?error=mismatch"), 303);
   }
   if (password.length < 14 || password.length > 256) {
-    return NextResponse.redirect(new URL("/change-password?error=weak", request.url), 303);
+    return NextResponse.redirect(commandCenterUrl("/change-password?error=weak"), 303);
   }
 
   const token = request.cookies.get(INTERNAL_SESSION_COOKIE)?.value;
   if (!token || token.length < 32) {
-    return NextResponse.redirect(new URL("/login", request.url), 303);
+    return NextResponse.redirect(commandCenterUrl("/login"), 303);
   }
   const tokenHash = createHash("sha256").update(token).digest("hex");
   const passwordHash = await hashPassword(password);
@@ -46,7 +50,7 @@ export async function POST(request: NextRequest) {
     WHERE token_hash = ${tokenHash} AND expires_at > now()
   `;
   if (!session) {
-    return NextResponse.redirect(new URL("/login", request.url), 303);
+    return NextResponse.redirect(commandCenterUrl("/login"), 303);
   }
 
   await sql.begin(async (transaction) => {
@@ -61,7 +65,7 @@ export async function POST(request: NextRequest) {
     `;
   });
 
-  const response = NextResponse.redirect(new URL("/", request.url), 303);
+  const response = NextResponse.redirect(commandCenterUrl("/"), 303);
   response.headers.set("Cache-Control", "private, no-store");
   return response;
 }

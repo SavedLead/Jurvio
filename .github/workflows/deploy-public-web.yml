@@ -1,5 +1,5 @@
 name: Deploy public web app
-# Release trigger: research administrator password rotation
+# Release trigger: command-center external redirects
 
 on:
   workflow_dispatch: {}
