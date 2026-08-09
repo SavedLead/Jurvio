@@ -12,8 +12,8 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   try {
-    await requireInternalPrincipal(db(), await headers(), ["administrator"]);
-    redirect("/");
+    const principal = await requireInternalPrincipal(db(), await headers(), ["administrator"]);
+    redirect(principal.mustChangePassword ? "/change-password" : "/");
   } catch (error) {
     if (error && typeof error === "object" && "digest" in error) throw error;
   }
@@ -27,22 +27,22 @@ export default async function LoginPage({
 
   return <main className={styles.main}>
     <section className={styles.card}>
-      <div className={styles.brand}>J<span>.</span></div>
+      <div className={styles.brand} aria-hidden="true">J<span>.</span></div>
       <p className={styles.eyebrow}>Private command center</p>
-      <h1>Sign in to Jurvio</h1>
-      <p className={styles.intro}>Authorized administrators only.</p>
+      <h1>Sign in</h1>
+      <p className={styles.intro}>Use your authorized Jurvio administrator account.</p>
       {message ? <p className={styles.error} role="alert">{message}</p> : null}
       <form action="/api/internal-auth/login" method="post" className={styles.form}>
-        <label>Email address
-          <input name="email" type="email" autoComplete="username" required
-            defaultValue="david@cleanyourname.com" />
+        <label>Email
+          <input name="email" type="email" autoComplete="username" required autoFocus
+            placeholder="name@jurvio.com" />
         </label>
         <label>Password
-          <input name="password" type="password" autoComplete="current-password" required autoFocus />
+          <input name="password" type="password" autoComplete="current-password" required />
         </label>
-        <button type="submit">Sign in</button>
+        <button type="submit">Continue</button>
       </form>
-      <p className={styles.security}>Secure session · Expires after 12 hours</p>
+      <p className={styles.security}>Private system · Authorized access only</p>
     </section>
   </main>;
 }
