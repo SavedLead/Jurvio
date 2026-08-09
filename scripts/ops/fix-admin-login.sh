@@ -28,6 +28,22 @@ chmod 700 "/home/$ADMIN/.ssh"; chmod 600 "/home/$ADMIN/.ssh/authorized_keys"
 chown "$ADMIN:$ADMIN" "/home/$ADMIN"; chmod go-w "/home/$ADMIN"   # StrictModes: home not group/world-writable
 echo "authorized_keys installed: $(ls -l "/home/$ADMIN/.ssh/authorized_keys")"
 
+# Scoped passwordless sudo policy (create if missing/incorrect). Resolve actual
+# binary paths so the allowlist matches regardless of usrmerge layout. Covers
+# systemd, Docker, packages, unattended-upgrades, networking, monitoring, and
+# the runner; tee is scoped to config trees only.
+SUDOERS=/etc/sudoers.d/90-jurvio-admin
+cmds=""
+for b in systemctl journalctl docker apt apt-get apt-config dpkg unattended-upgrade ip ss ufw netplan sysctl mkdir; do
+  p="$(command -v "$b" 2>/dev/null || true)"
+  [ -n "$p" ] && cmds="${cmds:+$cmds, }$p"
+done
+TEE="$(command -v tee 2>/dev/null || echo /usr/bin/tee)"
+cmds="$cmds, $TEE /etc/apt/apt.conf.d/*, $TEE /etc/systemd/system/*, $TEE /etc/sysctl.d/*"
+printf '%s ALL=(ALL) NOPASSWD: %s\n' "$ADMIN" "$cmds" > "$SUDOERS"
+chmod 440 "$SUDOERS"
+if visudo -cf "$SUDOERS"; then echo "scoped sudoers installed: $SUDOERS"; else echo "BAD sudoers; removing"; rm -f "$SUDOERS"; fi
+
 # sshd allow-list gate: add jurvio-admin via a minimal drop-in only if needed.
 AU="$(sshd -T 2>/dev/null | sed -n 's/^allowusers //Ip')"
 AG="$(sshd -T 2>/dev/null | sed -n 's/^allowgroups //Ip')"
