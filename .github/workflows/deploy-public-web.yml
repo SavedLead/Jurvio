@@ -1,0 +1,93 @@
+name: Deploy public web app
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths: [.github/workflows/deploy-public-web.yml]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: jurvio-public-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 20
+    environment: production
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve public web server
+        id: host
+        run: |
+          set -euo pipefail
+          public_private="$(curl -fsS -H "Authorization: Bearer $DO_TOKEN"             "https://api.digitalocean.com/v2/droplets?per_page=200" |
+            jq -r '.droplets[] | select(.name=="jurvio-public-01") |
+              .networks.v4[] | select(.type=="private") | .ip_address' | head -1)"
+          test -n "$public_private"
+          echo "private=$public_private" >> "$GITHUB_OUTPUT"
+
+      - name: Configure private SSH
+        env:
+          PUBLIC_PRIVATE: ${{ steps.host.outputs.private }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          ssh-keyscan -T 10 -H "$PUBLIC_PRIVATE" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Build and publish current web image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="${IMAGE,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -t "$image" .
+          docker push "$image"
+
+      - name: Replace public app container
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLIC_PRIVATE: ${{ steps.host.outputs.private }}
+        run: |
+          set -euo pipefail
+          image="${IMAGE,,}"
+          printf '%s' "$GH_TOKEN" | ssh "root@$PUBLIC_PRIVATE" 'docker login ghcr.io -u SavedLead --password-stdin'
+          ssh "root@$PUBLIC_PRIVATE" bash -s -- "$image" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          test -s .env.production
+          test -s docker-compose.public.yml
+          docker pull "$1"
+          JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml up -d --no-deps app
+          app_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app)"
+          for _ in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ] && break
+            sleep 3
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
+          curl -fsS -H 'Host: z.jurvio.com' http://127.0.0.1:3000/login |
+            grep -Fq 'Sign in to Jurvio'
+          REMOTE
+
+      - name: Verify hosted login through Cloudflare
+        run: |
+          set -euo pipefail
+          login_body="$(curl -fsS --retry 12 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
+          printf '%s' "$login_body" | grep -Fq 'Sign in to Jurvio'
+          public_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://jurvio.com/login)"
+          test "$public_status" = 404
+          echo "Hosted login is live at https://z.jurvio.com/login"
