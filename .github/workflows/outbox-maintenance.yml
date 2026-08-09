@@ -1,0 +1,88 @@
+name: Outbox maintenance (drain + retention)
+
+# Scheduled retention for the write-only outbox_event log so it stays bounded.
+# Daily it (1) marks published_at on events whose aggregate is currently
+# published+displayable (verified drain; unverified/held stay NULL), then
+# (2) prunes relayed events older than RETENTION_DAYS. Runs on the self-hosted
+# builder over the private VPC (no paid minutes). Also dispatchable on demand.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"   # 07:17 UTC daily
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: "Delete relayed events older than N days"
+        required: false
+        default: "14"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-outbox-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      RETENTION_DAYS: ${{ github.event.inputs.retention_days || '14' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Drain verified + prune relayed
+        run: |
+          set -euo pipefail
+          scp scripts/ops/drain-outbox-verified.sql "$INGESTION_USER@$DB_HOST:/tmp/drain-outbox-verified.sql"
+          scp scripts/ops/prune-outbox.sql          "$INGESTION_USER@$DB_HOST:/tmp/prune-outbox.sql"
+          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "$RETENTION_DAYS" <<'REMOTE'
+          set -euo pipefail
+          DAYS="$1"
+          cid="$(sudo -n docker ps --format '{{.ID}} {{.Names}}' | awk '/postgres/{print $1; exit}')"
+          [ -n "$cid" ] || { echo "no postgres container"; exit 1; }
+          sudo -n docker cp /tmp/drain-outbox-verified.sql "$cid:/tmp/drain-outbox-verified.sql"
+          sudo -n docker cp /tmp/prune-outbox.sql "$cid:/tmp/prune-outbox.sql"
+          # No `-i`: docker exec -i would attach this heredoc's stdin to the container.
+          psql() { sudo -n docker exec "$cid" psql -U jurvio -d jurvio "$@"; }
+
+          echo "=== BEFORE ==="
+          psql -c "SELECT count(*) total, count(*) FILTER (WHERE published_at IS NULL) unpublished, count(*) FILTER (WHERE published_at IS NOT NULL) published FROM outbox_event;"
+
+          echo "=== drain verified (batches of 20000) ==="
+          d=0
+          for _ in $(seq 1 60); do
+            n=$(psql -tA -v batch=20000 -f /tmp/drain-outbox-verified.sql | grep -c '^[0-9a-f]' || true)
+            d=$((d+n)); echo "drained=$n cumulative=$d"; [ "$n" -eq 0 ] && break
+          done
+
+          echo "=== prune relayed older than ${DAYS}d (batches of 20000) ==="
+          p=0
+          for _ in $(seq 1 60); do
+            n=$(psql -tA -v days="$DAYS" -v batch=20000 -f /tmp/prune-outbox.sql | grep -c '^[0-9a-f]' || true)
+            p=$((p+n)); echo "pruned=$n cumulative=$p"; [ "$n" -eq 0 ] && break
+          done
+
+          echo "=== AFTER (drained=$d pruned=$p) ==="
+          psql -c "SELECT count(*) total, count(*) FILTER (WHERE published_at IS NULL) unpublished, count(*) FILTER (WHERE published_at IS NOT NULL) published, min(created_at) oldest FROM outbox_event;"
+          sudo -n docker exec "$cid" rm -f /tmp/drain-outbox-verified.sql /tmp/prune-outbox.sql
+          rm -f /tmp/drain-outbox-verified.sql /tmp/prune-outbox.sql
+          REMOTE

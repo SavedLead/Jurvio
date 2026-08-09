@@ -5,6 +5,13 @@ on:
   push:
     branches:
       - main
+    # Skip the heavy self-hosted build for pushes that only touch docs, one-off
+    # operational workflows, or read-only diagnostic scripts — none of which
+    # affect the application build. Keeps the serial builder free for real work.
+    paths-ignore:
+      - "**.md"
+      - "scripts/diag/**"
+      - ".github/workflows/*-once.yml"
 
 permissions:
   contents: read
