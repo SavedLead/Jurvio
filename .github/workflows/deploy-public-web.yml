@@ -1,5 +1,5 @@
 name: Deploy public web app
-# Release trigger: command-center external redirects
+# Release trigger: replacement administrator bootstrap
 
 on:
   workflow_dispatch: {}
