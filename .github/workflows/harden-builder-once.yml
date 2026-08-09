@@ -22,35 +22,39 @@ jobs:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 10
-    env:
-      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
-      ADMIN_USER: ${{ secrets.DO_USER }}
     steps:
       - uses: actions/checkout@v4
-      - name: Configure SSH (loopback admin)
+      - name: Probe local privilege on the builder
+        id: probe
+        run: |
+          set -uo pipefail
+          echo "whoami: $(whoami)"; id
+          echo "--- sudo -n -l ---"
+          if sudo -n -l 2>&1; then :; fi
+          if sudo -n true 2>/dev/null; then
+            echo "direct passwordless sudo: YES"
+            echo "have_sudo=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "direct passwordless sudo: NO"
+            echo "have_sudo=no" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Apply hardening directly (no runner restart)
+        if: steps.probe.outputs.have_sudo == 'yes'
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          cat > ~/.ssh/config <<'CFG'
-          Host localbuilder
-            HostName 127.0.0.1
-            User __ADMIN__
-            IdentityFile ~/.ssh/id_ed25519
-            BatchMode yes
-            ConnectTimeout 15
-            StrictHostKeyChecking accept-new
-          CFG
-          sed -i "s/__ADMIN__/$ADMIN_USER/" ~/.ssh/config
-          chmod 600 ~/.ssh/config
-      - name: Preflight (prove loopback admin + passwordless sudo)
+          sudo -n bash scripts/ops/harden-builder.sh
+      - name: Diagnostics when no direct sudo (choose next mechanism)
+        if: steps.probe.outputs.have_sudo != 'yes'
         run: |
-          set -euo pipefail
-          echo "whoami via loopback: $(ssh localbuilder 'whoami')"
-          echo "sudo check: $(ssh localbuilder 'sudo -n whoami')"
-      - name: Apply hardening as root (no runner restart)
-        run: |
-          set -euo pipefail
-          scp scripts/ops/harden-builder.sh localbuilder:/tmp/harden-builder.sh
-          ssh localbuilder 'sudo -n bash /tmp/harden-builder.sh; rm -f /tmp/harden-builder.sh'
+          set -uo pipefail
+          echo "No direct passwordless sudo for the runner user. Enumerating options:"
+          echo "--- /etc/sudoers.d (if readable) ---"; ls -la /etc/sudoers.d/ 2>&1 || true
+          echo "--- runner unit (systemctl cat, no root needed to read) ---"
+          systemctl cat 'actions.runner.*.service' 2>&1 | head -40 || true
+          echo "--- current runner Restart/enabled/active ---"
+          U="$(systemctl list-units 'actions.runner.*.service' --no-legend --all 2>/dev/null | awk '{print $1}' | head -1)"
+          echo "unit=$U"
+          [ -n "$U" ] && systemctl show "$U" -p Restart -p UnitFileState -p ActiveState 2>&1 || true
+          echo "--- local login users ---"; getent passwd | awk -F: '$7 ~ /(ba)?sh$/ {print $1}' || true
+          echo "(Failing this step on purpose so the run is marked failed and I revisit the mechanism.)"
+          exit 1
