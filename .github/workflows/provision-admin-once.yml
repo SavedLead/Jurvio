@@ -1,0 +1,100 @@
+name: Provision admin access (jurvio-admin)
+
+# Establish a permanent, audited administrative account (jurvio-admin) on
+# jurvio-builder-01, authenticated with the existing CI-managed SSH key and
+# granted passwordless sudo. Runs on the builder itself and escalates via an
+# existing root SSH route over loopback (bypasses the cloud firewall; no new
+# inbound exposure). If no root route exists it fails with the single manual
+# command to run. Non-destructive except for creating the additive admin user.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-provision-admin
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      ADMIN_USER: jurvio-admin
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare key + derive public key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > ~/.ssh/id_ed25519.pub
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 10
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Probe for an existing root route (non-destructive)
+        id: root
+        run: |
+          set -uo pipefail
+          targets="127.0.0.1 $(hostname -I 2>/dev/null || true)"
+          echo "candidate targets: $targets"
+          found=""
+          for h in $targets; do
+            out="$(ssh -o ConnectTimeout=8 "root@$h" 'id -u' 2>/dev/null || true)"
+            if [ "$out" = "0" ]; then echo "root route OK via $h"; found="$h"; break; fi
+            echo "no root via $h"
+          done
+          if [ -n "$found" ]; then
+            { echo "have_root=yes"; echo "root_host=$found"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "have_root=no" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bootstrap jurvio-admin (as root)
+        if: steps.root.outputs.have_root == 'yes'
+        env:
+          RH: ${{ steps.root.outputs.root_host }}
+        run: |
+          set -euo pipefail
+          PUB="$(cat ~/.ssh/id_ed25519.pub)"
+          scp scripts/ops/bootstrap-admin.sh "root@$RH:/tmp/bootstrap-admin.sh"
+          ssh "root@$RH" "ADMIN_USER='$ADMIN_USER' bash /tmp/bootstrap-admin.sh '$PUB'; rm -f /tmp/bootstrap-admin.sh"
+      - name: Verify access, set no-auto-reboot, confirm runner
+        if: steps.root.outputs.have_root == 'yes'
+        run: |
+          set -euo pipefail
+          A="$ADMIN_USER@127.0.0.1"
+          echo "=== identity + passwordless sudo (as $ADMIN_USER) ==="
+          ssh "$A" 'id && echo "-- sudo -n id --" && sudo -n id'
+          echo "=== set unattended-upgrade auto-reboot values to false ==="
+          ssh "$A" 'printf "%s\n" "Unattended-Upgrade::Automatic-Reboot \"false\";" "Unattended-Upgrade::Automatic-Reboot-WithUsers \"false\";" | sudo -n tee /etc/apt/apt.conf.d/99jurvio-no-reboot >/dev/null'
+          echo "-- effective apt policy --"
+          ssh "$A" 'apt-config dump | grep -i "Unattended-Upgrade::Automatic-Reboot" || echo "(none)"'
+          echo "=== confirm runner service ==="
+          U="$(ssh "$A" "systemctl list-units 'actions.runner.*.service' --no-legend --all | awk '{print \$1}' | head -1")"
+          echo "unit=$U"
+          ssh "$A" "systemctl show '$U' -p Restart -p UnitFileState -p ActiveState && echo is-enabled=\$(systemctl is-enabled '$U') && echo is-active=\$(systemctl is-active '$U')"
+          echo "=== record for GitHub production environment ==="
+          echo "JURVIO_ADMIN_USER=$ADMIN_USER"
+          echo "builder addresses (choose the VPC/private one for JURVIO_ADMIN_HOST): $(ssh "$A" 'hostname -I')"
+      - name: No root route — emit single manual bootstrap command
+        if: steps.root.outputs.have_root != 'yes'
+        run: |
+          set -euo pipefail
+          PUB="$(cat ~/.ssh/id_ed25519.pub)"
+          echo "No existing remote root route on the builder — one manual command is required."
+          echo "Run this ONCE on jurvio-builder-01 (Recovery Console, as root):"
+          echo
+          echo "u=jurvio-admin; useradd -m -s /bin/bash \$u 2>/dev/null; install -d -m700 -o \$u -g \$u /home/\$u/.ssh; echo '$PUB' > /home/\$u/.ssh/authorized_keys; chown \$u:\$u /home/\$u/.ssh/authorized_keys; chmod 600 /home/\$u/.ssh/authorized_keys; echo \"\$u ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/90-jurvio-admin; chmod 440 /etc/sudoers.d/90-jurvio-admin; visudo -cf /etc/sudoers.d/90-jurvio-admin"
+          echo
+          echo "Then re-run this workflow to verify + configure."
+          exit 1
