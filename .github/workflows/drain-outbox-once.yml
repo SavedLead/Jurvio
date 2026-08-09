@@ -59,7 +59,11 @@ jobs:
           cid="$(sudo -n docker ps --format '{{.ID}} {{.Names}}' | awk '/postgres/{print $1; exit}')"
           if [ -z "$cid" ]; then echo "no postgres container found"; exit 1; fi
           sudo -n docker cp /tmp/drain-outbox-verified.sql "$cid:/tmp/drain-outbox-verified.sql"
-          psql() { sudo -n docker exec -i "$cid" psql -U jurvio -d jurvio "$@"; }
+          # NOTE: no `-i` on docker exec. `-i` attaches the container to this
+          # ssh session's stdin (the heredoc feeding `bash -s`), which the first
+          # exec would then consume, truncating the rest of the script. These
+          # psql calls read from -c/-f, never stdin, so -i is unnecessary.
+          psql() { sudo -n docker exec "$cid" psql -U jurvio -d jurvio "$@"; }
 
           echo "=== BEFORE ==="
           psql -c "SELECT count(*) AS total, count(*) FILTER (WHERE published_at IS NULL) AS unpublished FROM outbox_event;"
@@ -94,6 +98,6 @@ jobs:
             WHERE oe.aggregate_type='legal_case' AND oe.published_at IS NOT NULL
             ORDER BY oe.published_at DESC LIMIT 10;"
 
-          sudo -n docker exec -i "$cid" rm -f /tmp/drain-outbox-verified.sql
+          sudo -n docker exec "$cid" rm -f /tmp/drain-outbox-verified.sql
           rm -f /tmp/drain-outbox-verified.sql
           REMOTE
