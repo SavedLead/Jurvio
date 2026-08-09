@@ -1,0 +1,56 @@
+name: Harden builder once (P5)
+
+# One-off: harden the self-hosted runner on jurvio-builder-01 entirely remotely.
+# The job runs ON the builder as the (sudo-less) runner user, then escalates via
+# an SSH-to-loopback as the DO_USER admin account (passwordless sudo, key already
+# in CI secrets; loopback bypasses the cloud firewall). It sets Restart=always,
+# enables the runner, and blocks unattended-upgrades auto-reboot -- WITHOUT
+# restarting the runner (that would kill this job). Delete after use.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-harden-builder
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      ADMIN_USER: ${{ secrets.DO_USER }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH (loopback admin)
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host localbuilder
+            HostName 127.0.0.1
+            User __ADMIN__
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          sed -i "s/__ADMIN__/$ADMIN_USER/" ~/.ssh/config
+          chmod 600 ~/.ssh/config
+      - name: Preflight (prove loopback admin + passwordless sudo)
+        run: |
+          set -euo pipefail
+          echo "whoami via loopback: $(ssh localbuilder 'whoami')"
+          echo "sudo check: $(ssh localbuilder 'sudo -n whoami')"
+      - name: Apply hardening as root (no runner restart)
+        run: |
+          set -euo pipefail
+          scp scripts/ops/harden-builder.sh localbuilder:/tmp/harden-builder.sh
+          ssh localbuilder 'sudo -n bash /tmp/harden-builder.sh; rm -f /tmp/harden-builder.sh'
