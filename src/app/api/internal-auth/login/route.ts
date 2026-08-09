@@ -18,6 +18,10 @@ function isCommandCenterHost(request: NextRequest) {
   ].includes("z.jurvio.com");
 }
 
+function commandCenterUrl(path: string) {
+  return new URL(path, "https://z.jurvio.com");
+}
+
 async function verifyPassword(password: string, encoded: string | null) {
   if (!encoded) return false;
   const [algorithm, salt, stored] = encoded.split("$");
@@ -53,7 +57,7 @@ export async function POST(request: NextRequest) {
   `;
 
   if (!attempt || attempt.failures > 8) {
-    return NextResponse.redirect(new URL("/login?error=locked", request.url), 303);
+    return NextResponse.redirect(commandCenterUrl("/login?error=locked"), 303);
   }
 
   const [user] = await sql<Array<{ id: string; passwordHash: string | null; mustChangePassword: boolean }>>`
@@ -64,7 +68,7 @@ export async function POST(request: NextRequest) {
 
   if (!user || !(await verifyPassword(password, user.passwordHash))) {
     await new Promise((resolve) => setTimeout(resolve, 350));
-    return NextResponse.redirect(new URL("/login?error=invalid", request.url), 303);
+    return NextResponse.redirect(commandCenterUrl("/login?error=invalid"), 303);
   }
 
   const token = randomBytes(32).toString("base64url");
@@ -79,7 +83,7 @@ export async function POST(request: NextRequest) {
   });
 
   const destination = user.mustChangePassword ? "/change-password" : "/";
-  const response = NextResponse.redirect(new URL(destination, request.url), 303);
+  const response = NextResponse.redirect(commandCenterUrl(destination), 303);
   response.cookies.set(INTERNAL_SESSION_COOKIE, token, {
     httpOnly: true, secure: true, sameSite: "strict", path: "/", maxAge: SESSION_SECONDS,
   });
