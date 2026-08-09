@@ -1,0 +1,80 @@
+name: Ingestion status (read-only, VPC route)
+
+# Read-only production status for the ingestion box (jurvio-web-01) reached over
+# the private VPC from the self-hosted builder runner. Supersedes the transport
+# in fleet-status.yml, which targeted the retired single droplet (DO_HOST) and
+# now times out after the two-server split. Performs NO writes, NO ingestion,
+# and NO publication: it only runs the existing read-only report-fleet-status
+# job inside the running app container plus a headline corpus snapshot.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-ingestion-status
+  cancel-in-progress: false
+
+jobs:
+  status:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Fleet status report (read-only)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          app="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=app' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo "::error::no running jurvio app container on ingestion box"; exit 1; }
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no running jurvio postgres container on ingestion box"; exit 1; }
+
+          echo "=== Headline corpus snapshot (read-only) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT json_build_object(
+            'checked_at', now(),
+            'cases', (SELECT count(*) FROM legal_case),
+            'published', (SELECT count(*) FROM legal_case WHERE publication='published'),
+            'held', (SELECT count(*) FROM legal_case WHERE publication IN ('draft','restricted')),
+            'needs_review', (SELECT count(*) FROM legal_case WHERE verification='needs_review'),
+            'documents', (SELECT count(*) FROM document),
+            'opinions', (SELECT count(*) FROM judicial_opinion),
+            'database_bytes', pg_database_size(current_database()),
+            'latest_source_at', (SELECT max(retrieved_at) FROM raw_artifact),
+            'pacer_cost_usd', 0
+          );"
+
+          echo "=== Disk on ingestion box (read-only) ==="
+          df -h / | tail -n +1
+
+          echo "=== Full fleet report (108 courts, read-only) ==="
+          sudo -n docker exec "$app" node jobs/report-fleet-status.mjs
+          REMOTE
