@@ -79,7 +79,9 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    # Deploy from the fixed DigitalOcean builder network. GitHub-hosted runner
+    # addresses rotate and are blocked by the production SSH firewall.
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     steps:
       - uses: actions/checkout@v4
