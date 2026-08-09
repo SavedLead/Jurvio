@@ -31,7 +31,7 @@ async function cloudflareEmail(requestHeaders: Headers): Promise<string | null> 
 
   const config = env();
   if (!config.CF_ACCESS_TEAM_DOMAIN || !config.CF_ACCESS_AUDIENCE) return null;
-  const issuer = config.CF_ACCESS_TEAM_DOMAIN.replace(/\\\/$/, "");
+  const issuer = config.CF_ACCESS_TEAM_DOMAIN.replace(/\/$/, "");
   jwks ??= createRemoteJWKSet(new URL(issuer + "/cdn-cgi/access/certs"));
   const { payload } = await jwtVerify(token, jwks, {
     issuer,
