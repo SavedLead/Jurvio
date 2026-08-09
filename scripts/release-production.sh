@@ -32,6 +32,22 @@ run_with_timeout() {
 }
 
 cd "$DEPLOY_DIR"
+
+# Load JURVIO_DATABASE_BIND from .env.production so the postgres port binds to
+# the private VPC address the public app (jurvio-public-01) connects to. docker
+# compose only auto-loads `.env`, not `.env.production`, so without this the
+# compose default ("${JURVIO_DATABASE_BIND:-127.0.0.1}") would rebind postgres
+# to loopback and isolate the public app from the database on every release.
+if [ -f "$DEPLOY_DIR/.env.production" ]; then
+  DB_BIND_LINE=$(grep -E '^JURVIO_DATABASE_BIND=' "$DEPLOY_DIR/.env.production" | tail -1 || true)
+  if [ -n "$DB_BIND_LINE" ]; then
+    JURVIO_DATABASE_BIND=$(printf '%s' "${DB_BIND_LINE#JURVIO_DATABASE_BIND=}" | tr -d '\r')
+    export JURVIO_DATABASE_BIND
+    printf 'Using JURVIO_DATABASE_BIND=%s for postgres port publication\n' "$JURVIO_DATABASE_BIND"
+  fi
+fi
+EXPECTED_DB_BIND=${JURVIO_DATABASE_BIND:-}
+
 if docker compose -f "$COMPOSE" ps -q app >/dev/null 2>&1; then
   CONTAINER=$(docker compose -f "$COMPOSE" ps -q app || true)
   if [ -n "$CONTAINER" ]; then
@@ -47,6 +63,19 @@ fi
 export JURVIO_IMAGE="$NEW_IMAGE"
 run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa
 run_with_timeout "Postgres startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d postgres
+
+# Readiness guard: a release must not proceed to replace the app/workers if
+# postgres bound to the wrong address (which would leave the public app cut off
+# from the database). Verify the published host IP matches the expected private
+# VPC bind before continuing.
+if [ -n "$EXPECTED_DB_BIND" ]; then
+  POSTGRES_CID=$(docker compose -f "$COMPOSE" ps -q postgres || true)
+  ACTUAL_DB_BIND=$(docker inspect -f '{{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostIp}} {{end}}{{end}}' "$POSTGRES_CID" 2>/dev/null || true)
+  case " $ACTUAL_DB_BIND " in
+    *" $EXPECTED_DB_BIND "*) printf 'Postgres bound to expected %s\n' "$EXPECTED_DB_BIND" ;;
+    *) fail "Postgres published on '$ACTUAL_DB_BIND' but expected '$EXPECTED_DB_BIND'. Refusing to replace the app/workers and isolate the public site from the database." ;;
+  esac
+fi
 
 DATABASE_READY=0
 for attempt in $(seq 1 30); do
