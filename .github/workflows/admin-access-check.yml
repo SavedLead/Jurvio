@@ -1,0 +1,54 @@
+name: Admin access check (jurvio-admin)
+
+# Permanent, non-destructive verification that the jurvio-admin recovery/admin
+# route is healthy: logs in over loopback with the CI key and runs read-only,
+# allowlisted checks (no changes to the system). Dispatch any time to confirm
+# remote admin access still works without touching the DigitalOcean console.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-admin-access-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      A: jurvio-admin@127.0.0.1
+    steps:
+      - name: Prepare key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 10
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Verify jurvio-admin route (read-only, non-destructive)
+        run: |
+          set -euo pipefail
+          echo "=== login + identity ==="
+          ssh "$A" 'echo "logged in as $(id -un) uid=$(id -u)"'
+          echo "=== scoped passwordless sudo (allowlisted, read-only) ==="
+          ssh "$A" 'sudo -n systemctl --version | head -1'
+          echo "=== service health (read-only) ==="
+          ssh "$A" 'echo "ssh=$(sudo -n systemctl is-active ssh 2>/dev/null || sudo -n systemctl is-active sshd 2>/dev/null || echo n/a) droplet-agent=$(sudo -n systemctl is-active droplet-agent.service 2>/dev/null || echo n/a)"'
+          U="$(ssh "$A" "systemctl list-units 'actions.runner.*.service' --no-legend --all | awk '{print \$1}' | head -1")"
+          ssh "$A" "systemctl show '$U' -p Restart -p UnitFileState -p ActiveState"
+          echo "=== scoped sudo allowlist ==="
+          ssh "$A" 'sudo -n -l 2>/dev/null || true'
+          echo "=== OK: permanent jurvio-admin access verified ==="
