@@ -7,9 +7,15 @@ import { INTERNAL_SESSION_COOKIE } from "@/modules/identity/cloudflare-access";
 const scrypt = promisify(scryptCallback);
 const SESSION_SECONDS = 60 * 60 * 12;
 
-function safeHost(request: NextRequest) {
-  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
-  return host.split(",")[0]?.trim().split(":")[0]?.toLowerCase();
+function normalizedHost(value: string | null) {
+  return (value ?? "").split(",")[0]?.trim().split(":")[0]?.toLowerCase();
+}
+
+function isCommandCenterHost(request: NextRequest) {
+  return [
+    normalizedHost(request.headers.get("host")),
+    normalizedHost(request.headers.get("x-forwarded-host")),
+  ].includes("z.jurvio.com");
 }
 
 async function verifyPassword(password: string, encoded: string | null) {
@@ -22,7 +28,7 @@ async function verifyPassword(password: string, encoded: string | null) {
 }
 
 export async function POST(request: NextRequest) {
-  if (safeHost(request) !== "z.jurvio.com") {
+  if (!isCommandCenterHost(request)) {
     return new NextResponse(null, { status: 404 });
   }
 

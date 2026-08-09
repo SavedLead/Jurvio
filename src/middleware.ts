@@ -12,10 +12,19 @@ function withLockdownHeaders(response: NextResponse): NextResponse {
   return response;
 }
 
-function requestHost(request: NextRequest) {
-  const forwardedHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
-  const firstHost = forwardedHost.split(",").at(0)?.trim() ?? "";
+function normalizedHost(value: string | null) {
+  const firstHost = (value ?? "").split(",").at(0)?.trim() ?? "";
   return firstHost.split(":").at(0)?.toLowerCase() ?? "";
+}
+
+function requestHosts(request: NextRequest) {
+  // Cloudflare may preserve a different X-Forwarded-Host while nginx correctly
+  // forwards the browser's Host header. Treat either as authoritative for the
+  // command-center host, while continuing to block admin paths on public hosts.
+  return new Set([
+    normalizedHost(request.headers.get("host")),
+    normalizedHost(request.headers.get("x-forwarded-host")),
+  ]);
 }
 
 function isFrameworkOrAssetPath(pathname: string) {
@@ -35,10 +44,10 @@ function publicCommandCenterPath(pathname: string) {
 }
 
 export function middleware(request: NextRequest) {
-  const host = requestHost(request);
+  const hosts = requestHosts(request);
   const { pathname } = request.nextUrl;
 
-  if (host === COMMAND_CENTER_HOST) {
+  if (hosts.has(COMMAND_CENTER_HOST)) {
     const cleanPath = publicCommandCenterPath(pathname);
     if (cleanPath !== null) {
       const redirectUrl = request.nextUrl.clone();
@@ -59,7 +68,7 @@ export function middleware(request: NextRequest) {
     return withLockdownHeaders(NextResponse.rewrite(rewriteUrl));
   }
 
-  if (PUBLIC_HOSTS.has(host) && (
+  if ([...hosts].some((host) => PUBLIC_HOSTS.has(host)) && (
     pathname === "/login" ||
     pathname.startsWith("/api/internal-auth/") ||
     pathname === "/internal" ||
