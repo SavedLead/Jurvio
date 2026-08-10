@@ -64,20 +64,21 @@ export function calculateOutcomeRates(input: {
   };
 }
 
-export async function listPublicJudges(sql: Sql, limit = 100): Promise<JudgeDirectorySummary[]> {
-  const safeLimit = Math.min(Math.max(limit, 1), 200);
+export async function listPublicJudges(sql: Sql, limit = 5_000): Promise<JudgeDirectorySummary[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 10_000);
   return sql<JudgeDirectorySummary[]>`
     SELECT judge.public_id AS "publicId", judge.display_name AS "displayName",
       court.name AS "courtName", count(DISTINCT legal_case.id)::int AS "caseCount",
       count(DISTINCT observation.id)::int AS "outcomeSample"
     FROM judge
     LEFT JOIN court ON court.id = judge.court_id
-    JOIN judge_case_assignment assignment ON assignment.judge_id = judge.id
-    JOIN legal_case ON legal_case.id = assignment.case_id
+    LEFT JOIN judge_case_assignment assignment ON assignment.judge_id = judge.id
+    LEFT JOIN legal_case ON legal_case.id = assignment.case_id
+      AND ${sql.unsafe(displayableCase)}
     LEFT JOIN judge_case_observation observation
       ON observation.judge_id = judge.id AND observation.case_id = legal_case.id
       AND observation.observation_type = 'case_outcome' AND observation.confidence >= 0.800
-    WHERE ${sql.unsafe(displayableJudge)} AND ${sql.unsafe(displayableCase)}
+    WHERE ${sql.unsafe(displayableJudge)}
     GROUP BY judge.id, court.name
     ORDER BY count(DISTINCT legal_case.id) DESC, judge.display_name
     LIMIT ${safeLimit}
@@ -107,8 +108,9 @@ export async function getPublicJudge(sql: Sql, publicId: string): Promise<JudgeA
       )::int AS "rulingTimeSample"
     FROM judge
     LEFT JOIN court ON court.id = judge.court_id
-    JOIN judge_case_assignment assignment ON assignment.judge_id = judge.id
-    JOIN legal_case ON legal_case.id = assignment.case_id
+    LEFT JOIN judge_case_assignment assignment ON assignment.judge_id = judge.id
+    LEFT JOIN legal_case ON legal_case.id = assignment.case_id
+      AND ${sql.unsafe(displayableCase)}
     LEFT JOIN judge_case_observation outcome
       ON outcome.judge_id = judge.id AND outcome.case_id = legal_case.id
       AND outcome.observation_type = 'case_outcome' AND outcome.confidence >= 0.800
@@ -119,7 +121,7 @@ export async function getPublicJudge(sql: Sql, publicId: string): Promise<JudgeA
       ON ruling.judge_id = judge.id AND ruling.case_id = legal_case.id
       AND ruling.observation_type = 'major_ruling' AND ruling.confidence >= 0.800
     WHERE judge.public_id = ${publicId}
-      AND ${sql.unsafe(displayableJudge)} AND ${sql.unsafe(displayableCase)}
+      AND ${sql.unsafe(displayableJudge)}
     GROUP BY judge.id, court.name
     LIMIT 1
   `;
