@@ -1,4 +1,5 @@
 import type { Route } from "next";
+import { formatEasternDateTime } from "@/lib/time/eastern";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
@@ -14,9 +15,7 @@ const labels = {
   F: "Syllabus and orders", G: "Briefs, transcripts, and audio",
 } as const;
 const count = (value: number) => value.toLocaleString("en-US");
-const date = (value: string | null) => value
-  ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(value))
-  : "Date unavailable";
+const date = (value: string | null) => formatEasternDateTime(value, "Date unavailable");
 
 export default async function CaseIngestionReportPage() {
   try {

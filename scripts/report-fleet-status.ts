@@ -30,6 +30,12 @@ async function safe<T>(fn: () => Promise<T>): Promise<Section<T>> {
 const num = (value: unknown): number => Number(value ?? 0);
 
 try {
+  // Render every timestamp in this read-only report in Eastern time (EST/EDT).
+  // Postgres keeps timestamptz in UTC; this only changes how this session
+  // displays them, so the `::text` casts below print Eastern with a -04/-05
+  // offset instead of +00. Scoped to this one-shot report connection.
+  await sql`SET TIME ZONE 'America/New_York'`;
+
   const checkedAt = new Date().toISOString();
 
   // ---- Corpus totals -------------------------------------------------------

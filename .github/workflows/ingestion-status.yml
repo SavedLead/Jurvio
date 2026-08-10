@@ -58,8 +58,8 @@ jobs:
             --format '{{.ID}}' | head -n1)"
           [ -n "$pg" ] || { echo "::error::no running jurvio postgres container on ingestion box"; exit 1; }
 
-          echo "=== Headline corpus snapshot (read-only) ==="
-          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT json_build_object(
+          echo "=== Headline corpus snapshot (read-only, Eastern time) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York'; SELECT json_build_object(
             'checked_at', now(),
             'cases', (SELECT count(*) FROM legal_case),
             'published', (SELECT count(*) FROM legal_case WHERE publication='published'),

@@ -1,4 +1,5 @@
 import type { Route } from "next";
+import { formatEasternDateTime } from "@/lib/time/eastern";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
@@ -9,9 +10,7 @@ import styles from "./internal.module.css";
 
 export const dynamic = "force-dynamic";
 const number = (value: number) => new Intl.NumberFormat("en-US").format(value);
-const date = (value: string | null) => value ? new Intl.DateTimeFormat("en-US", {
-  month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-}).format(new Date(value)) : "Still running";
+const date = (value: string | null) => formatEasternDateTime(value, "Still running");
 
 export default async function InternalOverviewPage() {
   try {
