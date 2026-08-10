@@ -5,7 +5,11 @@ let client: ReturnType<typeof postgres> | undefined;
 
 export function db() {
   client ??= postgres(env().DATABASE_URL, {
-    max: 10,
+    // Each process (app, workers, and every spawned scheduler child) opens its
+    // own pool, so this is per-process. Raised from 10 to give the higher-
+    // concurrency ingestion/publication lanes real parallelism; Postgres
+    // max_connections is raised to 200 in compose to cover the aggregate.
+    max: Number.parseInt(process.env.JURVIO_DB_POOL_MAX ?? "14", 10),
     idle_timeout: 20,
     connect_timeout: 10,
     prepare: true,
