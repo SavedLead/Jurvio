@@ -1,0 +1,87 @@
+name: Operator audit (read-only)
+
+# Read-only inventory of the Jurvio operator setup so deployment and service
+# control can run entirely through the self-hosted builder + private VPC route.
+# Reports the runner user on the builder and, over the VPC, the ingestion box's
+# scoped sudo allowlist, Jurvio systemd units, Docker Compose layout, running
+# containers, disk, and Spaces configuration PRESENCE (never values). Prints NO
+# secret values, NO .env contents, NO credentials.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-operator-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Builder-local runner identity and tooling
+        run: |
+          set -euo pipefail
+          echo "=== runner user on jurvio-builder-01 ==="
+          echo "user=$(id -un) uid=$(id -u) groups=$(id -Gn)"
+          echo "=== docker / compose availability on builder ==="
+          docker version --format '{{.Server.Version}}' 2>/dev/null || echo "no docker server access as runner user"
+          docker compose version 2>/dev/null | head -1 || echo "no docker compose"
+          echo "=== builder scoped sudo allowlist ==="
+          sudo -n -l 2>/dev/null || echo "no passwordless sudo for runner user"
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Ingestion box inventory over private VPC (read-only)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          echo "=== identity on jurvio-web-01 ==="
+          echo "user=$(id -un) uid=$(id -u) groups=$(id -Gn)"
+          echo "=== scoped sudo allowlist (jurvio-web-01) ==="
+          sudo -n -l 2>/dev/null || echo "no passwordless sudo"
+          echo "=== Jurvio systemd units ==="
+          systemctl list-units --type=service --all 2>/dev/null | grep -iE 'jurvio|docker|actions.runner' || echo "none matched"
+          systemctl is-enabled docker 2>/dev/null || true
+          echo "=== /opt/jurvio layout (names only, no contents) ==="
+          ls -la /opt/jurvio 2>/dev/null || echo "no /opt/jurvio"
+          for f in docker-compose.production.yml docker-compose.public.yml .env.production .env; do
+            if [ -e "/opt/jurvio/$f" ]; then echo "present: $f ($(stat -c%s "/opt/jurvio/$f" 2>/dev/null || echo '?') bytes)"; else echo "absent: $f"; fi
+          done
+          echo "=== JURVIO_IMAGE interpolation source (present? not value) ==="
+          if [ -f /opt/jurvio/.env ]; then grep -q '^JURVIO_IMAGE=' /opt/jurvio/.env && echo ".env sets JURVIO_IMAGE" || echo ".env has no JURVIO_IMAGE"; fi
+          echo "=== running jurvio containers (compose service + image ref) ==="
+          sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --format '{{.Label "com.docker.compose.service"}} {{.Image}} {{.Status}}' 2>/dev/null || echo "no docker access"
+          echo "=== disk ==="
+          df -h / | tail -n +1
+          echo "=== Spaces configuration PRESENCE on the running app (names only) ==="
+          app="$(sudo -n docker ps --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n1)"
+          if [ -n "$app" ]; then
+            sudo -n docker exec "$app" sh -lc 'for v in JURVIO_SPACES_ACCESS_KEY_ID JURVIO_SPACES_SECRET_ACCESS_KEY JURVIO_SPACES_BUCKET JURVIO_SPACES_ENDPOINT COURTLISTENER_API_TOKEN GOVINFO_API_KEY; do if [ -n "$(printenv "$v" 2>/dev/null)" ]; then echo "$v=set"; else echo "$v=unset"; fi; done'
+          fi
+          echo "=== release script present? ==="
+          ls -la /opt/jurvio/scripts 2>/dev/null | head -20 || echo "no scripts dir"
+          REMOTE
