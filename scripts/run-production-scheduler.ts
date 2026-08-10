@@ -124,10 +124,24 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/ingest-enriched-official-scotus.mjs",
       "--term=__CURRENT_SCOTUS_TERM__",
-      "--limit=100",
+      "--limit=300",
       "--resume=true",
       "--attempts=10",
     ],
+  },
+  {
+    lane: "core",
+    name: "scotus-publish",
+    initialDelayMs: 90_000,
+    intervalMs: 3 * minute,
+    // Publishes verified/approved official SCOTUS opinions ON THE BOX. This lane
+    // was previously MISSING entirely: the only thing that ever published SCOTUS
+    // was the DO_HOST `publish-official-scotus-opinions` workflow, retired in the
+    // two-server migration — which is why ~12k already-approved opinions sat
+    // unpublished for days. Publication is pure DB work (one transaction per
+    // opinion), so a large per-cycle limit is safe; it self-limits as the backlog
+    // drains and then just keeps pace with newly approved opinions.
+    command: ["jobs/publish-official-scotus-opinions.mjs", "--limit=2000"],
   },
   // Federal loops no longer carry the artificial throttle (fixed --limit=100 ceiling,
   // forced --approve-scale-up=false, and 1s/item --delay-ms). They now self-throttle via
@@ -139,41 +153,42 @@ const jobs: ScheduledJob[] = [
     lane: "core",
     name: "federal-new-cases",
     initialDelayMs: 2 * minute,
-    intervalMs: 60 * minute,
+    intervalMs: 30 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=new-case-discovery",
       "--start-concurrency=6",
-      "--max-concurrency=8",
-      "--max-items=5000",
+      "--max-concurrency=10",
+      "--max-items=10000",
     ],
   },
   {
     lane: "core",
     name: "federal-material-decisions",
     initialDelayMs: 12 * minute,
-    intervalMs: 60 * minute,
+    intervalMs: 30 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=material-decisions",
       "--start-concurrency=6",
-      "--max-concurrency=8",
-      "--max-items=5000",
+      "--max-concurrency=10",
+      "--max-items=10000",
     ],
   },
   {
     lane: "core",
     name: "federal-publication",
     initialDelayMs: 22 * minute,
-    intervalMs: 60 * minute,
-    // Publication is pure DB work (each publish opens a transaction); keep concurrency
-    // lower so it never starves the shared Postgres pool (max 10 connections).
+    intervalMs: 20 * minute,
+    // Publication is pure DB work (each publish opens a transaction). Runs 3x more
+    // often and drains up to 10k/cycle so the publish backlog (and the outbox that
+    // depends on it) keeps pace with ingestion instead of falling behind.
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=publication-quarantine",
       "--start-concurrency=4",
-      "--max-concurrency=6",
-      "--max-items=5000",
+      "--max-concurrency=8",
+      "--max-items=10000",
     ],
   },
   {
