@@ -1,6 +1,6 @@
 import { closeDb, db } from "@/db/client";
 import { ingestDirectCourtFeed } from "@/modules/ingestion/application/ingest-direct-court-feed";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import {
   FEDERAL_COURT_REGISTRY,
   federalCourtByCode,
@@ -14,9 +14,9 @@ const courts = courtCode === "all"
 if (courts.length === 0) throw new Error(`No enabled direct court feed for ${courtCode}`);
 
 const sql = db();
-const store = new LocalArtifactStore(
-  process.env.RAW_ARTIFACT_DIR ?? process.env.JURVIO_ARTIFACT_ROOT ?? ".data/raw",
-);
+const store = createArtifactStore({
+  localRoot: process.env.RAW_ARTIFACT_DIR ?? process.env.JURVIO_ARTIFACT_ROOT ?? ".data/raw",
+});
 try {
   const results = [];
   for (const court of courts) {

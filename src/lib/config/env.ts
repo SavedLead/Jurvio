@@ -13,6 +13,14 @@ const schema = z.object({
   // public site to search-engine indexing; anything else (including unset)
   // keeps the site fully noindex/nofollow. See src/lib/seo/indexing.ts.
   JURVIO_PUBLIC_LAUNCH: z.string().optional(),
+  // DigitalOcean Spaces raw-artifact store (S3-compatible). When both the access
+  // key and secret are present, raw source artifacts are written immutably to
+  // Spaces; otherwise the on-disk store is used. Read only at runtime; never logged.
+  JURVIO_SPACES_ACCESS_KEY_ID: z.string().optional(),
+  JURVIO_SPACES_SECRET_ACCESS_KEY: z.string().optional(),
+  JURVIO_SPACES_BUCKET: z.string().default("jurvio-raw-evidence"),
+  JURVIO_SPACES_ENDPOINT: z.string().url().default("https://nyc3.digitaloceanspaces.com"),
+  JURVIO_SPACES_REGION: z.string().default("nyc3"),
 });
 
 let cached: z.infer<typeof schema> | undefined;
