@@ -112,7 +112,9 @@ export async function matchJudgesToCases(
     const rows: Array<RankedJudgeCandidate | null> = candidates.slice(0, 10).length
       ? candidates.slice(0, 10) : [null];
     for (const candidate of rows) {
-      const candidateStatus = decision.acceptedJudgeId === candidate?.judgeId ? "accepted" : decision.status;
+      const candidateStatus = decision.acceptedJudgeId === candidate?.judgeId
+        ? "accepted"
+        : decision.status === "unmatched" ? "unmatched" : "needs_review";
       await sql.begin(async (tx) => {
         await tx`
           INSERT INTO judge_match_candidate (case_id, judge_id, source_artifact_id, observed_name,
