@@ -17,34 +17,51 @@ permissions:
   contents: read
   packages: write
 
-env:
-  DEPLOY_COMMIT: ${{ inputs.commit_sha || github.sha }}
-
 concurrency:
+  # THE single deploy lock for jurvio-web-01. Only one production deployment can
+  # run at a time; a second dispatch queues rather than running concurrently.
+  # cancel-in-progress:false so a queued release never kills an active one — and
+  # because GitHub keeps only the latest pending run per group, an older run can
+  # never jump ahead of a newer one. deploy-ingestion.yml no longer deploys, so
+  # this workflow is the only writer to the box and this is the only lock needed.
   group: jurvio-production
-  # A queued verified release must not replace an active production deployment.
   cancel-in-progress: false
 
 jobs:
   release-gate:
     runs-on: ubuntu-latest
     outputs:
-      current: ${{ steps.current.outputs.value }}
+      current: ${{ steps.resolve.outputs.current }}
+      deploy: ${{ steps.resolve.outputs.deploy }}
     steps:
-      - id: current
-        name: Skip superseded release
+      - id: resolve
+        name: Resolve deploy commit (always current main, never older)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CANDIDATE_SHA: ${{ env.DEPLOY_COMMIT }}
+          INPUT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
           LATEST_MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')"
-          if [ "$CANDIDATE_SHA" = "$LATEST_MAIN_SHA" ]; then
-            echo "value=true" >> "$GITHUB_OUTPUT"
-            echo "Deploying current main commit $CANDIDATE_SHA"
+          if [ -n "${INPUT_SHA:-}" ]; then
+            # A pinned commit may deploy ONLY if it is still the tip of main. This
+            # makes it impossible to (re)deploy an older or side commit — an
+            # older queued/manual run is refused here instead of overwriting a
+            # newer release.
+            if [ "$INPUT_SHA" = "$LATEST_MAIN_SHA" ]; then
+              echo "deploy=$LATEST_MAIN_SHA" >> "$GITHUB_OUTPUT"
+              echo "current=true" >> "$GITHUB_OUTPUT"
+              echo "Deploying pinned commit $INPUT_SHA (== current main)."
+            else
+              echo "current=false" >> "$GITHUB_OUTPUT"
+              echo "Refusing pinned commit $INPUT_SHA; current main is $LATEST_MAIN_SHA. Not deploying an older/other commit."
+            fi
           else
-            echo "value=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping superseded commit $CANDIDATE_SHA; current main is $LATEST_MAIN_SHA"
+            # No pin: always deploy the CURRENT tip of main, resolved now — so a
+            # queued or manual run always releases current main, never a stale
+            # dispatch-time commit.
+            echo "deploy=$LATEST_MAIN_SHA" >> "$GITHUB_OUTPUT"
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            echo "Deploying current main commit $LATEST_MAIN_SHA."
           fi
 
   build:
@@ -52,6 +69,10 @@ jobs:
     if: ${{ needs.release-gate.outputs.current == 'true' }}
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
+    env:
+      # The commit resolved by the gate (current main). All build steps below
+      # check out and tag this exact commit.
+      DEPLOY_COMMIT: ${{ needs.release-gate.outputs.deploy }}
     outputs:
       image: ${{ steps.image.outputs.value }}
     steps:
@@ -82,16 +103,43 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: build
+    needs: [release-gate, build]
     # Deploy from the fixed DigitalOcean builder network. GitHub-hosted runner
     # addresses rotate and are blocked by the production SSH firewall.
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
+    env:
+      DEPLOY_COMMIT: ${{ needs.release-gate.outputs.deploy }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_COMMIT }}
+      - id: guard
+        name: Abort if superseded by a newer main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Final safety check at the moment of release: if main advanced while
+          # this run was building, this (now-older) release must NOT overwrite
+          # the newer one. The box-mutating steps below are gated on fresh=true,
+          # so a superseded run copies nothing and swaps nothing — it just ends
+          # cleanly. The concurrency lock + latest-pending-wins already order
+          # runs; this closes the build-duration window as defence in depth.
+          # Uses the raw-SHA media type so no jq/gh is needed on the builder.
+          LATEST_MAIN_SHA="$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.sha" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/main")"
+          if [ "$DEPLOY_COMMIT" = "$LATEST_MAIN_SHA" ]; then
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+            echo "Confirmed $DEPLOY_COMMIT is still current main; releasing."
+          else
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Superseded release skipped::main advanced to $LATEST_MAIN_SHA after this release ($DEPLOY_COMMIT) was gated; skipping box changes so this older run cannot overwrite the newer release."
+          fi
       - name: Configure SSH
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
           DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
@@ -122,6 +170,7 @@ jobs:
           } > ~/.ssh/config
           chmod 600 ~/.ssh/config
       - name: Copy release controls
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -133,6 +182,7 @@ jobs:
           timeout --signal=TERM --kill-after=30s 180s scp $SSH_OPTS scripts/release-production.sh scripts/backup-production.sh "$DO_USER@$DO_HOST:/opt/jurvio/scripts/"
           timeout --signal=TERM --kill-after=30s 180s scp $SSH_OPTS ops/nginx-jurvio.conf "$DO_USER@$DO_HOST:/opt/jurvio/nginx-jurvio.conf"
       - name: Install reverse proxy configuration
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
         id: nginx
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
@@ -172,6 +222,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Authenticate image registry
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -181,6 +232,7 @@ jobs:
           SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
           printf '%s' "$GH_TOKEN" | timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" 'docker login ghcr.io -u SavedLead --password-stdin'
       - name: Release and verify
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -190,6 +242,7 @@ jobs:
           SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
           timeout --signal=TERM --kill-after=30s 1500s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
       - name: Verify hosted command-center login externally
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
           set -euo pipefail
           login_body="$(curl --fail --silent --show-error --retry 8 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
