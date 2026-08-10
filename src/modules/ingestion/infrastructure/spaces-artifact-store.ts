@@ -12,7 +12,16 @@ export interface SpacesConfig {
 
 interface FetchResponseLike {
   readonly status: number;
+  readonly headers?: { get(name: string): string | null };
   text(): Promise<string>;
+}
+
+/** Result of a read-only existence check against Spaces. */
+export interface SpacesHeadResult {
+  readonly exists: boolean;
+  readonly status: number;
+  /** The stored `x-amz-meta-content-hash` metadata, when present on the object. */
+  readonly contentHash: string | null;
 }
 type FetchLike = (
   url: string,
@@ -73,6 +82,28 @@ export class SpacesArtifactStore implements ArtifactStore {
       amzDate: amzDate(this.now()),
       extraHeaders,
     }).headers;
+  }
+
+  /**
+   * Read-only existence + content-hash check for a stored object. Used to verify
+   * that a raw artifact recorded in the database is actually present in Spaces and
+   * that its stored `x-amz-meta-content-hash` matches the normalized record's
+   * content hash. Never writes.
+   */
+  async head(objectKey: string): Promise<SpacesHeadResult> {
+    const key = sanitizeKey(objectKey);
+    const res = await this.fetch(this.url(key), {
+      method: "HEAD",
+      headers: this.sign("HEAD", key, sha256Hex("")),
+    });
+    if (res.status !== 200 && res.status !== 404) {
+      throw new Error(`Spaces HEAD ${key} failed with status ${res.status}`);
+    }
+    return {
+      exists: res.status === 200,
+      status: res.status,
+      contentHash: res.headers?.get("x-amz-meta-content-hash") ?? null,
+    };
   }
 
   async putIfAbsent(input: ArtifactWrite): Promise<{ objectKey: string }> {

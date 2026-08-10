@@ -39,3 +39,21 @@ export function createArtifactStore(opts: {
 export function spacesConfigured(env: Record<string, string | undefined> = process.env): boolean {
   return Boolean(env.JURVIO_SPACES_ACCESS_KEY_ID && env.JURVIO_SPACES_SECRET_ACCESS_KEY);
 }
+
+/**
+ * Returns the concrete Spaces store (for read-only verification such as HEAD
+ * existence checks), or null when Spaces credentials are absent. Uses the same
+ * config resolution as {@link createArtifactStore}.
+ */
+export function createSpacesArtifactStore(
+  env: Record<string, string | undefined> = process.env,
+): SpacesArtifactStore | null {
+  const accessKeyId = env.JURVIO_SPACES_ACCESS_KEY_ID;
+  const secretAccessKey = env.JURVIO_SPACES_SECRET_ACCESS_KEY;
+  if (!accessKeyId || !secretAccessKey) return null;
+  const bucket = env.JURVIO_SPACES_BUCKET ?? "jurvio-raw-evidence";
+  const endpoint = env.JURVIO_SPACES_ENDPOINT ?? "https://nyc3.digitaloceanspaces.com";
+  const host = new URL(endpoint).host;
+  const region = env.JURVIO_SPACES_REGION ?? host.split(".")[0] ?? "nyc3";
+  return new SpacesArtifactStore({ bucket, region, host, accessKeyId, secretAccessKey });
+}

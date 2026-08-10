@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatEasternDate } from "@/lib/time/eastern";
 import type { Route } from "next";
 import { db } from "@/db/client";
 import { listRecentlyUpdatedPublicCases } from "@/modules/cases/application/list-recently-updated-public-cases";
@@ -65,12 +66,7 @@ const audienceItems = [
 export const dynamic = "force-dynamic";
 
 function formatActivityDate(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(value));
+  return formatEasternDate(value);
 }
 
 export default async function HomePage() {

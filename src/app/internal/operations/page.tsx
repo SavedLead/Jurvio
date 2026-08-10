@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatEasternDateTime } from "@/lib/time/eastern";
 import type { Route } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
@@ -18,10 +19,7 @@ function count(value: number) {
 }
 
 function dateTime(value: string | null) {
-  if (!value) return "Not available";
-  return new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium", timeStyle: "short", timeZone: "UTC",
-  }).format(new Date(value)) + " UTC";
+  return formatEasternDateTime(value, "Not available");
 }
 
 function statusLabel(status: string) {

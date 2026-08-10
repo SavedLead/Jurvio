@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { formatEasternDateTime } from "@/lib/time/eastern";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { db } from "@/db/client";
@@ -43,14 +44,7 @@ function count(value: number) {
 }
 
 function dateTime(value: string | null) {
-  if (!value) return "Not yet";
-  return (
-    new Intl.DateTimeFormat("en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: "UTC",
-    }).format(new Date(value)) + " UTC"
-  );
+  return formatEasternDateTime(value, "Not yet");
 }
 
 type StatusLabel = "Live" | "Delayed" | "Stalled";

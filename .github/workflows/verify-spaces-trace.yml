@@ -1,0 +1,69 @@
+name: Verify Spaces trace (read-only, VPC route)
+
+# Read-only proof that an immutable DigitalOcean Spaces artifact traces, by
+# content hash, to its normalized and eligible (published) record. Runs on the
+# self-hosted builder, reaches the ingestion box over the private VPC, and
+# executes the bundled read-only verifier inside the running app container (so it
+# uses the app's Spaces credentials from the environment — never printed here).
+# No writes, no ingestion, no publication. Prints only the verifier's JSON.
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Only consider artifacts retrieved at/after this ISO time (optional)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-verify-spaces-trace
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SINCE: ${{ inputs.since }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run read-only Spaces trace verifier over the private VPC
+        run: |
+          set -euo pipefail
+          case "$SINCE" in ''|*[!0-9TZ:.+-]*) since_arg="";; *) since_arg="--since=$SINCE";; esac
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$since_arg" <<'REMOTE'
+          set -euo pipefail
+          since_arg="${1:-}"
+          app="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=app' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo "::error::no running jurvio app container on ingestion box"; exit 1; }
+          echo "=== Spaces trace verification (read-only) ==="
+          if [ -n "$since_arg" ]; then
+            sudo -n docker exec "$app" node jobs/verify-spaces-trace.mjs "$since_arg"
+          else
+            sudo -n docker exec "$app" node jobs/verify-spaces-trace.mjs
+          fi
+          REMOTE
