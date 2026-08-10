@@ -84,9 +84,15 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$GH_TOKEN" | ssh "$INGESTION_USER@$DB_HOST" "docker login ghcr.io -u $GITHUB_ACTOR --password-stdin"
-          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$IMAGE_LC" <<'REMOTE'
+          # IMPORTANT: the release script is written to a file on the box and then
+          # executed with stdin redirected from /dev/null. It must NOT be piped to
+          # `bash -s` over the SSH heredoc: `docker compose` reads stdin, and when
+          # the script is itself on stdin a compose command silently consumes the
+          # rest of the script, so bash hits EOF and exits 0 after only bringing up
+          # postgres (migrate/restart/verify never run, yet the step looks green).
+          ssh "$INGESTION_USER@$DB_HOST" "cat > /tmp/jurvio-release.sh" <<'REMOTE'
           set -euo pipefail
-          img="$1"
+          img="$JURVIO_RELEASE_IMAGE"
           cd /opt/jurvio
           test -s .env.production
           test -s docker-compose.production.yml
@@ -106,8 +112,15 @@ jobs:
           ok=0
           for _ in $(seq 1 40); do if curl -fsS --max-time 5 http://127.0.0.1:3000/api/ready >/dev/null 2>&1; then ok=1; break; fi; sleep 3; done
           [ "$ok" = 1 ] || { echo "::error::app did not become ready"; $C ps; exit 1; }
+          echo "=== migration state ==="
+          $C exec -T postgres psql -U jurvio -d jurvio -At \
+            -c "select count(*) || ' migrations applied; latest=' || coalesce(max(name),'none') from schema_migration" 2>/dev/null \
+            || echo "schema_migration query skipped"
           echo "=== running services ==="
           docker ps --filter 'label=com.docker.compose.project=jurvio' \
             --format '{{.Label "com.docker.compose.service"}} {{.Image}} {{.Status}}'
           echo "Release ready: $img"
           REMOTE
+          ssh "$INGESTION_USER@$DB_HOST" \
+            "JURVIO_RELEASE_IMAGE='$IMAGE_LC' bash /tmp/jurvio-release.sh; rc=\$?; rm -f /tmp/jurvio-release.sh; exit \$rc" \
+            < /dev/null
