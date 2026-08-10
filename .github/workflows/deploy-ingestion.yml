@@ -1,0 +1,113 @@
+name: Deploy ingestion (jurvio-web-01, VPC route)
+
+# Deploys the current commit's image to the ingestion box (jurvio-web-01) over
+# the private VPC from the self-hosted builder. DO_USER is in the docker group,
+# so no sudo is needed; /opt/jurvio is owned by DO_USER. Builds+pushes the image,
+# copies the current compose (which includes worker-supervisor), pulls, runs
+# migrations inside the compose network, restarts app + workers + supervisor,
+# and health-checks. Optionally activates the Spaces artifact store when its
+# credentials are present as production secrets. No PACER, no paid sources.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: jurvio-deploy-ingestion
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Build and publish image
+        run: |
+          set -euo pipefail
+          image="${IMAGE,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -t "$image" .
+          docker push "$image"
+          echo "IMAGE_LC=$image" >> "$GITHUB_ENV"
+
+      - name: Copy current compose to ingestion box
+        run: |
+          set -euo pipefail
+          scp docker-compose.production.yml "$INGESTION_USER@$DB_HOST:/opt/jurvio/docker-compose.production.yml"
+
+      - name: Activate Spaces artifact store (only if credentials are configured)
+        env:
+          SPACES_KEY: ${{ secrets.JURVIO_SPACES_ACCESS_KEY_ID }}
+          SPACES_SECRET: ${{ secrets.JURVIO_SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SPACES_KEY:-}" ] || [ -z "${SPACES_SECRET:-}" ]; then
+            echo "::warning::Spaces credentials not found as secrets JURVIO_SPACES_ACCESS_KEY_ID / JURVIO_SPACES_SECRET_ACCESS_KEY; raw artifacts stay on the local volume. Add those secret names (or tell me the real ones) to enable offsite Spaces storage."
+            exit 0
+          fi
+          ssh "$INGESTION_USER@$DB_HOST" "cat > /tmp/jurvio-spaces.env && cd /opt/jurvio && grep -v '^JURVIO_SPACES_' .env.production > /tmp/env.new || true && cat /tmp/jurvio-spaces.env >> /tmp/env.new && chmod 600 /tmp/env.new && mv /tmp/env.new .env.production && shred -u /tmp/jurvio-spaces.env && echo 'Spaces credentials written to .env.production (values not shown)'" <<ENV
+          JURVIO_SPACES_ACCESS_KEY_ID=$SPACES_KEY
+          JURVIO_SPACES_SECRET_ACCESS_KEY=$SPACES_SECRET
+          JURVIO_SPACES_BUCKET=jurvio-raw-evidence
+          JURVIO_SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
+          JURVIO_SPACES_REGION=nyc3
+          ENV
+
+      - name: Release (pull, migrate, restart app+workers+supervisor, verify)
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | ssh "$INGESTION_USER@$DB_HOST" "docker login ghcr.io -u $GITHUB_ACTOR --password-stdin"
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$IMAGE_LC" <<'REMOTE'
+          set -euo pipefail
+          img="$1"
+          cd /opt/jurvio
+          test -s .env.production
+          test -s docker-compose.production.yml
+          export JURVIO_IMAGE="$img"
+          C="docker compose -f docker-compose.production.yml"
+          echo "=== pull $img ==="
+          $C pull app worker-core worker-coa worker-supervisor
+          echo "=== postgres up + ready ==="
+          $C up -d postgres
+          for _ in $(seq 1 30); do $C exec -T postgres pg_isready -U jurvio -d jurvio >/dev/null 2>&1 && break; sleep 2; done
+          $C exec -T postgres pg_isready -U jurvio -d jurvio
+          echo "=== migrate ==="
+          $C run --rm --no-deps app node scripts/migrate.mjs
+          echo "=== up app + workers + supervisor ==="
+          $C up -d app worker-core worker-coa worker-supervisor
+          echo "=== app readiness ==="
+          ok=0
+          for _ in $(seq 1 40); do if curl -fsS --max-time 5 http://127.0.0.1:3000/api/ready >/dev/null 2>&1; then ok=1; break; fi; sleep 3; done
+          [ "$ok" = 1 ] || { echo "::error::app did not become ready"; $C ps; exit 1; }
+          echo "=== running services ==="
+          docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --format '{{.Label "com.docker.compose.service"}} {{.Image}} {{.Status}}'
+          echo "Release ready: $img"
+          REMOTE
