@@ -44,7 +44,7 @@ async function tick(): Promise<{ reaped: number; depth: number; judgeAutopilotRa
     judgeAutopilotRan = true;
     await recordHeartbeat(sql, {
       workerId: `${workerId}-judges`, lane: "judge-autopilot", status: "alive",
-      detail: judgeSnapshot,
+      detail: { ...judgeSnapshot },
     });
   }
 
