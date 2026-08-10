@@ -23,10 +23,9 @@ function isFrameworkOrAssetPath(pathname: string) {
   return pathname.startsWith("/_next/") || pathname.startsWith("/api/") ||
     pathname === "/favicon.ico" || /\.[^/]+$/.test(pathname);
 }
-function publicCommandCenterPath(pathname: string) {
-  if (pathname === "/internal") return "/";
-  if (pathname.startsWith("/internal/")) return pathname.slice("/internal".length);
-  if (pathname === "/in" || pathname.startsWith("/in/")) return pathname.slice("/in".length) || "/";
+function legacyCommandCenterPath(pathname: string) {
+  if (pathname === "/internal") return "/in";
+  if (pathname.startsWith("/internal/")) return `/in${pathname.slice("/internal".length)}`;
   return null;
 }
 
@@ -34,11 +33,17 @@ export function middleware(request: NextRequest) {
   const hosts = requestHosts(request);
   const { pathname } = request.nextUrl;
   if (hosts.has(COMMAND_CENTER_HOST)) {
-    const cleanPath = publicCommandCenterPath(pathname);
-    if (cleanPath !== null) {
+    const canonicalPath = legacyCommandCenterPath(pathname);
+    if (canonicalPath !== null) {
       const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = cleanPath;
+      redirectUrl.pathname = canonicalPath;
       return withLockdownHeaders(NextResponse.redirect(redirectUrl, 308));
+    }
+    if (pathname === "/in" || pathname.startsWith("/in/")) {
+      const rewriteUrl = request.nextUrl.clone();
+      const suffix = pathname.slice("/in".length);
+      rewriteUrl.pathname = suffix ? `/internal${suffix}` : "/internal";
+      return withLockdownHeaders(NextResponse.rewrite(rewriteUrl));
     }
     if (
       pathname === "/login" ||
