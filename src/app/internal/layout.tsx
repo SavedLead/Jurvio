@@ -9,6 +9,7 @@ import styles from "./internal.module.css";
 const navigation = [
   { href: "/internal", icon: "◫", label: "Command center" },
   { href: "/internal/operations", icon: "↻", label: "Ingestion & workers" },
+  { href: "/internal/uptime", icon: "♥", label: "Uptime & Speed" },
   { href: "/internal/ingestion-report", icon: "≣", label: "Publication X-ray" },
   { href: "/internal#sources", icon: "◎", label: "Court sources" },
   { href: "/internal#alerts", icon: "◉", label: "Case alerts" },
