@@ -1,0 +1,112 @@
+name: Ingestion ops (status / logs / restart)
+
+# Operator control for the Jurvio ingestion stack on jurvio-web-01, run entirely
+# through the self-hosted builder over the private VPC. Uses direct `sudo -n
+# docker` against containers by their compose labels, so it needs neither the
+# compose file nor JURVIO_IMAGE. Restart is scoped to a SINGLE named service —
+# it restarts only the affected component, never the whole stack. Logs are
+# sanitized of obvious secret-bearing lines. No writes to data, no ingestion.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Operation
+        required: true
+        type: choice
+        default: status
+        options: [status, logs, restart]
+      service:
+        description: Jurvio service (for logs/restart)
+        required: true
+        type: choice
+        default: app
+        options: [app, worker-core, worker-coa, worker-supervisor, postgres]
+      lines:
+        description: Log lines (for logs)
+        required: false
+        default: "200"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-ingestion-ops
+  cancel-in-progress: false
+
+jobs:
+  ops:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      ACTION: ${{ inputs.action }}
+      SERVICE: ${{ inputs.service }}
+      LINES: ${{ inputs.lines }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run operation over private VPC
+        run: |
+          set -euo pipefail
+          case "$LINES" in ''|*[!0-9]*) echo "::error::lines must be numeric"; exit 1;; esac
+          case "$SERVICE" in app|worker-core|worker-coa|worker-supervisor|postgres) ;; *) echo "::error::invalid service"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$ACTION" "$SERVICE" "$LINES" <<'REMOTE'
+          set -euo pipefail
+          ACTION="$1"; SERVICE="$2"; LINES="$3"
+          find_id() {
+            sudo -n docker ps -a \
+              --filter "label=com.docker.compose.project=jurvio" \
+              --filter "label=com.docker.compose.service=$1" \
+              --format '{{.ID}}' | head -n1
+          }
+          case "$ACTION" in
+            status)
+              echo "=== jurvio containers ==="
+              sudo -n docker ps -a \
+                --filter "label=com.docker.compose.project=jurvio" \
+                --format '{{.Label "com.docker.compose.service"}}\t{{.Status}}\t{{.Image}}'
+              echo "=== health ==="
+              for s in app worker-core worker-coa worker-supervisor postgres; do
+                id="$(find_id "$s")"
+                [ -n "$id" ] || { echo "$s: absent"; continue; }
+                h="$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$id")"
+                st="$(sudo -n docker inspect -f '{{.State.Status}}' "$id")"
+                echo "$s: state=$st health=$h"
+              done
+              ;;
+            logs)
+              id="$(find_id "$SERVICE")"
+              [ -n "$id" ] || { echo "::error::$SERVICE container not found"; exit 1; }
+              echo "=== last $LINES log lines: $SERVICE (sanitized) ==="
+              sudo -n docker logs --tail "$LINES" "$id" 2>&1 |
+                sed -E \
+                  -e 's#(postgres(ql)?://)[^[:space:]@]+@#\1<redacted>@#g' \
+                  -e 's#(DATABASE_URL|PASSWORD|TOKEN|SECRET|AUTHORIZATION|COOKIE|API_KEY|ACCESS_KEY|SECRET_ACCESS_KEY)([=:])[^[:space:]]+#\1\2<redacted>#gI'
+              ;;
+            restart)
+              id="$(find_id "$SERVICE")"
+              [ -n "$id" ] || { echo "::error::$SERVICE container not found"; exit 1; }
+              echo "Restarting only: $SERVICE ($id)"
+              sudo -n docker restart --time 30 "$id" >/dev/null
+              sleep 3
+              echo "state=$(sudo -n docker inspect -f '{{.State.Status}}' "$id") health=$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$id")"
+              ;;
+          esac
+          REMOTE
