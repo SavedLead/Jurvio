@@ -1,0 +1,61 @@
+name: Repair builder runner once
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+    steps:
+      - name: Temporarily allow SSH and restart runner service
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          droplet_id="$(jq -r '.droplets[] | select(.name=="jurvio-builder-01") | .id' <<<"$droplets" | head -1)"
+          public_ip="$(jq -r '.droplets[] | select(.name=="jurvio-builder-01") | .networks.v4[] | select(.type=="public") | .ip_address' <<<"$droplets" | head -1)"
+          test -n "$droplet_id" && test -n "$public_ip"
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          firewall="$(jq -c --argjson id "$droplet_id" '.firewalls[] | select((.droplet_ids // []) | index($id))' <<<"$firewalls" | head -1)"
+          firewall_id="$(jq -r '.id' <<<"$firewall")"
+          test -n "$firewall_id" && test "$firewall_id" != null
+          original="$(jq '{name,inbound_rules,outbound_rules,droplet_ids,tags}' <<<"$firewall")"
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+          temporary="$(jq --arg source "$runner_ip/32" '.inbound_rules += [{"protocol":"tcp","ports":"22","sources":{"addresses":[$source]}}]' <<<"$original")"
+          restore() {
+            curl -fsS -X PUT "${auth[@]}" "$api/firewalls/$firewall_id" -d "$original" >/dev/null || true
+          }
+          trap restore EXIT
+          curl -fsS -X PUT "${auth[@]}" "$api/firewalls/$firewall_id" -d "$temporary" >/dev/null
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          for _ in $(seq 1 12); do
+            ssh-keyscan -T 5 -H "$public_ip" > ~/.ssh/known_hosts 2>/dev/null && break
+            sleep 5
+          done
+          ssh -o BatchMode=yes -o ConnectTimeout=15 root@"$public_ip" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          service="$(systemctl list-unit-files --type=service --no-legend | awk '/actions\.runner|github.*runner/ {print $1; exit}')"
+          if [ -n "$service" ]; then
+            systemctl enable "$service"
+            systemctl restart "$service"
+            systemctl is-active "$service"
+          elif [ -x /opt/actions-runner/svc.sh ]; then
+            cd /opt/actions-runner
+            ./svc.sh install root || true
+            ./svc.sh start
+          else
+            echo "GitHub runner service not found" >&2
+            exit 1
+          fi
+          REMOTE
+          echo "Builder runner service repaired; firewall restored by trap."
