@@ -98,6 +98,31 @@ services:
       - jurvio_artifacts:/var/lib/jurvio/artifacts
     networks: [private]
 
+  worker-supervisor:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    command: ["node", "jobs/run-ingestion-supervisor.mjs"]
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    # Health is the supervisor liveness heartbeat file (refreshed every tick),
+    # not an HTTP endpoint — same pattern as the scheduler workers.
+    healthcheck:
+      test: ["CMD-SHELL", "hb=$$(cat /var/lib/jurvio/artifacts/scheduler/supervisor.alive 2>/dev/null || echo 0); [ $$(( $$(date +%s) - hb )) -lt 180 ]"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
 volumes:
   jurvio_postgres:
   jurvio_artifacts:
