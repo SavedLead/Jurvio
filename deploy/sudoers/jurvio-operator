@@ -1,0 +1,45 @@
+# /etc/sudoers.d/jurvio-operator
+#
+# Least-privilege passwordless sudo for the Jurvio operator account (the Linux
+# user that the private-VPC operator workflows authenticate as on jurvio-web-01,
+# i.e. secrets.DO_USER) so deploys, service status/logs/restart, migrations, and
+# read-only verification can run through the self-hosted builder WITHOUT
+# unrestricted root, a login shell, server passwords, or NOPASSWD: ALL.
+#
+# Install (one time, as root, edited to the real operator user in place of
+# jurvio-operator):
+#   visudo -cf deploy/sudoers/jurvio-operator     # validate first
+#   install -m 0440 -o root -g root deploy/sudoers/jurvio-operator /etc/sudoers.d/jurvio-operator
+#
+# SCOPE NOTE (honest): access to the Docker daemon is inherently root-equivalent
+# on the host, so the meaningful restriction here is limiting this account to the
+# docker/compose binaries and a tiny set of read-only systemctl status calls —
+# NOT granting arbitrary root. There is no shell escape granted, no editor, no
+# package manager, no filesystem write outside Docker. Operator workflows never
+# request more than these commands.
+
+# The operator user. Replace with the real account if it differs.
+User_Alias JURVIO_OPERATORS = jurvio-operator
+
+# Container lifecycle + read-only inspection for the Jurvio stack.
+Cmnd_Alias JURVIO_DOCKER = \
+    /usr/bin/docker ps, /usr/bin/docker ps *, \
+    /usr/bin/docker inspect *, \
+    /usr/bin/docker logs *, \
+    /usr/bin/docker exec *, \
+    /usr/bin/docker restart *, \
+    /usr/bin/docker pull *, \
+    /usr/bin/docker run *, \
+    /usr/bin/docker cp *, \
+    /usr/bin/docker image prune *, \
+    /usr/bin/docker builder prune *, \
+    /usr/bin/docker compose *
+
+# Read-only service status for the host units the operator may inspect.
+Cmnd_Alias JURVIO_SYSTEMD_RO = \
+    /usr/bin/systemctl is-active *, \
+    /usr/bin/systemctl is-enabled *, \
+    /usr/bin/systemctl status *, \
+    /usr/bin/systemctl show *
+
+JURVIO_OPERATORS ALL=(root) NOPASSWD: JURVIO_DOCKER, JURVIO_SYSTEMD_RO
