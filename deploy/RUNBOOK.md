@@ -8,7 +8,7 @@ GitHub Actions builder over the private VPC — no direct console access require
 
 | Host | Role | Reached by |
 |---|---|---|
-| `jurvio-web-01` (VPC `10.116.0.2`) | Ingestion + PostgreSQL + raw artifacts. Runs `postgres`, `app`, `worker-core`, `worker-coa`, `worker-supervisor` via `docker-compose.production.yml` in `/opt/jurvio`. | self-hosted builder → `DO_USER@10.116.0.2` (private VPC), `sudo -n docker` |
+| `jurvio-web-01` (VPC `10.116.0.2`) | Ingestion + PostgreSQL + raw artifacts. Runs `postgres`, `app`, `worker-core`, `worker-coa`, `worker-entities`, `worker-supervisor` via `docker-compose.production.yml` in `/opt/jurvio`. | self-hosted builder → `DO_USER@10.116.0.2` (private VPC), `sudo -n docker` |
 | `jurvio-public-01` | Isolated public Next.js (`docker-compose.public.yml`); artifacts read-only over NFS; DB over VPC. Sitewide `noindex`; `JURVIO_PUBLIC_LAUNCH` disabled. | `deploy-public-web.yml` |
 | `jurvio-builder-01` | Self-hosted Actions runner + SSH bastion for the VPC. | GitHub Actions (`[self-hosted, jurvio, builder, trusted]`) |
 
@@ -36,7 +36,7 @@ service; persistence is a one-time setup.
 | `ingestion-status.yml` | Read-only corpus + 108-court fleet report (live DB evidence). |
 | `operator-audit.yml` | Read-only inventory: runner user, sudo allowlist, compose layout, containers, disk, Spaces/creds presence. |
 | `ingestion-ops.yml` | `status` / `logs` / `restart` a single Jurvio service (direct `sudo -n docker`; restart is scoped, never whole-stack). |
-| `deploy-ingestion.yml` | Build + push image, deploy to `jurvio-web-01`, run migrations, restart workers, health-check. |
+| `deploy-ingestion.yml` | Build + push image, deploy to `jurvio-web-01`, run migrations, restart the independent case, appellate, and entity workers, health-check. |
 | `federal-ingestion.yml` / `direct-court-ingestion.yml` / `appellate-ingestion.yml` | Ingestion cycles over the VPC route. |
 | `outbox-maintenance.yml` | Drain + prune the outbox (daily + on demand). |
 
@@ -53,7 +53,7 @@ shell, no `NOPASSWD: ALL`. Validate with `visudo -cf` then install to
 2. Dispatch `deploy-ingestion.yml`. It builds the image, pushes to GHCR, pulls on
    `jurvio-web-01`, runs `scripts/migrate.mjs` in the compose network, and
    `docker compose up -d` for `app`, `worker-core`, `worker-coa`,
-   `worker-supervisor`, then health-checks `/api/ready`.
+   `worker-entities`, `worker-supervisor`, then health-checks `/api/ready`.
 3. Verify with `ingestion-status.yml`.
 
 Rollback: re-deploy the previous image tag; migrations are additive and forward-only.
@@ -64,6 +64,15 @@ Every stack service is `restart: unless-stopped`; Docker is enabled on boot, so
 the full stack (including `worker-supervisor`) resumes automatically after a
 reboot. The durable job queue (`ingestion_job`) preserves in-flight work; the
 supervisor reaps any lease abandoned across the reboot.
+
+## General ingestion lanes
+
+- `worker-core`: heavy federal and state case discovery, documents, publication, and future PDF-to-text work.
+- `worker-coa`: appellate-source ingestion and backfills.
+- `worker-entities`: lightweight structured data such as judges, lawyers, law firms, legislators, agencies, and future entity catalogs.
+- `worker-supervisor`: shared health, lease recovery, backpressure, and repair reporting.
+
+These are independent long-running server processes. Heavy case/PDF work cannot occupy the entity scheduler, and routine entity refreshes do not block builds or production deployment.
 
 ## Self-repair (supervisor)
 
