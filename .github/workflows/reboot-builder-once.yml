@@ -1,5 +1,7 @@
 name: Reboot builder once
 
+# Second bounded recovery: release obsolete frozen CI and allow production deploy.
+
 # Hosted (ubuntu-latest) helper that power-cycles jurvio-builder-01 via the
 # DigitalOcean API. Inbound SSH to the builder is firewalled, so the only way
 # to run anything on it is a self-hosted job; but the runner exits after one
