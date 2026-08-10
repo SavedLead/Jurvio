@@ -36,7 +36,9 @@ service; persistence is a one-time setup.
 | `ingestion-status.yml` | Read-only corpus + 108-court fleet report (live DB evidence). |
 | `operator-audit.yml` | Read-only inventory: runner user, sudo allowlist, compose layout, containers, disk, Spaces/creds presence. |
 | `ingestion-ops.yml` | `status` / `logs` / `restart` a single Jurvio service (direct `sudo -n docker`; restart is scoped, never whole-stack). |
-| `deploy-ingestion.yml` | Build + push image, deploy to `jurvio-web-01`, run migrations, restart workers, health-check. |
+| `deploy-production.yml` | **The single authoritative production deploy for `jurvio-web-01`.** Concurrency-locked (`jurvio-production`, one at a time); the release gate always resolves the current tip of `main` and refuses any older/other commit, and a pre-release guard skips the box changes if `main` advanced during the build — so an older run can never overwrite a newer release. |
+| `deploy-ingestion.yml` | **Retired as a release path** — build-only preflight (`docker build`, no push, never touches the box). Use `deploy-production.yml` to release. |
+| `verify-spaces-trace.yml` | Read-only: proves a Spaces artifact traces by content hash to a published record. |
 | `federal-ingestion.yml` / `direct-court-ingestion.yml` / `appellate-ingestion.yml` | Ingestion cycles over the VPC route. |
 | `outbox-maintenance.yml` | Drain + prune the outbox (daily + on demand). |
 
@@ -49,12 +51,23 @@ shell, no `NOPASSWD: ALL`. Validate with `visudo -cf` then install to
 
 ## Deploy
 
+Production releases to `jurvio-web-01` go through **`deploy-production.yml` only**
+— it is the single authoritative pipeline for the box. `deploy-ingestion.yml` no
+longer deploys (build-only preflight).
+
 1. Merge to `main` (CI `verify` must pass: lint, typecheck, test, `build:jobs`, build).
-2. Dispatch `deploy-ingestion.yml`. It builds the image, pushes to GHCR, pulls on
-   `jurvio-web-01`, runs `scripts/migrate.mjs` in the compose network, and
-   `docker compose up -d` for `app`, `worker-core`, `worker-coa`,
-   `worker-supervisor`, then health-checks `/api/ready`.
+2. Dispatch `deploy-production.yml` (no input needed — it always deploys the
+   current tip of `main`; a pinned `commit_sha` is accepted only if it equals
+   current `main`). It builds+pushes the image, copies the compose/release
+   controls, runs `release-production.sh` (migrate + `docker compose up -d`),
+   refreshes nginx, and verifies the hosted login.
 3. Verify with `ingestion-status.yml`.
+
+**Safety guarantees:** the `jurvio-production` concurrency lock allows only one
+deploy at a time; the release gate always resolves current `main` and refuses an
+older/other commit; and a pre-release guard skips all box changes if `main`
+advanced during the build. Together these ensure an older or queued run can never
+overwrite a newer production release.
 
 Rollback: re-deploy the previous image tag; migrations are additive and forward-only.
 
@@ -83,7 +96,7 @@ credentials until the $0 enforcement tests pass (they do).
 ## Backup / restore
 
 - PostgreSQL: `scripts/backup-production.sh` (`pg_dump | gzip`, retains 2). Restore:
-  load a dump into a fresh `postgres` volume, then `deploy-ingestion` to migrate.
+  load a dump into a fresh `postgres` volume, then `deploy-production` to migrate.
 - Artifacts: immutable in Spaces (`jurvio-raw-evidence`); recovery = re-fetch by
   content-addressed key and verify the stored `x-amz-meta-content-hash`.
 

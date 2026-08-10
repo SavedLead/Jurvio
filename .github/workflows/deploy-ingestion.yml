@@ -1,126 +1,42 @@
-name: Deploy ingestion (jurvio-web-01, VPC route)
+name: Build image preflight (no deploy)
 
-# Deploys the current commit's image to the ingestion box (jurvio-web-01) over
-# the private VPC from the self-hosted builder. DO_USER is in the docker group,
-# so no sudo is needed; /opt/jurvio is owned by DO_USER. Builds+pushes the image,
-# copies the current compose (which includes worker-supervisor), pulls, runs
-# migrations inside the compose network, restarts app + workers + supervisor,
-# and health-checks. Optionally activates the Spaces artifact store when its
-# credentials are present as production secrets. No PACER, no paid sources.
+# RETIRED as a production release path. Production releases to jurvio-web-01 go
+# through deploy-production.yml ONLY — that is the single authoritative pipeline
+# for the ingestion box, with the `jurvio-production` deploy lock and the
+# current-main release gate. This workflow no longer copies compose, writes
+# secrets, restarts services, or touches the box in any way. It only builds the
+# image for a commit as a pre-release sanity check, so a broken build is caught
+# before a real release is dispatched. It never pushes and never connects to the
+# ingestion box.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (defaults to the current branch)"
+        required: false
+        type: string
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: jurvio-deploy-ingestion
-  cancel-in-progress: false
+  # Deliberately NOT the production deploy lock. This build check must never
+  # queue behind or block a real release, and it cannot deploy.
+  group: jurvio-image-preflight-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
-    environment: production
     timeout-minutes: 30
-    env:
-      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
-      INGESTION_USER: ${{ secrets.DO_USER }}
-      DB_HOST: 10.116.0.2
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure SSH
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Build the production image (no push, no deploy)
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          cat > ~/.ssh/config <<'CFG'
-          Host *
-            IdentityFile ~/.ssh/id_ed25519
-            BatchMode yes
-            ConnectTimeout 15
-            StrictHostKeyChecking accept-new
-          CFG
-          chmod 600 ~/.ssh/config
-
-      - name: Build and publish image
-        run: |
-          set -euo pipefail
-          image="${IMAGE,,}"
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker build -t "$image" .
-          docker push "$image"
-          echo "IMAGE_LC=$image" >> "$GITHUB_ENV"
-
-      - name: Copy current compose to ingestion box
-        run: |
-          set -euo pipefail
-          scp docker-compose.production.yml "$INGESTION_USER@$DB_HOST:/opt/jurvio/docker-compose.production.yml"
-
-      - name: Activate Spaces artifact store (only if credentials are configured)
-        env:
-          SPACES_KEY: ${{ secrets.JURVIO_SPACES_ACCESS_KEY_ID }}
-          SPACES_SECRET: ${{ secrets.JURVIO_SPACES_SECRET_ACCESS_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SPACES_KEY:-}" ] || [ -z "${SPACES_SECRET:-}" ]; then
-            echo "::warning::Spaces credentials not found as secrets JURVIO_SPACES_ACCESS_KEY_ID / JURVIO_SPACES_SECRET_ACCESS_KEY; raw artifacts stay on the local volume. Add those secret names (or tell me the real ones) to enable offsite Spaces storage."
-            exit 0
-          fi
-          ssh "$INGESTION_USER@$DB_HOST" "cat > /tmp/jurvio-spaces.env && cd /opt/jurvio && grep -v '^JURVIO_SPACES_' .env.production > /tmp/env.new || true && cat /tmp/jurvio-spaces.env >> /tmp/env.new && chmod 600 /tmp/env.new && mv /tmp/env.new .env.production && shred -u /tmp/jurvio-spaces.env && echo 'Spaces credentials written to .env.production (values not shown)'" <<ENV
-          JURVIO_SPACES_ACCESS_KEY_ID=$SPACES_KEY
-          JURVIO_SPACES_SECRET_ACCESS_KEY=$SPACES_SECRET
-          JURVIO_SPACES_BUCKET=jurvio-raw-evidence
-          JURVIO_SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
-          JURVIO_SPACES_REGION=nyc3
-          ENV
-
-      - name: Release (pull, migrate, restart app+workers+supervisor, verify)
-        run: |
-          set -euo pipefail
-          printf '%s' "$GH_TOKEN" | ssh "$INGESTION_USER@$DB_HOST" "docker login ghcr.io -u $GITHUB_ACTOR --password-stdin"
-          # IMPORTANT: the release script is written to a file on the box and then
-          # executed with stdin redirected from /dev/null. It must NOT be piped to
-          # `bash -s` over the SSH heredoc: `docker compose` reads stdin, and when
-          # the script is itself on stdin a compose command silently consumes the
-          # rest of the script, so bash hits EOF and exits 0 after only bringing up
-          # postgres (migrate/restart/verify never run, yet the step looks green).
-          ssh "$INGESTION_USER@$DB_HOST" "cat > /tmp/jurvio-release.sh" <<'REMOTE'
-          set -euo pipefail
-          img="$JURVIO_RELEASE_IMAGE"
-          cd /opt/jurvio
-          test -s .env.production
-          test -s docker-compose.production.yml
-          export JURVIO_IMAGE="$img"
-          C="docker compose -f docker-compose.production.yml"
-          echo "=== pull $img ==="
-          $C pull app worker-core worker-coa worker-supervisor
-          echo "=== postgres up + ready ==="
-          $C up -d postgres
-          for _ in $(seq 1 30); do $C exec -T postgres pg_isready -U jurvio -d jurvio >/dev/null 2>&1 && break; sleep 2; done
-          $C exec -T postgres pg_isready -U jurvio -d jurvio
-          echo "=== migrate ==="
-          $C run --rm --no-deps app node scripts/migrate.mjs
-          echo "=== up app + workers + supervisor ==="
-          $C up -d app worker-core worker-coa worker-supervisor
-          echo "=== app readiness ==="
-          ok=0
-          for _ in $(seq 1 40); do if curl -fsS --max-time 5 http://127.0.0.1:3000/api/ready >/dev/null 2>&1; then ok=1; break; fi; sleep 3; done
-          [ "$ok" = 1 ] || { echo "::error::app did not become ready"; $C ps; exit 1; }
-          echo "=== migration state ==="
-          $C exec -T postgres psql -U jurvio -d jurvio -At \
-            -c "select count(*) || ' migrations applied; latest=' || coalesce(max(name),'none') from schema_migration" 2>/dev/null \
-            || echo "schema_migration query skipped"
-          echo "=== running services ==="
-          docker ps --filter 'label=com.docker.compose.project=jurvio' \
-            --format '{{.Label "com.docker.compose.service"}} {{.Image}} {{.Status}}'
-          echo "Release ready: $img"
-          REMOTE
-          ssh "$INGESTION_USER@$DB_HOST" \
-            "JURVIO_RELEASE_IMAGE='$IMAGE_LC' bash /tmp/jurvio-release.sh; rc=\$?; rm -f /tmp/jurvio-release.sh; exit \$rc" \
-            < /dev/null
+          echo "Preflight build only — production releases go through deploy-production.yml."
+          docker build -t jurvio-preflight:${{ github.sha }} .
+          echo "Image built successfully for ${{ github.sha }} (not pushed, not deployed)."
