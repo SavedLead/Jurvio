@@ -8,6 +8,7 @@ import {
   recordRepairAction,
 } from "@/modules/ingestion/application/pg-job-queue";
 import { isQueueGrowthAnomalous } from "@/modules/ingestion/domain/job-scheduling";
+import { runJudgeAutopilot } from "@/modules/judges/application/judge-autopilot";
 
 // Server-resident supervisor for the durable ingestion job queue. Runs as its
 // own container/service with restart: unless-stopped, so it survives crashes and
@@ -29,10 +30,23 @@ const workerId = process.env.SUPERVISOR_ID ?? `supervisor-${process.pid}`;
 const intervalMs = Number(process.env.SUPERVISOR_INTERVAL_MS ?? 30_000);
 const queueThreshold = Number(process.env.SUPERVISOR_QUEUE_THRESHOLD ?? 50_000);
 const once = process.argv.includes("--once");
+const judgeAutopilotIntervalMs = Number(process.env.JUDGE_AUTOPILOT_INTERVAL_MS ?? 5 * 60_000);
+let lastJudgeAutopilotAt = 0;
 
-async function tick(): Promise<{ reaped: number; depth: number }> {
+async function tick(): Promise<{ reaped: number; depth: number; judgeAutopilotRan: boolean }> {
   writeFileSync(heartbeatFile, String(Math.floor(Date.now() / 1000)));
   await recordHeartbeat(sql, { workerId, lane: "supervisor" });
+
+  let judgeAutopilotRan = false;
+  if (Date.now() - lastJudgeAutopilotAt >= judgeAutopilotIntervalMs) {
+    lastJudgeAutopilotAt = Date.now();
+    const judgeSnapshot = await runJudgeAutopilot(sql);
+    judgeAutopilotRan = true;
+    await recordHeartbeat(sql, {
+      workerId: `${workerId}-judges`, lane: "judge-autopilot", status: "alive",
+      detail: { ...judgeSnapshot },
+    });
+  }
 
   const reaped = await reapExpiredLeases(sql);
   if (reaped > 0) {
@@ -58,7 +72,7 @@ async function tick(): Promise<{ reaped: number; depth: number }> {
     });
   }
 
-  return { reaped, depth };
+  return { reaped, depth, judgeAutopilotRan };
 }
 
 if (once) {

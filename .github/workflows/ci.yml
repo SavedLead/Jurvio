@@ -17,13 +17,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref == 'agent/judge-autopilot-control-loop' && github.sha || 'standard' }}
   cancel-in-progress: true
 
 jobs:
   verify:
-    # Fork PRs stay on isolated GitHub-hosted runners; only Jurvio-owned code reaches the persistent builder.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'self-hosted' }}
+    # Fork PRs and the bounded Judge Autopilot recovery validation use isolated hosted runners.
+    # Main and all ordinary Jurvio-owned PRs remain on the self-hosted builder.
+    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.head_ref == 'agent/judge-autopilot-control-loop')) && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 20
     env:
       DATABASE_URL: postgresql://jurvio:jurvio@localhost:5432/jurvio
