@@ -6,6 +6,7 @@
 .caseMeta dt, .railFacts dt { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
 .caseMeta dd, .railFacts dd { margin: 5px 0 0; overflow-wrap: anywhere; color: var(--ink); font-weight: 700; }
 .caseWorkspace { display: grid; grid-template-columns: minmax(150px, 190px) minmax(0, 1fr) minmax(220px, 260px); gap: clamp(24px, 3.2vw, 52px); align-items: start; margin-top: 42px; }
+.caseWorkspaceNoRail { grid-template-columns: minmax(150px, 190px) minmax(0, 1fr); max-width: 1080px; }
 .caseWorkspaceNav, .caseProvenanceRail { position: sticky; top: 98px; min-width: 0; }
 .caseWorkspaceMain { min-width: 0; }
 .caseWorkspaceNav .caseNavDesktop { display: grid; gap: 4px; margin: 0; padding: 0 0 24px; overflow: visible; border-bottom: 1px solid var(--border); }
@@ -38,8 +39,6 @@
 .featureHeading > div { min-width: 0; }
 .featureHeading .sectionKicker { margin: 0 0 5px; }
 .featureHeading h2 { margin: 0; font-size: clamp(25px, 3vw, 34px); line-height: 1.15; }
-.featureBadge { display: inline-flex; flex: 0 0 auto; min-width: 38px; min-height: 38px; align-items: center; justify-content: center; border-radius: 9px; background: #eaf1ff; color: var(--brand); font-size: 15px; font-weight: 850; }
-.featureBadgeWide { min-width: 54px; padding: 0 8px; }
 .decisionHeading { align-items: center; }
 .decisionLabel { margin-left: auto; color: var(--brand); font-size: 18px; white-space: nowrap; }
 .verifiedDetail { margin: 0; color: #344055; text-transform: capitalize; }
@@ -115,7 +114,6 @@
   .caseLeadSection.caseFeatureSection { padding-top: 4px; }
   .featureHeading { gap: 11px; margin-bottom: 16px; }
   .featureHeading h2 { font-size: clamp(25px, 7.2vw, 31px); }
-  .featureBadge { min-width: 36px; min-height: 36px; }
   .decisionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr); }
   .decisionLabel { grid-column: 2; margin: -8px 0 0; white-space: normal; }
   .caseMilestones li { grid-template-columns: minmax(105px, auto) 1fr; gap: 12px; }
