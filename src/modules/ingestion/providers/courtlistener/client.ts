@@ -53,6 +53,10 @@ function headers(useConfiguredApiToken: boolean): HeadersInit {
 
 async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
   const maximumAttempts = 4;
+  // CourtListener's bulk docket/opinion-cluster queries can be slow; a 30s abort
+  // was tripping on legitimately-heavy pages and crashing the lane. Allow a longer
+  // per-request budget (env-overridable) and treat a timeout as retryable below.
+  const timeoutMs = Number.parseInt(process.env.COURTLISTENER_TIMEOUT_MS ?? "60000", 10);
   // Token fallback is scoped to THIS request. A single transient 401 must not
   // permanently downgrade the whole worker to unauthenticated access, which
   // would silently throttle every later request until a restart. Each new
@@ -61,10 +65,25 @@ async function retrieve(url: URL): Promise<{ response: Response; body: string }>
   let useConfiguredApiToken = Boolean(env().COURTLISTENER_API_TOKEN);
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
     const sentConfiguredToken = useConfiguredApiToken;
-    const response = await fetch(url, {
-      headers: headers(useConfiguredApiToken),
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: headers(useConfiguredApiToken),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      // A fetch-level rejection (request timeout via AbortSignal, or a DNS/socket
+      // error) is transient. Retry with backoff instead of failing the lane; only
+      // surface it after exhausting attempts, with the shared "CourtListener request
+      // failed:" prefix so callers can degrade gracefully rather than crash-loop.
+      if (attempt === maximumAttempts) {
+        throw new Error(
+          `CourtListener request failed: network ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, courtListenerRetryDelayMs(null, attempt)));
+      continue;
+    }
     if (response.ok) return { response, body: await response.text() };
     if (response.status === 401 && sentConfiguredToken) {
       useConfiguredApiToken = false;
