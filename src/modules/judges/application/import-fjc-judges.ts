@@ -93,7 +93,7 @@ async function artifact(sql: Sql, url: string, content: string, artifactRoot: st
   const [stored] = await sql<{ id: string }[]>`
     INSERT INTO raw_artifact (provider_id, source_uri, content_hash, object_key, media_type, retrieved_at)
     VALUES (${provider.id}, ${url}, ${hash}, ${objectKey}, 'text/csv', now())
-    ON CONFLICT (provider_id, content_hash) DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
+    ON CONFLICT (provider_id, source_uri, content_hash) DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
     RETURNING id
   `;
   if (!stored) throw new Error("FJC artifact was not persisted");

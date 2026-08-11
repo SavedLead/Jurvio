@@ -291,18 +291,36 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
     // durable cursor advances, so a crash never skips an unprocessed page (upserts are
     // idempotent, so at-least-once re-processing is safe). We keep going until the source
     // window is exhausted OR the runaway safety bound is reached.
+    let courtlistenerUnauthorized = false;
     while (discovered < runawayItemLimit) {
-      const page = await fetchDocketPage(kind === "historical-backfill"
-        ? {
-            filedAfter: checkpoint.windowStart.slice(0, 10),
-            filedBefore: checkpoint.windowEnd.slice(0, 10),
-            cursor: next ?? undefined,
-          }
-        : {
-            modifiedAfter: checkpoint.windowStart,
-            modifiedBefore: checkpoint.windowEnd,
-            cursor: next ?? undefined,
-          });
+      let page: Awaited<ReturnType<typeof fetchDocketPage>>;
+      try {
+        page = await fetchDocketPage(kind === "historical-backfill"
+          ? {
+              filedAfter: checkpoint.windowStart.slice(0, 10),
+              filedBefore: checkpoint.windowEnd.slice(0, 10),
+              cursor: next ?? undefined,
+            }
+          : {
+              modifiedAfter: checkpoint.windowStart,
+              modifiedBefore: checkpoint.windowEnd,
+              cursor: next ?? undefined,
+            });
+      } catch (error) {
+        // CourtListener's docket API requires authentication. Without a valid
+        // COURTLISTENER_API_TOKEN on the box every request 401s; treat that as a clean
+        // "nothing to do this cycle" and stop WITHOUT advancing the cursor, so ingestion
+        // resumes from the same window once the token is set — instead of crash-looping
+        // the lane (exit 1) every cycle.
+        if (error instanceof Error && /CourtListener request failed: 401/.test(error.message)) {
+          process.stderr.write(
+            "CourtListener docket API returned 401 (authentication required); set COURTLISTENER_API_TOKEN to enable federal docket ingestion. Ending this cycle cleanly.\n",
+          );
+          courtlistenerUnauthorized = true;
+          break;
+        }
+        throw error;
+      }
       sourceTotal ??= page.total;
       if (page.records.length === 0) {
         next = null;
@@ -316,6 +334,30 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
       next = page.next;
       await writeCheckpoint(streamName, { ...checkpoint, next });
       if (!next) break;
+    }
+
+    if (courtlistenerUnauthorized) {
+      // Preserve the cursor unchanged so no window is skipped while unauthenticated.
+      await writeCheckpoint(streamName, checkpoint);
+      await finishIngestionRun(sql, runId);
+      return {
+        loop: kind,
+        runId,
+        discovered,
+        inserted,
+        updated,
+        duplicated: 0,
+        held,
+        failed,
+        docketEntries,
+        documents,
+        sourceTotal: sourceTotal ?? null,
+        checkpoint,
+        finalConcurrency: controllerState.concurrency,
+        remainingEstimate: null,
+        costs: 0,
+        courtlistenerUnauthorized: true,
+      };
     }
 
     const completedWindow = next === null;
