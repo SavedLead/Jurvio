@@ -13,7 +13,7 @@ START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-180}
 diagnose() {
   printf '\n--- production release diagnostics ---\n' >&2
   docker compose -f "$COMPOSE" ps >&2 || true
-  docker compose -f "$COMPOSE" logs --tail=150 app worker-core worker-coa postgres >&2 || true
+  docker compose -f "$COMPOSE" logs --tail=150 app worker-core worker-coa worker-entities worker-supervisor worker-entities worker-supervisor postgres >&2 || true
 }
 
 fail() {
@@ -61,7 +61,7 @@ if docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
 fi
 
 export JURVIO_IMAGE="$NEW_IMAGE"
-run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa
+run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa worker-entities worker-supervisor
 run_with_timeout "Postgres startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d postgres
 
 # Readiness guard: a release must not proceed to replace the app/workers if
@@ -88,7 +88,7 @@ done
 [ "$DATABASE_READY" -eq 1 ] || fail "Database readiness failed before migration"
 
 run_with_timeout "Database migration" "$MIGRATION_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" run --rm --no-deps app node scripts/migrate.mjs
-run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker-core worker-coa
+run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker-core worker-coa worker-entities worker-supervisor
 
 READY=0
 for attempt in $(seq 1 30); do
@@ -108,7 +108,7 @@ fi
 printf 'Readiness failed for %s\n' "$NEW_IMAGE" >&2
 if [ -n "$PREVIOUS_IMAGE" ]; then
   export JURVIO_IMAGE="$PREVIOUS_IMAGE"
-  docker compose -f "$COMPOSE" up -d app worker-core worker-coa || true
+  docker compose -f "$COMPOSE" up -d app worker-core worker-coa worker-entities worker-supervisor || true
   printf 'Application and worker rolled back to %s\n' "$PREVIOUS_IMAGE" >&2
 fi
 diagnose

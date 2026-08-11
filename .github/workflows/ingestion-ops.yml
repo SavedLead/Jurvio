@@ -21,7 +21,7 @@ on:
         required: true
         type: choice
         default: app
-        options: [app, worker-core, worker-coa, worker-supervisor, postgres]
+        options: [app, worker-core, worker-coa, worker-entities, worker-supervisor, postgres]
       lines:
         description: Log lines (for logs)
         required: false
@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$LINES" in ''|*[!0-9]*) echo "::error::lines must be numeric"; exit 1;; esac
-          case "$SERVICE" in app|worker-core|worker-coa|worker-supervisor|postgres) ;; *) echo "::error::invalid service"; exit 1;; esac
+          case "$SERVICE" in app|worker-core|worker-coa|worker-entities|worker-supervisor|postgres) ;; *) echo "::error::invalid service"; exit 1;; esac
           ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$ACTION" "$SERVICE" "$LINES" <<'REMOTE'
           set -euo pipefail
           ACTION="$1"; SERVICE="$2"; LINES="$3"
@@ -83,7 +83,7 @@ jobs:
                 --filter "label=com.docker.compose.project=jurvio" \
                 --format '{{.Label "com.docker.compose.service"}}\t{{.Status}}\t{{.Image}}'
               echo "=== health ==="
-              for s in app worker-core worker-coa worker-supervisor postgres; do
+              for s in app worker-core worker-coa worker-entities worker-supervisor postgres; do
                 id="$(find_id "$s")"
                 [ -n "$id" ] || { echo "$s: absent"; continue; }
                 h="$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$id")"

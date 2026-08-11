@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-type SchedulerLane = "coa" | "core";
+type SchedulerLane = "coa" | "core" | "entities";
 
 type ScheduledJob = {
   lane: SchedulerLane;
@@ -27,14 +27,14 @@ function currentScotusTerm(): string {
 
 const jobs: ScheduledJob[] = [
   {
-    lane: "core",
+    lane: "entities",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
     intervalMs: 15 * minute,
     command: ["jobs/match-judges.mjs", "--limit=5000"],
   },
   {
-    lane: "core",
+    lane: "entities",
     name: "fjc-judge-roster",
     initialDelayMs: 3 * minute,
     intervalMs: 24 * 60 * minute,
@@ -220,8 +220,8 @@ const jobs: ScheduledJob[] = [
 ];
 
 const configuredLane = process.env.JURVIO_SCHEDULER_LANE ?? "core";
-if (configuredLane !== "coa" && configuredLane !== "core") {
-  throw new Error(`JURVIO_SCHEDULER_LANE must be "coa" or "core"; received ${configuredLane}`);
+if (configuredLane !== "coa" && configuredLane !== "core" && configuredLane !== "entities") {
+  throw new Error(`JURVIO_SCHEDULER_LANE must be "coa", "core", or "entities"; received ${configuredLane}`);
 }
 const activeJobs = jobs.filter((job) => job.lane === configuredLane);
 if (activeJobs.length === 0) {

@@ -116,6 +116,35 @@ services:
       - jurvio_artifacts:/var/lib/jurvio/artifacts
     networks: [private]
 
+  # Lightweight structured-data lane for judges, lawyers, law firms,
+  # legislators, agencies, and future entity catalogs. Heavy case/PDF work
+  # stays in worker-core so it cannot block entity refreshes.
+  worker-entities:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    command: ["node", "jobs/run-production-scheduler.mjs"]
+    env_file: .env.production
+    environment:
+      TZ: America/New_York
+      NODE_ENV: production
+      JURVIO_SCHEDULER_LANE: entities
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    # See worker-core: health is the scheduler heartbeat, not an HTTP endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "hb=$$(cat /var/lib/jurvio/artifacts/scheduler/entities.alive 2>/dev/null || echo 0); [ $$(( $$(date +%s) - hb )) -lt 180 ]"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
   worker-supervisor:
     image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
     restart: unless-stopped
