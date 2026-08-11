@@ -129,7 +129,7 @@ async function artifact(sql: Sql, url: string, content: string, artifactRoot: st
 export async function importFjcJudges(
   sql: Sql,
   options: { artifactRoot?: string; limit?: number } = {},
-): Promise<{ judges: number; services: number; seats: number; unmatchedCourts: number }> {
+): Promise<{ judges: number; services: number; seats: number; unmatchedCourts: number; failedRows: number }> {
   const artifactRoot = options.artifactRoot ?? process.env.JURVIO_ARTIFACT_ROOT ?? "/var/lib/jurvio/artifacts";
   const [demographicsText, serviceText] = await Promise.all([
     download(FJC_DEMOGRAPHICS_URL, "demographics.csv"),
@@ -148,7 +148,7 @@ export async function importFjcJudges(
   const courtByCode = new Map(courts.filter((court) => court.providerCourtId)
     .map((court) => [key(court.providerCourtId ?? ""), court]));
   const courtByName = new Map(courts.map((court) => [key(court.name), court]));
-  let judges = 0, services = 0, seats = 0, unmatchedCourts = 0;
+  let judges = 0, services = 0, seats = 0, unmatchedCourts = 0, failedRows = 0;
   const limit = Math.min(Math.max(options.limit ?? 50_000, 1), 50_000);
 
   for (const service of serviceRows.slice(0, limit)) {
@@ -161,6 +161,8 @@ export async function importFjcJudges(
     const court = (seat ? courtByCode.get(key(seat.courtCode)) : undefined) ?? courtByName.get(key(sourceCourtName));
     if (!nid || !name || !normalized || !court) { if (!court) unmatchedCourts += 1; continue; }
     const profileUrl = `https://www.fjc.gov/node/${encodeURIComponent(nid)}`;
+    const before = { judges, services, seats };
+    try {
     await sql.begin(async (tx) => {
       let [judge] = await tx<{ id: string }[]>`SELECT id FROM judge WHERE fjc_nid = ${nid} LIMIT 1 FOR UPDATE`;
       if (!judge) [judge] = await tx<{ id: string }[]>`
@@ -222,6 +224,14 @@ export async function importFjcJudges(
           AND (term.ended_on IS NULL OR term.ended_on >= current_date)
       ), updated_at = now() WHERE id = ${judge.id}`;
     });
+    } catch {
+      // One malformed row (a bad court mapping, or a per-table constraint edge
+      // case like the ones already fixed elsewhere) must never abort the whole
+      // roster import. Roll the per-row counters back and skip it so the
+      // remaining thousands of judges still import.
+      ({ judges, services, seats } = before);
+      failedRows += 1;
+    }
   }
-  return { judges, services, seats, unmatchedCourts };
+  return { judges, services, seats, unmatchedCourts, failedRows };
 }
