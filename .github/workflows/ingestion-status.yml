@@ -72,6 +72,18 @@ jobs:
             'pacer_cost_usd', 0
           );"
 
+          echo "=== Scheduler lane health: recent failures with real error tail (read-only) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
+            SELECT string_agg(row, E'\n---\n') FROM (
+              SELECT lane || '  exit=' || coalesce(exit_code::text,'null')
+                || ' signal=' || coalesce(signal,'none')
+                || ' at=' || to_char(started_at,'YYYY-MM-DD HH24:MI:SS')
+                || E'\n' || left(coalesce(error_tail,'(no tail captured)'), 700) AS row
+              FROM scheduler_lane_run
+              WHERE ok = false AND started_at > now() - interval '2 hours'
+              ORDER BY started_at DESC LIMIT 12
+            ) recent;" || echo "(scheduler_lane_run not present yet)"
+
           echo "=== Disk on ingestion box (read-only) ==="
           df -h / | tail -n +1
 
