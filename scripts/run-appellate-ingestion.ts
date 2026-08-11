@@ -437,6 +437,15 @@ async function downloadAndExtract(item: {
 }
 
 async function processQueue() {
+  // Bound each cycle's work instead of materializing the entire backlog. The
+  // historical GovInfo/CourtListener appellate backfills feed tens of thousands of
+  // `discovered` rows into this table; an unbounded SELECT pulled all of them into
+  // memory and let one huge, ever-restarting cycle starve fresh opinions, which is
+  // why per-circuit `last_publication` froze while discovery stayed current. Cap the
+  // batch and process freshly-discovered official-listing opinions BEFORE the bulk
+  // backfill flood so new circuit decisions publish continuously every cycle; the
+  // backfill still drains in the remaining capacity.
+  const processBatchLimit = Number.parseInt(process.env.APPELLATE_PROCESS_LIMIT ?? "800", 10);
   const items = await sql<{
     id: string; court_code: string; docket_number: string | null; caption: string;
     decided_on: string | null; document_url: string; source_listing_url: string;
@@ -445,7 +454,9 @@ async function processQueue() {
       document_url, source_listing_url
     FROM appellate_ingestion_item
     WHERE state IN ('discovered','downloaded','extracted','enriched','publication_ready')
-    ORDER BY decided_on DESC NULLS LAST, first_seen_at
+    ORDER BY (source_listing_url NOT LIKE '%govinfo%') DESC,
+      decided_on DESC NULLS LAST, first_seen_at
+    LIMIT ${processBatchLimit}
   `;
   let cursor = 0;
   const results: Array<Record<string, unknown>> = [];
