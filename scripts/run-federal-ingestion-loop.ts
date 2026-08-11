@@ -826,6 +826,26 @@ try {
     executionTimeMs: Date.now() - startedAt,
     completedAt: new Date().toISOString(),
   })}\n`);
+} catch (error) {
+  // CourtListener's opinion/docket APIs require authentication. Without a valid
+  // COURTLISTENER_API_TOKEN on the box every request 401s. Whichever loop hit it
+  // (material-decisions and active-case-updates fetch opinion clusters via a
+  // different path than runDocketStream), treat it as a clean "nothing to do this
+  // cycle" and exit 0 — the durable cursor is never advanced past the failed page,
+  // so ingestion resumes from the same point once the token is set — instead of
+  // crash-looping the lane every cycle.
+  if (error instanceof Error && /CourtListener request failed: 401/.test(error.message)) {
+    process.stderr.write(
+      "CourtListener API returned 401 (authentication required); set COURTLISTENER_API_TOKEN to enable federal ingestion. Ending this cycle cleanly.\n",
+    );
+    process.stdout.write(`${JSON.stringify({
+      loop,
+      courtlistenerUnauthorized: true,
+      completedAt: new Date().toISOString(),
+    })}\n`);
+  } else {
+    throw error;
+  }
 } finally {
   await closeDb();
 }
