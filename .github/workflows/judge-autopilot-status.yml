@@ -105,4 +105,24 @@ jobs:
           sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "SET TIME ZONE 'America/New_York'; SELECT occurred_at, action, outcome, left(reason, 80) AS reason
             FROM ingestion_repair_action WHERE detector = 'judge-autopilot'
             ORDER BY occurred_at DESC LIMIT 15;"
+
+          echo ""
+          echo "=== Latest refresh_fjc_roster failure detail (exact error) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT jsonb_pretty(detail) FROM ingestion_repair_action
+            WHERE detector = 'judge-autopilot' AND action = 'refresh_fjc_roster'
+            ORDER BY occurred_at DESC LIMIT 1;"
+
+          echo ""
+          echo "=== Live egress probe from the box to the FJC roster source ==="
+          # Distinguishes an outbound-egress block (connection error) from an HTTP
+          # error (status code). Read-only HEAD request, 20s cap.
+          sup="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-supervisor' --format '{{.ID}}' | head -n1)"
+          if [ -n "$sup" ]; then
+            sudo -n docker exec "$sup" sh -lc 'wget -S -q -O /dev/null --timeout=20 --tries=1 \
+              https://www.fjc.gov/sites/default/files/history/demographics.csv 2>&1 | head -20 \
+              || echo "wget exit=$? (non-zero = could not fetch: egress block, DNS, TLS, or HTTP error above)"'
+          else
+            echo "(worker-supervisor container not found)"
+          fi
           REMOTE
