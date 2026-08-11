@@ -32,9 +32,9 @@ export async function getJudgeControlCenter(sql: Sql) {
     sql<Array<{
       id: string; action: string; reason: string; outcome: string; createdAt: string;
     }>>`
-      SELECT id, action, reason, outcome, created_at::text AS "createdAt"
+      SELECT id, action, reason, outcome, occurred_at::text AS "createdAt"
       FROM ingestion_repair_action WHERE detector = 'judge-autopilot'
-      ORDER BY created_at DESC LIMIT 100
+      ORDER BY occurred_at DESC LIMIT 100
     `,
   ]);
   return { generatedAt: new Date().toISOString(), snapshot, judges, repairs };
