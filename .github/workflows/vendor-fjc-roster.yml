@@ -50,11 +50,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes — vendored snapshot already current."
           else
-            git commit -m "Vendor FJC roster CSV snapshot for offline import fallback
-
-Downloaded from fjc.gov by the vendor-fjc-roster workflow so the roster importer
-can populate judges from the bundled copy when the production box cannot reach
-fjc.gov directly."
+            git commit -m "Vendor FJC roster CSV snapshot for offline import fallback"
             git push
             echo "Committed and pushed vendored FJC snapshot."
           fi
