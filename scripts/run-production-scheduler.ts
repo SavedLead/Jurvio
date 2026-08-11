@@ -126,7 +126,12 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/ingest-enriched-official-scotus.mjs",
       "--term=__CURRENT_SCOTUS_TERM__",
-      "--limit=300",
+      // The enriched job fans this budget out per stage: the network-bound
+      // fetch/enrich/docket stages clamp to their 100 ceiling internally, while the
+      // pure-DB publish/extract drain stages use the full amount. A large budget
+      // therefore drains the SCOTUS publish/extract backlog fast without exceeding
+      // any network stage's cap (the over-large value is what used to crash-loop it).
+      "--limit=5000",
       "--resume=true",
       "--attempts=10",
     ],
@@ -145,52 +150,54 @@ const jobs: ScheduledJob[] = [
     // drains and then just keeps pace with newly approved opinions.
     command: ["jobs/publish-official-scotus-opinions.mjs", "--limit=2000"],
   },
-  // Federal loops no longer carry the artificial throttle (fixed --limit=100 ceiling,
-  // forced --approve-scale-up=false, and 1s/item --delay-ms). They now self-throttle via
-  // a bounded adaptive worker pool: conservative --start-concurrency that climbs only after
-  // clean windows and halves on distress, capped by --max-concurrency (hard max 16), and a
-  // finite --max-items runaway guard rather than an hourly ceiling. Defaults are OOM-safe
-  // for the small droplet; per-loop overrides below stay well inside those bounds.
+  // Federal loops carry no artificial throughput throttle. They self-throttle via a
+  // bounded adaptive worker pool: --start-concurrency climbs only after clean windows
+  // and halves on distress (source 429s or DB pressure), capped by --max-concurrency,
+  // with a finite --max-items runaway guard rather than an hourly ceiling. The box was
+  // resized, so these now run at full headroom: --max-concurrency=14 matches the
+  // per-process DB pool (JURVIO_DB_POOL_MAX, Postgres max_connections=200) so a loop
+  // can saturate its pool without exhausting it, and the adaptive controller remains
+  // the safety valve — it, not a hand-tuned cap, is what protects the box under load.
   {
     lane: "core",
     name: "federal-new-cases",
     initialDelayMs: 2 * minute,
-    intervalMs: 30 * minute,
+    intervalMs: 20 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=new-case-discovery",
-      "--start-concurrency=6",
-      "--max-concurrency=10",
-      "--max-items=10000",
+      "--start-concurrency=8",
+      "--max-concurrency=14",
+      "--max-items=25000",
     ],
   },
   {
     lane: "core",
     name: "federal-material-decisions",
     initialDelayMs: 12 * minute,
-    intervalMs: 30 * minute,
+    intervalMs: 20 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=material-decisions",
-      "--start-concurrency=6",
-      "--max-concurrency=10",
-      "--max-items=10000",
+      "--start-concurrency=8",
+      "--max-concurrency=14",
+      "--max-items=25000",
     ],
   },
   {
     lane: "core",
     name: "federal-publication",
     initialDelayMs: 22 * minute,
-    intervalMs: 20 * minute,
-    // Publication is pure DB work (each publish opens a transaction). Runs 3x more
-    // often and drains up to 10k/cycle so the publish backlog (and the outbox that
+    intervalMs: 12 * minute,
+    // Publication is pure DB work (each publish opens a transaction). Runs often and
+    // drains a large batch per cycle so the publish backlog (and the outbox that
     // depends on it) keeps pace with ingestion instead of falling behind.
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=publication-quarantine",
-      "--start-concurrency=4",
-      "--max-concurrency=8",
-      "--max-items=10000",
+      "--start-concurrency=6",
+      "--max-concurrency=14",
+      "--max-items=25000",
     ],
   },
   {
@@ -201,9 +208,9 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=active-case-updates",
-      "--start-concurrency=6",
-      "--max-concurrency=8",
-      "--max-items=5000",
+      "--start-concurrency=8",
+      "--max-concurrency=14",
+      "--max-items=15000",
     ],
   },
   {
@@ -214,9 +221,9 @@ const jobs: ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=historical-backfill",
-      "--start-concurrency=6",
-      "--max-concurrency=8",
-      "--max-items=5000",
+      "--start-concurrency=8",
+      "--max-concurrency=14",
+      "--max-items=20000",
     ],
   },
 ];
