@@ -2,9 +2,16 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import postgres from "postgres";
+import { fetchOfficialBoundVolumeIndex } from "@/modules/ingestion/providers/scotus/official-bound-volumes";
 
-const newestVolume = 499;
+// U.S. Reports bound-volume backfill (supremecourt.gov, first-hand). The exact set
+// of volumes to work is discovered from the official index at run time — capped at
+// the ingester's supported ceiling (587) — so every published volume is covered and
+// new volumes are picked up automatically. This previously only covered volumes < 500
+// (hence the legacy "pre500" lease/state identifiers, kept stable so existing
+// per-volume completion checkpoints and advisory locks stay valid).
 const oldestVolume = 1;
+const maxVolume = 587;
 const volumeWorkers = 4;
 const leaseKey = "jurvio:scotus-pre500:coordinator";
 const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
@@ -143,7 +150,11 @@ async function runVolume(
     const result = await runNode([
       "jobs/ingest-official-scotus-bound-volume.mjs",
       `--volume=${volume}`,
-      "--limit=1000",
+      // The bound-volume ingester hard-caps a batch at 100 and throws synchronously
+      // above it. Passing a larger value crashed the ingester on every volume, so the
+      // whole backfill silently published nothing. A volume larger than one batch is
+      // finished across resumed attempts/cycles via its per-record checkpoint.
+      "--limit=100",
       "--resume=true",
     ]);
     attempts.push({ code: result.code, signal: result.signal, output: result.output });
@@ -247,12 +258,21 @@ async function main(): Promise<void> {
       SELECT pg_try_advisory_lock(hashtext(${leaseKey})) AS acquired
     `;
     if (!lease?.acquired) {
-      process.stdout.write("SCOTUS pre-500 coordinator skipped: another coordinator holds the lease\n");
+      process.stdout.write("SCOTUS U.S. Reports backfill coordinator skipped: another coordinator holds the lease\n");
       return;
     }
 
+    // Discover the volumes the Supreme Court actually publishes, rather than a
+    // hardcoded ceiling, so coverage spans every available U.S. Reports volume
+    // (through the 587 hard cap) and auto-extends as new volumes are released.
+    const boundVolumeIndex = await fetchOfficialBoundVolumeIndex();
+    const availableVolumes = boundVolumeIndex.volumes
+      .map((entry) => entry.volume)
+      .filter((volume) => volume >= oldestVolume && volume <= maxVolume)
+      .sort((left, right) => right - left);
+    const newestVolume = availableVolumes[0] ?? 0;
     const volumes: number[] = [];
-    for (let volume = newestVolume; volume >= oldestVolume; volume -= 1) {
+    for (const volume of availableVolumes) {
       if (!await isComplete(volume)) volumes.push(volume);
     }
 
@@ -303,7 +323,7 @@ async function main(): Promise<void> {
 
     await writeStatus(volumes.length === 0 ? "complete" : "running");
     if (volumes.length === 0) {
-      process.stdout.write("SCOTUS pre-500 coordinator complete: no unfinished volumes\n");
+      process.stdout.write("SCOTUS U.S. Reports backfill coordinator complete: no unfinished volumes\n");
       return;
     }
 
@@ -325,7 +345,7 @@ async function main(): Promise<void> {
 
     await Promise.all(Array.from({ length: Math.min(volumeWorkers, volumes.length) }, () => worker()));
     await writeStatus(failedVolumes.length === 0 ? "complete" : "complete-with-failures");
-    process.stdout.write(`SCOTUS pre-500 coordinator finished: completed=${completedVolumes.length}, failed=${failedVolumes.length}, alreadyRunning=${alreadyRunningVolumes.length}\n`);
+    process.stdout.write(`SCOTUS U.S. Reports backfill coordinator finished: completed=${completedVolumes.length}, failed=${failedVolumes.length}, alreadyRunning=${alreadyRunningVolumes.length}\n`);
   } finally {
     await sql.end({ timeout: 5 });
   }
