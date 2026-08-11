@@ -14,6 +14,7 @@ jobs:
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      DO_USER: ${{ secrets.DO_USER }}
     steps:
       - name: Temporarily allow SSH and restart runner service
         run: |
@@ -43,20 +44,40 @@ jobs:
             ssh-keyscan -T 5 -H "$public_ip" > ~/.ssh/known_hosts 2>/dev/null && break
             sleep 5
           done
-          ssh -o BatchMode=yes -o ConnectTimeout=15 root@"$public_ip" 'bash -se' <<'REMOTE'
-          set -euo pipefail
-          service="$(systemctl list-unit-files --type=service --no-legend | awk '/actions\.runner|github.*runner/ {print $1; exit}')"
-          if [ -n "$service" ]; then
-            systemctl enable "$service"
-            systemctl restart "$service"
-            systemctl is-active "$service"
-          elif [ -x /opt/actions-runner/svc.sh ]; then
-            cd /opt/actions-runner
-            ./svc.sh install root || true
-            ./svc.sh start
+          # Find an SSH user whose key is accepted (root failed before with
+          # "Permission denied (publickey)"; the deploy operator user may work).
+          ssh_user=""
+          for u in root "$DO_USER"; do
+            [ -n "$u" ] || continue
+            if ssh -o BatchMode=yes -o ConnectTimeout=15 "$u"@"$public_ip" true 2>/dev/null; then
+              ssh_user="$u"; break
+            fi
+            echo "SSH as $u was refused."
+          done
+          test -n "$ssh_user" || { echo "::error::neither root nor the deploy user accepted the SSH key on the builder"; exit 1; }
+          echo "SSH accepted as $ssh_user; (re)starting the runner service."
+          ssh -o BatchMode=yes -o ConnectTimeout=15 "$ssh_user"@"$public_ip" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          SUDO=""
+          [ "$(id -u)" -eq 0 ] || SUDO="sudo -n"
+          who="$(whoami)"
+          svc="$($SUDO systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '/actions\.runner|github.*runner/ {print $1; exit}')"
+          echo "runner user=$who detected service=${svc:-none}"
+          if [ -n "$svc" ]; then
+            $SUDO systemctl enable "$svc" 2>&1 || true
+            $SUDO systemctl restart "$svc" 2>&1 || true
+            echo "is-active: $($SUDO systemctl is-active "$svc" 2>&1)"
           else
-            echo "GitHub runner service not found" >&2
-            exit 1
+            for d in /opt/actions-runner /home/*/actions-runner /root/actions-runner; do
+              if [ -x "$d/svc.sh" ]; then
+                echo "runner dir: $d"
+                cd "$d"
+                $SUDO ./svc.sh install "$who" 2>&1 || true
+                $SUDO ./svc.sh start 2>&1 || true
+                $SUDO ./svc.sh status 2>&1 || true
+                break
+              fi
+            done
           fi
           REMOTE
-          echo "Builder runner service repaired; firewall restored by trap."
+          echo "Runner repair attempted; firewall restored by trap."
