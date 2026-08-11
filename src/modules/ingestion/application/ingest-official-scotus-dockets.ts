@@ -41,10 +41,16 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
   `;
   let succeeded = 0;
   let held = 0;
+  let skipped = 0;
   let eventsPublished = 0;
   let documentsPublished = 0;
   const publicRecords: Array<{ caseId: string; events: number; documents: number }> = [];
   for (const legalCase of cases) {
+    // The official_docket_url CHECK constraint (migrations 0019/0020) only accepts a
+    // docket number matching [0-9A-Za-z-]+. A case with any other docket number (common
+    // in historical bound-volume cases) would violate the constraint in BOTH the success
+    // and the error-handler inserts below, crashing the lane. Skip it here instead.
+    if (!/^[0-9A-Za-z-]+$/.test(legalCase.docket_number ?? "")) { skipped += 1; continue; }
     try {
       const docket = await fetchOfficialDocket(legalCase.docket_number);
       const stored = await artifactStore.putIfAbsent({ key: `scotus/dockets/${legalCase.docket_number}/${docket.contentHash}.html`,
@@ -193,5 +199,5 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
         held: error instanceof Error ? error.message : "Official docket ingestion failed" }));
     }
   }
-  return { selected: cases.length, succeeded, held, eventsPublished, documentsPublished, publicRecords };
+  return { selected: cases.length, succeeded, held, skipped, eventsPublished, documentsPublished, publicRecords };
 }

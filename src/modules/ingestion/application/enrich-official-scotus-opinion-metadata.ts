@@ -23,8 +23,14 @@ export async function enrichOfficialScotusOpinionMetadata(sql: Sql, options: { l
   `;
   let enriched = 0;
   let partial = 0;
+  let skipped = 0;
   const publicRecords: Array<{ caseId: string; holding: boolean; background: boolean; perCuriam: boolean }> = [];
   for (const row of rows) {
+    // The official_docket_url CHECK constraint (migrations 0019/0020) only accepts a
+    // docket number matching [0-9A-Za-z-]+. Historical bound-volume cases can carry a
+    // docket number with other characters (or none); building the docket URL for one
+    // throws a constraint violation that would crash the entire enrich lane. Skip it.
+    if (!/^[0-9A-Za-z-]+$/.test(row.docket_number ?? "")) { skipped += 1; continue; }
     const metadata = extractOfficialOpinionMetadata(row.content_text);
     await sql.begin(async (tx) => {
       await tx`
@@ -80,5 +86,5 @@ export async function enrichOfficialScotusOpinionMetadata(sql: Sql, options: { l
     publicRecords.push({ caseId: row.case_public_id, holding: Boolean(metadata.exactHolding),
       background: Boolean(metadata.background), perCuriam: metadata.perCuriam });
   }
-  return { selected: rows.length, enriched, partial, publicRecords };
+  return { selected: rows.length, enriched, partial, skipped, publicRecords };
 }
