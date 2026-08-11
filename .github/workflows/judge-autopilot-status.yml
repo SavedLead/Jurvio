@@ -1,0 +1,108 @@
+name: Judge Autopilot status (read-only, VPC route)
+
+# Read-only production proof for the Judge Autopilot control loop on the
+# ingestion box (jurvio-web-01), reached over the private VPC from the
+# self-hosted builder runner (same transport as ingestion-status.yml).
+#
+# It performs NO writes, NO ingestion, NO publication and NO repairs. It only
+# reports, straight from the production database and the running containers:
+#   1. which jurvio containers are running and on which image tag (proves the
+#      worker-supervisor control-loop container is live and current),
+#   2. the live Judge Autopilot snapshot (roster / active / published / case
+#      assignments / pending + needs-review matches) — the exact numbers the
+#      backend Judge Control Center renders,
+#   3. the Judge Autopilot liveness heartbeat (proves the control loop is
+#      ticking and when it last ran),
+#   4. the most recent automatic detection & repair actions it recorded.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-judge-autopilot-status
+  cancel-in-progress: false
+
+jobs:
+  status:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Judge Autopilot report (read-only)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no running jurvio postgres container on ingestion box"; exit 1; }
+
+          echo "=== Running jurvio containers (service : image : status) ==="
+          # Proves worker-supervisor (the Judge Autopilot control loop) is running
+          # and on the current release image tag, alongside app and workers.
+          sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --format '{{.Label "com.docker.compose.service"}} : {{.Image}} : {{.Status}}' | sort
+
+          echo ""
+          echo "=== Judge Autopilot snapshot (read-only, Eastern time) ==="
+          # Mirrors getJudgeAutopilotSnapshot() exactly, so these numbers match the
+          # backend Judge Control Center dashboard.
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York'; SELECT jsonb_pretty(jsonb_build_object(
+            'checked_at', now(),
+            'roster_verified', (SELECT count(*) FROM judge WHERE fjc_nid IS NOT NULL AND verification = 'verified'),
+            'active', (SELECT count(*) FROM judge WHERE fjc_nid IS NOT NULL AND active = true),
+            'service_terms', (SELECT count(*) FROM judge_service_term WHERE source_system = 'fjc' AND verification = 'verified'),
+            'case_assignments', (SELECT count(*) FROM judge_case_assignment),
+            'published_profiles', (SELECT count(*) FROM judge j WHERE j.fjc_nid IS NOT NULL AND EXISTS (
+              SELECT 1 FROM publication_decision pd WHERE pd.object_type = 'judge' AND pd.object_id = j.id AND pd.displayable = true)),
+            'pending_matches', (SELECT count(*) FROM judicial_opinion jo JOIN document d ON d.id = jo.document_id
+              WHERE jo.author_name IS NOT NULL AND btrim(jo.author_name) <> '' AND jo.per_curiam = false
+                AND NOT EXISTS (SELECT 1 FROM judge_match_candidate jmc
+                  WHERE jmc.case_id = d.case_id AND jmc.source_artifact_id = jo.source_artifact_id
+                    AND jmc.matcher_version = 'jurisdiction-timeframe-v2')),
+            'needs_review_matches', (SELECT count(*) FROM judge_match_candidate
+              WHERE matcher_version = 'jurisdiction-timeframe-v2' AND status = 'needs_review'),
+            'latest_roster_at', (SELECT max(ra.retrieved_at) FROM raw_artifact ra
+              JOIN provider p ON p.id = ra.provider_id WHERE p.code = 'fjc')
+          ));"
+
+          echo ""
+          echo "=== Judge Autopilot control-loop heartbeat (proves the loop is ticking) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York'; SELECT jsonb_pretty(to_jsonb(h)) FROM (
+            SELECT worker_id, lane, status, last_heartbeat_at,
+              round(extract(epoch FROM now() - last_heartbeat_at))::int AS seconds_ago, detail
+            FROM ingestion_worker_heartbeat WHERE lane = 'judge-autopilot'
+            ORDER BY last_heartbeat_at DESC LIMIT 1
+          ) h;" || echo "(no judge-autopilot heartbeat yet)"
+
+          echo ""
+          echo "=== Most recent Judge Autopilot detections & repairs (last 15) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "SET TIME ZONE 'America/New_York'; SELECT created_at, action, outcome, left(reason, 80) AS reason
+            FROM ingestion_repair_action WHERE detector = 'judge-autopilot'
+            ORDER BY created_at DESC LIMIT 15;"
+          REMOTE
