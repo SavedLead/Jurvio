@@ -61,7 +61,11 @@ if docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
 fi
 
 export JURVIO_IMAGE="$NEW_IMAGE"
-run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa
+# worker-supervisor runs the Judge Autopilot control loop and the durable-queue
+# self-repair supervisor (run-ingestion-supervisor.mjs). It MUST be pulled and
+# recreated on every release like the other workers, otherwise it keeps running
+# a stale image and the control loop never picks up new code.
+run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa worker-supervisor
 run_with_timeout "Postgres startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d postgres
 
 # Readiness guard: a release must not proceed to replace the app/workers if
@@ -88,7 +92,7 @@ done
 [ "$DATABASE_READY" -eq 1 ] || fail "Database readiness failed before migration"
 
 run_with_timeout "Database migration" "$MIGRATION_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" run --rm --no-deps app node scripts/migrate.mjs
-run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker-core worker-coa
+run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker-core worker-coa worker-supervisor
 
 READY=0
 for attempt in $(seq 1 30); do

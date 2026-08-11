@@ -246,7 +246,11 @@ jobs:
         run: |
           set -euo pipefail
           login_body="$(curl --fail --silent --show-error --retry 8 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
-          printf '%s' "$login_body" | grep -Fq "PRIVATE COMMAND CENTER" || {
+          # Case-insensitive match: the page renders "Private command center" in the
+          # HTML and only APPEARS uppercase via CSS (text-transform). A case-sensitive
+          # grep for the uppercase string never matched the served markup, which
+          # false-failed every deploy at this gate even though the release succeeded.
+          printf '%s' "$login_body" | grep -Fiq "PRIVATE COMMAND CENTER" || {
             echo "::error::z.jurvio.com/login did not return the hosted Jurvio login page"
             exit 1
           }
