@@ -231,6 +231,39 @@ jobs:
           set -euo pipefail
           SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
           printf '%s' "$GH_TOKEN" | timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" 'docker login ghcr.io -u SavedLead --password-stdin'
+      - name: Sync CourtListener API token to box env
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          COURTLISTENER_API_TOKEN: ${{ secrets.COURTLISTENER_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # CourtListener's docket/opinion API requires authentication; the federal
+          # ingestion lanes 401 without a token. Upsert the token into the box env as
+          # a single line (never clobbering other vars), passing the value over stdin
+          # so it never appears in argv/process listings, and never echoing it. No-op
+          # if the secret is unset. "Release and verify" below recreates the containers
+          # via `docker compose up -d`, which re-reads env_file, so the new token takes
+          # effect on this same release.
+          if [ -z "${COURTLISTENER_API_TOKEN:-}" ]; then
+            echo "::notice title=CourtListener token not set::COURTLISTENER_API_TOKEN secret is empty; leaving box env unchanged (federal CourtListener lanes stay idle)."
+            exit 0
+          fi
+          SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+          printf '%s' "$COURTLISTENER_API_TOKEN" | timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" '
+            set -euo pipefail
+            umask 077
+            env_file=/opt/jurvio/.env.production
+            token="$(cat)"
+            touch "$env_file"
+            tmp="$(mktemp)"
+            grep -v "^COURTLISTENER_API_TOKEN=" "$env_file" > "$tmp" || true
+            printf "COURTLISTENER_API_TOKEN=%s\n" "$token" >> "$tmp"
+            chmod 600 "$tmp"
+            mv "$tmp" "$env_file"
+            echo "COURTLISTENER_API_TOKEN synced into box env (value not printed)."
+          '
       - name: Release and verify
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:
