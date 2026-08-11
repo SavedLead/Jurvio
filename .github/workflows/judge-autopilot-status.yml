@@ -53,8 +53,10 @@ jobs:
       - name: Judge Autopilot report (read-only)
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
-          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          # Read-only report: best-effort (no errexit) so a single query or the
+          # egress diagnostic can never abort the job before the snapshot prints.
+          set +e
           pg="$(sudo -n docker ps \
             --filter 'label=com.docker.compose.project=jurvio' \
             --filter 'label=com.docker.compose.service=postgres' \
