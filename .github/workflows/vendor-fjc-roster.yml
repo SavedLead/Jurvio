@@ -1,0 +1,56 @@
+name: Vendor FJC roster snapshot
+
+# One-shot helper (GitHub-hosted, open internet) that downloads the authoritative
+# Federal Judicial Center roster CSVs and commits them under db/seed/fjc/. The
+# Dockerfile copies db/ into the image, so this vendored snapshot ships with the
+# app and the importer falls back to it when the production box cannot reach
+# fjc.gov. Run this on the working branch; it commits the CSVs to that branch.
+# No production access, no DO API, no deploy — it only fetches public files and
+# commits them to the repo.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Download FJC roster CSVs
+        run: |
+          set -euo pipefail
+          mkdir -p db/seed/fjc
+          ua="Jurvio judge roster importer/1.0"
+          dl() {
+            url="$1"; out="$2"
+            echo "Fetching $url"
+            curl -fSL --retry 5 --retry-delay 5 --max-time 120 -A "$ua" -o "$out" "$url"
+            bytes="$(wc -c < "$out")"
+            lines="$(wc -l < "$out")"
+            echo "  -> $out : ${bytes} bytes, ${lines} lines"
+            # Sanity: the real files are hundreds of KB with thousands of rows.
+            test "$bytes" -gt 200000 || { echo "::error::$out is too small ($bytes bytes) — not the expected FJC file"; exit 1; }
+            test "$lines" -gt 1000 || { echo "::error::$out has too few rows ($lines) — not the expected FJC file"; exit 1; }
+            echo "  header: $(head -1 "$out")"
+          }
+          dl "https://www.fjc.gov/sites/default/files/history/demographics.csv" db/seed/fjc/demographics.csv
+          dl "https://www.fjc.gov/sites/default/files/history/federal-judicial-service.csv" db/seed/fjc/federal-judicial-service.csv
+      - name: Commit vendored snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "jurvio-automation"
+          git config user.email "noreply@anthropic.com"
+          git add db/seed/fjc/demographics.csv db/seed/fjc/federal-judicial-service.csv
+          if git diff --cached --quiet; then
+            echo "No changes — vendored snapshot already current."
+          else
+            git commit -m "Vendor FJC roster CSV snapshot for offline import fallback"
+            git push
+            echo "Committed and pushed vendored FJC snapshot."
+          fi

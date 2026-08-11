@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
@@ -12,6 +12,14 @@ export const FJC_DEMOGRAPHICS_URL =
   "https://www.fjc.gov/sites/default/files/history/demographics.csv";
 export const FJC_SERVICE_URL =
   "https://www.fjc.gov/sites/default/files/history/federal-judicial-service.csv";
+
+// The authoritative FJC roster CSVs are also vendored into the image
+// (db/seed/fjc, copied by the Dockerfile). The importer fetches live first so
+// the roster auto-updates whenever the host has egress to fjc.gov; if that
+// fetch fails (e.g. the production box's restricted egress cannot reach
+// fjc.gov) it falls back to the bundled snapshot so the roster still imports
+// and the public judge pages populate instead of staying empty.
+export const FJC_SEED_DIR = process.env.FJC_SEED_DIR ?? join(process.cwd(), "db", "seed", "fjc");
 
 function key(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -71,10 +79,28 @@ function displayName(row: CsvRow): string | null {
   return cleanJudgeDisplayName(parts.join(" "));
 }
 
-async function download(url: string): Promise<string> {
-  const response = await fetch(url, { headers: { "user-agent": "Jurvio judge roster importer/1.0" } });
-  if (!response.ok) throw new Error(`FJC download failed (${response.status}) for ${url}`);
-  return response.text();
+async function download(url: string, seedName: string): Promise<string> {
+  try {
+    const response = await fetch(url, {
+      headers: { "user-agent": "Jurvio judge roster importer/1.0" },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new Error(`FJC download failed (${response.status}) for ${url}`);
+    const body = await response.text();
+    if (body.trim().length === 0) throw new Error(`FJC download was empty for ${url}`);
+    return body;
+  } catch (liveError) {
+    // Live fetch failed — fall back to the vendored snapshot so a roster refresh
+    // still succeeds when the host cannot reach fjc.gov. If the bundled copy is
+    // also missing, surface the original network error (it is the real cause).
+    try {
+      const bundled = await readFile(join(FJC_SEED_DIR, seedName), "utf8");
+      if (bundled.trim().length === 0) throw new Error(`bundled FJC seed ${seedName} was empty`);
+      return bundled;
+    } catch {
+      throw liveError instanceof Error ? liveError : new Error(String(liveError));
+    }
+  }
 }
 
 async function artifact(sql: Sql, url: string, content: string, artifactRoot: string): Promise<string> {
@@ -106,7 +132,8 @@ export async function importFjcJudges(
 ): Promise<{ judges: number; services: number; seats: number; unmatchedCourts: number }> {
   const artifactRoot = options.artifactRoot ?? process.env.JURVIO_ARTIFACT_ROOT ?? "/var/lib/jurvio/artifacts";
   const [demographicsText, serviceText] = await Promise.all([
-    download(FJC_DEMOGRAPHICS_URL), download(FJC_SERVICE_URL),
+    download(FJC_DEMOGRAPHICS_URL, "demographics.csv"),
+    download(FJC_SERVICE_URL, "federal-judicial-service.csv"),
   ]);
   const [demographicsArtifactId, serviceArtifactId] = await Promise.all([
     artifact(sql, FJC_DEMOGRAPHICS_URL, demographicsText, artifactRoot),
