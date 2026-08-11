@@ -102,7 +102,7 @@ jobs:
 
           echo ""
           echo "=== Most recent Judge Autopilot detections & repairs (last 15) ==="
-          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "SET TIME ZONE 'America/New_York'; SELECT created_at, action, outcome, left(reason, 80) AS reason
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "SET TIME ZONE 'America/New_York'; SELECT occurred_at, action, outcome, left(reason, 80) AS reason
             FROM ingestion_repair_action WHERE detector = 'judge-autopilot'
-            ORDER BY created_at DESC LIMIT 15;"
+            ORDER BY occurred_at DESC LIMIT 15;"
           REMOTE
