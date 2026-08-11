@@ -82,9 +82,24 @@ supervisor reaps any lease abandoned across the reboot.
 
 `worker-supervisor` runs `run-ingestion-supervisor.mjs` continuously. Each tick it
 refreshes its heartbeat, reaps expired leases from crashed/stalled workers back
-to `pending` (bounded, safe), and records backpressure. Every automatic action is
-written to `ingestion_repair_action` (detector / action / reason / outcome) — it
-never silently repairs, makes publication/legal judgments, or spends money.
+to `pending` (bounded, safe), records backpressure, and detects crash-looping
+scheduler lanes (see below). Every automatic action is written to
+`ingestion_repair_action` (detector / action / reason / outcome) — it never
+silently repairs, makes publication/legal judgments, or spends money.
+
+### Lane-health self-detection
+
+The on-box scheduler records the outcome of every lane child process to
+`scheduler_lane_run` (lane, exit code, signal, duration, and a bounded tail of the
+child's output on failure). The supervisor reads it each tick and flags any lane
+that ran repeatedly in the last 30 minutes and **never once succeeded** as a
+`lane-health` / `flag_failing_lane` entry in `ingestion_repair_action`, carrying the
+real error tail — throttled to one alert per lane per 15 min. This is detection and
+audit only: a lane that crashes on startup needs a code/config fix (a PR), so the
+supervisor surfaces it with the actual error instead of blindly restarting it. A
+crash-looping lane is therefore visible in the repair feed within a tick, not
+buried in a per-lane log file. (Recording is best-effort — a bookkeeping-DB error
+never takes down the scheduler loop.)
 
 ## PACER ($0, disabled)
 

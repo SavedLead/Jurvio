@@ -45,11 +45,29 @@ export async function ingestOfficialScotusOpinions(
     SELECT cursor_value FROM ingestion_checkpoint
     WHERE provider_id = ${provider.id} AND stream_name = ${`official:slip-opinions:${options.termYear}`}
   ` : [];
-  const selected = selectOfficialScotusBatch(
-    index.records,
-    options.limit,
-    checkpoint?.cursor_value ?? null,
-  );
+  const storedCursor = checkpoint?.cursor_value ?? null;
+  let selected: typeof index.records;
+  try {
+    selected = selectOfficialScotusBatch(index.records, options.limit, storedCursor);
+  } catch (error) {
+    // A stored cursor can fall out of the live index when supremecourt.gov rebuilds
+    // the term listing (a record is reordered or removed). `selectOfficialScotusBatch`
+    // fails closed in that case; recover here instead of crash-looping the lane by
+    // restarting from the head of the current index. Ingestion is idempotent — both
+    // `raw_artifact` and `official_opinion_candidate` upsert on conflict — so replaying
+    // already-seen records is safe and the checkpoint re-advances cleanly.
+    if (storedCursor && error instanceof Error && /checkpoint is not present/.test(error.message)) {
+      console.error(JSON.stringify({
+        scotusOfficial: "checkpoint_reset",
+        termYear: options.termYear,
+        staleCursor: storedCursor,
+        reason: error.message,
+      }));
+      selected = selectOfficialScotusBatch(index.records, options.limit, null);
+    } else {
+      throw error;
+    }
+  }
   const runId = await startIngestionRun(sql, {
     providerCode: "scotus_official", runType: "official_scotus_slip_opinions",
     selection: { termYear: options.termYear, limit: options.limit, resume: options.resume,
