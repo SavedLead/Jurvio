@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { db } from "@/db/client";
+import { recordLaneRun } from "@/modules/ingestion/application/lane-health";
 
 type SchedulerLane = "coa" | "core";
 
@@ -237,12 +239,29 @@ if (
 const running = new Set<string>();
 const timers: NodeJS.Timeout[] = [];
 
+// Bookkeeping-only pool: the scheduler records each lane's exit outcome so the
+// supervisor can detect a crash-looping lane. A failure here must never take down
+// the scheduler loop, so every write is best-effort (see recordLaneOutcome).
+const sql = db();
+
 function logStatus(name: string, message: string): void {
   const timestamp = new Date().toISOString();
   const line = `${timestamp} ${message}\n`;
   process.stdout.write(`[${name}] ${line}`);
   const stream = createWriteStream(join(logRoot, `${name}.log`), { flags: "a" });
   stream.end(line);
+}
+
+const LANE_TAIL_MAX = 8_000;
+
+function recordLaneOutcome(outcome: Parameters<typeof recordLaneRun>[1]): void {
+  // Never let lane-health bookkeeping (a bad DB connection, a transient error)
+  // abort the long-running scheduler. Detection is best-effort by design.
+  recordLaneRun(sql, outcome).catch((error) => {
+    process.stdout.write(
+      `[lane-health] failed to record ${outcome.lane}: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  });
 }
 
 function run(job: ScheduledJob): void {
@@ -255,7 +274,9 @@ function run(job: ScheduledJob): void {
   const command = job.command.map((argument) =>
     argument === "--term=__CURRENT_SCOTUS_TERM__" ? `--term=${currentScotusTerm()}` : argument
   );
-  logStatus(job.name, `started: node ${command.join(" ")}`);
+  const commandLine = `node ${command.join(" ")}`;
+  const startedAt = new Date();
+  logStatus(job.name, `started: ${commandLine}`);
   const output = createWriteStream(join(logRoot, `${job.name}.log`), { flags: "a" });
   const child = spawn("node", command, {
     cwd: "/app",
@@ -269,14 +290,44 @@ function run(job: ScheduledJob): void {
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
 
-  child.once("error", (error) => {
-    logStatus(job.name, `spawn failed: ${error.message}`);
-  });
-  child.once("close", (code, signal) => {
+  // Keep the trailing bytes of the child's output so a failed lane can persist the
+  // actual error (an uncaught throw goes to stderr) into scheduler_lane_run, not
+  // just an exit code. Bounded, so a chatty lane can never grow this unbounded.
+  let tail = "";
+  const collect = (chunk: Buffer): void => {
+    tail = (tail + chunk.toString("utf8")).slice(-LANE_TAIL_MAX);
+  };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+
+  // Unify cleanup + recording so it happens exactly once whether the child exits
+  // normally or fails to spawn. Previously `running` and the log stream were only
+  // cleaned up in the `close` handler, so a spawn error (where `close` may never
+  // fire) would leave the lane wedged as permanently "running" and skipped forever.
+  let settled = false;
+  const settle = (code: number | null, signal: NodeJS.Signals | null, extraTail: string | null): void => {
+    if (settled) return;
+    settled = true;
     running.delete(job.name);
     output.end();
     logStatus(job.name, `finished: code=${code ?? "null"} signal=${signal ?? "none"}`);
-  });
+    const finishedAt = new Date();
+    const errorTail = [extraTail, tail].filter(Boolean).join("\n").trim().slice(-LANE_TAIL_MAX) || null;
+    recordLaneOutcome({
+      lane: job.name,
+      schedulerLane: configuredLane,
+      command: commandLine,
+      startedAt,
+      finishedAt,
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      exitCode: code,
+      signal: signal ?? null,
+      errorTail,
+    });
+  };
+
+  child.once("error", (error) => settle(null, null, `spawn failed: ${error.message}`));
+  child.once("close", (code, signal) => settle(code, signal, null));
 }
 
 for (const job of activeJobs) {
