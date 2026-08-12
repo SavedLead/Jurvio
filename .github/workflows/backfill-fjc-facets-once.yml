@@ -1,0 +1,98 @@
+name: Backfill FJC facets (one-shot, VPC route)
+
+# One-shot: force a full FJC roster re-import against the production database so
+# the appointing-president / party / court-category facet columns (migration
+# 0107) backfill on the existing ~3,900-judge roster via the importer's
+# ON CONFLICT DO UPDATE path. The autopilot only re-imports when the roster is
+# missing or stale (>36h), so a complete-but-un-backfilled roster needs this
+# manual nudge once, right after the facet-writing importer ships.
+#
+# Runs the bundled importer INSIDE the live worker-supervisor container over the
+# private VPC (same transport as judge-autopilot-status.yml / ingestion-ops.yml),
+# so it reuses that container's DATABASE_URL and the image-bundled FJC snapshot.
+# Then prints the resulting facet population so the backfill is proven, not
+# assumed.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backfill-fjc-facets
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Force FJC re-import and report facet population
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          sup="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-supervisor' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$sup" ] || { echo "::error::worker-supervisor container not running"; exit 1; }
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::postgres container not running"; exit 1; }
+
+          echo "=== Facet population BEFORE re-import ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT jsonb_pretty(jsonb_build_object(
+            'service_terms_total', (SELECT count(*) FROM judge_service_term WHERE source_system='fjc'),
+            'with_court_category', (SELECT count(*) FROM judge_service_term WHERE source_system='fjc' AND court_category IS NOT NULL),
+            'with_appointing_president', (SELECT count(*) FROM judge_service_term WHERE source_system='fjc' AND appointing_president IS NOT NULL)
+          ));" || echo "(facet columns not present yet — migration 0107 may not have applied)"
+
+          echo ""
+          echo "=== Forcing FJC re-import (bundled importer, ON CONFLICT DO UPDATE backfill) ==="
+          # WORKDIR is /app; the bundled job lives at /app/jobs/import-fjc-judges.mjs.
+          sudo -n docker exec "$sup" node jobs/import-fjc-judges.mjs --limit=50000
+
+          echo ""
+          echo "=== Facet population AFTER re-import ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT jsonb_pretty(jsonb_build_object(
+            'service_terms_total', (SELECT count(*) FROM judge_service_term WHERE source_system='fjc'),
+            'with_court_category', (SELECT count(*) FROM judge_service_term WHERE source_system='fjc' AND court_category IS NOT NULL),
+            'with_appointing_president', (SELECT count(*) FROM judge_service_term WHERE source_system='fjc' AND appointing_president IS NOT NULL)
+          ));"
+
+          echo ""
+          echo "=== Court-category distribution (service terms) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "SELECT court_category, count(*)
+            FROM judge_service_term WHERE source_system='fjc'
+            GROUP BY court_category ORDER BY count(*) DESC;"
+
+          echo ""
+          echo "=== Top nominating presidents (distinct judges, primary term) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "SELECT appointing_president, appointing_president_party, count(DISTINCT judge_id) AS judges
+            FROM judge_service_term WHERE source_system='fjc' AND appointing_president IS NOT NULL
+            GROUP BY appointing_president, appointing_president_party ORDER BY judges DESC LIMIT 20;"
+          REMOTE
