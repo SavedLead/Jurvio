@@ -107,8 +107,8 @@ jobs:
           curl -s -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $RUNNER_REG_PAT" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners" \
-            | python3 -c 'import sys,json;
-d=json.load(sys.stdin);
-print("total_runners:", d.get("total_count"));
-[print(" -", r["name"], "status="+r["status"], "busy="+str(r["busy"]), "labels="+",".join(l["name"] for l in r["labels"])) for r in d.get("runners",[])]' 2>/dev/null || echo "(could not parse runner list)"
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners" -o /tmp/runners.json
+          echo "total_runners: $(jq -r '.total_count' /tmp/runners.json 2>/dev/null)"
+          jq -r '.runners[]? | " - \(.name) status=\(.status) busy=\(.busy) labels=\([.labels[].name]|join(","))"' \
+            /tmp/runners.json 2>/dev/null || echo "(could not parse runner list)"
+          rm -f /tmp/runners.json
