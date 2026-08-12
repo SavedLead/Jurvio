@@ -84,6 +84,27 @@ jobs:
               ORDER BY started_at DESC LIMIT 12
             ) recent;" || echo "(scheduler_lane_run not present yet)"
 
+          echo "=== SCOTUS backfill diagnostic (read-only) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
+            SELECT 'candidates_by_status: ' || review_status || '=' || count(*)
+              FROM official_opinion_candidate GROUP BY review_status
+            UNION ALL SELECT 'candidates_total=' || count(*) FROM official_opinion_candidate
+            UNION ALL SELECT 'candidates_bound_volume_cite=' || count(*)
+              FROM official_opinion_candidate WHERE citation ~ '^[0-9]+ U'
+            UNION ALL SELECT 'scotus_published_cases=' || count(*)
+              FROM legal_case lc JOIN court c ON c.id = lc.court_id
+              WHERE lower(c.provider_court_id) = 'scotus' AND lc.publication = 'published';" || echo "(candidate query failed)"
+          echo "--- ingestion_run by type/status ---"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
+            SELECT run_type || ' | ' || status || ' | n=' || count(*) || ' | latest=' || to_char(max(started_at),'MM-DD HH24:MI')
+            FROM ingestion_run WHERE run_type LIKE 'official_scotus%'
+            GROUP BY run_type, status ORDER BY run_type, status;" || echo "(ingestion_run query failed)"
+          echo "--- recent bound-volume run failures ---"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
+            SELECT to_char(started_at,'MM-DD HH24:MI') || ' :: ' || left(coalesce(error::text,'(no error)'),400)
+            FROM ingestion_run WHERE run_type = 'official_scotus_bound_volume' AND status = 'failed'
+            ORDER BY started_at DESC LIMIT 6;" || echo "(bound-volume failure query failed)"
+
           echo "=== Disk on ingestion box (read-only) ==="
           df -h / | tail -n +1
 
