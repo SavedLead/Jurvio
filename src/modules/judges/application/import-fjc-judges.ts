@@ -79,6 +79,17 @@ function displayName(row: CsvRow): string | null {
   return cleanJudgeDisplayName(parts.join(" "));
 }
 
+// Normalize the FJC "Court Type" into the three branches the control center
+// groups by. FJC values look like "U.S. District Court", "U.S. Court of
+// Appeals", "Supreme Court of the United States", "U.S. Circuit Court (1801-1911)".
+export function courtCategory(courtType: string): "scotus" | "appeals" | "district" | "other" {
+  const value = courtType.toLowerCase();
+  if (value.includes("supreme court")) return "scotus";
+  if (value.includes("court of appeals") || value.includes("circuit court")) return "appeals";
+  if (value.includes("district court")) return "district";
+  return "other";
+}
+
 async function download(url: string, seedName: string): Promise<string> {
   try {
     const response = await fetch(url, {
@@ -196,24 +207,35 @@ export async function importFjcJudges(
       const terminationDate = parseDate(field(service, "Termination Date"));
       const sourceRecordKey = `${nid}:${field(service, "Seat ID", "SeatID") || key(sourceCourtName)}`;
       const activeEnd = seniorDate ?? terminationDate;
+      const appointingPresident = field(service, "Appointing President") || null;
+      const appointingParty = field(service, "Party of Appointing President") || null;
+      const category = courtCategory(field(service, "Court Type", "Court"));
       const active = await tx`
         INSERT INTO judge_service_term (judge_id, court_id, judicial_seat_id, service_type, started_on, ended_on,
-          succession_order, commission_date, termination_reason, source_system, source_record_key, source_url,
-          source_artifact_id, verification)
+          succession_order, commission_date, termination_reason, appointing_president, appointing_president_party,
+          court_category, source_system, source_record_key, source_url, source_artifact_id, verification)
         VALUES (${judge.id}, ${court.id}, ${judicialSeatId}, 'article_iii_active', ${commissionDate}, ${activeEnd},
-          ${seat?.succession ?? null}, ${commissionDate}, ${field(service, "Termination Reason") || null}, 'fjc',
+          ${seat?.succession ?? null}, ${commissionDate}, ${field(service, "Termination Reason") || null},
+          ${appointingPresident}, ${appointingParty}, ${category}, 'fjc',
           ${`${sourceRecordKey}:active`}, ${FJC_SERVICE_URL}, ${serviceArtifactId}, 'verified')
         ON CONFLICT (source_system, source_record_key) DO UPDATE SET ended_on = EXCLUDED.ended_on,
-          termination_reason = EXCLUDED.termination_reason, updated_at = now() RETURNING id
+          termination_reason = EXCLUDED.termination_reason, appointing_president = EXCLUDED.appointing_president,
+          appointing_president_party = EXCLUDED.appointing_president_party,
+          court_category = EXCLUDED.court_category, updated_at = now() RETURNING id
       `;
       services += active.length;
       if (seniorDate) {
         const senior = await tx`
           INSERT INTO judge_service_term (judge_id, court_id, judicial_seat_id, service_type, started_on, ended_on,
+            appointing_president, appointing_president_party, court_category,
             source_system, source_record_key, source_url, source_artifact_id, verification)
           VALUES (${judge.id}, ${court.id}, ${judicialSeatId}, 'article_iii_senior', ${seniorDate}, ${terminationDate},
+            ${appointingPresident}, ${appointingParty}, ${category},
             'fjc', ${`${sourceRecordKey}:senior`}, ${FJC_SERVICE_URL}, ${serviceArtifactId}, 'verified')
-          ON CONFLICT (source_system, source_record_key) DO UPDATE SET ended_on = EXCLUDED.ended_on, updated_at = now()
+          ON CONFLICT (source_system, source_record_key) DO UPDATE SET ended_on = EXCLUDED.ended_on,
+            appointing_president = EXCLUDED.appointing_president,
+            appointing_president_party = EXCLUDED.appointing_president_party,
+            court_category = EXCLUDED.court_category, updated_at = now()
           RETURNING id
         `;
         services += senior.length;
