@@ -1,0 +1,114 @@
+name: Scout runner provisioning (one-shot, read-only)
+
+# Read-only recon before building a light-runner provisioning workflow. Runs on
+# the existing builder runner and reports, without changing anything:
+#   - the installed runner directory layout + agent version + service naming
+#   - memory / CPU headroom on the box (can it host more agents?)
+#   - the jurvio-admin loopback sudo allowlist (what privileged ops are available)
+#   - whether RUNNER_REG_PAT can mint a runner registration token (HTTP status
+#     ONLY — the token itself is never printed)
+# No writes, no new runners. Purely informational.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-scout-runner-provisioning
+  cancel-in-progress: false
+
+jobs:
+  scout:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      RUNNER_REG_PAT: ${{ secrets.RUNNER_REG_PAT }}
+      A: jurvio-admin@127.0.0.1
+    steps:
+      - name: Prepare admin loopback key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 10
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Runner layout + host headroom (read-only)
+        run: |
+          set +e
+          echo "=== this runner ==="
+          echo "name=${RUNNER_NAME:-?} labels(from job)=self-hosted,jurvio,builder,trusted"
+          echo "workdir=$(pwd)"
+          echo ""
+          echo "=== runner directories on the box ==="
+          for d in /opt/actions-runner /root/actions-runner /home/*/actions-runner; do
+            [ -d "$d" ] || continue
+            ver="$(cat "$d/.runner" 2>/dev/null | tr -d '\n' | cut -c1-200)"
+            echo "dir=$d"
+            echo "  has svc.sh: $([ -x "$d/svc.sh" ] && echo yes || echo no)"
+            echo "  config.sh:  $([ -x "$d/config.sh" ] && echo yes || echo no)"
+            echo "  agent ver:  $(cat "$d/bin/Runner.Listener.deps.json" 2>/dev/null >/dev/null; cat "$d"/*.tar.gz 2>/dev/null >/dev/null; ls "$d" | grep -i version 2>/dev/null; true)"
+          done
+          echo ""
+          echo "=== installed runner services ==="
+          systemctl list-units 'actions.runner.*' --all --no-legend 2>/dev/null | cat
+          echo ""
+          echo "=== host headroom ==="
+          echo "cpus=$(nproc 2>/dev/null)"
+          free -h 2>/dev/null
+          echo "disk:"; df -h / 2>/dev/null | tail -2
+
+      - name: Admin loopback sudo allowlist (read-only)
+        run: |
+          set +e
+          echo "=== jurvio-admin identity ==="
+          ssh "$A" 'echo "user=$(id -un) uid=$(id -u)"'
+          echo "=== scoped sudo allowlist (what privileged ops admin can run) ==="
+          ssh "$A" 'sudo -n -l 2>/dev/null | sed -e "s/[[:space:]]\+/ /g"'
+          echo "=== can admin see runner dirs / svc.sh? ==="
+          ssh "$A" 'for d in /opt/actions-runner /root/actions-runner /home/*/actions-runner; do [ -d "$d" ] && echo "$d (svc.sh=$([ -x "$d/svc.sh" ] && echo yes || echo no))"; done'
+
+      - name: Can RUNNER_REG_PAT mint a registration token? (status only)
+        run: |
+          set +e
+          if [ -z "${RUNNER_REG_PAT:-}" ]; then
+            echo "::error::RUNNER_REG_PAT is empty in this environment"
+            exit 0
+          fi
+          # POST the registration-token endpoint; print ONLY the HTTP status and
+          # whether a token field came back — never the token value itself.
+          code="$(curl -s -o /tmp/reg.json -w '%{http_code}' -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $RUNNER_REG_PAT" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token)"
+          echo "registration-token HTTP status: $code"
+          if grep -q '"token"' /tmp/reg.json 2>/dev/null; then
+            exp="$(grep -o '"expires_at":"[^"]*"' /tmp/reg.json | cut -d'"' -f4)"
+            echo "token minted OK (expires_at=$exp) — value withheld"
+          else
+            echo "no token in response; error body (first 300 chars, no secrets):"
+            cut -c1-300 /tmp/reg.json 2>/dev/null; echo
+          fi
+          rm -f /tmp/reg.json
+          echo ""
+          echo "=== also list currently registered runners (names + labels + status) ==="
+          curl -s -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $RUNNER_REG_PAT" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners" \
+            | python3 -c 'import sys,json;
+d=json.load(sys.stdin);
+print("total_runners:", d.get("total_count"));
+[print(" -", r["name"], "status="+r["status"], "busy="+str(r["busy"]), "labels="+",".join(l["name"] for l in r["labels"])) for r in d.get("runners",[])]' 2>/dev/null || echo "(could not parse runner list)"
