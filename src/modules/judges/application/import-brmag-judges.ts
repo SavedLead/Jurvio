@@ -161,21 +161,6 @@ export async function importBrmagJudges(
   let judges = 0, services = 0, activeJudges = 0, skipped = 0, failedRows = 0;
   const limit = Math.min(Math.max(options.limit ?? 50_000, 1), 50_000);
 
-  async function resolveCourt(tx: Sql, institution: string, state: string | null): Promise<string> {
-    const norm = normalizeKey(institution);
-    const existing = existingCourtByName.get(norm);
-    if (existing) return existing;
-    const [court] = await tx<{ id: string }[]>`
-      INSERT INTO court (public_id, provider_id, provider_court_id, name, jurisdiction, verification, source_artifact_id)
-      VALUES (${createPublicId("court")}, ${providerId}, ${`brmag:${norm}`}, ${institution}, ${state}, 'verified', ${artifactId})
-      ON CONFLICT (provider_id, provider_court_id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
-      RETURNING id
-    `;
-    if (!court) throw new Error(`BR/MAG court ${institution} was not persisted`);
-    createdCourtKeys.add(norm);
-    return court.id;
-  }
-
   for (const record of records.slice(0, limit)) {
     const judgeId = (record.judge_id ?? "").trim();
     const branch = judgeId ? brmagBranch(judgeId) : null;
@@ -196,9 +181,28 @@ export async function importBrmagJudges(
     const before = { judges, services, activeJudges };
     try {
       await sql.begin(async (tx) => {
+        // Resolve (reuse existing / create new) an Article I court within this
+        // judge's transaction. Defined here so it closes over the correctly-typed
+        // transaction handle; new courts are always re-upserted, never cached, so
+        // a rollback can never leave a dangling id for the next judge.
+        const resolveCourt = async (institution: string, state: string | null): Promise<string> => {
+          const norm = normalizeKey(institution);
+          const existing = existingCourtByName.get(norm);
+          if (existing) return existing;
+          const [court] = await tx<{ id: string }[]>`
+            INSERT INTO court (public_id, provider_id, provider_court_id, name, jurisdiction, verification, source_artifact_id)
+            VALUES (${createPublicId("court")}, ${providerId}, ${`brmag:${norm}`}, ${institution}, ${state}, 'verified', ${artifactId})
+            ON CONFLICT (provider_id, provider_court_id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+            RETURNING id
+          `;
+          if (!court) throw new Error(`BR/MAG court ${institution} was not persisted`);
+          createdCourtKeys.add(norm);
+          return court.id;
+        };
+
         // Court for the primary (most recent) judicial appointment.
         const primary = judicialPositions[judicialPositions.length - 1]!;
-        const primaryCourtId = await resolveCourt(tx, (primary.institution ?? "").trim(), (primary.state ?? "").trim() || null);
+        const primaryCourtId = await resolveCourt((primary.institution ?? "").trim(), (primary.state ?? "").trim() || null);
 
         // Dedup: a judge already in the Article III roster (fjc_id set and matched)
         // keeps their identity; otherwise match by brmag_id, then by court+name.
@@ -247,7 +251,7 @@ export async function importBrmagJudges(
           const position = judicialPositions[index]!;
           const courtId = index === judicialPositions.length - 1
             ? primaryCourtId
-            : await resolveCourt(tx, (position.institution ?? "").trim(), (position.state ?? "").trim() || null);
+            : await resolveCourt((position.institution ?? "").trim(), (position.state ?? "").trim() || null);
           const startedOn = parseBrmagDate(position.date_start);
           const endedOn = parseBrmagDate(position.date_end);
           const inserted = await tx`
