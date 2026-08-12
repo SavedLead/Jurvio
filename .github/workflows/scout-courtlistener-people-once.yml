@@ -16,6 +16,7 @@ permissions:
 jobs:
   scout:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
     env:
       CL_TOKEN: ${{ secrets.COURTLISTENER_API_TOKEN }}
