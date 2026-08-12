@@ -1,6 +1,7 @@
 import type postgres from "postgres";
 import { importFjcJudges } from "./import-fjc-judges";
 import { importBrmagJudges } from "./import-brmag-judges";
+import { importJudgePhotos } from "./import-judge-photos";
 import { matchJudgesToCases } from "./match-judges";
 import { recordRepairAction } from "@/modules/ingestion/application/pg-job-queue";
 
@@ -194,6 +195,27 @@ export async function runJudgeAutopilot(sql: Sql): Promise<JudgeAutopilotSnapsho
           `${snapshot.pendingMatches} opinion author observation(s) pending`, "repaired", result);
       } catch (error) {
         await audit(sql, "advance_judge_matching", "judge matching was blocked", "failed",
+          { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    // Judge portraits from Wikidata / Wikimedia Commons. Weekly cadence — portraits
+    // change rarely and the SPARQL fetch is heavy — and only when some roster judge
+    // still lacks a photo.
+    const [photo] = await sql<{ lastAt: string | null; missing: string }[]>`
+      SELECT (SELECT max(occurred_at)::text FROM ingestion_repair_action
+                WHERE detector = 'judge-autopilot' AND action = 'refresh_judge_photos') AS "lastAt",
+             (SELECT count(*)::text FROM judge
+                WHERE (fjc_nid IS NOT NULL OR brmag_id IS NOT NULL) AND photo_url IS NULL) AS missing
+    `;
+    const photoLast = photo?.lastAt ? new Date(photo.lastAt).getTime() : 0;
+    const photoStale = !photoLast || Date.now() - photoLast > 7 * 24 * 60 * 60 * 1_000;
+    if (photoStale && Number(photo?.missing ?? 0) > 0) {
+      try {
+        const result = await importJudgePhotos(sql);
+        await audit(sql, "refresh_judge_photos", "judge portraits refreshed from Wikidata/Wikimedia", "repaired", result);
+      } catch (error) {
+        await audit(sql, "refresh_judge_photos", "judge portrait source unavailable", "failed",
           { error: error instanceof Error ? error.message : String(error) });
       }
     }

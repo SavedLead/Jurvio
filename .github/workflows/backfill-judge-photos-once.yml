@@ -1,0 +1,71 @@
+name: Backfill judge photos (one-shot, VPC route)
+
+# One-shot: run the Wikidata/Wikimedia judge-photo importer immediately inside the
+# live worker-supervisor container (rather than waiting for the autopilot's weekly
+# photo cadence), then report how many judges now have a portrait, split by
+# authority. Read-through to the importer only; no schema changes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backfill-judge-photos
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run photo importer and report coverage
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          sup="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-supervisor' --format '{{.ID}}' | head -n1)"
+          [ -n "$sup" ] || { echo "::error::worker-supervisor container not running"; exit 1; }
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::postgres container not running"; exit 1; }
+
+          echo "=== Running judge-photo importer (Wikidata/Wikimedia) ==="
+          sudo -n docker exec "$sup" node jobs/import-judge-photos.mjs
+
+          echo ""
+          echo "=== Photo coverage AFTER import ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT jsonb_pretty(jsonb_build_object(
+            'with_photo_total', (SELECT count(*) FROM judge WHERE photo_url IS NOT NULL),
+            'article_iii_with_photo', (SELECT count(*) FROM judge WHERE photo_url IS NOT NULL AND fjc_nid IS NOT NULL),
+            'article_i_with_photo', (SELECT count(*) FROM judge WHERE photo_url IS NOT NULL AND brmag_id IS NOT NULL AND fjc_nid IS NULL),
+            'roster_total', (SELECT count(*) FROM judge WHERE fjc_nid IS NOT NULL OR brmag_id IS NOT NULL)
+          ));"
+
+          echo ""
+          echo "=== Sample judges with photos ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "SELECT display_name, left(photo_url, 70) AS photo_url
+            FROM judge WHERE photo_url IS NOT NULL ORDER BY random() LIMIT 8;"
+          REMOTE
