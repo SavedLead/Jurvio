@@ -25,6 +25,28 @@ export default async function JudgeControlCenterPage() {
   const dashboard = await getJudgeControlCenter(db());
   const s = dashboard.snapshot;
   const healthy = s.roster >= 1_000 && s.services > 0 && s.published >= s.roster;
+
+  // Authorized judgeships: Article III counts are set by statute (28 U.S.C. §1, §44,
+  // §133); bankruptcy judgeships are authorized by the Judicial Conference. "Filled"
+  // is judges currently in active commission in our verified roster; senior judges
+  // serve additionally and do not occupy an authorized seat, so they are counted
+  // separately rather than against the seat total.
+  const AUTHORIZED: Record<string, number> = { scotus: 9, appeals: 179, district: 677, bankruptcy: 349 };
+  const SEAT_LABEL: Record<string, string> = {
+    scotus: "Supreme Court", appeals: "Courts of Appeals", district: "District Courts", bankruptcy: "Bankruptcy Courts",
+  };
+  const seatRows = (["scotus", "appeals", "district", "bankruptcy"] as const).map((cat) => {
+    const inCat = dashboard.judges.filter((j) => (j.category ?? "other") === cat);
+    const filled = inCat.filter((j) => j.status === "active").length;
+    const senior = inCat.filter((j) => j.status === "senior").length;
+    const authorized = AUTHORIZED[cat] ?? 0;
+    return { cat, authorized, filled, senior, vacant: Math.max(0, authorized - filled) };
+  });
+  const seatTotals = seatRows.reduce((a, r) => ({
+    authorized: a.authorized + r.authorized, filled: a.filled + r.filled,
+    senior: a.senior + r.senior, vacant: a.vacant + r.vacant,
+  }), { authorized: 0, filled: 0, senior: 0, vacant: 0 });
+
   return <main className={styles.page}>
     <header className={styles.header}>
       <div><p>Judge Autopilot</p><h1>Federal judge control center</h1>
@@ -41,6 +63,30 @@ export default async function JudgeControlCenterPage() {
       <article><span>Needs review</span><strong>{count(s.reviewMatches)}</strong></article>
     </section>
     <p className={styles.fresh}>Authoritative roster last received: {date(s.latestRosterAt)}. Dashboard generated {date(dashboard.generatedAt)}.</p>
+    <section className={styles.panel}><h2>Seats &amp; vacancies</h2>
+      <p className={styles.fresh}>Authorized judgeships are fixed by statute (Article III) and the Judicial Conference (bankruptcy). Filled = judges currently in active commission in the verified roster; vacant = authorized − filled. Senior judges serve additionally and do not occupy an authorized seat. Magistrate positions are authorized per district and are excluded here.</p>
+      <div className={styles.table}>
+        <table>
+          <thead><tr><th>Branch</th><th>Authorized seats</th><th>Filled</th><th>Vacant</th><th>Senior (additional)</th></tr></thead>
+          <tbody>
+            {seatRows.map((r) => <tr key={r.cat}>
+              <td>{SEAT_LABEL[r.cat]}</td>
+              <td>{count(r.authorized)}</td>
+              <td>{count(r.filled)}</td>
+              <td className={r.vacant > 0 ? styles.bad : styles.ok}>{count(r.vacant)}</td>
+              <td>{count(r.senior)}</td>
+            </tr>)}
+            <tr style={{ fontWeight: 700 }}>
+              <td>Total</td>
+              <td>{count(seatTotals.authorized)}</td>
+              <td>{count(seatTotals.filled)}</td>
+              <td className={seatTotals.vacant > 0 ? styles.bad : styles.ok}>{count(seatTotals.vacant)}</td>
+              <td>{count(seatTotals.senior)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
     <section className={styles.panel}><h2>Every imported federal judge</h2>
       <JudgeRosterTable judges={dashboard.judges} />
     </section>
