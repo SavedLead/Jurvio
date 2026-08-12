@@ -13,12 +13,39 @@ type Sql = ReturnType<typeof postgres>;
 // CourtListener free BULK people-db (quarterly CSVs on public S3 — no token, no
 // rate limit). Enriches the Article I bench (magistrate + bankruptcy) that
 // Wikidata does not cover: a CourtListener person id per matched judge, plus a
-// free.law portrait where CourtListener has one. Matched by exact normalized
-// name, and only when unambiguous on both sides — never overwriting an existing
-// photo, so a wrong face can never land on the wrong judge.
+// free.law portrait where the Free Law Project has one. Matched by exact
+// normalized name, and only when unambiguous on both sides — never overwriting an
+// existing photo, so a wrong face can never land on the wrong judge.
 const BULK = "https://com-courtlistener-storage.s3.amazonaws.com";
 const CL_PERSON_BASE = "https://www.courtlistener.com/person";
-const PORTRAIT_BASE = "https://portraits.free.law/v2";
+// Free Law Project judge-pics portrait manifest (an array of {person, path}) and
+// the hosted image URL it builds: https://portraits.free.law/v2/{size}/{path}.jpeg
+// (see freelawproject/judge-pics judge_pics/search.py). The manifest — keyed by
+// CourtListener person id — is the source of truth for which judges actually have
+// a portrait, rather than CourtListener's own has_photo flag.
+const PORTRAIT_MANIFEST =
+  "https://raw.githubusercontent.com/freelawproject/judge-pics/main/judge_pics/data/people.json";
+const PORTRAIT_BASE = "https://portraits.free.law/v2/256";
+
+async function fetchPortraitManifest(): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const response = await fetch(PORTRAIT_MANIFEST, {
+      headers: { "user-agent": "Jurvio judge enrichment/1.0" }, signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) return map;
+    const entries = (await response.json()) as Array<{ person?: number | string; path?: string }>;
+    for (const entry of entries) {
+      const person = entry.person === undefined || entry.person === null ? "" : String(entry.person).trim();
+      const path = (entry.path ?? "").trim();
+      if (person && path && !map.has(person)) map.set(person, path);
+    }
+  } catch {
+    // A missing/unreachable manifest simply means no portraits this run — the
+    // person-id enrichment below is unaffected.
+  }
+  return map;
+}
 
 async function latestBulkKey(prefix: string): Promise<string> {
   const response = await fetch(`${BULK}/?list-type=2&prefix=bulk-data/${prefix}`, {
@@ -58,12 +85,13 @@ function displayName(row: Record<string, string>): string {
     .map((part) => (part ?? "").trim()).filter(Boolean).join(" ");
 }
 
-// The free.law v2 portrait URL scheme is inferred, so every portrait is proven to
-// resolve before it is ever written to (or kept on) a judge. A HEAD is tried
-// first; some CDNs answer HEAD with 405/501, so a 1-byte ranged GET is the
-// fallback. Only a 2xx image response counts as resolved — anything else (404,
-// network error, non-image) is treated as absent so a broken URL can never land
-// on a public judge page.
+// Even with the manifest as the source of truth, every portrait is proven to
+// resolve before it is written to (or kept on) a judge — a belt-and-suspenders
+// guard against a stale manifest path or a moved image. A HEAD is tried first;
+// some CDNs answer HEAD with 405/501/403, so a 1-byte ranged GET is the fallback.
+// Only a 2xx image response counts as resolved — anything else (404, network
+// error, non-image) is treated as absent so a broken URL can never land on a
+// public judge page.
 async function portraitResolves(url: string): Promise<boolean> {
   const looksImage = (response: Response): boolean =>
     response.ok && (response.headers.get("content-type") ?? "").toLowerCase().startsWith("image/");
@@ -83,13 +111,15 @@ async function portraitResolves(url: string): Promise<boolean> {
 }
 
 export async function importCourtListenerPeople(sql: Sql): Promise<{
-  people: number; articleIPeople: number; withPhoto: number; photosChecked: number;
+  people: number; articleIPeople: number; manifestPortraits: number; photosChecked: number;
   photosSet: number; photosHealed: number; factsSet: number; ambiguous: number;
 }> {
   const [peopleKey, positionsKey] = await Promise.all([
     latestBulkKey("people-db-people"), latestBulkKey("people-db-positions"),
   ]);
-  const [peopleCsv, positionsCsv] = await Promise.all([fetchCsvBz2(peopleKey), fetchCsvBz2(positionsKey)]);
+  const [peopleCsv, positionsCsv, portraitByPerson] = await Promise.all([
+    fetchCsvBz2(peopleKey), fetchCsvBz2(positionsKey), fetchPortraitManifest(),
+  ]);
   const people = parseCsv(peopleCsv);
   const positions = parseCsv(positionsCsv);
 
@@ -112,19 +142,20 @@ export async function importCourtListenerPeople(sql: Sql): Promise<{
   }
 
   // Normalized name -> CourtListener person, keeping only names that are unique on
-  // the CourtListener side.
-  const byName = new Map<string, { id: string; slug: string; hasPhoto: boolean; count: number }>();
-  let withPhoto = 0;
+  // the CourtListener side. The portrait path (if the manifest has one for this
+  // person) rides along so a photo can be set without a second lookup.
+  const byName = new Map<string, { id: string; slug: string; portraitPath: string | null; count: number }>();
   for (const personId of articleI) {
     const person = personById.get(personId);
     if (!person) continue;
     const key = normalizeJudgeName(displayName(person));
     if (!key) continue;
-    const hasPhoto = (person.has_photo ?? "").trim().toLowerCase() === "t";
-    if (hasPhoto) withPhoto += 1;
     const existing = byName.get(key);
     if (existing) existing.count += 1;
-    else byName.set(key, { id: personId, slug: (person.slug ?? "").trim(), hasPhoto, count: 1 });
+    else byName.set(key, {
+      id: personId, slug: (person.slug ?? "").trim(),
+      portraitPath: portraitByPerson.get(personId) ?? null, count: 1,
+    });
   }
 
   let photosChecked = 0, photosSet = 0, factsSet = 0, ambiguous = 0;
@@ -145,8 +176,8 @@ export async function importCourtListenerPeople(sql: Sql): Promise<{
       ON CONFLICT DO NOTHING
     `;
     factsSet += 1;
-    if (entry.hasPhoto && judge.photoUrl === null) {
-      const photoUrl = `${PORTRAIT_BASE}/${entry.id}-${entry.slug}.256.jpeg`;
+    if (entry.portraitPath && judge.photoUrl === null) {
+      const photoUrl = `${PORTRAIT_BASE}/${entry.portraitPath}.jpeg`;
       photosChecked += 1;
       if (await portraitResolves(photoUrl)) {
         const updated = await sql`
@@ -177,7 +208,7 @@ export async function importCourtListenerPeople(sql: Sql): Promise<{
   }
 
   return {
-    people: people.length, articleIPeople: articleI.size, withPhoto,
+    people: people.length, articleIPeople: articleI.size, manifestPortraits: portraitByPerson.size,
     photosChecked, photosSet, photosHealed, factsSet, ambiguous,
   };
 }
