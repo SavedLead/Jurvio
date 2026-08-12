@@ -1,0 +1,56 @@
+name: Nightly database backup (out-of-band)
+
+# Keeps a fresh recovery point independent of deploys. Because ordinary app-only
+# releases now skip the slow pre-release backup (see scripts/release-production.sh),
+# this scheduled job guarantees the database is backed up at least nightly. Runs on
+# the box over the private VPC and reuses the same backup-production.sh the release
+# uses (compressed pg_dump, retains the last few).
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC nightly (~02:00-03:00 ET)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-nightly-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 40
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run compressed database backup on the box
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          test -x scripts/backup-production.sh || { echo "::error::backup script missing on box"; exit 1; }
+          scripts/backup-production.sh
+          echo "=== backups on box (newest first) ==="
+          ls -lh backups/ | head -6
+          REMOTE

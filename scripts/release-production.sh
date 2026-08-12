@@ -55,11 +55,6 @@ if docker compose -f "$COMPOSE" ps -q app >/dev/null 2>&1; then
   fi
 fi
 
-if docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
-  printf 'Starting compressed database backup (deadline: %ss)\n' "$BACKUP_TIMEOUT_SECONDS"
-  run_with_timeout "Database backup" "$BACKUP_TIMEOUT_SECONDS" "$DEPLOY_DIR/scripts/backup-production.sh"
-fi
-
 export JURVIO_IMAGE="$NEW_IMAGE"
 # worker-supervisor runs the Judge Autopilot control loop and the durable-queue
 # self-repair supervisor (run-ingestion-supervisor.mjs). It MUST be pulled and
@@ -67,6 +62,21 @@ export JURVIO_IMAGE="$NEW_IMAGE"
 # a stale image and the control loop never picks up new code.
 run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa worker-supervisor
 run_with_timeout "Postgres startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d postgres
+
+# The pre-release backup guards against a bad MIGRATION. An app-only release (no
+# pending migration) changes no data and can always be rolled back by image, so
+# the slow full backup is skipped for it — this is what makes ordinary deploys
+# fast. The nightly out-of-band backup (nightly-db-backup.yml) keeps the recovery
+# point fresh regardless. FAIL-SAFE: the check prints "unknown" on any error, and
+# the backup is skipped ONLY when the count is exactly "0"; every other value
+# (including "unknown") backs up, so this can never reduce safety on a migration.
+PENDING_MIGRATIONS=$(docker compose -f "$COMPOSE" run --rm --no-deps -T app node jobs/list-pending-migrations.mjs 2>/dev/null || echo unknown)
+if [ "$PENDING_MIGRATIONS" = "0" ]; then
+  printf 'No pending migrations — skipping pre-release backup (nightly backup covers recovery).\n'
+elif docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
+  printf 'Pending migrations (%s) — compressed database backup first (deadline: %ss)\n' "$PENDING_MIGRATIONS" "$BACKUP_TIMEOUT_SECONDS"
+  run_with_timeout "Database backup" "$BACKUP_TIMEOUT_SECONDS" "$DEPLOY_DIR/scripts/backup-production.sh"
+fi
 
 # Readiness guard: a release must not proceed to replace the app/workers if
 # postgres bound to the wrong address (which would leave the public app cut off
