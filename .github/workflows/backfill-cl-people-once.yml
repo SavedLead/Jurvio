@@ -52,37 +52,21 @@ jobs:
             --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
           [ -n "$pg" ] || { echo "::error::postgres container not running"; exit 1; }
 
-          echo "=== Running CourtListener bulk people-db enrichment ==="
+          # The importer is self-verifying: it HEAD-checks every free.law portrait
+          # before writing it and re-validates the ones it already wrote, nulling
+          # any that no longer resolve. So the JSON it prints (photosChecked /
+          # photosSet / photosHealed) IS the portrait-convention proof — no
+          # separate probe needed.
+          echo "=== Running CourtListener bulk people-db enrichment (self-verifying) ==="
           sudo -n docker exec "$sup" node jobs/import-courtlistener-people.mjs
 
           echo ""
-          echo "=== Article I photo coverage AFTER ==="
+          echo "=== Article I coverage AFTER ==="
           sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT jsonb_pretty(jsonb_build_object(
             'article_i_with_photo', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL AND fjc_nid IS NULL AND photo_url IS NOT NULL),
             'article_i_total', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL AND fjc_nid IS NULL),
             'courtlistener_facts', (SELECT count(*) FROM judge_profile_fact WHERE fact_type='courtlistener_person_id'),
+            'free_law_portraits', (SELECT count(*) FROM judge WHERE photo_url LIKE 'https://portraits.free.law/%'),
             'total_with_photo', (SELECT count(*) FROM judge WHERE photo_url IS NOT NULL)
           ));"
-
-          echo ""
-          echo "=== Prove the free.law v2 portrait convention resolves from the box ==="
-          # Known CourtListener people with has_photo=t (real ids+slugs). If the
-          # convention https://portraits.free.law/v2/{id}-{slug}.256.jpeg resolves
-          # for these, the URL scheme the importer writes is proven correct.
-          for u in \
-            "https://portraits.free.law/v2/3468-claudia-ann-wilken.256.jpeg" \
-            "https://portraits.free.law/v2/9092-elizabeth-d-laporte.256.jpeg" \
-            "https://portraits.free.law/v2/1429-thelton-eugene-henderson.256.jpeg"; do
-            code="$(sudo -n docker exec "$sup" sh -lc "wget -S -q -O /dev/null --timeout=20 --tries=1 '$u' 2>&1 | grep -Eio 'HTTP/[0-9.]+ [0-9]+' | head -1")"
-            echo "  [$code]  $u"
-          done
-
-          echo ""
-          echo "=== Verify a portrait URL the importer actually wrote (from the DB) ==="
-          sample="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT photo_url FROM judge WHERE photo_url LIKE 'https://portraits.free.law%' ORDER BY random() LIMIT 1")"
-          echo "  db sample: ${sample:-<none set>}"
-          if [ -n "$sample" ]; then
-            code="$(sudo -n docker exec "$sup" sh -lc "wget -S -q -O /dev/null --timeout=20 --tries=1 '$sample' 2>&1 | grep -Eio 'HTTP/[0-9.]+ [0-9]+' | head -1")"
-            echo "  [$code]  $sample"
-          fi
           REMOTE

@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import { importFjcJudges } from "./import-fjc-judges";
 import { importBrmagJudges } from "./import-brmag-judges";
 import { importJudgePhotos } from "./import-judge-photos";
+import { importCourtListenerPeople } from "./import-courtlistener-people";
 import { matchJudgesToCases } from "./match-judges";
 import { recordRepairAction } from "@/modules/ingestion/application/pg-job-queue";
 
@@ -216,6 +217,29 @@ export async function runJudgeAutopilot(sql: Sql): Promise<JudgeAutopilotSnapsho
         await audit(sql, "refresh_judge_photos", "judge portraits refreshed from Wikidata/Wikimedia", "repaired", result);
       } catch (error) {
         await audit(sql, "refresh_judge_photos", "judge portrait source unavailable", "failed",
+          { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    // CourtListener bulk people-db enrichment for the Article I bench (a
+    // CourtListener person id per uniquely matched judge, plus a self-verified
+    // free.law portrait where one exists). The bulk files are quarterly, so a
+    // fortnightly cadence is ample; only runs once an Article I roster exists.
+    // The importer HEAD-checks every portrait it writes and re-validates the ones
+    // it already wrote, so this lane can never plant a broken image.
+    const [enrich] = await sql<{ lastAt: string | null }[]>`
+      SELECT (SELECT max(occurred_at)::text FROM ingestion_repair_action
+                WHERE detector = 'judge-autopilot' AND action = 'enrich_courtlistener_people') AS "lastAt"
+    `;
+    const enrichLast = enrich?.lastAt ? new Date(enrich.lastAt).getTime() : 0;
+    const enrichStale = !enrichLast || Date.now() - enrichLast > 14 * 24 * 60 * 60 * 1_000;
+    if (enrichStale && brmagCount > 0) {
+      try {
+        const result = await importCourtListenerPeople(sql);
+        await audit(sql, "enrich_courtlistener_people",
+          "article I bench enriched from CourtListener bulk people-db", "repaired", result);
+      } catch (error) {
+        await audit(sql, "enrich_courtlistener_people", "CourtListener bulk people-db unavailable", "failed",
           { error: error instanceof Error ? error.message : String(error) });
       }
     }
