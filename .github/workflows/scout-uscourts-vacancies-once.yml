@@ -1,0 +1,81 @@
+name: Scout US Courts vacancies (one-shot, read-only)
+
+# Read-only reconnaissance of the U.S. Courts judicial-vacancy + authorized-
+# judgeship sources, from inside the worker-supervisor container on the box
+# (verified egress). Captures whether structured downloads (XML/CSV) exist and
+# the HTML table shape, before building the seats & vacancies importer. The
+# structured-download probes and table dump are printed LAST so they survive
+# log tailing. No writes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-scout-uscourts
+  cancel-in-progress: false
+
+jobs:
+  scout:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Describe US Courts vacancy sources (read-only)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set +e
+          sup="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-supervisor' --format '{{.ID}}' | head -n1)"
+          [ -n "$sup" ] || { echo "::error::worker-supervisor container not running"; exit 1; }
+          run() { sudo -n docker exec "$sup" sh -lc "$1"; }
+          uget() { sudo -n docker exec "$sup" sh -lc "wget -q -O - --timeout=30 --tries=1 --header='User-Agent: Mozilla/5.0 Jurvio/1.0' '$1' 2>/dev/null"; }
+
+          cur="https://www.uscourts.gov/data-news/judicial-vacancies/current-judicial-vacancies"
+          auth="https://www.uscourts.gov/about-federal-courts/about-federal-judges/authorized-judgeships"
+
+          echo "=== Data-download links on the current-vacancies page (xml/csv/xls/json/file) ==="
+          uget "$cur" | grep -oiE 'href="[^"]*\.(xml|csv|xlsx?|json)"' | sort -u | head -20
+          uget "$cur" | grep -oiE 'href="[^"]*(download|/file/|/sites/default/files/)[^"]*"' | sort -u | head -20
+
+          echo ""
+          echo "=== Probe likely uscourts XML vacancy endpoints (status) ==="
+          for u in \
+            "https://www.uscourts.gov/file/document/judicial-vacancies-xml" \
+            "https://www.uscourts.gov/sites/default/files/vacancies.xml" \
+            "https://www.uscourts.gov/judges-judgeships/judicial-vacancies/current-judicial-vacancies/download"; do
+            printf '  %s -> ' "$u"
+            run "wget -S -q -O /dev/null --timeout=20 --tries=1 --header='User-Agent: Mozilla/5.0' '$u' 2>&1 | grep -Ei 'HTTP/' | tr '\n' ' '"; echo ""
+          done
+
+          echo ""
+          echo "=== Authorized judgeships page: total counts text (District/Circuit/Supreme) ==="
+          uget "$auth" | sed -e 's/<[^>]*>/ /g' | tr -s ' ' | grep -iE 'district|circuit|supreme|court of appeals|total|authorized' | head -30
+
+          echo ""
+          echo "=== Current vacancies HTML table (tags stripped) — PRINTED LAST ==="
+          uget "$cur" | sed -e 's/<\/td>/ | /g' -e 's/<\/tr>/\n/g' -e 's/<[^>]*>//g' | \
+            tr -s ' ' | grep -iE 'vacan|circuit|district|court|[0-9]{2}/[0-9]{2}/[0-9]{4}' | head -60
+          REMOTE
