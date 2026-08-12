@@ -58,8 +58,33 @@ function displayName(row: Record<string, string>): string {
     .map((part) => (part ?? "").trim()).filter(Boolean).join(" ");
 }
 
+// The free.law v2 portrait URL scheme is inferred, so every portrait is proven to
+// resolve before it is ever written to (or kept on) a judge. A HEAD is tried
+// first; some CDNs answer HEAD with 405/501, so a 1-byte ranged GET is the
+// fallback. Only a 2xx image response counts as resolved — anything else (404,
+// network error, non-image) is treated as absent so a broken URL can never land
+// on a public judge page.
+async function portraitResolves(url: string): Promise<boolean> {
+  const looksImage = (response: Response): boolean =>
+    response.ok && (response.headers.get("content-type") ?? "").toLowerCase().startsWith("image/");
+  try {
+    const head = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(20_000) });
+    if (looksImage(head)) return true;
+    if (head.status !== 405 && head.status !== 501 && head.status !== 403) return false;
+  } catch {
+    // fall through to the ranged GET
+  }
+  try {
+    const ranged = await fetch(url, { headers: { range: "bytes=0-0" }, signal: AbortSignal.timeout(20_000) });
+    return looksImage(ranged);
+  } catch {
+    return false;
+  }
+}
+
 export async function importCourtListenerPeople(sql: Sql): Promise<{
-  people: number; articleIPeople: number; withPhoto: number; photosSet: number; factsSet: number; ambiguous: number;
+  people: number; articleIPeople: number; withPhoto: number; photosChecked: number;
+  photosSet: number; photosHealed: number; factsSet: number; ambiguous: number;
 }> {
   const [peopleKey, positionsKey] = await Promise.all([
     latestBulkKey("people-db-people"), latestBulkKey("people-db-positions"),
@@ -102,7 +127,7 @@ export async function importCourtListenerPeople(sql: Sql): Promise<{
     else byName.set(key, { id: personId, slug: (person.slug ?? "").trim(), hasPhoto, count: 1 });
   }
 
-  let photosSet = 0, factsSet = 0, ambiguous = 0;
+  let photosChecked = 0, photosSet = 0, factsSet = 0, ambiguous = 0;
   for (const [key, entry] of byName) {
     if (entry.count !== 1) { ambiguous += 1; continue; }
     // Require the name to be unique among OUR roster judges too.
@@ -122,14 +147,37 @@ export async function importCourtListenerPeople(sql: Sql): Promise<{
     factsSet += 1;
     if (entry.hasPhoto && judge.photoUrl === null) {
       const photoUrl = `${PORTRAIT_BASE}/${entry.id}-${entry.slug}.256.jpeg`;
-      const updated = await sql`
-        UPDATE judge SET photo_url = ${photoUrl}, photo_source_url = ${personUrl}, updated_at = now()
-        WHERE id = ${judge.id} AND photo_url IS NULL
-        RETURNING id
-      `;
-      photosSet += updated.length;
+      photosChecked += 1;
+      if (await portraitResolves(photoUrl)) {
+        const updated = await sql`
+          UPDATE judge SET photo_url = ${photoUrl}, photo_source_url = ${personUrl}, updated_at = now()
+          WHERE id = ${judge.id} AND photo_url IS NULL
+          RETURNING id
+        `;
+        photosSet += updated.length;
+      }
     }
   }
 
-  return { people: people.length, articleIPeople: articleI.size, withPhoto, photosSet, factsSet, ambiguous };
+  // Self-heal: re-validate every free.law portrait already on the roster (these
+  // are only ever written by this lane) and clear any that no longer resolve, so
+  // a stale or wrong URL cannot linger on a public page. Cheap — only this lane's
+  // own photos, a handful of rows.
+  let photosHealed = 0;
+  const existing = await sql<{ id: string; photoUrl: string }[]>`
+    SELECT id, photo_url AS "photoUrl" FROM judge WHERE photo_url LIKE 'https://portraits.free.law/%'
+  `;
+  for (const row of existing) {
+    if (await portraitResolves(row.photoUrl)) continue;
+    await sql`
+      UPDATE judge SET photo_url = NULL, photo_source_url = NULL, updated_at = now()
+      WHERE id = ${row.id} AND photo_url = ${row.photoUrl}
+    `;
+    photosHealed += 1;
+  }
+
+  return {
+    people: people.length, articleIPeople: articleI.size, withPhoto,
+    photosChecked, photosSet, photosHealed, factsSet, ambiguous,
+  };
 }

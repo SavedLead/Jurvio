@@ -52,26 +52,21 @@ jobs:
             --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
           [ -n "$pg" ] || { echo "::error::postgres container not running"; exit 1; }
 
-          echo "=== Running CourtListener bulk people-db enrichment ==="
+          # The importer is self-verifying: it HEAD-checks every free.law portrait
+          # before writing it and re-validates the ones it already wrote, nulling
+          # any that no longer resolve. So the JSON it prints (photosChecked /
+          # photosSet / photosHealed) IS the portrait-convention proof — no
+          # separate probe needed.
+          echo "=== Running CourtListener bulk people-db enrichment (self-verifying) ==="
           sudo -n docker exec "$sup" node jobs/import-courtlistener-people.mjs
 
           echo ""
-          echo "=== Article I photo coverage AFTER ==="
+          echo "=== Article I coverage AFTER ==="
           sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT jsonb_pretty(jsonb_build_object(
             'article_i_with_photo', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL AND fjc_nid IS NULL AND photo_url IS NOT NULL),
             'article_i_total', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL AND fjc_nid IS NULL),
             'courtlistener_facts', (SELECT count(*) FROM judge_profile_fact WHERE fact_type='courtlistener_person_id'),
+            'free_law_portraits', (SELECT count(*) FROM judge WHERE photo_url LIKE 'https://portraits.free.law/%'),
             'total_with_photo', (SELECT count(*) FROM judge WHERE photo_url IS NOT NULL)
           ));"
-
-          echo ""
-          echo "=== Verify a sample free.law portrait URL actually resolves (HTTP status) ==="
-          sample="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
-            \"SELECT photo_url FROM judge WHERE photo_url LIKE 'https://portraits.free.law%' ORDER BY random() LIMIT 1\")"
-          echo "sample: $sample"
-          if [ -n "$sample" ]; then
-            sudo -n docker exec "$sup" sh -lc "wget -S -q -O /dev/null --timeout=20 --tries=1 '$sample' 2>&1 | grep -Ei 'HTTP/' | head -3"
-          else
-            echo "(no free.law portrait URLs were set — CourtListener matches may lack photos)"
-          fi
           REMOTE
