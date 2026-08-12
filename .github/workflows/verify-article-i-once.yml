@@ -1,0 +1,90 @@
+name: Verify Article I bench (read-only, VPC route)
+
+# Read-only proof that the Article I bench (magistrate + bankruptcy judges from
+# the BR/MAG source) imported, published, and is renderable — the counterpart to
+# judge-autopilot-status.yml for the new lane. No writes, no ingestion.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-verify-article-i
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Article I report (read-only, Eastern time)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set +e
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no running jurvio postgres container"; exit 1; }
+          psql() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio "$@"; }
+
+          echo "=== Article I roster totals (magistrate + bankruptcy) ==="
+          psql -Atc "SELECT jsonb_pretty(jsonb_build_object(
+            'brmag_judges', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL),
+            'brmag_active', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL AND active = true),
+            'brmag_published', (SELECT count(*) FROM judge j WHERE j.brmag_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM publication_decision pd WHERE pd.object_type='judge' AND pd.object_id=j.id AND pd.displayable=true)),
+            'brmag_service_terms', (SELECT count(*) FROM judge_service_term WHERE source_system='brmag'),
+            'brmag_courts', (SELECT count(*) FROM court c JOIN provider p ON p.id=c.provider_id WHERE p.code='brmag'),
+            'full_bench_total', (SELECT count(*) FROM judge WHERE fjc_nid IS NOT NULL OR brmag_id IS NOT NULL)
+          ));"
+
+          echo ""
+          echo "=== By branch (service terms) + active split ==="
+          psql -c "SELECT court_category,
+              count(DISTINCT judge_id) AS judges,
+              count(DISTINCT judge_id) FILTER (WHERE ended_on IS NULL) AS still_serving
+            FROM judge_service_term WHERE source_system='brmag'
+            GROUP BY court_category ORDER BY judges DESC;"
+
+          echo ""
+          echo "=== Sample active magistrate + bankruptcy judges ==="
+          psql -c "SELECT j.display_name, jst.court_category, c.name AS court, jst.started_on
+            FROM judge j JOIN judge_service_term jst ON jst.judge_id=j.id AND jst.source_system='brmag'
+            JOIN court c ON c.id=jst.court_id
+            WHERE jst.ended_on IS NULL
+            ORDER BY jst.court_category, j.display_name LIMIT 12;"
+
+          echo ""
+          echo "=== Autopilot BR/MAG refresh actions (proves the loop imported it) ==="
+          psql -c "SET TIME ZONE 'America/New_York'; SELECT occurred_at, action, outcome, left(reason,60) AS reason
+            FROM ingestion_repair_action WHERE detector='judge-autopilot' AND action='refresh_brmag_roster'
+            ORDER BY occurred_at DESC LIMIT 5;"
+
+          echo ""
+          echo "=== Latest refresh_brmag_roster detail (import result) ==="
+          psql -Atc "SELECT jsonb_pretty(detail) FROM ingestion_repair_action
+            WHERE detector='judge-autopilot' AND action='refresh_brmag_roster'
+            ORDER BY occurred_at DESC LIMIT 1;"
+          REMOTE
