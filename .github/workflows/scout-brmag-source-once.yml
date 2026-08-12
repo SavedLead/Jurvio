@@ -3,9 +3,12 @@ name: Scout BR/MAG source (one-shot, read-only)
 # Read-only reconnaissance of the BR/MAG Judge Database (UVA Law Legal Data Lab),
 # the consolidated source for federal magistrate + bankruptcy judges that the FJC
 # Article III directory does not cover. Runs from inside the worker-supervisor
-# container on the production box (which has verified outbound egress), so we can
-# see the exact file formats, columns, counts and a couple of sample rows before
-# building the Article I importer against them. No writes, no ingestion.
+# container on the production box (verified outbound egress) so we can see the
+# exact bulk-file structure (formats, CSV header, JSON shape, photo URL) before
+# building the Article I importer. No writes, no ingestion.
+#
+# The most important output (CSV header, JSON shape, photo URL) is printed LAST so
+# it survives log tailing.
 
 on:
   workflow_dispatch: {}
@@ -42,7 +45,7 @@ jobs:
           CFG
           chmod 600 ~/.ssh/config
 
-      - name: Fetch and describe BR/MAG dataset (read-only)
+      - name: Describe BR/MAG bulk file (read-only)
         run: |
           set -euo pipefail
           ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
@@ -50,42 +53,29 @@ jobs:
           sup="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
             --filter 'label=com.docker.compose.service=worker-supervisor' --format '{{.ID}}' | head -n1)"
           [ -n "$sup" ] || { echo "::error::worker-supervisor container not running"; exit 1; }
-
           base="https://legaldatalab.law.virginia.edu/brmag-judges"
           run() { sudo -n docker exec "$sup" sh -lc "$1"; }
 
-          echo "=== Candidate download URLs (HTTP status + content-type + size) ==="
-          for f in brmag-judges.csv brmag-judges.json brmag-judges.xlsx data-dict.html index.html; do
+          echo "=== Which formats exist (HTTP status + size) ==="
+          for f in brmag-judges.csv brmag-judges.json brmag-judges.xlsx; do
+            printf '  %-22s ' "$f"
             run "wget -S -q -O /dev/null --timeout=25 --tries=1 '$base/$f' 2>&1 | \
-              grep -Ei 'HTTP/|Content-Type|Content-Length' | sed 's/^/  /' ; echo '  ^ $f'"
-            echo ""
+              grep -Ei 'HTTP/|Content-Length' | tr '\n' ' '"; echo ""
           done
 
-          echo "=== CSV: header + first 3 data rows + total line count ==="
-          run "wget -q -O - --timeout=30 --tries=1 '$base/brmag-judges.csv' > /tmp/brmag.csv 2>/dev/null; \
-            if [ -s /tmp/brmag.csv ]; then echo '--- header ---'; head -1 /tmp/brmag.csv; \
-            echo '--- rows 2-4 ---'; sed -n '2,4p' /tmp/brmag.csv; \
-            echo '--- total lines ---'; wc -l < /tmp/brmag.csv; \
-            else echo '(no CSV at that URL)'; fi"
+          echo ""
+          echo "=== Photo URL: raw <img> tags on a detail page ==="
+          run "wget -q -O - --timeout=25 --tries=1 '$base/detail/mag-89.html' 2>/dev/null | \
+            grep -oiE '<img[^>]+src=\"[^\"]+\"' | head -6"
 
           echo ""
-          echo "=== JSON: first 1200 bytes (shape) ==="
-          run "wget -q -O - --timeout=30 --tries=1 '$base/brmag-judges.json' 2>/dev/null | head -c 1200; echo"
+          echo "=== CSV: header + first 2 data rows + total line count ==="
+          run "wget -q -O - --timeout=40 --tries=1 '$base/brmag-judges.csv' > /tmp/b.csv 2>/dev/null; \
+            if [ -s /tmp/b.csv ]; then echo 'HEADER:'; head -1 /tmp/b.csv; \
+            echo 'ROW1:'; sed -n '2p' /tmp/b.csv; echo 'ROW2:'; sed -n '3p' /tmp/b.csv; \
+            echo -n 'LINES: '; wc -l < /tmp/b.csv; else echo '(no CSV)'; fi"
 
           echo ""
-          echo "=== Data dictionary (tags stripped, first 120 lines) ==="
-          run "wget -q -O - --timeout=30 --tries=1 '$base/data-dict.html' 2>/dev/null | \
-            sed -e 's/<[^>]*>/ /g' -e 's/&amp;/\&/g' -e 's/&nbsp;/ /g' | \
-            tr -s ' ' | grep -v '^ *$' | head -120"
-
-          echo ""
-          echo "=== One magistrate detail page + one bankruptcy detail page (tags stripped, head) ==="
-          for d in detail/mag-89.html detail/bnk-464.html; do
-            echo "--- $d ---"
-            run "wget -q -O - --timeout=30 --tries=1 '$base/$d' 2>/dev/null | \
-              grep -Eio '(src=\"[^\"]*\\.(jpg|jpeg|png|webp)\"|photo|image|<title>[^<]*</title>)' | head -8"
-            run "wget -q -O - --timeout=30 --tries=1 '$base/$d' 2>/dev/null | \
-              sed -e 's/<[^>]*>/ /g' | tr -s ' ' | grep -v '^ *$' | head -40"
-            echo ""
-          done
+          echo "=== JSON: first 1500 bytes (shape) — PRINTED LAST ==="
+          run "wget -q -O - --timeout=40 --tries=1 '$base/brmag-judges.json' 2>/dev/null | head -c 1500; echo"
           REMOTE
