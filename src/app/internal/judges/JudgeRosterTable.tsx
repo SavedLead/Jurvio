@@ -204,7 +204,7 @@ export default function JudgeRosterTable({ judges }: { judges: JudgeRow[] }) {
           <tbody>
             {filtered.slice(0, RENDER_CAP).map((j) => (
               <tr key={j.publicId}>
-                <td style={td}><a href={`/judges/${j.publicId}`} target="_blank" rel="noreferrer"
+                <td style={td}><a href={`/internal/judges/${j.publicId}`}
                   style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 600 }}>{j.displayName}</a></td>
                 <td style={td}>{j.courtName ?? <span style={{ color: "#94a3b8" }}>Unmapped</span>}</td>
                 <td style={td}>{CATEGORY_LABEL[j.category ?? "other"]}</td>
