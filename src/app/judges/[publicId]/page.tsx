@@ -37,6 +37,11 @@ export default async function JudgePage({ params }: { params: Promise<{ publicId
   return <main className={directory.page}>
     <nav className={directory.breadcrumbs}><Link href="/judges">Judges</Link> / {judge.displayName}</nav>
     <header className={directory.profileHeader}>
+      {judge.photoUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={judge.photoUrl} alt={`Official portrait of ${judge.displayName}`} width={120} height={150}
+          style={{ float: "right", marginLeft: 20, borderRadius: 10, objectFit: "cover", border: "1px solid #e2e8f0" }} />
+      ) : null}
       <p className={directory.eyebrow}>Source-backed federal judge analytics</p>
       <h1>{judge.displayName}</h1>
       <p>{judge.courtName ?? "Court information unavailable"}. Statistics describe the verified public records Jurvio currently covers, not every matter ever handled by the judge.</p>

@@ -13,6 +13,8 @@ export interface JudgeDirectorySummary {
 export interface JudgeAnalyticsProfile extends JudgeDirectorySummary {
   verification: string;
   indexable: boolean;
+  photoUrl: string | null;
+  photoSourceUrl: string | null;
   plaintiffWins: number;
   defendantWins: number;
   mixedOutcomes: number;
@@ -89,6 +91,7 @@ export async function getPublicJudge(sql: Sql, publicId: string): Promise<JudgeA
   const [summary] = await sql<Array<Omit<JudgeAnalyticsProfile, "natureOfSuit" | "recentCases">>>`
     SELECT judge.public_id AS "publicId", judge.display_name AS "displayName",
       court.name AS "courtName", judge.verification::text AS verification,
+      judge.photo_url AS "photoUrl", judge.photo_source_url AS "photoSourceUrl",
       COALESCE((
         SELECT decision.indexable FROM publication_decision decision
         WHERE decision.object_type = 'judge' AND decision.object_id = judge.id
