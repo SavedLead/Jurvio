@@ -1,0 +1,77 @@
+name: Backfill CourtListener people (one-shot, VPC route)
+
+# One-shot: run the CourtListener bulk people-db enrichment inside the live
+# worker-supervisor container, then report Article I photo coverage and verify a
+# sample free.law portrait URL actually resolves (the portrait convention is
+# inferred, so this proves it before the lane is trusted / wired to the autopilot).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backfill-cl-people
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 25
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run CourtListener enrichment and verify
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set +e
+          sup="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-supervisor' --format '{{.ID}}' | head -n1)"
+          [ -n "$sup" ] || { echo "::error::worker-supervisor container not running"; exit 1; }
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::postgres container not running"; exit 1; }
+
+          echo "=== Running CourtListener bulk people-db enrichment ==="
+          sudo -n docker exec "$sup" node jobs/import-courtlistener-people.mjs
+
+          echo ""
+          echo "=== Article I photo coverage AFTER ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT jsonb_pretty(jsonb_build_object(
+            'article_i_with_photo', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL AND fjc_nid IS NULL AND photo_url IS NOT NULL),
+            'article_i_total', (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL AND fjc_nid IS NULL),
+            'courtlistener_facts', (SELECT count(*) FROM judge_profile_fact WHERE fact_type='courtlistener_person_id'),
+            'total_with_photo', (SELECT count(*) FROM judge WHERE photo_url IS NOT NULL)
+          ));"
+
+          echo ""
+          echo "=== Verify a sample free.law portrait URL actually resolves (HTTP status) ==="
+          sample="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            \"SELECT photo_url FROM judge WHERE photo_url LIKE 'https://portraits.free.law%' ORDER BY random() LIMIT 1\")"
+          echo "sample: $sample"
+          if [ -n "$sample" ]; then
+            sudo -n docker exec "$sup" sh -lc "wget -S -q -O /dev/null --timeout=20 --tries=1 '$sample' 2>&1 | grep -Ei 'HTTP/' | head -3"
+          else
+            echo "(no free.law portrait URLs were set — CourtListener matches may lack photos)"
+          fi
+          REMOTE
