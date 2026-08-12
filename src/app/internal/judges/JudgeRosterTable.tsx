@@ -126,7 +126,7 @@ export default function JudgeRosterTable({ judges }: { judges: JudgeRow[] }) {
           <option value="former">Former</option>
         </select>
         <select style={{ ...ctrl, maxWidth: 320 }} value={court} onChange={(e) => setCourt(e.target.value)}>
-          <option value="all">{category === "all" ? "Any court" : `Any ${CATEGORY_LABEL[category].toLowerCase()}`}</option>
+          <option value="all">{category === "all" ? "Any court" : `Any ${(CATEGORY_LABEL[category] ?? "court").toLowerCase()}`}</option>
           {courtsInCategory.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <select style={{ ...ctrl, maxWidth: 260 }} value={president} onChange={(e) => setPresident(e.target.value)}>
