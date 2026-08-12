@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { importFjcJudges } from "./import-fjc-judges";
+import { importBrmagJudges } from "./import-brmag-judges";
 import { matchJudgesToCases } from "./match-judges";
 import { recordRepairAction } from "@/modules/ingestion/application/pg-job-queue";
 
@@ -45,11 +46,11 @@ export async function getJudgeAutopilotSnapshot(sql: Sql): Promise<JudgeAutopilo
     pendingMatches: string; reviewMatches: string; latestRosterAt: string | null;
   }>>`
     SELECT
-      (SELECT count(*) FROM judge WHERE fjc_nid IS NOT NULL AND verification = 'verified')::text AS roster,
-      (SELECT count(*) FROM judge WHERE fjc_nid IS NOT NULL AND active = true)::text AS active,
-      (SELECT count(*) FROM judge_service_term WHERE source_system = 'fjc' AND verification = 'verified')::text AS services,
+      (SELECT count(*) FROM judge WHERE (fjc_nid IS NOT NULL OR brmag_id IS NOT NULL) AND verification = 'verified')::text AS roster,
+      (SELECT count(*) FROM judge WHERE (fjc_nid IS NOT NULL OR brmag_id IS NOT NULL) AND active = true)::text AS active,
+      (SELECT count(*) FROM judge_service_term WHERE source_system IN ('fjc', 'brmag') AND verification = 'verified')::text AS services,
       (SELECT count(*) FROM judge_case_assignment)::text AS assignments,
-      (SELECT count(*) FROM judge j WHERE j.fjc_nid IS NOT NULL AND EXISTS (
+      (SELECT count(*) FROM judge j WHERE (j.fjc_nid IS NOT NULL OR j.brmag_id IS NOT NULL) AND EXISTS (
         SELECT 1 FROM publication_decision pd WHERE pd.object_type = 'judge' AND pd.object_id = j.id
           AND pd.displayable = true
       ))::text AS published,
@@ -87,9 +88,10 @@ async function publishVerifiedRoster(sql: Sql): Promise<number> {
       summary_eligible, reason_code, rule_version
     )
     SELECT 'judge', judge.id, true, true, true, false, false,
-      'verified_fjc_identity', 'judge-publication-v3'
+      CASE WHEN judge.fjc_nid IS NOT NULL THEN 'verified_fjc_identity' ELSE 'verified_brmag_identity' END,
+      'judge-publication-v3'
     FROM judge
-    WHERE judge.fjc_nid IS NOT NULL AND judge.verification = 'verified'
+    WHERE (judge.fjc_nid IS NOT NULL OR judge.brmag_id IS NOT NULL) AND judge.verification = 'verified'
       AND NOT EXISTS (
         SELECT 1 FROM publication_decision decision
         WHERE decision.object_type = 'judge' AND decision.object_id = judge.id
@@ -142,6 +144,31 @@ export async function runJudgeAutopilot(sql: Sql): Promise<JudgeAutopilotSnapsho
           "repaired", result);
       } catch (error) {
         await audit(sql, "refresh_fjc_roster", "authoritative roster unavailable", "failed",
+          { error: error instanceof Error ? error.message : String(error) });
+      }
+      snapshot = await getJudgeAutopilotSnapshot(sql);
+      assessment = assessJudgeAutopilot(snapshot);
+    }
+
+    // Article I bench (magistrate + bankruptcy) from the BR/MAG source. Governed
+    // independently of the FJC Article III roster — its own provider provenance
+    // and staleness window — then the shared publication step below publishes any
+    // newly imported Article I judges.
+    const [brmag] = await sql<{ count: string; latest: string | null }[]>`
+      SELECT (SELECT count(*) FROM judge WHERE brmag_id IS NOT NULL)::text AS count,
+        (SELECT max(ra.retrieved_at)::text FROM raw_artifact ra
+          JOIN provider p ON p.id = ra.provider_id WHERE p.code = 'brmag') AS latest
+    `;
+    const brmagCount = Number(brmag?.count ?? 0);
+    const brmagLatest = brmag?.latest ? new Date(brmag.latest).getTime() : 0;
+    const brmagStale = !brmagLatest || Date.now() - brmagLatest > ROSTER_STALE_HOURS * 60 * 60 * 1_000;
+    if (brmagCount < 1 || brmagStale) {
+      try {
+        const result = await importBrmagJudges(sql, { limit: 50_000 });
+        await audit(sql, "refresh_brmag_roster",
+          brmagCount < 1 ? "article I bench missing" : "article I bench stale", "repaired", result);
+      } catch (error) {
+        await audit(sql, "refresh_brmag_roster", "article I bench source unavailable", "failed",
           { error: error instanceof Error ? error.message : String(error) });
       }
       snapshot = await getJudgeAutopilotSnapshot(sql);

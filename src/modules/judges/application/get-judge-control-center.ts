@@ -8,7 +8,8 @@ export async function getJudgeControlCenter(sql: Sql) {
     getJudgeAutopilotSnapshot(sql),
     sql<Array<{
       publicId: string; displayName: string; courtName: string | null; active: boolean | null;
-      category: "scotus" | "appeals" | "district" | "other" | null;
+      category: "scotus" | "appeals" | "district" | "bankruptcy" | "magistrate" | "other" | null;
+      authority: "article_iii" | "article_i";
       status: "active" | "senior" | "former"; appointedYear: number | null;
       president: string | null; presidentParty: string | null;
       serviceTerms: number; assignments: number; observations: number; published: boolean;
@@ -17,6 +18,8 @@ export async function getJudgeControlCenter(sql: Sql) {
       SELECT judge.public_id AS "publicId", judge.display_name AS "displayName",
         court.name AS "courtName", judge.active,
         primary_term.court_category AS category,
+        CASE WHEN primary_term.court_category IN ('bankruptcy', 'magistrate')
+          THEN 'article_i' ELSE 'article_iii' END AS authority,
         primary_term.appointing_president AS president,
         primary_term.appointing_president_party AS "presidentParty",
         (SELECT extract(year FROM min(t2.commission_date))::int FROM judge_service_term t2
@@ -41,11 +44,11 @@ export async function getJudgeControlCenter(sql: Sql) {
       LEFT JOIN LATERAL (
         SELECT t.court_category, t.appointing_president, t.appointing_president_party
         FROM judge_service_term t
-        WHERE t.judge_id = judge.id AND t.source_system = 'fjc'
+        WHERE t.judge_id = judge.id AND t.source_system IN ('fjc', 'brmag')
         ORDER BY (t.ended_on IS NULL) DESC, t.started_on DESC NULLS LAST
         LIMIT 1
       ) primary_term ON true
-      WHERE judge.fjc_nid IS NOT NULL
+      WHERE judge.fjc_nid IS NOT NULL OR judge.brmag_id IS NOT NULL
       GROUP BY judge.id, court.name, primary_term.court_category,
         primary_term.appointing_president, primary_term.appointing_president_party
       ORDER BY judge.active DESC NULLS LAST, judge.display_name

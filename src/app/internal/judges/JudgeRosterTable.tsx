@@ -6,7 +6,8 @@ export type JudgeRow = {
   publicId: string;
   displayName: string;
   courtName: string | null;
-  category: "scotus" | "appeals" | "district" | "other" | null;
+  category: "scotus" | "appeals" | "district" | "bankruptcy" | "magistrate" | "other" | null;
+  authority: "article_iii" | "article_i";
   status: "active" | "senior" | "former";
   appointedYear: number | null;
   president: string | null;
@@ -18,11 +19,27 @@ export type JudgeRow = {
 };
 
 const CATEGORY_LABEL: Record<string, string> = {
-  all: "All branches",
+  all: "All courts",
   scotus: "Supreme Court",
   appeals: "Courts of Appeals",
   district: "District Courts",
+  bankruptcy: "Bankruptcy Courts",
+  magistrate: "Magistrate Judges",
   other: "Other",
+};
+
+// The two constitutional authorities and which court categories belong to each.
+// Article III = life-tenured (SCOTUS / Appeals / District); Article I = fixed-term
+// magistrate + bankruptcy judges.
+const AUTHORITY_LABEL: Record<string, string> = {
+  all: "Full bench",
+  article_iii: "Article III",
+  article_i: "Article I",
+};
+const AUTHORITY_CATEGORIES: Record<string, readonly string[]> = {
+  all: ["all", "scotus", "appeals", "district", "bankruptcy", "magistrate"],
+  article_iii: ["all", "scotus", "appeals", "district"],
+  article_i: ["all", "magistrate", "bankruptcy"],
 };
 
 const STATUS_LABEL: Record<JudgeRow["status"], string> = {
@@ -38,6 +55,7 @@ type SortKey =
 const RENDER_CAP = 500;
 
 export default function JudgeRosterTable({ judges }: { judges: JudgeRow[] }) {
+  const [authority, setAuthority] = useState<string>("all");
   const [category, setCategory] = useState<string>("all");
   const [court, setCourt] = useState<string>("all");
   const [status, setStatus] = useState<string>("all");
@@ -46,22 +64,36 @@ export default function JudgeRosterTable({ judges }: { judges: JudgeRow[] }) {
   const [sortKey, setSortKey] = useState<SortKey>("displayName");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
 
-  // Category tab counts (independent of the other filters).
-  const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: judges.length, scotus: 0, appeals: 0, district: 0, other: 0 };
-    for (const j of judges) counts[j.category ?? "other"] = (counts[j.category ?? "other"] ?? 0) + 1;
+  // Judges within the selected constitutional authority (Article III / Article I /
+  // full bench). The branch tabs, counts and court list all scope to this.
+  const inAuthority = useMemo(
+    () => judges.filter((j) => authority === "all" || j.authority === authority),
+    [judges, authority],
+  );
+
+  // Authority tab counts (independent of the branch/other filters).
+  const authorityCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: judges.length, article_iii: 0, article_i: 0 };
+    for (const j of judges) counts[j.authority] = (counts[j.authority] ?? 0) + 1;
     return counts;
   }, [judges]);
+
+  // Branch tab counts within the selected authority.
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: inAuthority.length };
+    for (const j of inAuthority) counts[j.category ?? "other"] = (counts[j.category ?? "other"] ?? 0) + 1;
+    return counts;
+  }, [inAuthority]);
 
   // Courts + presidents available within the selected branch, for the dropdowns.
   const courtsInCategory = useMemo(() => {
     const set = new Set<string>();
-    for (const j of judges) {
+    for (const j of inAuthority) {
       if (category !== "all" && (j.category ?? "other") !== category) continue;
       if (j.courtName) set.add(j.courtName);
     }
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [judges, category]);
+  }, [inAuthority, category]);
 
   const presidents = useMemo(() => {
     const set = new Set<string>();
@@ -71,7 +103,7 @@ export default function JudgeRosterTable({ judges }: { judges: JudgeRow[] }) {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const rows = judges.filter((j) => {
+    const rows = inAuthority.filter((j) => {
       if (category !== "all" && (j.category ?? "other") !== category) return false;
       if (court !== "all" && j.courtName !== court) return false;
       if (status !== "all" && j.status !== status) return false;
@@ -88,7 +120,9 @@ export default function JudgeRosterTable({ judges }: { judges: JudgeRow[] }) {
       return String(av).localeCompare(String(bv)) * sortDir;
     });
     return rows;
-  }, [judges, category, court, status, president, search, sortKey, sortDir]);
+  }, [inAuthority, category, court, status, president, search, sortKey, sortDir]);
+
+  const selectAuthority = (next: string) => { setAuthority(next); setCategory("all"); setCourt("all"); };
 
   const toggleSort = (key: SortKey) => {
     if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
@@ -104,14 +138,28 @@ export default function JudgeRosterTable({ judges }: { judges: JudgeRow[] }) {
     background: active ? "#4f46e5" : "#fff", color: active ? "#fff" : "#334155",
     fontWeight: 600, fontSize: 13, cursor: "pointer",
   });
+  const seg = (active: boolean): CSSProperties => ({
+    padding: "6px 12px", borderRadius: 8, border: "1px solid " + (active ? "#0f172a" : "#cbd5e1"),
+    background: active ? "#0f172a" : "#fff", color: active ? "#fff" : "#334155",
+    fontWeight: 600, fontSize: 13, cursor: "pointer",
+  });
+  const branchTabs = AUTHORITY_CATEGORIES[authority] ?? AUTHORITY_CATEGORIES.all ?? [];
 
   return (
     <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+        <span style={{ fontSize: 11, color: "#64748b", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>Bench</span>
+        {(["all", "article_iii", "article_i"] as const).map((a) => (
+          <button key={a} type="button" style={seg(authority === a)} onClick={() => selectAuthority(a)}>
+            {AUTHORITY_LABEL[a]} <span style={{ opacity: 0.75 }}>({authorityCounts[a]?.toLocaleString() ?? 0})</span>
+          </button>
+        ))}
+      </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        {(["all", "scotus", "appeals", "district"] as const).map((c) => (
+        {branchTabs.map((c) => (
           <button key={c} type="button" style={tab(category === c)}
             onClick={() => { setCategory(c); setCourt("all"); }}>
-            {CATEGORY_LABEL[c]} <span style={{ opacity: 0.75 }}>({categoryCounts[c]?.toLocaleString() ?? 0})</span>
+            {CATEGORY_LABEL[c] ?? c} <span style={{ opacity: 0.75 }}>({categoryCounts[c]?.toLocaleString() ?? 0})</span>
           </button>
         ))}
       </div>
