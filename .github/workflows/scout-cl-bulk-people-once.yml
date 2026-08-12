@@ -1,0 +1,48 @@
+name: Scout CourtListener bulk people-db (one-shot, read-only)
+
+# Discovers the current CourtListener bulk-data people-db files (people +
+# positions CSVs on public S3 — no token, no rate limit) and dumps their headers
+# + a couple of sample rows, so the Article I enrichment importer is written
+# against the real columns. GitHub-hosted; no VPC. No writes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      BULK: https://com-courtlistener-storage.s3.amazonaws.com
+    steps:
+      - name: Discover people-db bulk files and dump headers
+        run: |
+          set -uo pipefail
+          echo "=== A) people-db keys under bulk-data/ (name + size) ==="
+          curl -s "$BULK/?list-type=2&prefix=bulk-data/people-db" \
+            | tr '<' '\n' | grep -iE '^Key>bulk-data/people|^Size>' | sed 's/Key>//; s/Size>//' | paste - - | head -40
+
+          people=$(curl -s "$BULK/?list-type=2&prefix=bulk-data/people-db-people" | tr '<' '\n' | grep -ioE 'bulk-data/people-db-people[^>]*\.csv[^>]*' | sort | tail -1)
+          positions=$(curl -s "$BULK/?list-type=2&prefix=bulk-data/people-db-positions" | tr '<' '\n' | grep -ioE 'bulk-data/people-db-positions[^>]*\.csv[^>]*' | sort | tail -1)
+          echo ""
+          echo "latest people file:    $people"
+          echo "latest positions file: $positions"
+
+          dump() { # $1 = key
+            case "$1" in
+              *.bz2) curl -s "$BULK/$1" | bzcat 2>/dev/null | head -3 ;;
+              *.gz)  curl -s "$BULK/$1" | zcat  2>/dev/null | head -3 ;;
+              *)     curl -s "$BULK/$1" | head -3 ;;
+            esac
+          }
+
+          echo ""
+          echo "=== B) people-db-people header + 1 row (PRINTED LAST-ish) ==="
+          [ -n "$people" ] && dump "$people" | cut -c1-1500
+
+          echo ""
+          echo "=== C) people-db-positions header + 2 rows ==="
+          [ -n "$positions" ] && dump "$positions" | cut -c1-1500
