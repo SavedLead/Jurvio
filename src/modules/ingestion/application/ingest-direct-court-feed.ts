@@ -87,7 +87,7 @@ export async function ingestDirectCourtFeed(
               ${event.caption}, ${event.eventType === "case_filed" ? event.filedAt.slice(0, 10) : null},
               'verified', 'draft', ${artifact.id}, ${event.filedAt}
             )
-            ON CONFLICT (court_id, docket_number)
+            ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
             DO UPDATE SET source_artifact_id = EXCLUDED.source_artifact_id,
               source_updated_at = EXCLUDED.source_updated_at, updated_at = now()
             RETURNING id, public_id, publication::text

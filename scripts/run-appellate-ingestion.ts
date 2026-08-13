@@ -242,7 +242,7 @@ async function downloadAndExtract(item: {
           ${item.caption}, ${item.decided_on}, 'verified', 'published',
           ${artifact.id}, now()
         )
-        ON CONFLICT (court_id, docket_number)
+        ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
         DO UPDATE SET caption=CASE WHEN length(EXCLUDED.caption) > length(legal_case.caption)
             THEN EXCLUDED.caption ELSE legal_case.caption END,
           decided_on=COALESCE(EXCLUDED.decided_on, legal_case.decided_on),
