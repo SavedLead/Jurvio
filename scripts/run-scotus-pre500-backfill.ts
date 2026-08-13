@@ -12,6 +12,9 @@ import { fetchOfficialBoundVolumeIndex } from "@/modules/ingestion/providers/sco
 // per-volume completion checkpoints and advisory locks stay valid).
 const oldestVolume = 1;
 const maxVolume = 587;
+// Volumes at or below this are the nominative era that only the bound-volume PDF
+// path can supply; they are worked first (see queue ordering in main()).
+const NOMINATIVE_PRIORITY_MAX = 90;
 const volumeWorkers = 4;
 const leaseKey = "jurvio:scotus-pre500:coordinator";
 const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
@@ -81,6 +84,22 @@ function lastJsonObject(output: string): Record<string, unknown> | null {
 function numberField(value: Record<string, unknown> | null, field: string): number {
   const raw = value?.[field];
   return typeof raw === "number" && Number.isFinite(raw) ? raw : -1;
+}
+
+// U.S. Reports volumes that already have at least one candidate (volume parsed
+// from the leading integer of the citation). Used to skip already-covered volumes.
+// On any query error, returns an empty set so the sweep still runs (it will simply
+// not skip anything that cycle).
+async function safeCoveredVolumes(sql: Sql): Promise<Set<number>> {
+  try {
+    const rows = await sql<{ vol: number | null }[]>`
+      SELECT DISTINCT ((regexp_match(citation, '^([0-9]+) U'))[1])::int AS vol
+      FROM official_opinion_candidate WHERE citation ~ '^[0-9]+ U'
+    `;
+    return new Set(rows.map((row) => row.vol).filter((vol): vol is number => typeof vol === "number"));
+  } catch {
+    return new Set<number>();
+  }
 }
 
 async function drainPublication(volume: number): Promise<Record<string, unknown>> {
@@ -281,10 +300,32 @@ async function main(): Promise<void> {
       .filter((volume) => volume >= oldestVolume && volume <= maxVolume)
       .sort((left, right) => right - left);
     const newestVolume = availableVolumes[0] ?? 0;
+    // Volumes above the nominative range that ALREADY have candidates are covered
+    // by the Library of Congress (91-501) or modern (502+) paths. Re-ingesting them
+    // through the bound-volume path never completes -- their cases are published
+    // under a different provider's identifier, so the per-volume publication proof
+    // fails and the volume is retried every cycle forever (observed: ~9,700 runs,
+    // zero new completions). Skip them so the coordinator spends its cycles on the
+    // genuinely-missing nominative era instead of thrashing.
+    const covered = await safeCoveredVolumes(sql);
     const volumes: number[] = [];
     for (const volume of availableVolumes) {
-      if (!await isComplete(volume)) volumes.push(volume);
+      if (await isComplete(volume)) continue;
+      if (volume > NOMINATIVE_PRIORITY_MAX && covered.has(volume)) continue;
+      volumes.push(volume);
     }
+    // Work the nominative era (2-90) FIRST. It is the only genuinely missing part
+    // of the corpus -- 91-501 are already covered by the Library of Congress path
+    // and 502+ by the modern bound-volume path -- but it sits at the bottom of the
+    // top-down queue, so without this it is never reached behind the large backlog
+    // of higher, already-covered volumes. Nominative ascending, then the rest
+    // descending as before.
+    volumes.sort((left, right) => {
+      const leftNominative = left <= NOMINATIVE_PRIORITY_MAX ? 0 : 1;
+      const rightNominative = right <= NOMINATIVE_PRIORITY_MAX ? 0 : 1;
+      if (leftNominative !== rightNominative) return leftNominative - rightNominative;
+      return leftNominative === 0 ? left - right : right - left;
+    });
 
     let publicationTail: Promise<void> = Promise.resolve();
     const drainSerially = async (volume: number): Promise<Record<string, unknown>> => {
