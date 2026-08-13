@@ -113,6 +113,23 @@ export async function publishVerifiedOfficialScotusOpinions(
     const clusterIds = new Set(compatible.map((match) => match.cluster_id));
 
     if (compatible.length === 0) {
+      // Historical SCOTUS cases are identified by their official reporter citation
+      // ("100 U.S. 5"), globally unique per decided case. The docket number ("No. 5")
+      // resets every Term, so keying a case on it -- as this branch used to -- made
+      // each new historical case with a reused docket silently overwrite an unrelated
+      // one. A candidate with no citation cannot be uniquely placed, so hold it until
+      // enrichment supplies one rather than collapse it onto a docket collision.
+      const officialCitation = candidate.citation?.trim() ? candidate.citation.trim() : null;
+      if (!officialCitation) {
+        held += 1;
+        await sql`
+          UPDATE official_opinion_candidate
+          SET reviewer_notes = 'Held: awaiting official reporter citation for case identity',
+            last_seen_at = now()
+          WHERE id = ${candidate.id}
+        `;
+        continue;
+      }
       const metadataMatches = await sql<Array<{
         case_id: string;
         case_public_id: string;
@@ -122,25 +139,13 @@ export async function publishVerifiedOfficialScotusOpinions(
           legal_case.caption AS case_caption
         FROM legal_case
         JOIN court ON court.id = legal_case.court_id
-        WHERE lower(regexp_replace(legal_case.docket_number, '[^a-zA-Z0-9]', '', 'g'))
-          = lower(regexp_replace(${candidate.docket_number}, '[^a-zA-Z0-9]', '', 'g'))
+        WHERE legal_case.official_citation = ${officialCitation}
           AND lower(court.provider_court_id) = 'scotus'
         ORDER BY legal_case.id
       `;
-      const exactMetadataMatches = metadataMatches.filter((match) =>
-        isSameScotusCase(normalizedCaseName, match.case_caption)
-      );
-
-      if (exactMetadataMatches.length > 1) {
-        held += 1;
-        await sql`
-          UPDATE official_opinion_candidate
-          SET reviewer_notes = 'Held: ambiguous canonical SCOTUS case metadata match',
-            last_seen_at = now()
-          WHERE id = ${candidate.id}
-        `;
-        continue;
-      }
+      // The citation is unique (legal_case_scotus_citation_key), so at most one row
+      // matches; it is authoritative regardless of caption normalization drift.
+      const exactMetadataMatches = metadataMatches;
 
       const metadataCase = await sql.begin(async (tx) => {
         let existing = exactMetadataMatches[0];
@@ -174,10 +179,10 @@ export async function publishVerifiedOfficialScotusOpinions(
             ) VALUES (
               ${createPublicId("case")}, ${court.id}, ${candidate.docket_number},
               ${normalizedCaseName}, NULL, ${candidate.filed_on},
-              ${expandScotusTermYear(candidate.term_year)}, ${candidate.citation}, 'verified', 'published',
+              ${expandScotusTermYear(candidate.term_year)}, ${officialCitation}, 'verified', 'published',
               ${candidate.opinion_artifact_id}, now()
             )
-            ON CONFLICT (court_id, docket_number)
+            ON CONFLICT (court_id, official_citation) WHERE official_citation IS NOT NULL
             DO UPDATE SET caption = EXCLUDED.caption, decided_on = EXCLUDED.decided_on,
               supreme_court_term = EXCLUDED.supreme_court_term,
               official_citation = EXCLUDED.official_citation,
@@ -204,7 +209,7 @@ export async function publishVerifiedOfficialScotusOpinions(
             UPDATE legal_case
             SET filed_on = NULL, decided_on = ${candidate.filed_on},
               supreme_court_term = ${expandScotusTermYear(candidate.term_year)},
-              official_citation = ${candidate.citation}, verification = 'verified',
+              official_citation = ${officialCitation}, verification = 'verified',
               publication = 'published', source_artifact_id = ${candidate.opinion_artifact_id},
               updated_at = now()
             WHERE id = ${existing.case_id}
