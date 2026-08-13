@@ -81,9 +81,16 @@ export async function publishVerifiedOfficialScotusOpinions(
 
   let published = 0;
   let held = 0;
+  let failed = 0;
   const publicRecords: Array<{ caseId: string; documentIds: string[] }> = [];
 
   for (const candidate of candidates) {
+    // Per-candidate isolation: a single malformed or genuinely-duplicate candidate
+    // (e.g. two source records that resolve to the same citation+docket) must never
+    // abort the whole batch and stall every other case behind it. Its own
+    // transaction rolls back on throw; we record the failure and move on so the
+    // rest of the queue drains.
+    try {
     const normalizedCaseName = normalizeScotusCaption(candidate.case_name);
     const matches = await sql<Match[]>`
       SELECT legal_case.id AS case_id, legal_case.public_id AS case_public_id,
@@ -509,7 +516,22 @@ export async function publishVerifiedOfficialScotusOpinions(
 
     published += 1;
     publicRecords.push({ caseId: first.case_public_id, documentIds: documentPublicIds });
+    } catch (error) {
+      failed += 1;
+      // Quarantine the candidate so it is skipped by the review-queue selection
+      // (which only takes pending_review/approved) instead of being retried and
+      // re-failing every cycle; keep the real reason for later triage/re-queue.
+      await sql`
+        UPDATE official_opinion_candidate
+        SET review_status = 'rejected',
+          reviewer_notes = ${`Publish error (isolated, batch continued): ${
+            error instanceof Error ? error.message : String(error)
+          }`.slice(0, 500)},
+          last_seen_at = now()
+        WHERE id = ${candidate.id}
+      `.catch(() => {});
+    }
   }
 
-  return { selected: candidates.length, published, held, publicRecords };
+  return { selected: candidates.length, published, held, failed, publicRecords };
 }
