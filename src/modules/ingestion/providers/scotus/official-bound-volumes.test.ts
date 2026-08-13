@@ -117,6 +117,33 @@ describe("nominative-reporter U.S. Reports (volumes 1-90)", () => {
     ]);
   });
 
+  it("falls back to running headers for the two-column early reporters (Cranch)", () => {
+    // Volume 9 (5 Cranch, February Term 1809) prints a TWO-COLUMN "Table of the
+    // Names of the Cases Reported" the line parser cannot read, so identity must
+    // come from the "<page> SUPREME COURT / CaseName" running headers instead. The
+    // middle page carries an OCR name blip that must be merged back into its case.
+    const cranch = [
+      "SUPREME COURT OF THE UNITED STATES,\nIN FEBRUARY TERM, 1809.\nVOL. V.",
+      "A TABLE OF THE NAMES OF THE CASES REPORTED IN THIS VOLUME.\n"
+        + "Alexander v. Mayor .. 1   Deveaux, Bank of United States v. .. 6\n"
+        + "Tucker v. Oxley .. 3   United States v. Peters .. 7\n",
+      "3                    SUPREME COURT                    [Feb'y\nTucker v. Oxley.\nmarshalling assets, where specialty creditors",
+      "4                    SUPREME COURT                    [Feb'y\nTucker v. Oxleyy.\nOCR-variant blip page still inside the same case",
+      "5                    SUPREME COURT                    [Feb'y\nTucker v. Oxley.\ncontinued merits text",
+      "6                    SUPREME COURT                    [Feb'y\nBank of the United States v. Deveaux.\nthat they are all citizens",
+      "7                   SUPREME COURT                    [Feb'y\nUnited States v. Peters.\nthe whole course of these proceedings",
+    ].join("\f");
+    const records = parseNominativeBoundVolumeText(cranch, {
+      volume: 9, termYear: "09",
+      pdfUrl: "https://www.supremecourt.gov/pdfs/USReports/USREPORTS-9_PDFA.pdf",
+    });
+    expect(records).toEqual([
+      expect.objectContaining({ caseName: "Tucker v. Oxley", citation: "9 U.S. 3", filedOn: "1809-01-01", startPage: 3, endPage: 5 }),
+      expect.objectContaining({ caseName: "Bank of the United States v. Deveaux", citation: "9 U.S. 6", startPage: 6, endPage: 6 }),
+      expect.objectContaining({ caseName: "United States v. Peters", citation: "9 U.S. 7", startPage: 7, endPage: null }),
+    ]);
+  });
+
   it("locates each case's first PDF page from the running-header page numbers", () => {
     // Physically plausible layout (report page <= physical page): three cases at
     // star pages 1, 3, 5. The middle case's header drifts one ahead of its table
