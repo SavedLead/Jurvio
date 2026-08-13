@@ -218,8 +218,126 @@ export function parseNominativeTableOfCases(text: string, volume: number): Array
     .sort((a, b) => a.reportPage - b.reportPage);
 }
 
+// A running-head caption line ("Tucker v. Oxley."). Strip a leading or trailing
+// page number and a trailing bracketed term marker ("[Feb'y"), then accept it only
+// if it reads like a case caption. Used by the running-header fallback below.
+function nominativeCaptionFromHeader(line: string): string | null {
+  const stripped = line
+    .replace(/^\s*\d{1,4}\s+/, "")
+    .replace(/\s*\[[^\]]*$/, "")
+    .replace(/\s+\d{1,4}\s*\]?\.?\s*$/, "")
+    .replaceAll(/\s+/g, " ")
+    .trim()
+    .replace(/\.$/, "");
+  if (stripped.length < 4 || stripped.length > 90) return null;
+  if (/\bv\.\s+\S/.test(stripped) || /^(?:Ex parte|In re|In the Matter of)\b/i.test(stripped)) return stripped;
+  return null;
+}
+
+function nominativeRunningHeader(page: string): { report: number | null; name: string | null } {
+  const lines = page.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 6);
+  let report: number | null = null;
+  let name: string | null = null;
+  for (const line of lines) {
+    if (report === null) {
+      const lead = /^(\d{1,4})\s+SUPREME COURT/i.exec(line);
+      const trail = /SUPREME COURT[^0-9]{0,14}(\d{1,4})\s*\]?\.?\s*$/i.exec(line);
+      if (lead) report = Number.parseInt(lead[1] ?? "", 10);
+      else if (trail) report = Number.parseInt(trail[1] ?? "", 10);
+    }
+    if (name === null && !/SUPREME COURT/i.test(line)) {
+      const caption = nominativeCaptionFromHeader(line);
+      if (caption) name = caption;
+    }
+  }
+  return { report, name };
+}
+
+// Fallback used when the Table of Cases cannot be parsed -- the earliest reporters
+// (Dallas/Cranch/Wheaton/Peters, vols ~2-41) print a two-column table with a
+// different heading the line parser cannot read. Every reporter, however, prints a
+// "<page> SUPREME COURT / CaseName" running header on each opinion page, so case
+// identity and boundaries are recovered from those instead. Consecutive pages that
+// share a running-head name are one case; a lone name blip sandwiched between two
+// pages of the same case (OCR variance) is merged back.
+export function parseNominativeByRunningHeaders(
+  pages: string[], source: OfficialBoundVolume, filedOn: string,
+): OfficialBoundOpinion[] {
+  type Group = { key: string; name: string; report: number | null; pdf: number; span: number };
+  type Scan = { pdf: number; key: string; name: string; report: number | null };
+  const scan: Scan[] = [];
+  for (const [index, page] of pages.entries()) {
+    const { report, name } = nominativeRunningHeader(page);
+    if (!name) continue;
+    const key = name.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
+    if (key.length < 3) continue;
+    scan.push({ pdf: index + 1, key, name, report: report !== null && report >= 1 && report <= pages.length ? report : null });
+  }
+  const groups: Group[] = [];
+  for (let i = 0; i < scan.length; i += 1) {
+    const entry = scan[i];
+    if (!entry) continue;
+    const current = groups[groups.length - 1];
+    if (current && current.key === entry.key) {
+      current.span += 1;
+      if (entry.report !== null && (current.report === null || entry.report < current.report)) current.report = entry.report;
+      continue;
+    }
+    // A one-page name blip (OCR variance): if the NEXT page with a header reverts to
+    // the current case's name, absorb this page rather than opening a spurious case.
+    const next = scan[i + 1];
+    if (current && next && next.key === current.key) {
+      current.span += 1;
+      continue;
+    }
+    groups.push({ key: entry.key, name: entry.name, report: entry.report, pdf: entry.pdf, span: 1 });
+  }
+  const byPage = new Map<number, Group>();
+  for (const group of groups) {
+    if (group.report === null) continue;
+    const existing = byPage.get(group.report);
+    if (!existing || group.pdf < existing.pdf) byPage.set(group.report, group);
+  }
+  const ordered = [...byPage.values()].sort((a, b) => a.pdf - b.pdf);
+  let lastStart = 0;
+  const starts = ordered.map((group) => {
+    const startPage = Math.max(group.pdf, lastStart + 1);
+    lastStart = startPage;
+    return {
+      sourceRecordId: `nom:${source.volume}:${group.report}`,
+      releaseNumber: null as null,
+      filedOn,
+      docketNumber: `${source.volume}US${group.report}`,
+      caseName: group.name,
+      authorCode: null as null,
+      citation: `${source.volume} U.S. ${group.report}`,
+      pdfUrl: `${source.pdfUrl}#page=${startPage}`,
+      startPage,
+    };
+  });
+  const unique = [...new Map(starts.map((record) => [record.sourceRecordId, record])).values()]
+    .sort((a, b) => a.startPage - b.startPage);
+  return unique.map((record, index): OfficialBoundOpinion => ({
+    ...record,
+    endPage: unique[index + 1] ? (unique[index + 1]?.startPage ?? record.startPage) - 1 : null,
+  }));
+}
+
 export function parseNominativeBoundVolumeText(text: string, source: OfficialBoundVolume): OfficialBoundOpinion[] {
   const pages = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\f");
+  const termYear = parseNominativeTermYear(text);
+  const filedOn = `${termYear ?? Number.parseInt(`18${source.termYear}`, 10)}-01-01`;
+  const tableOpinions = parseNominativeFromTable(text, source, pages, filedOn);
+  // The earliest reporters use a two-column table the line parser cannot read;
+  // fall back to the running headers, and keep whichever recovered more cases.
+  if (tableOpinions.length >= 3) return tableOpinions;
+  const headerOpinions = parseNominativeByRunningHeaders(pages, source, filedOn);
+  return headerOpinions.length > tableOpinions.length ? headerOpinions : tableOpinions;
+}
+
+function parseNominativeFromTable(
+  text: string, source: OfficialBoundVolume, pages: string[], filedOn: string,
+): OfficialBoundOpinion[] {
   // Skip table entries whose star page exceeds the physical page count: that report
   // page cannot exist in this volume, so the number is an OCR error (e.g. 317 read
   // as 817). Dropping it avoids emitting a wrong citation; the case is simply left
@@ -227,8 +345,6 @@ export function parseNominativeBoundVolumeText(text: string, source: OfficialBou
   const reported = parseNominativeTableOfCases(text, source.volume)
     .filter((entry) => entry.reportPage <= pages.length);
   if (reported.length === 0) return [];
-  const termYear = parseNominativeTermYear(text);
-  const filedOn = `${termYear ?? Number.parseInt(`18${source.termYear}`, 10)}-01-01`;
   // Observed (pdf page -> report page) anchors from the running headers.
   const anchors: Array<{ pdf: number; report: number }> = [];
   for (const [index, page] of pages.entries()) {
