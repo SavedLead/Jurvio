@@ -105,6 +105,28 @@ jobs:
             FROM ingestion_run WHERE run_type = 'official_scotus_bound_volume' AND status = 'failed'
             ORDER BY started_at DESC LIMIT 6;" || echo "(bound-volume failure query failed)"
 
+          echo "=== SCOTUS collapse confirmation + citation-migration preconditions (read-only) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
+            WITH scotus AS (
+              SELECT lc.* FROM legal_case lc JOIN court c ON c.id = lc.court_id
+              WHERE lower(c.provider_court_id) = 'scotus'
+            )
+            SELECT 'scotus_cases=' || count(*) FROM scotus
+            UNION ALL SELECT 'scotus_documents=' || count(*)
+              FROM document d JOIN scotus s ON s.id = d.case_id
+            UNION ALL SELECT 'scotus_cases_missing_term=' || count(*) FROM scotus WHERE supreme_court_term IS NULL
+            UNION ALL SELECT 'scotus_cases_missing_citation=' || count(*) FROM scotus WHERE official_citation IS NULL
+            UNION ALL SELECT 'scotus_duplicate_citations=' || coalesce(sum(c-1),0) FROM (
+              SELECT count(*) c FROM scotus WHERE supreme_court_term IS NOT NULL AND official_citation IS NOT NULL
+              GROUP BY court_id, official_citation HAVING count(*) > 1) d
+            UNION ALL SELECT 'nonscotus_rows_with_term=' || count(*)
+              FROM legal_case lc JOIN court c ON c.id = lc.court_id
+              WHERE lower(c.provider_court_id) <> 'scotus' AND lc.supreme_court_term IS NOT NULL
+            UNION ALL SELECT 'nonscotus_dupe_docket_where_term_null=' || coalesce(sum(c-1),0) FROM (
+              SELECT count(*) c FROM legal_case lc JOIN court c2 ON c2.id = lc.court_id
+              WHERE lower(c2.provider_court_id) <> 'scotus' AND lc.supreme_court_term IS NULL
+              GROUP BY lc.court_id, lc.docket_number HAVING count(*) > 1) e;" || echo "(scotus precondition query failed)"
+
           echo "=== Federal / district ingestion diagnostic (read-only) ==="
           echo "--- federal/district/courtlistener/bulk ingestion_run by type/status ---"
           sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
