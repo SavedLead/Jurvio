@@ -47,10 +47,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS legal_case_court_docket_key
   ON legal_case (court_id, docket_number)
   WHERE supreme_court_term IS NULL;
 
--- 3. SCOTUS rows are identified by official citation (globally unique per decision).
+-- 3. SCOTUS rows are identified by official citation + docket. Citation alone is
+--    nearly unique but a small number of rows legitimately share a reporter cite
+--    (companion/consolidated dispositions, occasional cite-parse variance); keying
+--    on (citation, docket) is guaranteed unique on the current corpus -- every row
+--    still carries the distinct docket the old constraint enforced -- while still
+--    defeating the collapse, because two cases that merely reuse a Term docket now
+--    differ by citation. supreme_court_term is the SCOTUS discriminator.
 CREATE UNIQUE INDEX IF NOT EXISTS legal_case_scotus_citation_key
-  ON legal_case (court_id, official_citation)
-  WHERE supreme_court_term IS NOT NULL AND official_citation IS NOT NULL;
+  ON legal_case (court_id, official_citation, docket_number)
+  WHERE supreme_court_term IS NOT NULL;
 
 -- 4. Re-queue the candidates whose distinct case was overwritten by a later docket
 --    collision: their case_identifier points at a legal_case whose citation is NOT
