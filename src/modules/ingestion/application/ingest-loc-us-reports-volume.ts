@@ -1,64 +1,10 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import type postgres from "postgres";
 import type { ArtifactStore } from "./artifact-store";
 import { finishIngestionRun, finishIngestionRunItem, startIngestionRun, startIngestionRunItem } from "./ingestion-run";
-import { fetchLocUsReportsPdf, fetchLocUsReportsVolume } from "../providers/scotus/loc-us-reports";
+import { fetchLocUsReportsVolume } from "../providers/scotus/loc-us-reports";
 
 type Sql = ReturnType<typeof postgres>;
-const execFileAsync = promisify(execFile);
-const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
-
-function parseDecision(text: string) {
-  const date = /\bDecided\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/m.exec(text);
-  const docket = /\bNos?\.\s+([^\n.]+?)\.(?:\s|$)/m.exec(text);
-  if (!date || !docket) throw new Error("Official case PDF lacks deterministic docket or decision date");
-  const month = months.indexOf((date[1] ?? "").toLowerCase()) + 1;
-  if (month < 1) throw new Error("Official case PDF has unsupported decision month");
-  const decidedOn = `${date[3]}-${String(month).padStart(2, "0")}-${date[2]?.padStart(2, "0")}`;
-  const year = Number(date[3]);
-  const term = month >= 10 ? year : year - 1;
-  return {
-    docketNumber: (docket[1] ?? "").replaceAll(/[–—]/g, "-").replaceAll(/\s+/g, " ").trim(),
-    decidedOn,
-    termYear: String(term).slice(-2),
-  };
-}
-
-async function extractDecisionMetadata(body: Uint8Array, sourceRecordId: string) {
-  const directory = await mkdtemp(path.join(tmpdir(), "jurvio-loc-usreports-"));
-  try {
-    const safe = sourceRecordId.replaceAll(/[^a-zA-Z0-9_-]/g, "_");
-    const pdfPath = path.join(directory, `${safe}.pdf`);
-    const textPath = path.join(directory, `${safe}.txt`);
-    await writeFile(pdfPath, body);
-
-    // Pre-500 case PDFs can be hundreds of pages. Docket and decision date are normally
-    // in the opening pages, so probe only those first and fall back to the full document
-    // for unusual reporter formatting. The public-text worker performs the one full
-    // extraction needed for the reader after metadata publication.
-    for (const pageArgs of [["-f", "1", "-l", "12"], []] as const) {
-      await execFileAsync(
-        "pdftotext",
-        [...pageArgs, "-layout", pdfPath, textPath],
-        { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
-      );
-      const text = await readFile(textPath, "utf8");
-      if (text.replaceAll(/\s+/g, "").length < 500) continue;
-      try {
-        return parseDecision(text);
-      } catch {
-        // Retry once against the complete PDF before holding the official record.
-      }
-    }
-    throw new Error("Official case PDF lacks deterministic docket or decision date");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-}
 
 export async function ingestLocUsReportsVolume(
   sql: Sql,
@@ -108,49 +54,34 @@ export async function ingestLocUsReportsVolume(
     for (const record of selected) {
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
       try {
-        const pdf = await fetchLocUsReportsPdf(record.pdfUrl);
-        // The earliest U.S. Reports volumes (roughly pre-1875) are seriatim-era
-        // opinions with no "Nos. X ... Decided" docket/decision line, so the PDF
-        // metadata parse cannot yield a docket. Rather than drop these historically
-        // important cases, fall back to the authoritative LoC listing: the reporter
-        // citation is a unique case identity and the decision year is published in
-        // the item title. A synthetic volume+page docket keeps each case distinct.
-        const metadata = await extractDecisionMetadata(pdf.body, record.sourceRecordId).catch(() => ({
-          docketNumber: `${record.volume}US${record.reporterPage}`,
-          decidedOn: `${record.decisionYear}-01-01`,
-          termYear: String(record.decisionYear).slice(-2),
-        }));
-        const stored = await artifactStore.putIfAbsent({
-          key: `scotus/loc-us-reports/${options.volume}/${record.sourceRecordId.replaceAll(":", "-")}-${pdf.contentHash}.pdf`,
-          mediaType: pdf.mediaType,
-          body: pdf.body,
-          contentHash: pdf.contentHash,
-        });
-        const [pdfArtifact] = await sql<{ id: string }[]> `
-          INSERT INTO raw_artifact (provider_id, ingestion_run_id, source_uri, source_record_id,
-            content_hash, object_key, media_type, retrieved_at, response_metadata)
-          VALUES (${provider.id}, ${runId}, ${pdf.sourceUri}, ${record.sourceRecordId},
-            ${pdf.contentHash}, ${stored.objectKey}, ${pdf.mediaType}, ${pdf.retrievedAt},
-            ${sql.json({ volume: options.volume, citation: record.citation, itemUrl: record.itemUrl })})
-          ON CONFLICT (provider_id, source_uri, content_hash) DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at RETURNING id
-        `;
-        if (!pdfArtifact) throw new Error("Library of Congress PDF artifact was not persisted");
-        await sql `
+        // Metadata-first ingestion. The Library of Congress collection catalog already
+        // carries the authoritative case name, reporter citation ("N U.S. Page") and
+        // decision year for every case in the volume, so the case record is created
+        // directly from that JSON -- no per-case PDF download. LoC rate-limits per-case
+        // PDF fetches (429), and the PDF is only needed later for the reader, which the
+        // text-extraction worker fetches lazily from source_pdf_uri. The reporter
+        // citation is the case identity; a synthetic volume+page docket keeps rows
+        // distinct without a docket number the seriatim era never assigned. The volume
+        // listing artifact stands in as the source artifact.
+        const contentHash = createHash("sha256")
+          .update(`${record.sourceRecordId}|${record.citation}|${record.caseName}`)
+          .digest("hex");
+        await sql`
           INSERT INTO official_opinion_candidate (provider_id, term_year, source_record_id,
             release_number, docket_number, case_name, filed_on, author_code, citation,
             source_pdf_uri, source_content_hash, listing_artifact_id, opinion_artifact_id,
             source_page_start, source_page_end)
-          VALUES (${provider.id}, ${metadata.termYear}, ${record.sourceRecordId}, NULL,
-            ${metadata.docketNumber}, ${record.caseName}, ${metadata.decidedOn}, NULL, ${record.citation},
-            ${record.pdfUrl}, ${pdf.contentHash}, ${listingArtifact.id}, ${pdfArtifact.id}, NULL, NULL)
+          VALUES (${provider.id}, ${String(record.decisionYear).slice(-2)}, ${record.sourceRecordId}, NULL,
+            ${`${record.volume}US${record.reporterPage}`}, ${record.caseName},
+            ${`${record.decisionYear}-01-01`}, NULL, ${record.citation},
+            ${record.pdfUrl}, ${contentHash}, ${listingArtifact.id}, ${listingArtifact.id}, NULL, NULL)
           ON CONFLICT (provider_id, source_record_id) DO UPDATE SET
             docket_number = EXCLUDED.docket_number, case_name = EXCLUDED.case_name,
             filed_on = EXCLUDED.filed_on, citation = EXCLUDED.citation,
             source_pdf_uri = EXCLUDED.source_pdf_uri, source_content_hash = EXCLUDED.source_content_hash,
-            listing_artifact_id = EXCLUDED.listing_artifact_id, opinion_artifact_id = EXCLUDED.opinion_artifact_id,
-            last_seen_at = now()
+            listing_artifact_id = EXCLUDED.listing_artifact_id, last_seen_at = now()
         `;
-        await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, documentCount: 1 });
+        await finishIngestionRunItem(sql, { runId, sourceRecordId: record.sourceRecordId, documentCount: 0 });
         if (!sawFailure) lastContiguousSourceRecordId = record.sourceRecordId;
         succeeded += 1;
       } catch (error) {
