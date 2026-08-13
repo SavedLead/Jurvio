@@ -1,0 +1,88 @@
+name: Probe old U.S. Reports volume (read-only)
+
+# One-shot, read-only structural dump of a single pre-91 U.S. Reports bound
+# volume straight from supremecourt.gov, used to design and validate the
+# nominative-era (volumes 1-90) ingestion parser. Downloads USREPORTS-{N}_PDFA.pdf
+# inside the running app container (which already reaches supremecourt.gov over
+# the box's egress), runs pdftotext, and prints the page count, the front-matter
+# "Table of Cases" section, and a spread of running-header samples. Performs NO
+# writes, NO ingestion, NO publication. Runs on the self-hosted builder over the
+# private VPC, identical transport to ingestion-status.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      volume:
+        description: U.S. Reports volume number (2-90)
+        required: true
+        default: "49"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-probe-old-volume
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      VOLUME: ${{ inputs.volume }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Dump volume structure (read-only)
+        run: |
+          set -euo pipefail
+          case "$VOLUME" in ''|*[!0-9]*) echo "::error::volume must be numeric"; exit 1;; esac
+          if [ "$VOLUME" -lt 2 ] || [ "$VOLUME" -gt 90 ]; then echo "::error::volume must be 2-90"; exit 1; fi
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$VOLUME" <<'REMOTE'
+          set -euo pipefail
+          VOL="$1"
+          app="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=app' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo "::error::no running jurvio app container"; exit 1; }
+
+          sudo -n docker exec -e VOL="$VOL" "$app" sh -c '
+            set -e
+            url="https://www.supremecourt.gov/pdfs/USReports/USREPORTS-${VOL}_PDFA.pdf"
+            echo "=== Volume ${VOL} :: ${url} ==="
+            node -e "fetch(process.env.U,{headers:{\"user-agent\":process.env.INGESTION_USER_AGENT||\"Jurvio/0.1\"},signal:AbortSignal.timeout(180000)}).then(r=>{console.log(\"HTTP=\"+r.status);if(!r.ok)process.exit(2);return r.arrayBuffer();}).then(b=>{require(\"fs\").writeFileSync(\"/tmp/vol.pdf\",Buffer.from(b));console.log(\"BYTES=\"+b.byteLength);}).catch(e=>{console.log(\"ERR=\"+e.name+\":\"+String(e.message).slice(0,150));process.exit(2);})" \
+              U="$url" INGESTION_USER_AGENT="${INGESTION_USER_AGENT:-Jurvio/0.1}"
+
+            echo "=== pdfinfo ==="
+            pdfinfo /tmp/vol.pdf 2>/dev/null | grep -iE "^Pages|^Page size" || echo "(no pdfinfo)"
+
+            echo "=== FRONT MATTER: pages 1-30 (-layout) ==="
+            pdftotext -layout -f 1 -l 30 /tmp/vol.pdf - 2>/dev/null | head -c 14000
+
+            echo ""
+            echo "=== RUNNING-HEADER SAMPLES: first 2 lines of pages 40,60,80,120,160,220,300 ==="
+            for p in 40 60 80 120 160 220 300; do
+              echo "----PDFPAGE ${p}----"
+              pdftotext -layout -f "$p" -l "$p" /tmp/vol.pdf - 2>/dev/null | sed "/^[[:space:]]*$/d" | head -n 3
+            done
+            rm -f /tmp/vol.pdf
+          ' || echo "(volume ${VOL} probe failed)"
+          REMOTE
