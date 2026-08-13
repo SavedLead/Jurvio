@@ -1,0 +1,95 @@
+name: Ingest one old U.S. Reports volume (2-90)
+
+# Controlled single-volume ingestion of a nominative-era (pre-91) U.S. Reports
+# volume through the bound-volume job on jurvio-web-01, over the private VPC. Used
+# to validate the nominative parser against a real volume before enabling the
+# automatic 2-90 sweep. Runs the shared bound-volume ingester for ONE volume, then
+# drains the shared SCOTUS publish + text-extraction path, then prints a read-only
+# proof of what landed (counts + sample citations/pages). Scoped to a single named
+# volume; no sweep, no other courts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      volume:
+        description: U.S. Reports volume number (2-90)
+        required: true
+        default: "49"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-ingest-old-scotus-volume
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      VOLUME: ${{ inputs.volume }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Ingest, publish, extract, and prove one volume
+        run: |
+          set -euo pipefail
+          case "$VOLUME" in ''|*[!0-9]*) echo "::error::volume must be numeric"; exit 1;; esac
+          if [ "$VOLUME" -lt 2 ] || [ "$VOLUME" -gt 90 ]; then echo "::error::volume must be 2-90"; exit 1; fi
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$VOLUME" <<'REMOTE'
+          set -euo pipefail
+          VOL="$1"
+          worker="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-core' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker-core container"; exit 1; }
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no running jurvio postgres container"; exit 1; }
+
+          echo "=== ingest volume ${VOL} (bound-volume job, limit 100) ==="
+          sudo -n docker exec "$worker" node jobs/ingest-official-scotus-bound-volume.mjs \
+            --volume="$VOL" --limit=100 --resume=true 2>&1 | tail -n 8 || echo "(ingest job returned nonzero)"
+
+          echo "=== drain publish + extract for the freshly-ingested candidates ==="
+          sudo -n docker exec "$worker" node jobs/publish-official-scotus-opinions.mjs --limit=10000 2>&1 | tail -n 3 || echo "(publish returned nonzero)"
+          sudo -n docker exec "$worker" node jobs/extract-official-scotus-opinion-text.mjs --limit=1000 2>&1 | tail -n 3 || echo "(extract returned nonzero)"
+
+          echo "=== PROOF: volume ${VOL} candidates (read-only) ==="
+          sudo -n docker exec -e VOL="$VOL" "$pg" psql -U jurvio -d jurvio -Atc "
+            SELECT 'candidates=' || count(*) FROM official_opinion_candidate WHERE citation LIKE '${VOL} U.S.%'
+            UNION ALL SELECT 'distinct_report_pages=' || count(DISTINCT citation) FROM official_opinion_candidate WHERE citation LIKE '${VOL} U.S.%'
+            UNION ALL SELECT 'min_page_start=' || coalesce(min(source_page_start)::text,'none') FROM official_opinion_candidate WHERE citation LIKE '${VOL} U.S.%'
+            UNION ALL SELECT 'max_page_start=' || coalesce(max(source_page_start)::text,'none') FROM official_opinion_candidate WHERE citation LIKE '${VOL} U.S.%'
+            UNION ALL SELECT 'published_cases=' || count(*) FROM legal_case lc JOIN court c ON c.id=lc.court_id WHERE lower(c.provider_court_id)='scotus' AND lc.official_citation LIKE '${VOL} U.S.%' AND lc.publication='published';" \
+            || echo "(proof query failed)"
+
+          echo "--- sample candidates (first 25 by report page) ---"
+          sudo -n docker exec -e VOL="$VOL" "$pg" psql -U jurvio -d jurvio -Atc "
+            SELECT lpad(source_page_start::text,4,' ') || ' | ' || citation || ' | ' || case_name
+            FROM official_opinion_candidate
+            WHERE citation LIKE '${VOL} U.S.%'
+            ORDER BY (regexp_match(citation,'U\\.S\\. ([0-9]+)'))[1]::int NULLS LAST
+            LIMIT 25;" || echo "(sample query failed)"
+          REMOTE

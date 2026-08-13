@@ -6,7 +6,14 @@ import { promisify } from "node:util";
 import type postgres from "postgres";
 import type { ArtifactStore } from "./artifact-store";
 import { finishIngestionRun, finishIngestionRunItem, startIngestionRun, startIngestionRunItem } from "./ingestion-run";
-import { fetchOfficialBoundVolume, fetchOfficialBoundVolumeIndex, parseOfficialBoundVolumeText } from "../providers/scotus/official-bound-volumes";
+import { fetchOfficialBoundVolume, fetchOfficialBoundVolumeIndex, parseNominativeBoundVolumeText, parseNominativeTermYear, parseOfficialBoundVolumeText } from "../providers/scotus/official-bound-volumes";
+
+const OFFICIAL_ORIGIN = "https://www.supremecourt.gov";
+// Below this volume the reporter used the nominative format (no docket numbers,
+// no per-page "Decided" lines) that parseOfficialBoundVolumeText cannot read, and
+// the Library of Congress catalog has no per-case metadata. Both identity and text
+// come straight from the whole-volume PDF/A for these.
+const NOMINATIVE_MAX_VOLUME = 90;
 
 type Sql = ReturnType<typeof postgres>;
 const execFileAsync = promisify(execFile);
@@ -19,7 +26,15 @@ export async function ingestOfficialScotusBoundVolume(
   if (!Number.isInteger(options.volume) || options.volume < 2 || options.volume > 587) throw new Error("Unsupported U.S. Reports volume");
   if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) throw new Error("Batch limit must be between 1 and 100");
   const index = await fetchOfficialBoundVolumeIndex();
-  const source = index.volumes.find((item) => item.volume === options.volume);
+  const nominative = options.volume <= NOMINATIVE_MAX_VOLUME;
+  // The USReports.aspx index labels only carry a "(YYYY Term)" for the modern
+  // volumes, so the earliest volumes are frequently absent from it. Their PDF/A
+  // URL is deterministic, so synthesize a source for the nominative range rather
+  // than failing; the authoritative term year is read from the volume itself.
+  const source = index.volumes.find((item) => item.volume === options.volume)
+    ?? (nominative
+      ? { volume: options.volume, termYear: "", pdfUrl: `${OFFICIAL_ORIGIN}/pdfs/USReports/USREPORTS-${options.volume}_PDFA.pdf` }
+      : undefined);
   if (!source) throw new Error(`Official U.S. Reports volume ${options.volume} is not listed by the Supreme Court`);
   const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'scotus_official'`;
   if (!provider) throw new Error("Official Supreme Court provider seed is missing");
@@ -45,7 +60,15 @@ export async function ingestOfficialScotusBoundVolume(
       await rm(directory, { recursive: true, force: true });
     }
   }
-  const records = parseOfficialBoundVolumeText(text, source);
+  // Nominative volumes carry no "(YYYY Term)" index label; read the term year
+  // from the volume's own front matter so candidates land in the right term.
+  const nominativeTermYear = nominative ? parseNominativeTermYear(text) : null;
+  const effectiveTermYear = nominativeTermYear !== null ? String(nominativeTermYear).slice(-2) : source.termYear;
+  const boundSource = { ...source, termYear: effectiveTermYear };
+  const records = nominative
+    ? parseNominativeBoundVolumeText(text, boundSource)
+    : parseOfficialBoundVolumeText(text, boundSource);
+  if (records.length === 0) throw new Error(`Official U.S. Reports volume ${options.volume} produced no case candidates`);
   const checkpointIndex = checkpoint ? records.findIndex((record) => record.sourceRecordId === checkpoint.cursor_value) : -1;
   if (checkpoint && checkpointIndex < 0) throw new Error("Stored bound-volume checkpoint is absent from the current official volume");
   const selected = records.slice(checkpointIndex + 1, checkpointIndex + 1 + options.limit);
@@ -86,7 +109,7 @@ export async function ingestOfficialScotusBoundVolume(
             release_number, docket_number, case_name, filed_on, author_code, citation,
             source_pdf_uri, source_content_hash, listing_artifact_id, opinion_artifact_id,
             source_page_start, source_page_end)
-          VALUES (${provider.id}, ${source.termYear}, ${record.sourceRecordId}, NULL, ${record.docketNumber},
+          VALUES (${provider.id}, ${effectiveTermYear}, ${record.sourceRecordId}, NULL, ${record.docketNumber},
             ${record.caseName}, ${record.filedOn}, NULL, ${record.citation}, ${record.pdfUrl}, ${volume.contentHash},
             ${indexArtifact.id}, ${volumeArtifact.id}, ${record.startPage}, ${record.endPage})
           ON CONFLICT (provider_id, source_record_id) DO UPDATE SET
@@ -138,7 +161,7 @@ export async function ingestOfficialScotusBoundVolume(
       }
     }
     await finishIngestionRun(sql, runId);
-    return { runId, volume: options.volume, termYear: source.termYear, discovered: records.length,
+    return { runId, volume: options.volume, termYear: effectiveTermYear, discovered: records.length,
       selected: selected.length, succeeded, failed, failures,
       checkpoint: succeeded ? selected[succeeded - 1]?.sourceRecordId ?? null : checkpoint?.cursor_value ?? null };
   } catch (error) {

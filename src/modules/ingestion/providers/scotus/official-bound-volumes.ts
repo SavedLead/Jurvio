@@ -145,6 +145,134 @@ export function parseOfficialBoundVolumeText(text: string, source: OfficialBound
   }));
 }
 
+// --- Nominative-reporter era (volumes 1-90, ~1790-1874) -------------------
+// These pre-91 volumes predate docket numbers and per-page "Decided" lines, so
+// parseOfficialBoundVolumeText (which requires both) yields nothing for them.
+// The Library of Congress per-case catalog also floors at volume 91, so both the
+// case list and the decision text must come straight from the whole-volume
+// PDF/A. Identity is taken from the front-matter "Table of Cases Reported"
+// (authoritative case name + star/report page); the first page of each case is
+// located from the running-header page numbers, which occupy the same page-number
+// space as the Table of Cases (verified: header "185 SUPREME COURT / Taylor v.
+// Taylor" <-> table "Taylor v. Taylor et al. ... 183").
+
+const NOMINATIVE_MONTHS = "JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER";
+
+export function parseNominativeTermYear(text: string): number | null {
+  const match = new RegExp(`(?:${NOMINATIVE_MONTHS})\\s+TERM,?\\s+(\\d{4})`, "i").exec(text);
+  const year = match ? Number.parseInt(match[1] ?? "", 10) : Number.NaN;
+  return Number.isInteger(year) && year >= 1789 && year <= 1900 ? year : null;
+}
+
+function nominativeReportPage(page: string): number | null {
+  for (const raw of page.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 4)) {
+    const leading = /^(\d{1,4})\s+SUPREME COURT\.?/.exec(raw);
+    if (leading) return Number.parseInt(leading[1] ?? "", 10);
+    const trailing = /SUPREME COURT\.?\s+(\d{1,4})$/.exec(raw);
+    if (trailing) return Number.parseInt(trailing[1] ?? "", 10);
+  }
+  return null;
+}
+
+export function parseNominativeTableOfCases(text: string, volume: number): Array<{ caseName: string; reportPage: number }> {
+  const startMarker = /A?\s*TABLE OF (?:THE )?CASES REPORTED/i.exec(text);
+  if (!startMarker) return [];
+  // The reported-cases table ends where the cited-cases table begins.
+  const afterStart = text.slice(startMarker.index + startMarker[0].length);
+  const endMarker = /(?:TABLE OF (?:THE )?CASES CITED|CASES CITED IN THIS VOLUME)/i.exec(afterStart);
+  const region = endMarker ? afterStart.slice(0, endMarker.index) : afterStart.slice(0, 40_000);
+  const byPage = new Map<number, { name: string; reconstructed: boolean }>();
+  for (const line of region.split(/[\n\f]/)) {
+    const match = /^\s*([A-Z][^\n]*?)[.\s•·,]{2,}(\d{1,4})\.?\s*$/.exec(line);
+    if (!match) continue;
+    const reportPage = Number.parseInt(match[2] ?? "", 10);
+    if (!Number.isInteger(reportPage) || reportPage < 1 || reportPage > 4_000) continue;
+    const rawName = (match[1] ?? "").replaceAll(/\s+/g, " ").trim();
+    if (rawName.length < 4 || rawName.length > 140) continue;
+    const forwardParty = /\bv\.\s+\S/.test(rawName);
+    const reversed = /,\s.+\bv\.\s*$/.test(rawName);
+    const special = /^(?:Ex parte|In re|In the Matter of|The )/i.test(rawName);
+    let name: string;
+    let reconstructed = false;
+    if (forwardParty) {
+      name = rawName;
+    } else if (reversed) {
+      const comma = rawName.indexOf(",");
+      const head = rawName.slice(0, comma).trim();
+      const tail = rawName.slice(comma + 1).replace(/\s*v\.\s*$/i, "").trim();
+      if (!head || !tail) continue;
+      name = `${tail} v. ${head}`;
+      reconstructed = true;
+    } else if (special) {
+      name = rawName;
+    } else {
+      continue;
+    }
+    const existing = byPage.get(reportPage);
+    // Prefer a native forward "X v. Y" entry over a reconstructed reversed one.
+    if (!existing || (existing.reconstructed && !reconstructed)) byPage.set(reportPage, { name, reconstructed });
+  }
+  void volume;
+  return [...byPage.entries()]
+    .map(([reportPage, value]) => ({ caseName: value.name, reportPage }))
+    .sort((a, b) => a.reportPage - b.reportPage);
+}
+
+export function parseNominativeBoundVolumeText(text: string, source: OfficialBoundVolume): OfficialBoundOpinion[] {
+  const pages = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\f");
+  const reported = parseNominativeTableOfCases(text, source.volume);
+  if (reported.length === 0) return [];
+  const termYear = parseNominativeTermYear(text);
+  const filedOn = `${termYear ?? Number.parseInt(`18${source.termYear}`, 10)}-01-01`;
+  // Observed (pdf page -> report page) anchors from the running headers.
+  const anchors: Array<{ pdf: number; report: number }> = [];
+  for (const [index, page] of pages.entries()) {
+    const report = nominativeReportPage(page);
+    if (report !== null) anchors.push({ pdf: index + 1, report });
+  }
+  // Keep only monotonic, plausible header anchors (drop OCR outliers such as a
+  // footnote number misread as a page header), then map a report page to the first
+  // PDF page whose header reaches it. This is monotonic in the report page, so the
+  // located start pages stay in reading order even where a header is unreadable.
+  const monotonic: Array<{ pdf: number; report: number }> = [];
+  for (const anchor of anchors) {
+    if (anchor.report > pages.length + 50) continue;
+    const previous = monotonic[monotonic.length - 1];
+    if (previous && anchor.report < previous.report) continue;
+    monotonic.push(anchor);
+  }
+  if (monotonic.length === 0) return [];
+  const pdfForReport = (report: number): number => {
+    for (const anchor of monotonic) if (anchor.report >= report) return anchor.pdf;
+    const last = monotonic[monotonic.length - 1] as { pdf: number; report: number };
+    return Math.min(last.pdf + (report - last.report), pages.length);
+  };
+  let lastStart = 0;
+  const starts = reported.map((entry) => {
+    // Start pages are strictly increasing in ToC order so consecutive cases tile
+    // the volume without inverted or zero-length page ranges.
+    const startPage = Math.max(pdfForReport(entry.reportPage), lastStart + 1);
+    lastStart = startPage;
+    return {
+      sourceRecordId: `nom:${source.volume}:${entry.reportPage}`,
+      releaseNumber: null as null,
+      filedOn,
+      docketNumber: `${source.volume}US${entry.reportPage}`,
+      caseName: entry.caseName,
+      authorCode: null as null,
+      citation: `${source.volume} U.S. ${entry.reportPage}`,
+      pdfUrl: `${source.pdfUrl}#page=${startPage}`,
+      startPage,
+    };
+  });
+  const unique = [...new Map(starts.map((record) => [record.sourceRecordId, record])).values()]
+    .sort((a, b) => a.startPage - b.startPage);
+  return unique.map((record, index): OfficialBoundOpinion => ({
+    ...record,
+    endPage: unique[index + 1] ? (unique[index + 1]?.startPage ?? record.startPage) - 1 : null,
+  }));
+}
+
 async function boundedBody(response: Response, maximum: number) {
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > maximum) throw new Error(`Official source exceeds ${maximum} byte cap`);
