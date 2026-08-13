@@ -176,6 +176,13 @@ jobs:
           sudo -n docker exec "$app" sh -c 'cat /var/lib/jurvio/artifacts/scheduler/scotus-pre500/status.json 2>/dev/null | head -c 1200' || echo "(no backfill status.json)"
           sudo -n docker exec "$app" sh -c 'ls /var/lib/jurvio/artifacts/scheduler/scotus-pre500/*.complete.json 2>/dev/null | wc -l | sed "s/^/complete_volume_files=/"' || echo "(cannot count complete volumes)"
 
+          echo "=== Volume 49 direct PDF/A text sample (read-only; for old-volume parser) ==="
+          sudo -n docker exec "$app" sh -c '
+            node -e "fetch(\"https://www.supremecourt.gov/pdfs/USReports/USREPORTS-49_PDFA.pdf\",{headers:{\"user-agent\":process.env.INGESTION_USER_AGENT||\"Jurvio/0.1\"},signal:AbortSignal.timeout(120000)}).then(r=>{console.log(\"V49_HTTP=\"+r.status);return r.arrayBuffer();}).then(b=>{require(\"fs\").writeFileSync(\"/tmp/v49.pdf\",Buffer.from(b));console.log(\"V49_BYTES=\"+b.byteLength);}).catch(e=>console.log(\"V49_ERR=\"+e.name+\":\"+String(e.message).slice(0,120)));" &&
+            sleep 1 &&
+            (pdftotext -layout -f 1 -l 8 /tmp/v49.pdf - 2>/dev/null | head -c 3500; echo "----PAGE60----"; pdftotext -layout -f 55 -l 62 /tmp/v49.pdf - 2>/dev/null | head -c 2500)
+          ' || echo "(volume 49 sample failed)"
+
           echo "=== Disk on ingestion box (read-only) ==="
           df -h / | tail -n +1
 
