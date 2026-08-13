@@ -105,6 +105,24 @@ jobs:
             FROM ingestion_run WHERE run_type = 'official_scotus_bound_volume' AND status = 'failed'
             ORDER BY started_at DESC LIMIT 6;" || echo "(bound-volume failure query failed)"
 
+          echo "=== SCOTUS volume coverage audit: which U.S. Reports volumes have candidates (read-only) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "
+            WITH v AS (SELECT DISTINCT ((regexp_match(citation,'^([0-9]+) U'))[1])::int AS vol
+                       FROM official_opinion_candidate WHERE citation ~ '^[0-9]+ U')
+            SELECT 'volumes_with_candidates=' || count(*) FROM v
+            UNION ALL SELECT 'min_volume=' || coalesce(min(vol)::text,'none') FROM v
+            UNION ALL SELECT 'max_volume=' || coalesce(max(vol)::text,'none') FROM v
+            UNION ALL SELECT 'missing_in_2_501=' || count(*) FROM generate_series(2,501) g WHERE g NOT IN (SELECT vol FROM v)
+            UNION ALL SELECT 'missing_in_502_587=' || count(*) FROM generate_series(502,587) g WHERE g NOT IN (SELECT vol FROM v);" || echo "(volume audit failed)"
+          echo "--- first 90 missing volumes in 1..587 ---"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "
+            WITH v AS (SELECT DISTINCT ((regexp_match(citation,'^([0-9]+) U'))[1])::int AS vol
+                       FROM official_opinion_candidate WHERE citation ~ '^[0-9]+ U')
+            SELECT string_agg(g::text,',') FROM (SELECT g FROM generate_series(1,587) g WHERE g NOT IN (SELECT vol FROM v) ORDER BY g LIMIT 90) x;" || echo "(missing list failed)"
+
+          echo "=== Library of Congress end-to-end reachability (JSON index + real PDF GET) ==="
+          sudo -n docker exec "$app" node -e "const s=Date.now();fetch('https://www.loc.gov/collections/united-states-reports/?fo=json&at=results&c=5&q=100+US',{headers:{'user-agent':process.env.INGESTION_USER_AGENT||'Jurvio/0.1'},signal:AbortSignal.timeout(30000)}).then(async r=>{if(!r.ok){console.log('LOC_WWW_STATUS='+r.status+' ms='+(Date.now()-s));return;}const j=await r.json();const m=JSON.stringify(j.results||[]).match(/https?:\\/\\/[^\"']+\\.pdf/);const pdf=m?m[0].replace('http:','https:'):null;let ps='no-pdf-url';if(pdf){try{const p=await fetch(pdf,{headers:{Range:'bytes=0-2047','user-agent':process.env.INGESTION_USER_AGENT||'Jurvio/0.1'},signal:AbortSignal.timeout(30000)});ps=p.status;}catch(e){ps='ERR:'+e.name;}}console.log('LOC_WWW_STATUS=200 results='+((j.results||[]).length)+' tile_pdf_status='+ps+' ms='+(Date.now()-s));}).catch(e=>console.log('LOC_WWW_ERROR='+e.name+':'+String(e.message).slice(0,140)+' ms='+(Date.now()-s)));" || echo "(loc end-to-end probe failed to launch)"
+
           echo "=== SCOTUS collapse confirmation + citation-migration preconditions (read-only) ==="
           sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
             WITH scotus AS (
