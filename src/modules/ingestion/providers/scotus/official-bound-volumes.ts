@@ -220,7 +220,12 @@ export function parseNominativeTableOfCases(text: string, volume: number): Array
 
 export function parseNominativeBoundVolumeText(text: string, source: OfficialBoundVolume): OfficialBoundOpinion[] {
   const pages = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\f");
-  const reported = parseNominativeTableOfCases(text, source.volume);
+  // Skip table entries whose star page exceeds the physical page count: that report
+  // page cannot exist in this volume, so the number is an OCR error (e.g. 317 read
+  // as 817). Dropping it avoids emitting a wrong citation; the case is simply left
+  // for a later, better OCR pass rather than published under a bad number.
+  const reported = parseNominativeTableOfCases(text, source.volume)
+    .filter((entry) => entry.reportPage <= pages.length);
   if (reported.length === 0) return [];
   const termYear = parseNominativeTermYear(text);
   const filedOn = `${termYear ?? Number.parseInt(`18${source.termYear}`, 10)}-01-01`;
@@ -230,22 +235,23 @@ export function parseNominativeBoundVolumeText(text: string, source: OfficialBou
     const report = nominativeReportPage(page);
     if (report !== null) anchors.push({ pdf: index + 1, report });
   }
-  // Keep only monotonic, plausible header anchors (drop OCR outliers such as a
-  // footnote number misread as a page header), then map a report page to the first
-  // PDF page whose header reaches it. This is monotonic in the report page, so the
-  // located start pages stay in reading order even where a header is unreadable.
-  const monotonic: Array<{ pdf: number; report: number }> = [];
-  for (const anchor of anchors) {
-    if (anchor.report > pages.length + 50) continue;
-    const previous = monotonic[monotonic.length - 1];
-    if (previous && anchor.report < previous.report) continue;
-    monotonic.push(anchor);
-  }
-  if (monotonic.length === 0) return [];
+  // Drop implausible header anchors (an OCR outlier such as a footnote number
+  // misread as a page header can never exceed the physical page count by much),
+  // then map a report page to a PDF page by interpolating from the header anchor
+  // whose report number is CLOSEST to it. Closest-anchor interpolation is robust
+  // to isolated bad anchors -- a far outlier is never the nearest to a real target
+  // -- unlike a running monotonic filter, where one early false-high header would
+  // drop every later real anchor and collapse a whole stretch of the volume onto a
+  // few pages. Start pages are still forced strictly increasing below.
+  const plausible = anchors.filter((anchor) => anchor.report <= pages.length + 50);
+  if (plausible.length === 0) return [];
   const pdfForReport = (report: number): number => {
-    for (const anchor of monotonic) if (anchor.report >= report) return anchor.pdf;
-    const last = monotonic[monotonic.length - 1] as { pdf: number; report: number };
-    return Math.min(last.pdf + (report - last.report), pages.length);
+    let best = plausible[0] as { pdf: number; report: number };
+    for (const anchor of plausible) {
+      if (anchor.report === report) return anchor.pdf;
+      if (Math.abs(anchor.report - report) < Math.abs(best.report - report)) best = anchor;
+    }
+    return Math.min(Math.max(best.pdf + (report - best.report), 1), pages.length);
   };
   let lastStart = 0;
   const starts = reported.map((entry) => {
