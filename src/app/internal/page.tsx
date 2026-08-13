@@ -22,6 +22,7 @@ export default async function InternalOverviewPage() {
   const progress = ingestion && ingestion.recordsSeen > 0
     ? Math.min(100, Math.round((ingestion.recordsChanged / ingestion.recordsSeen) * 100)) : 0;
   const capabilities = [
+    { id: "pulse", title: "Pulse", detail: "One live glance: corpus totals, SCOTUS U.S. Reports volume coverage, publish backlog, and court health.", href: "/internal/pulse", state: "Live" },
     { id: "ingestion", title: "Ingestion command center", detail: "Corpus, provider runs, source freshness, storage, failures, and active work.", href: "/internal/operations", state: "Live" },
     { id: "publication", title: "Publication X-ray", detail: "Exact case blockers, next actions, projected unlocks, and SCOTUS A–G enrichment.", href: "/internal/ingestion-report", state: "Live" },
     { id: "sources", title: "Court source monitoring", detail: "108-court coverage status: 94 district courts, 13 appellate circuits, the Supreme Court, and per-court live/delayed/stalled health.", href: "/heartbeat", state: "Live" },
