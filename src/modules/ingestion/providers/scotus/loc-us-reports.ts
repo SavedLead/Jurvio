@@ -5,7 +5,7 @@ const LOC_STORAGE_ORIGIN = "https://tile.loc.gov";
 const COLLECTION_URL = `${LOC_ORIGIN}/collections/united-states-reports/`;
 const MAX_JSON_BYTES = 10 * 1024 * 1024;
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
-const LOC_FETCH_ATTEMPTS = 4;
+const LOC_FETCH_ATTEMPTS = 6;
 const LOC_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export interface LocUsReportsRecord {
@@ -125,7 +125,7 @@ function retryAfterMs(response: Response, attempt: number) {
   const retryAfter = response.headers.get("retry-after");
   const seconds = retryAfter === null ? Number.NaN : Number(retryAfter);
   if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 30_000);
-  return Math.min(1_000 * 2 ** (attempt - 1), 8_000) + Math.floor(Math.random() * 250);
+  return Math.min(1_000 * 2 ** (attempt - 1), 20_000) + Math.floor(Math.random() * 500);
 }
 
 async function fetchOfficialLoc(url: string) {
