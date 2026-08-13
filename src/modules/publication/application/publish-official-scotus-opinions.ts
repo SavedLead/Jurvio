@@ -140,6 +140,7 @@ export async function publishVerifiedOfficialScotusOpinions(
         FROM legal_case
         JOIN court ON court.id = legal_case.court_id
         WHERE legal_case.official_citation = ${officialCitation}
+          AND legal_case.docket_number = ${candidate.docket_number}
           AND lower(court.provider_court_id) = 'scotus'
         ORDER BY legal_case.id
       `;
@@ -182,7 +183,7 @@ export async function publishVerifiedOfficialScotusOpinions(
               ${expandScotusTermYear(candidate.term_year)}, ${officialCitation}, 'verified', 'published',
               ${candidate.opinion_artifact_id}, now()
             )
-            ON CONFLICT (court_id, official_citation) WHERE official_citation IS NOT NULL
+            ON CONFLICT (court_id, official_citation, docket_number) WHERE supreme_court_term IS NOT NULL
             DO UPDATE SET caption = EXCLUDED.caption, decided_on = EXCLUDED.decided_on,
               supreme_court_term = EXCLUDED.supreme_court_term,
               official_citation = EXCLUDED.official_citation,
