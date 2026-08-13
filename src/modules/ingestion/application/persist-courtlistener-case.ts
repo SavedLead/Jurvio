@@ -111,7 +111,7 @@ export async function persistCourtListenerCase(
           ${normalized.causeOfAction ?? null}, 'not_verified', 'draft',
           ${artifact.id}, ${normalized.sourceUpdatedAt}
         )
-        ON CONFLICT (court_id, docket_number)
+        ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
         DO UPDATE SET
           caption=EXCLUDED.caption, filed_on=EXCLUDED.filed_on,
           terminated_on=EXCLUDED.terminated_on,

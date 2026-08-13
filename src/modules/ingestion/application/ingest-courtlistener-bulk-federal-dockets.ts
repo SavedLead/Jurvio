@@ -131,7 +131,7 @@ export async function ingestCourtListenerBulkFederalDockets(
             ${docket.nature_of_suit || null}, ${docket.cause || null},
             'not_verified', 'draft', ${artifact.id}, ${docket.date_modified}
           )
-          ON CONFLICT (court_id, docket_number)
+          ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
           DO UPDATE SET
             caption = EXCLUDED.caption,
             filed_on = COALESCE(EXCLUDED.filed_on, legal_case.filed_on),
