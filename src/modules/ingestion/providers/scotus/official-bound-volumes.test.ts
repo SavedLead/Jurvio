@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { officialBoundVolumeMirrorFileName, parseOfficialBoundVolumeIndex, parseOfficialBoundVolumeText } from "./official-bound-volumes";
+import { officialBoundVolumeMirrorFileName, parseNominativeBoundVolumeText, parseNominativeTableOfCases, parseNominativeTermYear, parseOfficialBoundVolumeIndex, parseOfficialBoundVolumeText } from "./official-bound-volumes";
 
 describe("official U.S. Reports bound-volume ingestion", () => {
   it("uses the canonical Court filename regardless of source URL casing", () => {
@@ -82,6 +82,69 @@ describe("official U.S. Reports bound-volume ingestion", () => {
     expect(records).toEqual([
       expect.objectContaining({ caseName: "United States v. Texas", filedOn: "2016-06-23" }),
       expect.objectContaining({ caseName: "Montana v. Wyoming", filedOn: "2016-03-21" }),
+    ]);
+  });
+});
+
+describe("nominative-reporter U.S. Reports (volumes 1-90)", () => {
+  // Fixture built from the real Volume 49 (8 Howard, January Term 1850) PDF/A:
+  // its front-matter "A Table of the Cases Reported" and its "<page> SUPREME COURT."
+  // running headers, whose page numbers occupy the same space as the table.
+  const volume49 = [
+    "REPORTS OF CASES ARGUED AND ADJUDGED IN THE SUPREME COURT OF THE UNITED STATES,\nJANUARY TERM, 1850.\nBy BENJAMIN C. HOWARD,\nVOL. VIII.",
+    "A TABLE OF THE CASES REPORTED\nIN THIS VOLUME.\n[The references are to the star (*) pages.]\nPAGE\n"
+      + "Barnum, Wilson v. .......                                 . 258\n"
+      + "Bennett v. Butterworth       ....... 124\n"
+      + "Butterworth, Bennett v. ......                                124\n"
+      + "Staats, United States v............................................................... 41\n"
+      + "United States v. Staats........................................................... 41\n"
+      + "Wilson v. Barnum............................................................. 258\n",
+    "A TABLE OF THE CASES CITED IN THIS VOLUME.\n[The references are to the star (*) pages.]\n",
+    "41                      SUPREME COURT.\nThe United States v. Staats.\nThe merits of the case begin here.",
+    "126                 SUPREME COURT.\nBennett v. Butterworth.\nmerits text continues here.",
+    "258                 SUPREME COURT.\nWilson v. Barnum.\nof the Circuit Court differ in opinion on a point of law.",
+  ].join("\f");
+
+  it("reads the term year from the front matter", () => {
+    expect(parseNominativeTermYear(volume49)).toBe(1850);
+  });
+
+  it("takes case identity from the Table of Cases, deduping reversed entries", () => {
+    expect(parseNominativeTableOfCases(volume49, 49)).toEqual([
+      { caseName: "United States v. Staats", reportPage: 41 },
+      { caseName: "Bennett v. Butterworth", reportPage: 124 },
+      { caseName: "Wilson v. Barnum", reportPage: 258 },
+    ]);
+  });
+
+  it("locates each case's first PDF page from the running-header page numbers", () => {
+    // Physically plausible layout (report page <= physical page): three cases at
+    // star pages 1, 3, 5. The middle case's header drifts one ahead of its table
+    // page (4 vs 3), as it does in the real reprints; the mapping still lands it.
+    const compact = [
+      "THE SUPREME COURT OF THE UNITED STATES,\nJANUARY TERM, 1850.\nVOL. VIII.",
+      "A TABLE OF THE CASES REPORTED\nIN THIS VOLUME.\nPAGE\n"
+        + "Barnum, Wilson v. ....... 5\n"
+        + "Bennett v. Butterworth ....... 3\n"
+        + "Butterworth, Bennett v. ....... 3\n"
+        + "Staats, United States v. ....... 1\n"
+        + "United States v. Staats ....... 1\n"
+        + "Wilson v. Barnum ....... 5\n",
+      "A TABLE OF THE CASES CITED IN THIS VOLUME.\n",
+      "1                      SUPREME COURT.\nThe United States v. Staats.\nmerits begin here.",
+      "4                 SUPREME COURT.\nBennett v. Butterworth.\nmerits text continues here.",
+      "5                 SUPREME COURT.\nWilson v. Barnum.\na point of law.",
+    ].join("\f");
+    const records = parseNominativeBoundVolumeText(compact, {
+      volume: 49, termYear: "50",
+      pdfUrl: "https://www.supremecourt.gov/pdfs/USReports/USREPORTS-49_PDFA.pdf",
+    });
+    expect(records).toEqual([
+      expect.objectContaining({ caseName: "United States v. Staats", citation: "49 U.S. 1",
+        docketNumber: "49US1", filedOn: "1850-01-01", startPage: 4, endPage: 4,
+        pdfUrl: "https://www.supremecourt.gov/pdfs/USReports/USREPORTS-49_PDFA.pdf#page=4" }),
+      expect.objectContaining({ caseName: "Bennett v. Butterworth", citation: "49 U.S. 3", startPage: 5, endPage: 5 }),
+      expect.objectContaining({ caseName: "Wilson v. Barnum", citation: "49 U.S. 5", startPage: 6, endPage: null }),
     ]);
   });
 });
