@@ -109,7 +109,17 @@ export async function ingestLocUsReportsVolume(
       await startIngestionRunItem(sql, runId, record.sourceRecordId);
       try {
         const pdf = await fetchLocUsReportsPdf(record.pdfUrl);
-        const metadata = await extractDecisionMetadata(pdf.body, record.sourceRecordId);
+        // The earliest U.S. Reports volumes (roughly pre-1875) are seriatim-era
+        // opinions with no "Nos. X ... Decided" docket/decision line, so the PDF
+        // metadata parse cannot yield a docket. Rather than drop these historically
+        // important cases, fall back to the authoritative LoC listing: the reporter
+        // citation is a unique case identity and the decision year is published in
+        // the item title. A synthetic volume+page docket keeps each case distinct.
+        const metadata = await extractDecisionMetadata(pdf.body, record.sourceRecordId).catch(() => ({
+          docketNumber: `${record.volume}US${record.reporterPage}`,
+          decidedOn: `${record.decisionYear}-01-01`,
+          termYear: String(record.decisionYear).slice(-2),
+        }));
         const stored = await artifactStore.putIfAbsent({
           key: `scotus/loc-us-reports/${options.volume}/${record.sourceRecordId.replaceAll(":", "-")}-${pdf.contentHash}.pdf`,
           mediaType: pdf.mediaType,
