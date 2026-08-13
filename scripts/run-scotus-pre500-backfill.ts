@@ -266,8 +266,18 @@ async function main(): Promise<void> {
     // hardcoded ceiling, so coverage spans every available U.S. Reports volume
     // (through the 587 hard cap) and auto-extends as new volumes are released.
     const boundVolumeIndex = await fetchOfficialBoundVolumeIndex();
-    const availableVolumes = boundVolumeIndex.volumes
-      .map((entry) => entry.volume)
+    // The USReports.aspx index only labels the modern volumes with a "(YYYY Term)",
+    // so the nominative volumes (2-90) are usually absent from it. Their PDF/A URL
+    // is deterministic and the ingester synthesizes their source, so force them into
+    // the sweep rather than relying on the index to surface them. A volume the
+    // parser cannot yet read fails its two attempts, is recorded in a .failed.json
+    // placeholder, and the sweep moves on to the next -- one bad volume never blocks
+    // the rest.
+    const nominativeVolumes = Array.from({ length: 89 }, (_, offset) => offset + 2);
+    const availableVolumes = [...new Set([
+      ...boundVolumeIndex.volumes.map((entry) => entry.volume),
+      ...nominativeVolumes,
+    ])]
       .filter((volume) => volume >= oldestVolume && volume <= maxVolume)
       .sort((left, right) => right - left);
     const newestVolume = availableVolumes[0] ?? 0;
