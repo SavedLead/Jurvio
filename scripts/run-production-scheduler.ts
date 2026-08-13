@@ -61,6 +61,16 @@ const jobs: ScheduledJob[] = [
     command: ["jobs/run-scotus-pre500-backfill.mjs"],
   },
   {
+    // Extract the earliest U.S. Reports volumes (roughly 1-111) from the Library of
+    // Congress, which the supremecourt.gov PDF parser cannot read. Feeds the shared
+    // SCOTUS publish path; closes the last coverage gap toward the full corpus.
+    lane: "core",
+    name: "loc-us-reports-backfill",
+    initialDelayMs: 45_000,
+    intervalMs: 5 * minute,
+    command: ["jobs/run-loc-us-reports-backfill.mjs"],
+  },
+  {
     lane: "coa",
     name: "direct-court",
     initialDelayMs: 0,
