@@ -15,7 +15,11 @@ const oldestVolume = Number.parseInt(process.env.LOC_BACKFILL_OLDEST_VOLUME ?? "
 // LoC covers volumes 2-501. Default to the un-ingested early tail (<=111); raise
 // LOC_BACKFILL_MAX_VOLUME to sweep further into the LoC range if needed.
 const maxVolume = Math.min(Number.parseInt(process.env.LOC_BACKFILL_MAX_VOLUME ?? "111", 10), 501);
-const volumeWorkers = Number.parseInt(process.env.LOC_BACKFILL_WORKERS ?? "3", 10);
+// LoC's collection API rate-limits aggressively (429). Sweep serially by default
+// and pause between volumes so we stay under its threshold; the per-request retry
+// in the provider handles brief spikes. Both are env-tunable.
+const volumeWorkers = Number.parseInt(process.env.LOC_BACKFILL_WORKERS ?? "1", 10);
+const interVolumeDelayMs = Number.parseInt(process.env.LOC_BACKFILL_DELAY_MS ?? "5000", 10);
 const leaseKey = "jurvio:loc-us-reports:coordinator";
 const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? process.env.RAW_ARTIFACT_DIR
@@ -169,6 +173,9 @@ async function main(): Promise<void> {
         else if (outcome === "failed") failed.push(volume);
         else if (outcome === "empty") empty.push(volume);
         await writeStatus("running");
+        if (volumes[cursor] !== undefined && interVolumeDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, interVolumeDelayMs));
+        }
       }
     }
 
