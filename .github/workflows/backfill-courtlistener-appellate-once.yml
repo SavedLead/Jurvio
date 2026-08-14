@@ -1,0 +1,119 @@
+name: Backfill CourtListener appellate (once)
+
+# One-shot burst for the appellate CourtListener backfill. The scheduled coa-lane
+# job crawls conservatively (--court=next --batch-size=20, ~1 circuit / 10 min).
+# This runs an explicit paced loop over ALL circuits through the SAME proven
+# ingest-courtlistener-appellate-backfill job (which writes the full canonical
+# opinion graph and dedups on provider ids), so a chunk of the historical COA
+# corpus drains in one sitting. The CourtListener client self-throttles on 429
+# (honors Retry-After), and the loop stays moderate to respect CL's limits.
+#
+# For the FULL ~300k COA backlog, the streaming bulk-file path (separate build)
+# bypasses the API rate limit entirely; this API burst is the low-risk accelerator
+# on top of the already-proven writer.
+#
+# Runs on the self-hosted builder and reaches worker-coa on jurvio-web-01 over the
+# private VPC (10.116.0.2) with `sudo -n docker exec` -- the same route the deploy
+# and the other *-once controls use.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Max --court=all passes (completed circuit-years self-skip)"
+        required: false
+        default: "5"
+        type: string
+      batch_size:
+        description: "Clusters processed per circuit per pass (1-100)"
+        required: false
+        default: "30"
+        type: string
+      delay_ms:
+        description: "Delay between clusters (ms) to respect CL rate limits"
+        required: false
+        default: "800"
+        type: string
+      min_year:
+        description: "Earliest filing year to backfill"
+        required: false
+        default: "1900"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-courtlistener-appellate-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 45
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      ITERATIONS: ${{ inputs.iterations }}
+      BATCH_SIZE: ${{ inputs.batch_size }}
+      DELAY_MS: ${{ inputs.delay_ms }}
+      MIN_YEAR: ${{ inputs.min_year }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run paced CourtListener backfill across all circuits
+        run: |
+          set -euo pipefail
+          for v in "$ITERATIONS" "$BATCH_SIZE" "$DELAY_MS" "$MIN_YEAR"; do
+            case "$v" in ''|*[!0-9]*) echo "::error::inputs must be numeric"; exit 1;; esac
+          done
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$ITERATIONS" "$BATCH_SIZE" "$DELAY_MS" "$MIN_YEAR" <<'REMOTE'
+          set -euo pipefail
+          ITER="$1"; BATCH="$2"; DELAY="$3"; MINYEAR="$4"
+          worker="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-coa' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker-coa container"; exit 1; }
+
+          echo "=== CourtListener credential (need a token; the API 401s without it) ==="
+          sudo -n docker exec "$worker" sh -lc '
+            if [ -n "${COURTLISTENER_API_TOKEN:-}" ]; then
+              echo "courtlistener-token-configured"
+            else
+              echo "token-missing: aborting (CL API would 401 / lanes stay idle)"
+              exit 2
+            fi
+          '
+
+          echo "=== Baseline ledger ==="
+          sudo -n docker exec "$worker" node jobs/report-appellate-backfill.mjs 2>&1 | tail -n 40 || true
+
+          echo "=== Backfill loop: ${ITER} passes, batch ${BATCH}, ${DELAY}ms spacing, min-year ${MINYEAR} ==="
+          i=1
+          while [ "$i" -le "$ITER" ]; do
+            echo "--- pass ${i}/${ITER} ($(date -u +%H:%M:%SZ) UTC) ---"
+            sudo -n docker exec "$worker" \
+              node jobs/ingest-courtlistener-appellate-backfill.mjs \
+                --court=all --batch-size="$BATCH" --delay-ms="$DELAY" --min-year="$MINYEAR" 2>&1 | tail -n 40 || true
+            i=$((i + 1))
+          done
+
+          echo "=== Final ledger ==="
+          sudo -n docker exec "$worker" node jobs/report-appellate-backfill.mjs 2>&1 | tail -n 40 || true
+          REMOTE
