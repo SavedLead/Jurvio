@@ -1,0 +1,106 @@
+name: Backfill GovInfo appellate (once)
+
+# One-shot accelerator for the appellate GovInfo backfill. The scheduled coa-lane
+# job crawls conservatively (--court=next, ~1 circuit / 7 min). This runs an
+# explicit paced loop over ALL circuits so the historical corpus (USCOURTS goes
+# back to ~2004) drains in one sitting. It refuses to run on DEMO_KEY (which is
+# clamped to 1 page/circuit and 429s), and paces under the api.data.gov hourly
+# budget. Runs on ubuntu-latest via SSH, so it never contends with the self-hosted
+# builder / deploys.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Max full --court=all passes (completed circuits self-skip)"
+        required: false
+        default: "6"
+        type: string
+      pages_per_court:
+        description: "Pages (x1000 records) per circuit per pass (1-10)"
+        required: false
+        default: "10"
+        type: string
+      sleep_seconds:
+        description: "Pause between passes to stay under the hourly rate budget"
+        required: false
+        default: "90"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize with the scheduled govinfo lane's expectations: only one aggressive
+  # backfill at a time. Does not cancel an in-progress run.
+  group: jurvio-govinfo-appellate-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - name: Configure production SSH
+        env:
+          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Run paced GovInfo backfill across all circuits
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          ITERATIONS: ${{ inputs.iterations }}
+          PAGES_PER_COURT: ${{ inputs.pages_per_court }}
+          SLEEP_SECONDS: ${{ inputs.sleep_seconds }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            ITERATIONS="$ITERATIONS" \
+            PAGES_PER_COURT="$PAGES_PER_COURT" \
+            SLEEP_SECONDS="$SLEEP_SECONDS" \
+            'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          compose=(docker compose -f docker-compose.production.yml)
+
+          echo "=== COA worker ==="
+          "${compose[@]}" ps worker-coa
+
+          echo "=== GovInfo credential (refuse DEMO_KEY) ==="
+          "${compose[@]}" exec -T worker-coa sh -lc '
+            if [ -n "${GOVINFO_API_KEY:-}" ] && [ "$GOVINFO_API_KEY" != "DEMO_KEY" ]; then
+              echo "personal-key-configured"
+            else
+              echo "demo-or-missing: aborting so we do not hammer the shared DEMO_KEY"
+              exit 2
+            fi
+          '
+
+          echo "=== Baseline ledger ==="
+          "${compose[@]}" exec -T worker-coa node jobs/report-appellate-backfill.mjs || true
+
+          iterations="${ITERATIONS:-8}"
+          pages="${PAGES_PER_COURT:-10}"
+          pause="${SLEEP_SECONDS:-90}"
+          echo "=== Backfill loop: ${iterations} passes x ${pages} pages/circuit, ${pause}s pacing ==="
+          i=1
+          while [ "$i" -le "$iterations" ]; do
+            echo "--- pass ${i}/${iterations} ($(date -u +%H:%M:%SZ) UTC) ---"
+            # Each pass advances every not-yet-complete circuit; completed circuits
+            # early-return instantly, so passes get cheaper as the corpus fills.
+            "${compose[@]}" exec -T worker-coa \
+              node jobs/ingest-govinfo-appellate.mjs --court=all --page-size=1000 --pages-per-court="$pages" || true
+            i=$((i + 1))
+            [ "$i" -le "$iterations" ] && sleep "$pause"
+          done
+
+          echo "=== Final ledger ==="
+          "${compose[@]}" exec -T worker-coa node jobs/report-appellate-backfill.mjs || true
+          REMOTE
