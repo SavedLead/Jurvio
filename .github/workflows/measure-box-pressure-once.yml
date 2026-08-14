@@ -1,0 +1,80 @@
+name: Measure box pressure (once, read-only)
+
+# Read-only snapshot of jurvio-web-01's compute/memory headroom, to size how far
+# we can raise publish throughput (APPELLATE_PROCESS_LIMIT / processing-concurrency
+# / cycle cadence) before the box that also hosts Postgres starts thrashing.
+# Runs on the builder over the VPC; touches nothing.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-measure-box-pressure
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Snapshot memory / CPU / DB pressure
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          echo "=== CPU ==="
+          nproc; echo "load(1/5/15):"; cat /proc/loadavg
+          echo "=== Memory (MB) ==="
+          free -m
+          echo "=== Swap ==="
+          swapon --show || echo "(no swap)"
+          echo "=== Disk ==="
+          df -h / /opt 2>/dev/null || df -h /
+          echo "=== Per-container CPU/mem (snapshot) ==="
+          sudo -n docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' || echo "(docker stats failed)"
+          echo "=== Worker process counts ==="
+          for svc in worker-core worker-coa; do
+            cid="$(sudo -n docker ps --filter "label=com.docker.compose.service=$svc" --format '{{.ID}}' | head -n1)"
+            if [ -n "$cid" ]; then
+              procs="$(sudo -n docker exec "$cid" sh -lc 'ps -eo pid,rss,comm | grep -c node' 2>/dev/null || echo '?')"
+              echo "$svc: node procs=$procs"
+            fi
+          done
+          echo "=== Postgres cache-hit + activity ==="
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          if [ -n "$pg" ]; then
+            sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "
+              SELECT 'cache_hit_ratio=' || round(sum(heap_blks_hit)*100.0/nullif(sum(heap_blks_hit)+sum(heap_blks_read),0),2) FROM pg_statio_user_tables
+              UNION ALL SELECT 'active_connections=' || count(*) FROM pg_stat_activity WHERE state='active'
+              UNION ALL SELECT 'total_connections=' || count(*) FROM pg_stat_activity
+              UNION ALL SELECT 'shared_buffers=' || setting FROM pg_settings WHERE name='shared_buffers'
+              UNION ALL SELECT 'work_mem=' || setting FROM pg_settings WHERE name='work_mem'
+              UNION ALL SELECT 'xact_commit_per_s(approx)=' || round(xact_commit/extract(epoch from (now()-stats_reset))) FROM pg_stat_database WHERE datname='jurvio';" \
+              || echo "(pg query failed)"
+          fi
+          echo "=== Current appellate processor knobs (from compose env) ==="
+          grep -E 'APPELLATE_PROCESS_LIMIT|APPELLATE_OCR_RETRY_LIMIT|processing-concurrency|discovery-concurrency' /opt/jurvio/.env.production /opt/jurvio/docker-compose.production.yml 2>/dev/null || echo "(defaults in scheduler: limit=800, proc-concurrency=52, ocr-retry=8)"
+          REMOTE
