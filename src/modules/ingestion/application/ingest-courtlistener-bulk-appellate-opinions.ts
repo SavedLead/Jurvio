@@ -557,6 +557,10 @@ export async function ingestCourtListenerBulkAppellateOpinions(
       precedentialStatus: facts.precedentialStatus,
       citationCount: facts.citationCount,
     });
+    // `limit` bounds the number of clusters persisted (and therefore the whole
+    // run's write load), so a validation pass writes only a small, safe subset
+    // instead of the full corpus. Left unset for the real backfill.
+    if (limit && clusters.size >= limit) break;
   }
 
   // Pass B2: collect the reporter citations for matched clusters (few per cluster,
