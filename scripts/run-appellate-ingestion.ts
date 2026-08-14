@@ -11,6 +11,7 @@ import {
   appellateCourtByCode,
   fairAppellateOrder,
 } from "@/modules/ingestion/providers/appellate/registry";
+import { ocrPdf } from "@/modules/publication/application/ocr-pdf";
 
 const argument = (name: string) =>
   process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -184,14 +185,29 @@ async function downloadAndExtract(item: {
   const { stdout } = await execFileAsync("pdftotext", ["-layout", destination, "-"], {
     encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000,
   });
-  const validation = validateAppellateText(stdout, item.docket_number);
+  let validation = validateAppellateText(stdout, item.docket_number);
   if (!validation.valid) {
+    // Native extraction found no usable text -- an image-only (scanned) PDF. Read
+    // it with OCR (tesseract, local, free) and revalidate before parking it. This
+    // is the "selective OCR lane" the block state was always waiting for.
+    try {
+      const ocrText = await ocrPdf(destination, { maxPages: 40 });
+      const ocrValidation = validateAppellateText(ocrText, item.docket_number);
+      if (ocrValidation.valid) validation = ocrValidation;
+    } catch {
+      // OCR itself failed; fall through to the terminal ocr_failed state below.
+    }
+  }
+  if (!validation.valid) {
+    // OCR was attempted and still produced nothing usable: mark ocr_failed (a
+    // terminal state, so the retry quota never re-selects it) rather than the
+    // pre-OCR ocr_required bucket that the drain works through.
     await sql`UPDATE appellate_ingestion_item SET state='blocked',
-      document_content_hash=${pdfHash}, blocker_code='ocr_required',
-      blocker_detail=${`Native extraction produced only ${validation.wordCount} validated words`},
-      next_action='Send only this PDF to the selective OCR lane'
+      document_content_hash=${pdfHash}, blocker_code='ocr_failed',
+      blocker_detail=${`OCR produced only ${validation.wordCount} validated words; needs higher-resolution or manual OCR`},
+      next_action='Escalate to high-resolution or manual OCR'
       WHERE id=${item.id}`;
-    return { state: "blocked", reason: "ocr_required" };
+    return { state: "blocked", reason: "ocr_failed" };
   }
 
   const textHash = createHash("sha256").update(validation.normalized).digest("hex");
@@ -458,6 +474,21 @@ async function processQueue() {
       decided_on DESC NULLS LAST, first_seen_at
     LIMIT ${processBatchLimit}
   `;
+  // Drain the pre-existing image-only backlog a small batch at a time. Each of
+  // these is re-run through the same extract/publish path, which now OCRs the
+  // stored PDF and either publishes it or moves it to the terminal ocr_failed
+  // state -- so this bucket only shrinks. The batch is small because OCR is
+  // CPU-bound; raise APPELLATE_OCR_RETRY_LIMIT once the box has more cores.
+  const ocrRetryLimit = Number.parseInt(process.env.APPELLATE_OCR_RETRY_LIMIT ?? "8", 10);
+  const ocrItems = ocrRetryLimit > 0 ? await sql<typeof items>`
+    SELECT id, court_code, docket_number, caption, decided_on::text,
+      document_url, source_listing_url
+    FROM appellate_ingestion_item
+    WHERE state = 'blocked' AND blocker_code = 'ocr_required'
+    ORDER BY decided_on DESC NULLS LAST, first_seen_at
+    LIMIT ${ocrRetryLimit}
+  ` : [];
+  items.push(...ocrItems);
   let cursor = 0;
   const results: Array<Record<string, unknown>> = [];
   const workers = Array.from({ length: Math.min(processingConcurrency, items.length) }, async () => {

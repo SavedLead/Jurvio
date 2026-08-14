@@ -9,6 +9,13 @@ function withLockdownHeaders(response: NextResponse): NextResponse {
   if (!sitePubliclyLaunched()) response.headers.set("X-Robots-Tag", NOINDEX_HEADER_VALUE);
   return response;
 }
+// The command center serves live, per-request, authenticated data and its own
+// navigation chrome. It must never be edge- or browser-cached, or a stale sidebar
+// (e.g. missing a newly shipped page) and stale numbers get served after a deploy.
+function commandCenterResponse(response: NextResponse): NextResponse {
+  response.headers.set("Cache-Control", "private, no-store, must-revalidate");
+  return withLockdownHeaders(response);
+}
 function normalizedHost(value: string | null) {
   const firstHost = (value ?? "").split(",").at(0)?.trim() ?? "";
   return firstHost.split(":").at(0)?.toLowerCase() ?? "";
@@ -43,7 +50,7 @@ export function middleware(request: NextRequest) {
       const rewriteUrl = request.nextUrl.clone();
       const suffix = pathname.slice("/in".length);
       rewriteUrl.pathname = suffix ? `/internal${suffix}` : "/internal";
-      return withLockdownHeaders(NextResponse.rewrite(rewriteUrl));
+      return commandCenterResponse(NextResponse.rewrite(rewriteUrl));
     }
     if (
       pathname === "/login" ||
@@ -54,7 +61,7 @@ export function middleware(request: NextRequest) {
 
     const rewriteUrl = request.nextUrl.clone();
     rewriteUrl.pathname = pathname === "/" ? "/internal" : `/internal${pathname}`;
-    return withLockdownHeaders(NextResponse.rewrite(rewriteUrl));
+    return commandCenterResponse(NextResponse.rewrite(rewriteUrl));
   }
 
   if ([...hosts].some((host) => PUBLIC_HOSTS.has(host)) && (
