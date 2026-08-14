@@ -1,0 +1,87 @@
+name: Apply pending migrations (once)
+
+# Out-of-band migration apply for when the release-time pre-migration backup is
+# too slow on a CPU-loaded box and blows the release SSH timeout (exit 124), which
+# blocks the deploy before migrate/recreate ever run. Runs `scripts/migrate.mjs`
+# with a specified image WITHOUT the full pre-backup -- safe only for trivial,
+# reversible migrations (e.g. ADD COLUMN IF NOT EXISTS); the nightly backup keeps a
+# recovery point. After this, the normal deploy sees 0 pending migrations, skips
+# the backup, and recreates the app/workers fast.
+#
+# Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Full image ref whose migrate.mjs to run"
+        required: true
+        default: "ghcr.io/savedlead/jurvio:8030156b190ef823efebcb02ed30a8211dbdc4ee"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      IMAGE: ${{ inputs.image }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Apply pending migrations with the new image (no full backup)
+        run: |
+          set -euo pipefail
+          case "$IMAGE" in ghcr.io/*) : ;; *) echo "::error::image must be a ghcr.io ref"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$IMAGE" <<'REMOTE'
+          set -euo pipefail
+          IMG="$1"
+          cd /opt/jurvio
+          compose=(docker compose -f docker-compose.production.yml)
+
+          if ! sudo -n docker image inspect "$IMG" >/dev/null 2>&1; then
+            echo "=== image not cached locally; pulling ==="
+            sudo -n "${compose[@]}" pull app >/dev/null 2>&1 || sudo -n docker pull "$IMG"
+          fi
+
+          echo "=== pending migrations (before) ==="
+          sudo -n env JURVIO_IMAGE="$IMG" "${compose[@]}" run --rm --no-deps -T app node jobs/list-pending-migrations.mjs || true
+
+          echo "=== applying migrations (trivial ADD COLUMN; nightly backup is the recovery point) ==="
+          sudo -n env JURVIO_IMAGE="$IMG" "${compose[@]}" run --rm --no-deps -T app node scripts/migrate.mjs
+
+          echo "=== pending migrations (after — expect 0) ==="
+          sudo -n env JURVIO_IMAGE="$IMG" "${compose[@]}" run --rm --no-deps -T app node jobs/list-pending-migrations.mjs || true
+
+          echo "=== confirm provider_metadata columns exist ==="
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "
+            SELECT table_name || '.' || column_name || '=' || data_type
+            FROM information_schema.columns
+            WHERE column_name = 'provider_metadata'
+              AND table_name IN ('opinion_cluster','judicial_opinion')
+            ORDER BY 1;" || echo "(column check failed)"
+          REMOTE
