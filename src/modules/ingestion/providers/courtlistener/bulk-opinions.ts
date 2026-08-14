@@ -15,7 +15,8 @@ const bulkBoolean = z
   .string()
   .transform((value) => value === "t" || value === "true" || value === "1");
 
-// search_opinioncluster
+// search_opinioncluster -- declare every column we can consume; .passthrough()
+// keeps anything else so the full row can still be saved to provider_metadata.
 export const courtListenerBulkOpinionClusterSchema = z
   .object({
     id: z.string().regex(/^\d+$/),
@@ -24,12 +25,30 @@ export const courtListenerBulkOpinionClusterSchema = z
     case_name_short: z.string().optional().default(""),
     case_name_full: z.string().optional().default(""),
     date_filed: nullableBulkString.optional(),
+    date_filed_is_approximate: bulkBoolean.optional(),
     precedential_status: z.string().optional().default(""),
     citation_count: z.string().optional().default("0"),
+    scdb_id: z.string().optional().default(""),
+    scdb_decision_direction: z.string().optional().default(""),
+    source: z.string().optional().default(""),
     judges: z.string().optional().default(""),
+    attorneys: z.string().optional().default(""),
+    posture: z.string().optional().default(""),
     syllabus: z.string().optional().default(""),
+    headnotes: z.string().optional().default(""),
+    summary: z.string().optional().default(""),
+    disposition: z.string().optional().default(""),
+    history: z.string().optional().default(""),
+    other_dates: z.string().optional().default(""),
+    cross_reference: z.string().optional().default(""),
+    correction: z.string().optional().default(""),
     procedural_history: z.string().optional().default(""),
     nature_of_suit: z.string().optional().default(""),
+    slug: z.string().optional().default(""),
+    blocked: bulkBoolean.optional(),
+    date_blocked: nullableBulkString.optional(),
+    arguments: z.string().optional().default(""),
+    headmatter: z.string().optional().default(""),
     date_modified: z.string().optional().default(""),
   })
   .passthrough();
@@ -44,9 +63,13 @@ export const courtListenerBulkOpinionSchema = z
     id: z.string().regex(/^\d+$/),
     cluster_id: z.string().regex(/^\d+$/),
     type: z.string().optional().default(""),
+    author_id: nullableBulkString.optional(),
     author_str: z.string().optional().default(""),
+    joined_by_str: z.string().optional().default(""),
     per_curiam: bulkBoolean.optional(),
+    ordering_key: nullableBulkString.optional(),
     download_url: z.string().optional().default(""),
+    local_path: z.string().optional().default(""),
     sha1: z.string().optional().default(""),
     page_count: nullableBulkString.optional(),
     extracted_by_ocr: bulkBoolean.optional(),
@@ -62,6 +85,20 @@ export const courtListenerBulkOpinionSchema = z
   .passthrough();
 
 export type CourtListenerBulkOpinion = z.infer<typeof courtListenerBulkOpinionSchema>;
+
+// search_citation -- the official reporter citations, one row per (cluster, cite).
+export const courtListenerBulkCitationSchema = z
+  .object({
+    id: z.string().regex(/^\d+$/),
+    cluster_id: z.string().regex(/^\d+$/),
+    volume: z.string().optional().default(""),
+    reporter: z.string().optional().default(""),
+    page: z.string().optional().default(""),
+    type: z.string().optional().default(""),
+  })
+  .passthrough();
+
+export type CourtListenerBulkCitation = z.infer<typeof courtListenerBulkCitationSchema>;
 
 // CourtListener's opinion "type" values → our opinion_type enum.
 export function normalizeBulkOpinionType(type: string): string {
@@ -133,4 +170,106 @@ export function bulkOpinionSourceUri(snapshotDate: string, opinionId: string): s
 
 export function bulkContentHash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+const BULK_URL_REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
+
+// Stream a multi-GB `.bz2` bulk file straight from S3 over HTTPS, decompressing
+// through `bzip2 -dc` without ever landing the file on disk: the http response
+// is piped into bzip2's stdin and the decompressed CSV comes out of stdout.
+export function openBulkCsvFromUrl(url: string): BulkCsvSource {
+  const decompressor: ChildProcessWithoutNullStreams = spawn("bzip2", ["-dc"], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let standardError = "";
+  let transportError: string | null = null;
+  let closedByConsumer = false;
+  let activeRequest: ClientRequest | undefined;
+  decompressor.stderr.setEncoding("utf8");
+  decompressor.stderr.on("data", (chunk: string) => {
+    standardError += chunk;
+  });
+
+  const fail = (message: string) => {
+    if (transportError === null) transportError = message;
+    decompressor.stdin.destroy();
+  };
+
+  const request = (target: string, redirectsLeft: number): void => {
+    activeRequest = https.get(target, (response) => {
+      const status = response.statusCode ?? 0;
+      const location = response.headers.location;
+      if (BULK_URL_REDIRECT_CODES.has(status) && location && redirectsLeft > 0) {
+        response.resume();
+        request(new URL(location, target).toString(), redirectsLeft - 1);
+        return;
+      }
+      if (status !== 200) {
+        response.resume();
+        fail(`HTTP ${status} ${response.statusMessage ?? ""} for ${target}`.trim());
+        return;
+      }
+      response.on("error", (error) => fail(`HTTP stream error for ${target}: ${error.message}`));
+      response.pipe(decompressor.stdin);
+    });
+    activeRequest.on("error", (error) => fail(`HTTP request error for ${target}: ${error.message}`));
+  };
+
+  request(url, 5);
+
+  return {
+    stream: decompressor.stdout,
+    close: () => {
+      closedByConsumer = true;
+      activeRequest?.destroy();
+      decompressor.kill("SIGTERM");
+    },
+    completion: new Promise<void>((resolve, reject) => {
+      decompressor.once("error", (error) =>
+        reject(new Error(`bzip2 failed to start for ${url}: ${error.message}`)),
+      );
+      decompressor.once("close", (code) => {
+        if (transportError !== null) {
+          reject(new Error(transportError));
+        } else if (bulkCsvProcessCompleted(code, closedByConsumer)) {
+          resolve();
+        } else {
+          reject(new Error(`bzip2 exited with code ${code}: ${standardError.trim()}`));
+        }
+      });
+    }),
+  };
+}
+
+export async function* readBulkOpinionClusters(
+  source: BulkCsvSource,
+): AsyncGenerator<CourtListenerBulkOpinionCluster> {
+  try {
+    yield* parseBulkCsv(source.stream, courtListenerBulkOpinionClusterSchema);
+    await source.completion;
+  } finally {
+    source.close();
+  }
+}
+
+export async function* readBulkOpinions(
+  source: BulkCsvSource,
+): AsyncGenerator<CourtListenerBulkOpinion> {
+  try {
+    yield* parseBulkCsv(source.stream, courtListenerBulkOpinionSchema);
+    await source.completion;
+  } finally {
+    source.close();
+  }
+}
+
+export async function* readBulkCitations(
+  source: BulkCsvSource,
+): AsyncGenerator<CourtListenerBulkCitation> {
+  try {
+    yield* parseBulkCsv(source.stream, courtListenerBulkCitationSchema);
+    await source.completion;
+  } finally {
+    source.close();
+  }
 }
