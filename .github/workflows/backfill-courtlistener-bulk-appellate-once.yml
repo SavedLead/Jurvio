@@ -1,0 +1,115 @@
+name: Backfill CourtListener bulk appellate opinions (once)
+
+# One-shot loader for Court of Appeals opinions from the FREE public CourtListener
+# S3 bulk export (com-courtlistener-storage). No account, no API key, no rate
+# limit -- so, unlike the REST lane, this needs no COURTLISTENER_API_TOKEN. It
+# streams the multi-GB opinions/.bz2 straight through `bzip2 -dc` on worker-coa,
+# joining dockets -> opinion-clusters -> opinions and keeping only the 13 COA
+# courts in memory.
+#
+# Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC
+# (10.116.0.2) with `sudo -n docker exec` on worker-coa -- the SAME route the
+# production deploy and the other *-once controls use, because GitHub-hosted
+# runners' egress IPs are blocked by the box SSH firewall.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)"
+        required: false
+        default: ""
+        type: string
+      min_year:
+        description: "Earliest cluster filing year to ingest"
+        required: false
+        default: "1900"
+        type: string
+      limit:
+        description: "Cap opinions written (blank = no cap; use for smoke tests)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-courtlistener-bulk-appellate-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 350
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      MIN_YEAR: ${{ inputs.min_year }}
+      LIMIT: ${{ inputs.limit }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run CourtListener bulk appellate backfill
+        run: |
+          set -euo pipefail
+          case "$MIN_YEAR" in ''|*[!0-9]*) echo "::error::min_year must be numeric"; exit 1;; esac
+          if [ -n "$SNAPSHOT_DATE" ]; then
+            case "$SNAPSHOT_DATE" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+              *) echo "::error::snapshot_date must be YYYY-MM-DD or empty"; exit 1;;
+            esac
+          fi
+          if [ -n "$LIMIT" ]; then
+            case "$LIMIT" in ''|*[!0-9]*) echo "::error::limit must be numeric or empty"; exit 1;; esac
+          fi
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$SNAPSHOT_DATE" "$MIN_YEAR" "$LIMIT" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="$1"; MIN_YEAR="$2"; LIMIT="$3"
+          BUCKET="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          worker="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-coa' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker-coa container"; exit 1; }
+
+          echo "=== Confirm bzip2 exists in worker-coa ==="
+          sudo -n docker exec "$worker" sh -lc 'command -v bzip2 >/dev/null 2>&1 && echo "bzip2-present" || { echo "::error::bzip2 missing in worker-coa"; exit 3; }'
+
+          if [ -z "$SNAPSHOT" ]; then
+            echo "=== Discover newest opinions snapshot from S3 ListBucket ==="
+            SNAPSHOT="$(curl -fsS "${BUCKET}/?list-type=2&prefix=bulk-data/opinions-" \
+              | grep -oE 'opinions-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' \
+              | sed -E 's/^opinions-//; s/\.csv\.bz2$//' \
+              | sort -r | head -n1)"
+            [ -n "$SNAPSHOT" ] || { echo "::error::could not discover a bulk opinions snapshot"; exit 4; }
+            echo "discovered snapshot: ${SNAPSHOT}"
+          fi
+
+          echo "=== Baseline ledger ==="
+          sudo -n docker exec "$worker" node jobs/report-appellate-backfill.mjs 2>&1 | tail -n 40 || true
+
+          echo "=== CourtListener bulk appellate ingest (snapshot ${SNAPSHOT}, min-year ${MIN_YEAR}) ==="
+          set -- --snapshot-date="$SNAPSHOT" --min-year="$MIN_YEAR"
+          [ -n "$LIMIT" ] && set -- "$@" --limit="$LIMIT"
+          sudo -n docker exec "$worker" node jobs/ingest-courtlistener-bulk-appellate.mjs "$@"
+
+          echo "=== Final ledger ==="
+          sudo -n docker exec "$worker" node jobs/report-appellate-backfill.mjs 2>&1 | tail -n 40 || true
+          REMOTE
