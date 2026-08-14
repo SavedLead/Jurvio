@@ -3,10 +3,13 @@ name: Backfill GovInfo appellate (once)
 # One-shot accelerator for the appellate GovInfo backfill. The scheduled coa-lane
 # job crawls conservatively (--court=next, ~1 circuit / 7 min). This runs an
 # explicit paced loop over ALL circuits so the historical corpus (USCOURTS goes
-# back to ~2004) drains in one sitting. It refuses to run on DEMO_KEY (which is
-# clamped to 1 page/circuit and 429s), and paces under the api.data.gov hourly
-# budget. Runs on ubuntu-latest via SSH, so it never contends with the self-hosted
-# builder / deploys.
+# back to ~2004) drains fast. It refuses to run on DEMO_KEY and paces under the
+# api.data.gov hourly budget.
+#
+# Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC
+# (10.116.0.2) with `sudo -n docker exec` on worker-coa -- the SAME route the
+# production deploy and the other *-once controls use, because GitHub-hosted
+# runners' egress IPs are blocked by the box SSH firewall.
 
 on:
   workflow_dispatch:
@@ -14,7 +17,7 @@ on:
       iterations:
         description: "Max full --court=all passes (completed circuits self-skip)"
         required: false
-        default: "6"
+        default: "4"
         type: string
       pages_per_court:
         description: "Pages (x1000 records) per circuit per pass (1-10)"
@@ -24,57 +27,61 @@ on:
       sleep_seconds:
         description: "Pause between passes to stay under the hourly rate budget"
         required: false
-        default: "90"
+        default: "60"
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  # Serialize with the scheduled govinfo lane's expectations: only one aggressive
-  # backfill at a time. Does not cancel an in-progress run.
   group: jurvio-govinfo-appellate-backfill
   cancel-in-progress: false
 
 jobs:
   backfill:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 60
+    timeout-minutes: 45
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      ITERATIONS: ${{ inputs.iterations }}
+      PAGES_PER_COURT: ${{ inputs.pages_per_court }}
+      SLEEP_SECONDS: ${{ inputs.sleep_seconds }}
     steps:
-      - name: Configure production SSH
-        env:
-          DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
-          DO_KNOWN_HOSTS: ${{ secrets.DO_KNOWN_HOSTS }}
+      - name: Configure SSH
         run: |
+          set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
-          printf '%s\n' "$DO_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
 
       - name: Run paced GovInfo backfill across all circuits
-        env:
-          DO_HOST: ${{ secrets.DO_HOST }}
-          DO_USER: ${{ secrets.DO_USER }}
-          ITERATIONS: ${{ inputs.iterations }}
-          PAGES_PER_COURT: ${{ inputs.pages_per_court }}
-          SLEEP_SECONDS: ${{ inputs.sleep_seconds }}
         run: |
-          ssh "$DO_USER@$DO_HOST" \
-            ITERATIONS="$ITERATIONS" \
-            PAGES_PER_COURT="$PAGES_PER_COURT" \
-            SLEEP_SECONDS="$SLEEP_SECONDS" \
-            'bash -se' <<'REMOTE'
           set -euo pipefail
-          cd /opt/jurvio
-          compose=(docker compose -f docker-compose.production.yml)
-
-          echo "=== COA worker ==="
-          "${compose[@]}" ps worker-coa
+          case "$ITERATIONS" in ''|*[!0-9]*) echo "::error::iterations must be numeric"; exit 1;; esac
+          case "$PAGES_PER_COURT" in ''|*[!0-9]*) echo "::error::pages_per_court must be numeric"; exit 1;; esac
+          case "$SLEEP_SECONDS" in ''|*[!0-9]*) echo "::error::sleep_seconds must be numeric"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$ITERATIONS" "$PAGES_PER_COURT" "$SLEEP_SECONDS" <<'REMOTE'
+          set -euo pipefail
+          ITER="$1"; PAGES="$2"; PAUSE="$3"
+          worker="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-coa' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker-coa container"; exit 1; }
 
           echo "=== GovInfo credential (refuse DEMO_KEY) ==="
-          "${compose[@]}" exec -T worker-coa sh -lc '
+          sudo -n docker exec "$worker" sh -lc '
             if [ -n "${GOVINFO_API_KEY:-}" ] && [ "$GOVINFO_API_KEY" != "DEMO_KEY" ]; then
               echo "personal-key-configured"
             else
@@ -84,23 +91,18 @@ jobs:
           '
 
           echo "=== Baseline ledger ==="
-          "${compose[@]}" exec -T worker-coa node jobs/report-appellate-backfill.mjs || true
+          sudo -n docker exec "$worker" node jobs/report-appellate-backfill.mjs 2>&1 | tail -n 40 || true
 
-          iterations="${ITERATIONS:-8}"
-          pages="${PAGES_PER_COURT:-10}"
-          pause="${SLEEP_SECONDS:-90}"
-          echo "=== Backfill loop: ${iterations} passes x ${pages} pages/circuit, ${pause}s pacing ==="
+          echo "=== Backfill loop: ${ITER} passes x ${PAGES} pages/circuit, ${PAUSE}s pacing ==="
           i=1
-          while [ "$i" -le "$iterations" ]; do
-            echo "--- pass ${i}/${iterations} ($(date -u +%H:%M:%SZ) UTC) ---"
-            # Each pass advances every not-yet-complete circuit; completed circuits
-            # early-return instantly, so passes get cheaper as the corpus fills.
-            "${compose[@]}" exec -T worker-coa \
-              node jobs/ingest-govinfo-appellate.mjs --court=all --page-size=1000 --pages-per-court="$pages" || true
+          while [ "$i" -le "$ITER" ]; do
+            echo "--- pass ${i}/${ITER} ($(date -u +%H:%M:%SZ) UTC) ---"
+            sudo -n docker exec "$worker" \
+              node jobs/ingest-govinfo-appellate.mjs --court=all --page-size=1000 --pages-per-court="$PAGES" 2>&1 | tail -n 30 || true
             i=$((i + 1))
-            [ "$i" -le "$iterations" ] && sleep "$pause"
+            [ "$i" -le "$ITER" ] && sleep "$PAUSE"
           done
 
           echo "=== Final ledger ==="
-          "${compose[@]}" exec -T worker-coa node jobs/report-appellate-backfill.mjs || true
+          sudo -n docker exec "$worker" node jobs/report-appellate-backfill.mjs 2>&1 | tail -n 40 || true
           REMOTE
