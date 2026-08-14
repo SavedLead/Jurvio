@@ -264,6 +264,40 @@ jobs:
             mv "$tmp" "$env_file"
             echo "COURTLISTENER_API_TOKEN synced into box env (value not printed)."
           '
+      - name: Sync GovInfo API key to box env
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          GOVINFO_API_KEY: ${{ secrets.GOVINFO_API_KEY }}
+        run: |
+          set -euo pipefail
+          # The GovInfo appellate backfill falls back to the shared DEMO_KEY when
+          # GOVINFO_API_KEY is unset, which hard-clamps it to 1 page/circuit/cycle and
+          # trips 429s (unbounded consecutive_failures). Upsert the real key into the box
+          # env as a single line (never clobbering other vars), passing the value over
+          # stdin so it never appears in argv/process listings, and never echoing it.
+          # No-op if the secret is unset. "Release and verify" recreates the containers
+          # via `docker compose up -d`, which re-reads env_file, so the key takes effect
+          # on this same release.
+          if [ -z "${GOVINFO_API_KEY:-}" ]; then
+            echo "::notice title=GovInfo key not set::GOVINFO_API_KEY secret is empty; leaving box env unchanged (appellate govinfo backfill stays on DEMO_KEY: 1 page/circuit/cycle)."
+            exit 0
+          fi
+          SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+          printf '%s' "$GOVINFO_API_KEY" | timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" '
+            set -euo pipefail
+            umask 077
+            env_file=/opt/jurvio/.env.production
+            key="$(cat)"
+            touch "$env_file"
+            tmp="$(mktemp)"
+            grep -v "^GOVINFO_API_KEY=" "$env_file" > "$tmp" || true
+            printf "GOVINFO_API_KEY=%s\n" "$key" >> "$tmp"
+            chmod 600 "$tmp"
+            mv "$tmp" "$env_file"
+            echo "GOVINFO_API_KEY synced into box env (value not printed)."
+          '
       - name: Release and verify
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:
