@@ -79,9 +79,12 @@ jobs:
           if [ -n "$LIMIT" ]; then
             case "$LIMIT" in ''|*[!0-9]*) echo "::error::limit must be numeric or empty"; exit 1;; esac
           fi
-          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "$SNAPSHOT_DATE" "$MIN_YEAR" "$LIMIT" <<'REMOTE'
+          # Pass inputs as env (not positional args): an empty snapshot_date would be
+          # dropped by ssh's remote re-split, shifting $2/$3 and tripping set -u.
+          ssh "$INGESTION_USER@$DB_HOST" \
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' MIN_YEAR='$MIN_YEAR' LIMIT='$LIMIT' bash -se" <<'REMOTE'
           set -euo pipefail
-          SNAPSHOT="$1"; MIN_YEAR="$2"; LIMIT="$3"
+          SNAPSHOT="${SNAPSHOT_DATE:-}"; MIN_YEAR="${MIN_YEAR:-1900}"; LIMIT="${LIMIT:-}"
           BUCKET="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
           worker="$(sudo -n docker ps \
             --filter 'label=com.docker.compose.project=jurvio' \
