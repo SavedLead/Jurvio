@@ -25,7 +25,12 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 WORKDIR /app
 
-RUN apk add --no-cache bzip2 poppler-utils
+# poppler-utils supplies pdftotext (native text layer) and pdftoppm (rasterize a
+# page to an image for OCR). tesseract-ocr + the English trained data read the
+# image-only scans that have no text layer, which pdftotext alone cannot -- the
+# ~7,500 appellate opinions otherwise parked as "ocr_required". tesseract is free
+# and fully local, so this adds no per-page cost, only CPU time.
+RUN apk add --no-cache bzip2 poppler-utils tesseract-ocr tesseract-ocr-data-eng
 
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
