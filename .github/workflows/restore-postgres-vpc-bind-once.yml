@@ -1,0 +1,108 @@
+name: Restore Postgres VPC bind (once)
+
+# INCIDENT FIX. An out-of-band `docker compose up -d worker-coa worker-core`
+# (from the batch-writes enable control) recreated the postgres container WITHOUT
+# exporting JURVIO_DATABASE_BIND from .env.production. docker compose only
+# auto-loads `.env`, not `.env.production`, so the compose default kicked in --
+# `${JURVIO_DATABASE_BIND:-127.0.0.1}` -- and postgres rebound its host port from
+# the private VPC address (10.116.0.2) to loopback. The scheduler workers kept
+# running (they reach postgres over the internal compose network, not the host
+# port), so ingestion/publishing continued climbing in the DB -- but the public
+# app on jurvio-public-01 connects over the VPC to 10.116.0.2:5432 and was cut
+# off, freezing the public /cases count on its last cached value while the DB
+# moved underneath it. (Symptom: deploy-public-web failed with
+# `connect ECONNREFUSED 10.116.0.2:5432`.)
+#
+# This recreates postgres with JURVIO_DATABASE_BIND loaded exactly the way
+# release-production.sh does, restoring the VPC port publication so the public
+# app can reach the database again. Brief (~5s) postgres restart; workers
+# reconnect automatically. Runs on the self-hosted builder over the VPC.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Recreate postgres with the correct VPC bind
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          env_file=/opt/jurvio/.env.production
+          [ -f "$env_file" ] || { echo "::error::missing $env_file"; exit 1; }
+
+          # Load JURVIO_DATABASE_BIND exactly like release-production.sh.
+          DB_BIND_LINE=$(grep -E '^JURVIO_DATABASE_BIND=' "$env_file" | tail -1 || true)
+          [ -n "$DB_BIND_LINE" ] || { echo "::error::JURVIO_DATABASE_BIND not set in .env.production"; exit 1; }
+          JURVIO_DATABASE_BIND=$(printf '%s' "${DB_BIND_LINE#JURVIO_DATABASE_BIND=}" | tr -d '\r')
+          echo "target JURVIO_DATABASE_BIND=${JURVIO_DATABASE_BIND}"
+
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no running jurvio postgres container"; exit 1; }
+
+          echo "=== current postgres host port bindings (BEFORE) ==="
+          sudo -n docker inspect --format '{{json .NetworkSettings.Ports}}' "$pg" || true
+          IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$pg")"
+          [ -n "$IMG" ] || { echo "::error::could not resolve running postgres image"; exit 1; }
+          echo "using JURVIO_IMAGE=${IMG}"
+
+          echo "=== recreate postgres with JURVIO_DATABASE_BIND=${JURVIO_DATABASE_BIND} ==="
+          sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$JURVIO_DATABASE_BIND" \
+            docker compose -f docker-compose.production.yml up -d postgres
+
+          echo "=== wait for healthy ==="
+          for i in $(seq 1 30); do
+            st="$(sudo -n docker inspect --format '{{.State.Health.Status}}' "$(sudo -n docker ps \
+              --filter 'label=com.docker.compose.project=jurvio' \
+              --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)" 2>/dev/null || echo unknown)"
+            echo "postgres health: $st"
+            [ "$st" = "healthy" ] && break
+            sleep 2
+          done
+
+          pg2="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          echo "=== postgres host port bindings (AFTER) -- expect ${JURVIO_DATABASE_BIND}:5432 ==="
+          sudo -n docker inspect --format '{{json .NetworkSettings.Ports}}' "$pg2"
+
+          echo "=== confirm workers still connected (heartbeats fresh) ==="
+          for l in core coa; do
+            f="/var/lib/jurvio/artifacts/scheduler/$l.alive"
+            if sudo -n test -f "$f"; then
+              age=$(( $(date +%s) - $(sudo -n cat "$f") )); echo "$l heartbeat ${age}s old";
+            else echo "$l heartbeat missing (may still be starting)"; fi
+          done
+          echo "=== DONE: postgres rebound to VPC address ==="
+          REMOTE
