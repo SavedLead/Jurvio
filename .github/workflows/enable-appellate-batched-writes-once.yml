@@ -102,7 +102,18 @@ jobs:
           IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$coa0")"
           [ -n "$IMG" ] || { echo "::error::could not resolve running JURVIO_IMAGE from worker-coa"; exit 1; }
           echo "using JURVIO_IMAGE=${IMG}"
-          sudo -n env JURVIO_IMAGE="$IMG" docker compose -f docker-compose.production.yml up -d worker-coa worker-core
+          # CRITICAL: `compose up` recreates the postgres dependency if its config
+          # changed, and compose only auto-loads `.env`, not `.env.production`. Without
+          # exporting JURVIO_DATABASE_BIND the compose default (127.0.0.1) rebinds
+          # postgres to loopback and isolates the public app from the DB. Load it the
+          # same way release-production.sh does so the VPC bind is preserved.
+          env_file=/opt/jurvio/.env.production
+          DB_BIND_LINE=$(grep -E '^JURVIO_DATABASE_BIND=' "$env_file" | tail -1 || true)
+          [ -n "$DB_BIND_LINE" ] || { echo "::error::JURVIO_DATABASE_BIND missing from .env.production"; exit 1; }
+          JURVIO_DATABASE_BIND=$(printf '%s' "${DB_BIND_LINE#JURVIO_DATABASE_BIND=}" | tr -d '\r')
+          echo "using JURVIO_DATABASE_BIND=${JURVIO_DATABASE_BIND}"
+          sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$JURVIO_DATABASE_BIND" \
+            docker compose -f docker-compose.production.yml up -d worker-coa worker-core
 
           echo "=== Verify flag inside worker-coa (lane=coa runs the appellate cycle) ==="
           coa="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
