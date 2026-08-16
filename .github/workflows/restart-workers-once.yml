@@ -1,0 +1,104 @@
+name: Restart scheduler workers (once)
+
+# INCIDENT FIX. The whole publish/ingest pipeline froze at ~08:56 ET: the
+# scheduler containers (worker-coa lane=coa, worker-core lane=core) report docker
+# health=healthy (their scheduler heartbeat keeps refreshing) but the work-doing
+# child (ingestion_worker_heartbeat 'appellate-discovery-1', stage extract-publish)
+# hung, so nothing has published in hours. Neither the enable control (`up -d`
+# without --force-recreate skips a config-unchanged container) nor the current
+# lane-watchdog (only restarts docker-UNHEALTHY containers) can clear a hung child
+# inside a healthy container. This force-recreates both scheduler workers to clear
+# the wedged children, capturing their recent logs first for root cause.
+#
+# Loads JURVIO_DATABASE_BIND from .env.production and passes JURVIO_IMAGE from a
+# running container, so the compose recreate CANNOT rebind postgres to loopback
+# (the failure that isolated the public app earlier). Runs on the self-hosted
+# builder over the private VPC.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  restart:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 12
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Capture crash logs, then force-recreate worker-coa + worker-core
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          env_file=/opt/jurvio/.env.production
+          [ -f "$env_file" ] || { echo "::error::missing $env_file"; exit 1; }
+
+          # DB bind (same as release-production.sh) so postgres is never rebound to loopback.
+          DB_BIND_LINE=$(grep -E '^JURVIO_DATABASE_BIND=' "$env_file" | tail -1 || true)
+          [ -n "$DB_BIND_LINE" ] || { echo "::error::JURVIO_DATABASE_BIND missing from .env.production"; exit 1; }
+          JURVIO_DATABASE_BIND=$(printf '%s' "${DB_BIND_LINE#JURVIO_DATABASE_BIND=}" | tr -d '\r')
+          echo "using JURVIO_DATABASE_BIND=${JURVIO_DATABASE_BIND}"
+
+          find_svc() {
+            sudo -n docker ps --filter "label=com.docker.compose.project=jurvio" \
+              --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+          # JURVIO_IMAGE for the workers comes from a running worker container; fall back to postgres.
+          IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$(find_svc worker-coa)" 2>/dev/null || true)"
+          [ -n "$IMG" ] || IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$(find_svc postgres)" 2>/dev/null || true)"
+          [ -n "$IMG" ] || { echo "::error::could not resolve JURVIO_IMAGE"; exit 1; }
+          echo "using JURVIO_IMAGE=${IMG}"
+
+          echo "=== ROOT CAUSE: recent worker-coa logs (tail 80) ==="
+          coa="$(find_svc worker-coa)"; [ -n "$coa" ] && sudo -n docker logs --tail 80 "$coa" 2>&1 || echo "(worker-coa not found)"
+          echo "=== ROOT CAUSE: recent worker-core logs (tail 40) ==="
+          core="$(find_svc worker-core)"; [ -n "$core" ] && sudo -n docker logs --tail 40 "$core" 2>&1 || echo "(worker-core not found)"
+
+          echo "=== force-recreate worker-coa + worker-core ==="
+          sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$JURVIO_DATABASE_BIND" \
+            docker compose -f docker-compose.production.yml up -d --force-recreate worker-coa worker-core
+
+          echo "=== post-recreate state ==="
+          sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --format '{{.Names}}\t{{.Status}}' | grep -E 'worker-(coa|core)' || true
+
+          echo "=== confirm postgres still bound to VPC (not loopback) ==="
+          pg="$(find_svc postgres)"
+          sudo -n docker inspect --format '{{json .NetworkSettings.Ports}}' "$pg" || true
+
+          echo "=== verify batched-writes flag survived in worker-coa ==="
+          for i in $(seq 1 20); do
+            c="$(find_svc worker-coa)"
+            if [ -n "$c" ] && got="$(sudo -n docker exec "$c" printenv APPELLATE_BATCHED_WRITES 2>/dev/null)"; then
+              echo "worker-coa APPELLATE_BATCHED_WRITES=${got}"; break
+            fi
+            sleep 2
+          done
+          echo "=== DONE: scheduler workers force-recreated ==="
+          REMOTE
