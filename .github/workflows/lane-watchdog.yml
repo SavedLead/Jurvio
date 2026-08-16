@@ -1,0 +1,166 @@
+name: Lane watchdog (self-heal wedged scheduler workers)
+
+# Self-heal watchdog for the ingestion scheduler workers on jurvio-web-01.
+#
+# WHAT WEDGES: the scheduler lane workers can go silently dead without exiting.
+#   - worker-core runs the SCOTUS + federal lanes; worker-coa runs the appellate
+#     lanes; worker-supervisor reaps the durable PG job queue.
+#   - A publish child process can hang (e.g. a stuck network write): the lane's
+#     cycle is then skipped forever and no new work is published, but the parent
+#     process stays alive, so nothing crashes and nothing restarts.
+#   - A worker can also OOM-die but leave a wedged/zombie state.
+#   SCOTUS once sat dead for ~28h until a human manually restarted worker-core.
+#
+# WHY COMPOSE DOESN'T SELF-HEAL: by design the supervisor does NOT auto-restart a
+#   lane (see scripts/run-ingestion-supervisor.ts -- a startup crash needs a human
+#   fix, not a restart loop). And compose `restart: unless-stopped` only restarts a
+#   service when its PROCESS EXITS -- it does NOT act on `health: unhealthy`. So an
+#   unhealthy-but-still-running worker sits dead forever.
+#
+# WHAT THIS LEVERAGES: the docker-compose.production.yml healthchecks for
+#   worker-core / worker-coa / worker-supervisor already detect a wedged worker.
+#   Each reads its scheduler heartbeat file
+#   (/var/lib/jurvio/artifacts/scheduler/{core,coa,supervisor}.alive, refreshed
+#   every 30s) and flips the container to `health: unhealthy` when the heartbeat is
+#   >180s stale. This watchdog simply finds jurvio worker containers reporting
+#   health=unhealthy and force-recreates them -- closing the gap compose leaves.
+#
+# WHERE IT RUNS: on the self-hosted builder, reaching jurvio-web-01 over the private
+#   VPC (10.116.0.2), the same route the deploy and other box-exec workflows use,
+#   because GitHub-hosted runners' egress IPs are firewalled off the box SSH.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what WOULD be restarted without doing it"
+        required: false
+        default: "false"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-lane-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Detect and heal wedged scheduler workers
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" "DRY_RUN='$DRY_RUN' bash -se" <<'REMOTE'
+          set -euo pipefail
+          DRY_RUN="${DRY_RUN:-false}"
+          cd /opt/jurvio
+
+          echo "=== Lane watchdog run @ $(TZ='America/New_York' date +'%Y-%m-%d %H:%M:%S %Z') (dry_run=${DRY_RUN}) ==="
+
+          # Full inventory of jurvio compose containers with health status.
+          ps_all() {
+            sudo -n docker ps \
+              --filter 'label=com.docker.compose.project=jurvio' \
+              --format '{{.Names}}\t{{.State}}\t{{.Status}}'
+          }
+
+          echo "=== Worker health report ==="
+          all="$(ps_all)"
+          # Only the scheduler workers are watchdog candidates -- never postgres/app.
+          workers="$(printf '%s\n' "$all" | grep -E 'worker-(core|coa|supervisor)' || true)"
+          if [ -z "$workers" ]; then
+            echo "::warning::no jurvio scheduler worker containers found"
+          fi
+          # Classify + collect the unhealthy ones by container name.
+          unhealthy=""
+          while IFS=$'\t' read -r name state status; do
+            [ -n "$name" ] || continue
+            case "$status" in
+              *'(unhealthy)'*) health="UNHEALTHY"; unhealthy="${unhealthy}${name}"$'\n' ;;
+              *'(healthy)'*)   health="healthy" ;;
+              *'(health: starting)'*|*'(starting)'*) health="starting" ;;
+              *) health="unknown" ;;
+            esac
+            printf '  %-28s %-10s %-10s %s\n' "$name" "$state" "$health" "$status"
+          done <<< "$workers"
+          unhealthy="$(printf '%s' "$unhealthy" | sed '/^$/d')"
+
+          if [ -z "$unhealthy" ]; then
+            echo "all scheduler workers healthy -- no action"
+            exit 0
+          fi
+
+          echo "=== Unhealthy scheduler workers detected ==="
+          printf '%s\n' "$unhealthy"
+
+          # JURVIO_IMAGE is supplied to compose at deploy time (release-production.sh
+          # exports it) and is NOT persisted on the box, so an out-of-band `compose up`
+          # must provide it or every ${JURVIO_IMAGE:?...} interpolation fails. Derive it
+          # from a stable running jurvio container (postgres, then app) -- the exact tag
+          # in production -- and pass it through to root's compose via `env`.
+          stable="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$stable" ] || stable="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=app' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$stable" ] || { echo "::error::no stable running jurvio container (postgres/app) to derive JURVIO_IMAGE"; exit 1; }
+          IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$stable")"
+          [ -n "$IMG" ] || { echo "::error::could not resolve running JURVIO_IMAGE"; exit 1; }
+          echo "using JURVIO_IMAGE=${IMG}"
+
+          restarted=0
+          while IFS= read -r cname; do
+            [ -n "$cname" ] || continue
+            svc="$(sudo -n docker inspect --format '{{ index .Config.Labels "com.docker.compose.service"}}' "$cname" || true)"
+            if [ -z "$svc" ]; then
+              echo "::warning::could not resolve compose service for ${cname} -- skipping"
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "WOULD RESTART ${svc} (container ${cname})"
+              continue
+            fi
+            echo "--- Recreating ${svc} (container ${cname}) ---"
+            sudo -n env JURVIO_IMAGE="$IMG" docker compose -f docker-compose.production.yml up -d --force-recreate "$svc"
+            restarted=$((restarted + 1))
+          done <<< "$unhealthy"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "=== dry_run: no workers were recreated ==="
+            exit 0
+          fi
+
+          echo "=== Restarted ${restarted} scheduler worker(s) this run ==="
+          echo "=== Post-restart worker state (heartbeat should refresh within ~30s) ==="
+          ps_all | grep -E 'worker-(core|coa|supervisor)' || true
+          echo "=== DONE ==="
+          REMOTE
