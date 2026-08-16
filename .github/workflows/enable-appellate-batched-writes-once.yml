@@ -94,7 +94,15 @@ jobs:
           grep -E '^APPELLATE_BATCHED_WRITES=|^APPELLATE_WRITE_BATCH_SIZE=' "$env_file"
 
           echo "=== Recreate worker-coa + worker-core with new env ==="
-          sudo -n docker compose -f docker-compose.production.yml up -d worker-coa worker-core
+          # JURVIO_IMAGE is supplied to compose at deploy time (release-production.sh
+          # exports it) and is NOT persisted on the box, so an out-of-band `compose up`
+          # must provide it or every ${JURVIO_IMAGE:?...} interpolation fails. Derive it
+          # from the image the running worker-coa is already on -- the exact tag in
+          # production -- and pass it through to root's compose via `env`.
+          IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$coa0")"
+          [ -n "$IMG" ] || { echo "::error::could not resolve running JURVIO_IMAGE from worker-coa"; exit 1; }
+          echo "using JURVIO_IMAGE=${IMG}"
+          sudo -n env JURVIO_IMAGE="$IMG" docker compose -f docker-compose.production.yml up -d worker-coa worker-core
 
           echo "=== Verify flag inside worker-coa (lane=coa runs the appellate cycle) ==="
           coa="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
