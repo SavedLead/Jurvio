@@ -1,0 +1,111 @@
+name: Enable appellate batched writes (once)
+
+# Flip APPELLATE_BATCHED_WRITES=true on the production box and recreate the COA
+# scheduler so the appellate publish path switches from the per-item writer to the
+# set-based INSERT ... SELECT FROM UNNEST(...) batch upsert (per-item fallback on
+# any batch error -- byte-for-byte identical rows either way). This is the free
+# publish-throughput win: the box is CPU-bound and batching cuts round-trips per
+# published opinion, which is where the 58k+ outbox backlog is stuck.
+#
+# The flag is written into /opt/jurvio/.env.production with the SAME idempotent
+# grep-v-then-append pattern the deploy uses for the API tokens, so it PERSISTS
+# across future deploys (the release only rewrites individual keys, never the
+# whole file). worker-coa runs JURVIO_SCHEDULER_LANE=coa (the appellate cycle);
+# worker-core is recreated too so either lane picks the flag up. The durable PG
+# job queue makes a scheduler restart safe -- in-flight work is checkpointed.
+#
+# Prints a BEFORE ledger (COA published + outbox depth) so the post-enable
+# ingestion-status run can be diffed against it to measure the new publish rate.
+#
+# Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC
+# (10.116.0.2), the same route the deploy and other *-once controls use, because
+# GitHub-hosted runners' egress IPs are blocked by the box SSH firewall.
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "APPELLATE_WRITE_BATCH_SIZE (rows per set-based upsert)"
+        required: false
+        default: "25"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      BATCH_SIZE: ${{ inputs.batch_size }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Set flag, recreate COA scheduler, capture BEFORE ledger
+        run: |
+          set -euo pipefail
+          case "$BATCH_SIZE" in ''|*[!0-9]*) echo "::error::batch_size must be numeric"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "BATCH_SIZE='$BATCH_SIZE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          BATCH_SIZE="${BATCH_SIZE:-25}"
+          cd /opt/jurvio
+          env_file=/opt/jurvio/.env.production
+          [ -f "$env_file" ] || { echo "::error::missing $env_file"; exit 1; }
+
+          coa0="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-coa' --format '{{.ID}}' | head -n1)"
+          [ -n "$coa0" ] || { echo "::error::no running jurvio worker-coa container"; exit 1; }
+
+          echo "=== BEFORE ledger (t0) -- proven report script, per-circuit published counts ==="
+          date -u +'t0_utc=%Y-%m-%dT%H:%M:%SZ'
+          sudo -n docker exec "$coa0" node jobs/report-appellate-backfill.mjs 2>&1 | tail -n 40 || true
+
+          echo "=== Set APPELLATE_BATCHED_WRITES=true (idempotent, deploy-safe) ==="
+          tmp="$(mktemp)"
+          grep -v -E '^APPELLATE_BATCHED_WRITES=|^APPELLATE_WRITE_BATCH_SIZE=' "$env_file" > "$tmp" || true
+          printf 'APPELLATE_BATCHED_WRITES=true\n' >> "$tmp"
+          printf 'APPELLATE_WRITE_BATCH_SIZE=%s\n' "$BATCH_SIZE" >> "$tmp"
+          # Preserve ownership/permissions of the original env file.
+          cat "$tmp" > "$env_file"
+          rm -f "$tmp"
+          echo "flag lines now in env file:"
+          grep -E '^APPELLATE_BATCHED_WRITES=|^APPELLATE_WRITE_BATCH_SIZE=' "$env_file"
+
+          echo "=== Recreate worker-coa + worker-core with new env ==="
+          sudo -n docker compose -f docker-compose.production.yml up -d worker-coa worker-core
+
+          echo "=== Verify flag inside worker-coa (lane=coa runs the appellate cycle) ==="
+          coa="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-coa' --format '{{.ID}}' | head -n1)"
+          [ -n "$coa" ] || { echo "::error::worker-coa not running after recreate"; exit 1; }
+          got="$(sudo -n docker exec "$coa" printenv APPELLATE_BATCHED_WRITES || true)"
+          echo "worker-coa APPELLATE_BATCHED_WRITES=${got}"
+          [ "$got" = "true" ] || { echo "::error::flag did not propagate into worker-coa"; exit 1; }
+
+          echo "=== worker health (heartbeat should refresh within ~30s) ==="
+          sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --format '{{.Names}}\t{{.Status}}' | grep -E 'worker-(coa|core)' || true
+          echo "=== DONE: batched writes ENABLED (batch_size=${BATCH_SIZE}) ==="
+          REMOTE
