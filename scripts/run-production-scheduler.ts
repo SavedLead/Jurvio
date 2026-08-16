@@ -107,20 +107,15 @@ const jobs: ScheduledJob[] = [
       "--pages-per-court=10",
     ],
   },
-  {
-    lane: "coa",
-    name: "appellate-courtlistener-backfill",
-    initialDelayMs: 6 * minute,
-    intervalMs: 10 * minute,
-    command: [
-      "jobs/ingest-courtlistener-appellate-backfill.mjs",
-      "--court=next",
-      "--batch-size=20",
-      "--delay-ms=1000",
-      "--min-year=1700",
-      "--maximum-attempts=10",
-    ],
-  },
+  // REMOVED: the CourtListener REST/API appellate backfill lane. The public
+  // v4 API rate-limits us to a perpetual "429 Too Many Requests" loop that
+  // published nothing while burning a scheduler slot and network retries every
+  // 10 minutes. The COA corpus now comes from govinfo (complete for all 13
+  // circuits) and, for full-text/citation enrichment, the free CourtListener
+  // BULK download path (out-of-band, not scheduler-driven) -- neither needs the
+  // API lane. There is no env/DB toggle for a lane, so removing it here is the
+  // durable disable. See throughput-freewins-once.yml for the interim checkpoint
+  // muzzle that stopped it before this shipped.
   {
     lane: "coa",
     name: "appellate-backfill-report",

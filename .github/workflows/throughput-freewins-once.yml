@@ -1,0 +1,153 @@
+name: Throughput free wins (once)
+
+# Two $0 publish-throughput wins plus a read-only SCOTUS diagnostic, all over the
+# private VPC on the production Postgres. No image, no deploy, no backup.
+#
+#  1. RECLAIM STUCK RUNS: ingestion_run rows orphaned in status='running' when a
+#     worker was OOM/SIGKILLed between startIngestionRun and finishIngestionRun.
+#     The dead process already closed its Postgres connection, so these rows hold
+#     NO locks and block nothing -- they are stale bookkeeping that clutters the
+#     fleet report and (via the supervisor) noise. There is no reaper for this
+#     table by design, so we age-gate (>1 day) and mark them 'failed'. The gate
+#     cannot touch any run started in the last 24h.
+#
+#  2. MUZZLE THE COURTLISTENER *API* LANE (the perpetual 429 loop): there is no
+#     env/DB toggle for a scheduler lane, so the durable kill is removing the lane
+#     from run-production-scheduler.ts (staged for the next deploy). As an
+#     immediate stopgap, set every courtlistener_appellate_checkpoint row to
+#     'complete' so the --court=next selector (status <> 'complete') finds nothing
+#     and the lane stops making REST calls. This touches ONLY the CL-API lane's
+#     checkpoint table -- not govinfo (separate table) and not the CL BULK path
+#     (not scheduler-driven at all).
+#
+#  3. SCOTUS DIAGNOSTIC (read-only): worker-core was restarted at the batch-writes
+#     enable, which is the effective self-heal for a wedged publish lane. This
+#     confirms whether SCOTUS is publishing again (last legal_case publication,
+#     recent scheduler_lane_run for the two scotus lanes) or is merely holding
+#     candidates (editorial, not a crash).
+#
+# Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reclaim_stuck_runs:
+        description: "Mark orphaned running ingestion_run (>1 day) as failed"
+        required: false
+        default: "true"
+        type: string
+      muzzle_cl_api:
+        description: "Set courtlistener_appellate_checkpoint rows to complete (stopgap)"
+        required: false
+        default: "true"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  freewins:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      RECLAIM_STUCK_RUNS: ${{ inputs.reclaim_stuck_runs }}
+      MUZZLE_CL_API: ${{ inputs.muzzle_cl_api }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Reclaim stuck runs, muzzle CL-API, diagnose SCOTUS
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" \
+            "RECLAIM_STUCK_RUNS='$RECLAIM_STUCK_RUNS' MUZZLE_CL_API='$MUZZLE_CL_API' bash -se" <<'REMOTE'
+          set -euo pipefail
+          RECLAIM="${RECLAIM_STUCK_RUNS:-true}"; MUZZLE="${MUZZLE_CL_API:-true}"
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no running jurvio postgres container"; exit 1; }
+          psql() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio "$@"; }
+
+          echo "=== [SCOTUS diagnostic, read-only] candidate status counts ==="
+          psql -Atc "SELECT review_status||'='||count(*) FROM official_opinion_candidate GROUP BY review_status ORDER BY 1;" 2>&1 || true
+          echo "--- approved but not yet published (publisher's NOT EXISTS set) ---"
+          psql -Atc "
+            SELECT 'approved_unpublished='||count(*) FROM official_opinion_candidate c
+            WHERE c.review_status='approved'
+              AND NOT EXISTS (SELECT 1 FROM document_identifier di
+                WHERE di.provider_id=c.provider_id
+                  AND di.identifier_type='scotus_official_opinion'
+                  AND di.identifier_value=c.source_record_id);" 2>&1 || true
+          echo "--- held candidates (editorial hold, not a crash) ---"
+          psql -Atc "SELECT 'held_pending='||count(*) FROM official_opinion_candidate
+            WHERE review_status='pending_review' AND reviewer_notes LIKE 'Held:%';" 2>&1 || true
+          echo "--- SCOTUS last published legal_case update (Eastern) ---"
+          psql -Atc "
+            SELECT 'scotus_published='||count(*)||' last_publication_et='||
+              COALESCE(to_char(max(lc.updated_at) AT TIME ZONE 'America/New_York','YYYY-MM-DD HH24:MI:SS'),'none')
+            FROM legal_case lc JOIN court co ON co.id=lc.court_id
+            WHERE co.provider_court_id='scotus' AND lc.publication='published';" 2>&1 || true
+          echo "--- recent scheduler_lane_run for the two SCOTUS lanes (Eastern) ---"
+          psql -Atc "
+            SELECT lane||' started='||to_char(started_at AT TIME ZONE 'America/New_York','MM-DD HH24:MI:SS')
+              ||' finished='||COALESCE(to_char(finished_at AT TIME ZONE 'America/New_York','HH24:MI:SS'),'--')
+              ||' ok='||COALESCE(ok::text,'?')||' exit='||COALESCE(exit_code::text,'-')
+            FROM scheduler_lane_run
+            WHERE lane IN ('scotus-publish','scotus-enriched')
+            ORDER BY started_at DESC LIMIT 8;" 2>&1 || true
+
+          echo ""
+          echo "=== [1] Reclaim stuck ingestion_run (orphaned >1 day) ==="
+          psql -Atc "SELECT 'stuck_before='||count(*) FROM ingestion_run
+            WHERE status='running' AND started_at < now() - interval '1 day';"
+          if [ "$RECLAIM" = "true" ]; then
+            psql -v ON_ERROR_STOP=1 -c "
+              UPDATE ingestion_run
+              SET status='failed', completed_at=now(),
+                  error=jsonb_build_object('message',
+                    'Reaped: orphaned running run (worker crash/OOM); no active connection')
+              WHERE status='running' AND started_at < now() - interval '1 day';"
+            psql -Atc "SELECT 'stuck_after='||count(*) FROM ingestion_run
+              WHERE status='running' AND started_at < now() - interval '1 day';"
+            psql -Atc "SELECT 'running_total_remaining='||count(*) FROM ingestion_run WHERE status='running';"
+          else
+            echo "reclaim skipped (input=false)"
+          fi
+
+          echo ""
+          echo "=== [2] Muzzle CourtListener API lane (stopgap; durable removal ships next deploy) ==="
+          psql -Atc "SELECT 'cl_api_active_before='||count(*) FROM courtlistener_appellate_checkpoint
+            WHERE status <> 'complete';" 2>&1 || echo "(checkpoint table read failed; see above)"
+          if [ "$MUZZLE" = "true" ]; then
+            psql -v ON_ERROR_STOP=1 -c "
+              UPDATE courtlistener_appellate_checkpoint
+              SET status='complete', updated_at=now()
+              WHERE status <> 'complete';"
+            psql -Atc "SELECT 'cl_api_active_after='||count(*) FROM courtlistener_appellate_checkpoint
+              WHERE status <> 'complete';"
+          else
+            echo "muzzle skipped (input=false)"
+          fi
+          echo ""
+          echo "=== DONE ==="
+          REMOTE
