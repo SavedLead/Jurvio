@@ -1,0 +1,91 @@
+name: Diagnose ingestion disk (once, read-only)
+
+# Read-only breakdown of what is consuming the ingestion box disk. Identifies
+# the large docker volume, maps it to a purpose (postgres data vs artifacts),
+# and reports total DB size + largest tables. Performs NO writes and NO deletes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-disk
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Read-only disk breakdown over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+
+          echo "=== df ==="
+          df -h /
+
+          echo "=== docker volumes: name -> size (largest first) ==="
+          sudo -n du -x -h -d1 /var/lib/docker/volumes 2>/dev/null | sort -rh | head -15 || true
+
+          echo "=== docker system df -v (volumes section) ==="
+          sudo -n docker system df -v 2>/dev/null | sed -n '/LOCAL VOLUMES/,/Build cache/p' || true
+
+          echo "=== compose service -> mounts (what each volume is used for) ==="
+          for s in postgres app worker-core worker-coa worker-supervisor; do
+            id="$(sudo -n docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=$s" --format '{{.ID}}' | head -n1)"
+            [ -n "$id" ] || { echo "$s: (no container)"; continue; }
+            echo "--- $s ---"
+            sudo -n docker inspect -f '{{range .Mounts}}{{.Type}} {{.Name}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' "$id" 2>/dev/null || true
+          done
+
+          echo "=== postgres: total database size ==="
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          if [ -n "$pg" ]; then
+            sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT 'db_total=' || pg_size_pretty(pg_database_size('jurvio'));" 2>/dev/null || echo "(db size query failed)"
+            echo "=== postgres: top 20 tables by total size (incl. indexes + TOAST) ==="
+            sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "
+              SELECT rpad(relname, 34) || ' total=' || pg_size_pretty(pg_total_relation_size(c.oid))
+                     || '  table=' || pg_size_pretty(pg_relation_size(c.oid))
+                     || '  toast=' || pg_size_pretty(coalesce(pg_relation_size(c.reltoastrelid),0))
+              FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE c.relkind='r' AND n.nspname='public'
+              ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 20;" 2>/dev/null || echo "(table size query failed)"
+            echo "=== raw_artifact payload footprint (often the bloat source) ==="
+            sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "
+              SELECT 'raw_artifact_rows=' || count(*) FROM raw_artifact
+              UNION ALL SELECT 'raw_artifact_total=' || pg_size_pretty(pg_total_relation_size('raw_artifact'));" 2>/dev/null || echo "(raw_artifact query failed / table absent)"
+          else
+            echo "(no postgres container)"
+          fi
+
+          echo "=== app artifacts dir footprint (local fallback store) ==="
+          app="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n1)"
+          if [ -n "$app" ]; then
+            sudo -n docker exec "$app" sh -lc 'du -x -h -d2 /var/lib/jurvio/artifacts 2>/dev/null | sort -rh | head -20' || echo "(artifacts du failed)"
+          fi
+          echo "=== DONE ==="
+          REMOTE
