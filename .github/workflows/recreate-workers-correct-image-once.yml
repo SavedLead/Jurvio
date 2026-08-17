@@ -1,0 +1,96 @@
+name: Recreate workers on correct image (once)
+
+# Corrective one-shot: recreate worker-coa + worker-core pinned to the SAME
+# jurvio image the app container runs (never postgres). Guards against the
+# empty-lookup -> postgres fallback that put the workers on postgres:16-alpine.
+# Loads JURVIO_DATABASE_BIND so the compose recreate keeps postgres VPC-bound.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  recreate:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 12
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Recreate workers on the correct jurvio image
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          env_file=/opt/jurvio/.env.production
+          [ -f "$env_file" ] || { echo "::error::missing $env_file"; exit 1; }
+
+          DB_BIND_LINE=$(grep -E '^JURVIO_DATABASE_BIND=' "$env_file" | tail -1 || true)
+          [ -n "$DB_BIND_LINE" ] || { echo "::error::JURVIO_DATABASE_BIND missing"; exit 1; }
+          JURVIO_DATABASE_BIND=$(printf '%s' "${DB_BIND_LINE#JURVIO_DATABASE_BIND=}" | tr -d '\r')
+          echo "using JURVIO_DATABASE_BIND=${JURVIO_DATABASE_BIND}"
+
+          find_svc() {
+            sudo -n docker ps -a --filter "label=com.docker.compose.project=jurvio" \
+              --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+
+          # Resolve the jurvio image from the stably-running app container. Never postgres.
+          appid="$(find_svc app)"
+          [ -n "$appid" ] || { echo "::error::app container not found"; exit 1; }
+          IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$appid")"
+          case "$IMG" in
+            *jurvio*) : ;;
+            *) echo "::error::resolved image is not a jurvio image: $IMG"; exit 1 ;;
+          esac
+          echo "using JURVIO_IMAGE=${IMG}"
+
+          echo "=== force-recreate worker-coa + worker-core on correct image ==="
+          sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$JURVIO_DATABASE_BIND" \
+            docker compose -f docker-compose.production.yml up -d --force-recreate worker-coa worker-core
+
+          echo "=== settle (up to ~90s) then report ==="
+          for i in $(seq 1 18); do
+            sleep 5
+            line="$(sudo -n docker ps -a --filter 'label=com.docker.compose.project=jurvio' \
+              --format '{{.Label "com.docker.compose.service"}} {{.Image}} {{.Status}}' | grep -E 'worker-(coa|core) ' || true)"
+            echo "[$((i*5))s]"; printf '%s\n' "$line"
+            # stop early once both are healthy
+            hcoa="$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$(find_svc worker-coa)" 2>/dev/null || true)"
+            hcore="$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$(find_svc worker-core)" 2>/dev/null || true)"
+            [ "$hcoa" = "healthy" ] && [ "$hcore" = "healthy" ] && { echo "both healthy"; break; }
+          done
+
+          echo "=== final fleet ==="
+          for s in app worker-core worker-coa worker-supervisor postgres; do
+            id="$(find_svc "$s")"; [ -n "$id" ] || { echo "$s: absent"; continue; }
+            echo "$s: image=$(sudo -n docker inspect -f '{{.Config.Image}}' "$id") state=$(sudo -n docker inspect -f '{{.State.Status}}' "$id") health=$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$id")"
+          done
+          echo "=== postgres bind ==="
+          sudo -n docker inspect --format '{{json .NetworkSettings.Ports}}' "$(find_svc postgres)" || true
+          echo "=== DONE ==="
+          REMOTE
