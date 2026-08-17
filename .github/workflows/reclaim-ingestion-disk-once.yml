@@ -1,0 +1,97 @@
+name: Reclaim ingestion disk (once)
+
+# One-shot, read-mostly disk reclaim for the ingestion box (jurvio-web-01),
+# run through the self-hosted builder over the private VPC. Frees ONLY
+# disposable space and prints a full before/after trace. It deliberately does
+# NOT run `docker volume prune` or touch the postgres data volume, the database,
+# or any case/document/opinion data. Safe to re-run.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-reclaim-disk
+  cancel-in-progress: false
+
+jobs:
+  reclaim:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Reclaim recoverable disk over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+
+          echo "=== BEFORE: disk ==="
+          df -h /
+          echo "=== BEFORE: docker disk usage ==="
+          sudo -n docker system df || true
+          echo "=== Largest consumers under /var/lib (top 20, one-filesystem) ==="
+          sudo -n du -x -h -d2 /var/lib 2>/dev/null | sort -rh | head -20 || true
+
+          echo "=== Reclaim 1: stopped containers (running containers untouched) ==="
+          sudo -n docker container prune -f || true
+
+          echo "=== Reclaim 2: unused + dangling images (images used by running containers are protected) ==="
+          sudo -n docker image prune -af || true
+
+          echo "=== Reclaim 3: docker build cache ==="
+          sudo -n docker builder prune -af || true
+
+          echo "=== Reclaim 4: disposable CourtListener bulk cache (re-downloadable) ==="
+          app="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n1)"
+          if [ -n "$app" ]; then
+            if sudo -n docker exec "$app" sh -lc 'test -d /var/lib/jurvio/artifacts/courtlistener/bulk'; then
+              echo "CL bulk before:"; sudo -n docker exec "$app" sh -lc 'du -sh /var/lib/jurvio/artifacts/courtlistener/bulk 2>/dev/null || true'
+              sudo -n docker exec "$app" sh -lc 'find /var/lib/jurvio/artifacts/courtlistener/bulk -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true'
+              echo "CL bulk after:"; sudo -n docker exec "$app" sh -lc 'du -sh /var/lib/jurvio/artifacts/courtlistener/bulk 2>/dev/null || true'
+            else
+              echo "(no CourtListener bulk cache directory present)"
+            fi
+          else
+            echo "(no running app container found; skipped cache cleanup)"
+          fi
+
+          echo "=== Reclaim 5: trim system journal logs to 200M ==="
+          sudo -n journalctl --vacuum-size=200M || true
+
+          echo "=== AFTER: disk ==="
+          df -h /
+          echo "=== AFTER: docker disk usage ==="
+          sudo -n docker system df || true
+
+          echo "=== Worker/container health after reclaim ==="
+          for s in app worker-core worker-coa worker-supervisor postgres; do
+            id="$(sudo -n docker ps -a --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=$s" --format '{{.ID}}' | head -n1)"
+            [ -n "$id" ] || { echo "$s: absent"; continue; }
+            st="$(sudo -n docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || echo '?')"
+            h="$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$id" 2>/dev/null || echo '?')"
+            echo "$s: state=$st health=$h"
+          done
+          echo "=== DONE ==="
+          REMOTE
