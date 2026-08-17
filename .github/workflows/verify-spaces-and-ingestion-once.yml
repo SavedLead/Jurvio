@@ -1,0 +1,70 @@
+name: Verify Spaces + ingestion (once, read-only)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-verify-spaces
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Verify over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+
+          echo "=== disk ==="
+          df -h / | tail -n +1
+
+          for s in worker-core worker-coa; do
+            id="$(find_svc "$s")"
+            echo "--- $s Spaces credential presence (values never printed) ---"
+            [ -n "$id" ] || { echo "$s: absent"; continue; }
+            sudo -n docker exec "$id" sh -lc 'for v in JURVIO_SPACES_ACCESS_KEY_ID JURVIO_SPACES_SECRET_ACCESS_KEY JURVIO_SPACES_BUCKET JURVIO_SPACES_ENDPOINT; do if [ -n "$(printenv "$v" 2>/dev/null)" ]; then echo "$v=set"; else echo "$v=UNSET"; fi; done'
+            echo "--- $s artifact-store backend it will select ---"
+            sudo -n docker exec "$id" sh -lc 'node -e "const a=process.env.JURVIO_SPACES_ACCESS_KEY_ID,s=process.env.JURVIO_SPACES_SECRET_ACCESS_KEY;console.log((a&&s)?(\"SPACES bucket=\"+(process.env.JURVIO_SPACES_BUCKET||\"jurvio-raw-evidence\")):\"LOCAL_DISK_FALLBACK\")"' 2>/dev/null || echo "(node check failed)"
+          done
+
+          echo "=== scheduler heartbeats (age seconds) ==="
+          app="$(find_svc app)"
+          sudo -n docker exec "$app" sh -lc 'now=$(date +%s); for f in core coa supervisor; do h=$(cat /var/lib/jurvio/artifacts/scheduler/$f.alive 2>/dev/null || echo 0); echo "$f: $((now-h))s ago"; done' 2>/dev/null || echo "(heartbeat read failed)"
+
+          echo "=== ingestion activity (last 2h) ==="
+          pg="$(find_svc postgres)"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
+            SELECT 'legal_case_created_last_15m=' || count(*) FROM legal_case WHERE created_at > now() - interval '15 minutes'
+            UNION ALL SELECT 'legal_case_created_last_2h=' || count(*) FROM legal_case WHERE created_at > now() - interval '2 hours'
+            UNION ALL SELECT 'raw_artifact_last_15m=' || count(*) FROM raw_artifact WHERE retrieved_at > now() - interval '15 minutes'
+            UNION ALL SELECT 'published_total=' || count(*) FROM legal_case WHERE publication='published'
+            UNION ALL SELECT 'max_case_created=' || coalesce(to_char(max(created_at),'MM-DD HH24:MI:SS'),'(none)') FROM legal_case;" 2>/dev/null || echo "(activity query failed)"
+          echo "=== DONE ==="
+          REMOTE
