@@ -1,0 +1,74 @@
+name: Prune ingested source PDF cache (once)
+
+# One-shot reclaim of the large, already-ingested source-PDF cache on the
+# ingestion box. Clears the CONTENTS of official-appellate/ and scotus/ under
+# the jurvio_artifacts volume (their extracted text is already in postgres and
+# the originals are re-downloadable from public gov sources). Keeps the parent
+# directories. Never touches the postgres volume, the database, or other dirs.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-prune-artifacts
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Prune ingested source PDF cache over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          base=/var/lib/docker/volumes/jurvio_jurvio_artifacts/_data
+
+          echo "=== BEFORE: disk ==="
+          df -h /
+
+          if ! sudo -n test -d "$base"; then
+            echo "::error::artifacts volume path not found: $base"; exit 1
+          fi
+
+          for d in official-appellate scotus; do
+            target="$base/$d"
+            if sudo -n test -d "$target"; then
+              echo "--- $d BEFORE: $(sudo -n du -sh "$target" 2>/dev/null | cut -f1) ---"
+              sudo -n find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+              echo "--- $d AFTER:  $(sudo -n du -sh "$target" 2>/dev/null | cut -f1) ---"
+            else
+              echo "--- $d: not present, skipped ---"
+            fi
+          done
+
+          echo "=== AFTER: disk ==="
+          df -h /
+          echo "=== Remaining artifacts breakdown (top 12) ==="
+          sudo -n du -x -h -d2 "$base" 2>/dev/null | sort -rh | head -12 || true
+          echo "=== DONE ==="
+          REMOTE
