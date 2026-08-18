@@ -1,3 +1,4 @@
-Deploy self-healing Judge Autopilot control loop after PR #333.
-Merged application commit: 541c63ea2db88aaac9c925cd58163809d4726ba5
-Approved by the owner on 2026-08-10 EST.
+Deploy current validated main release.
+Merged application commit: 610055f7d68f502934f6e096862ec4f35e75b1b1
+USAO profiles, verified office-to-court mapping, public directory, and ongoing case-attribution backfill.
+Owner-directed release on 2026-08-18 ET.
