@@ -93,7 +93,7 @@ INSERT INTO usao_office (
   public_id, office_code, display_name, doj_profile_url,
   verification, source_url
 )
-SELECT
+SELECT DISTINCT
   'usao_' || CASE
     WHEN registry.jurvio_court_code IN ('gud', 'nmid') THEN 'guam-nmi'
     ELSE registry.jurvio_court_code
