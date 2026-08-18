@@ -44,6 +44,13 @@ const jobs: ScheduledJob[] = [
   },
   {
     lane: "core",
+    name: "usao-case-attribution",
+    initialDelayMs: 6 * minute,
+    intervalMs: 30 * minute,
+    command: ["jobs/backfill-usao-case-attribution.mjs", "--limit=10000"],
+  },
+  {
+    lane: "core",
     name: "district-court-source-scout",
     initialDelayMs: 15 * minute,
     intervalMs: 7 * 24 * 60 * minute,
