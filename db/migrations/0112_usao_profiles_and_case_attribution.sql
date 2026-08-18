@@ -10,7 +10,6 @@ CREATE TABLE usao_office (
   public_id text NOT NULL UNIQUE,
   office_code text NOT NULL UNIQUE,
   display_name text NOT NULL,
-  district_court_id uuid REFERENCES court(id),
   doj_profile_url text NOT NULL,
   verification verification_state NOT NULL DEFAULT 'verified',
   source_url text NOT NULL,
@@ -18,6 +17,13 @@ CREATE TABLE usao_office (
   active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE usao_office_court (
+  office_id uuid NOT NULL REFERENCES usao_office(id) ON DELETE CASCADE,
+  court_id uuid NOT NULL REFERENCES court(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (office_id, court_id)
 );
 
 CREATE TABLE usao_case_assignment (
@@ -74,7 +80,7 @@ CREATE TABLE usao_attorney_case_appearance (
   UNIQUE NULLS NOT DISTINCT (attorney_id, case_id, appearance_role, observed_on, source_artifact_id)
 );
 
-CREATE INDEX usao_office_district_idx ON usao_office (district_court_id);
+CREATE INDEX usao_office_court_court_idx ON usao_office_court (court_id);
 CREATE INDEX usao_case_assignment_case_idx ON usao_case_assignment (case_id);
 CREATE INDEX usao_case_assignment_office_idx ON usao_case_assignment (office_id, created_at DESC);
 CREATE INDEX usao_attorney_office_idx ON usao_attorney (office_id, active, display_name);
@@ -84,7 +90,7 @@ CREATE INDEX usao_attorney_case_case_idx ON usao_attorney_case_appearance (case_
 -- the Northern Mariana Islands are intentionally one DOJ office, yielding the
 -- correct nationwide total of 93 USAOs.
 INSERT INTO usao_office (
-  public_id, office_code, display_name, district_court_id, doj_profile_url,
+  public_id, office_code, display_name, doj_profile_url,
   verification, source_url
 )
 SELECT
@@ -101,17 +107,23 @@ SELECT
       THEN 'U.S. Attorney''s Office for Guam and the Northern Mariana Islands'
     ELSE 'U.S. Attorney''s Office for ' || registry.court_name
   END,
-  court.id,
   'https://www.justice.gov/usao',
   'verified',
   'https://www.justice.gov/usao'
 FROM direct_court_registry registry
-JOIN court ON court.provider_court_id = registry.jurvio_court_code
 WHERE registry.court_type = 'district'
-  AND registry.jurvio_court_code <> 'nmid'
-ON CONFLICT (office_code) DO UPDATE
-SET district_court_id = EXCLUDED.district_court_id,
-    updated_at = now();
+ON CONFLICT (office_code) DO UPDATE SET updated_at = now();
+
+INSERT INTO usao_office_court (office_id, court_id)
+SELECT office.id, court.id
+FROM direct_court_registry registry
+JOIN court ON court.provider_court_id = registry.jurvio_court_code
+JOIN usao_office office ON office.office_code = CASE
+  WHEN registry.jurvio_court_code IN ('gud', 'nmid') THEN 'guam-nmi'
+  ELSE registry.jurvio_court_code
+END
+WHERE registry.court_type = 'district'
+ON CONFLICT DO NOTHING;
 
 -- Historical and continuous office-level attribution.  This is an institution
 -- attribution, not a claim about a particular AUSA.  It uses the docket's own
@@ -131,7 +143,8 @@ SELECT DISTINCT
 FROM party_appearance appearance
 JOIN entity party ON party.id = appearance.entity_id
 JOIN legal_case legal_case ON legal_case.id = appearance.case_id
-JOIN usao_office office ON office.district_court_id = legal_case.court_id
+JOIN usao_office_court office_court ON office_court.court_id = legal_case.court_id
+JOIN usao_office office ON office.id = office_court.office_id
 WHERE appearance.role IN ('plaintiff', 'petitioner', 'appellant')
   AND lower(regexp_replace(party.display_name, '[^a-z0-9]+', '', 'g'))
     IN ('unitedstates', 'unitedstatesofamerica')
@@ -143,12 +156,13 @@ SELECT
   office.public_id,
   office.office_code,
   office.display_name,
-  office.district_court_id,
+  count(DISTINCT office_court.court_id)::integer AS district_count,
   count(assignment.id)::integer AS case_count,
   count(*) FILTER (WHERE legal_case.activity_state = 'active')::integer AS active_case_count,
   max(legal_case.filed_on) AS latest_case_filed_on,
   count(DISTINCT attorney.id)::integer AS attorney_count
 FROM usao_office office
+LEFT JOIN usao_office_court office_court ON office_court.office_id = office.id
 LEFT JOIN usao_case_assignment assignment ON assignment.office_id = office.id
 LEFT JOIN legal_case ON legal_case.id = assignment.case_id
 LEFT JOIN usao_attorney attorney ON attorney.office_id = office.id AND attorney.active IS NOT FALSE
