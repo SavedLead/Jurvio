@@ -108,7 +108,7 @@ SELECT DISTINCT
     ELSE 'U.S. Attorney''s Office for ' || registry.court_name
   END,
   'https://www.justice.gov/usao',
-  'verified',
+  'verified'::verification_state,
   'https://www.justice.gov/usao'
 FROM direct_court_registry registry
 WHERE registry.court_type = 'district'
