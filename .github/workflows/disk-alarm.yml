@@ -1,0 +1,79 @@
+name: Disk alarm (ingestion box)
+
+# Early-warning for the jurvio-web-01 disk so a fill-up is caught at 80-90%
+# instead of at 100% (which wedges postgres + workers). Hourly + on demand.
+# WARN at >=80%, FAIL the run (red -> GitHub notifies the owner) at >=90%.
+# Read-only: it never deletes anything.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      warn_pct:
+        description: "Warn threshold (percent used)"
+        required: false
+        default: "80"
+        type: string
+      fail_pct:
+        description: "Fail threshold (percent used)"
+        required: false
+        default: "90"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-disk-alarm
+  cancel-in-progress: false
+
+jobs:
+  alarm:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 8
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      WARN_PCT: ${{ inputs.warn_pct || '80' }}
+      FAIL_PCT: ${{ inputs.fail_pct || '90' }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Check ingestion-box disk over private VPC
+        run: |
+          set -euo pipefail
+          case "$WARN_PCT" in ''|*[!0-9]*) echo "::error::warn_pct must be integer"; exit 1;; esac
+          case "$FAIL_PCT" in ''|*[!0-9]*) echo "::error::fail_pct must be integer"; exit 1;; esac
+          used="$(ssh "$INGESTION_USER@$DB_HOST" "df -P / | awk 'NR==2{gsub(\"%\",\"\",\$5); print \$5}'")"
+          case "$used" in ''|*[!0-9]*) echo "::error::could not read disk percent (got '${used}')"; exit 1;; esac
+          echo "ingestion-box / usage = ${used}% (warn>=${WARN_PCT}%, fail>=${FAIL_PCT}%)"
+
+          if [ "$used" -ge "$FAIL_PCT" ] || [ "$used" -ge "$WARN_PCT" ]; then
+            echo "=== top disk consumers (triage) ==="
+            ssh "$INGESTION_USER@$DB_HOST" "sudo -n docker system df 2>/dev/null; echo '--- artifacts vs postgres volume ---'; sudo -n du -x -h -d1 /var/lib/docker/volumes 2>/dev/null | sort -rh | head -6" || true
+          fi
+
+          if [ "$used" -ge "$FAIL_PCT" ]; then
+            echo "::error::ingestion-box disk at ${used}% (>= ${FAIL_PCT}%). If growth is the postgres volume, resize the droplet volume; if it is the artifacts volume, workers may have lost Spaces creds -- check and run the prune/verify workflows."
+            exit 1
+          elif [ "$used" -ge "$WARN_PCT" ]; then
+            echo "::warning::ingestion-box disk at ${used}% (>= ${WARN_PCT}%). Plan a resize or prune before it reaches ${FAIL_PCT}%."
+          else
+            echo "disk healthy."
+          fi
