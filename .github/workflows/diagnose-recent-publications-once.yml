@@ -1,0 +1,84 @@
+name: Diagnose recent publications (once, read-only)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-recent-pub
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Recent publications breakdown over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "no postgres"; exit 1; }
+          psql() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio "$@"; }
+
+          echo "=== cases created in last 4d: total ==="
+          psql -Atc "SET TIME ZONE 'America/New_York'; SELECT count(*) FROM legal_case WHERE created_at > now()-interval '4 days';" 2>/dev/null || echo "(failed)"
+
+          echo "=== created last 4d by court (top 20) ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT c.provider_court_id || ' n=' || count(*)
+            FROM legal_case lc JOIN court c ON c.id = lc.court_id
+            WHERE lc.created_at > now()-interval '4 days'
+            GROUP BY c.provider_court_id ORDER BY count(*) DESC LIMIT 20;" 2>/dev/null || echo "(failed)"
+
+          echo "=== created last 4d by DECISION decade (decided_on): backfill-old vs newly-filed ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT (extract(year from decided_on)::int/10*10)::text || 's = ' || count(*)
+            FROM legal_case
+            WHERE created_at > now()-interval '4 days' AND decided_on IS NOT NULL
+            GROUP BY 1 ORDER BY 1;" 2>/dev/null || echo "(decided_on query failed)"
+
+          echo "=== created last 4d: decided_on min/max/null ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT 'oldest=' || coalesce(min(decided_on)::text,'-') || ' newest=' || coalesce(max(decided_on)::text,'-') || ' null_dated=' || count(*) FILTER (WHERE decided_on IS NULL) || ' of ' || count(*)
+            FROM legal_case WHERE created_at > now()-interval '4 days';" 2>/dev/null || echo "(failed)"
+
+          echo "=== created last 4d: filed decade (filed_on) as cross-check ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT (extract(year from filed_on)::int/10*10)::text || 's = ' || count(*)
+            FROM legal_case
+            WHERE created_at > now()-interval '4 days' AND filed_on IS NOT NULL
+            GROUP BY 1 ORDER BY 1;" 2>/dev/null || echo "(filed_on query failed)"
+
+          echo "=== CourtListener / bulk / appellate / district lane status (ingestion_run) ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT run_type || ' | ' || status || ' | n=' || count(*) || ' | latest=' || to_char(max(started_at),'MM-DD HH24:MI')
+            FROM ingestion_run
+            WHERE run_type ~* 'courtlistener|bulk|appellate|district|federal|usao'
+            GROUP BY run_type, status ORDER BY max(started_at) DESC LIMIT 30;" 2>/dev/null || echo "(lane query failed)"
+
+          echo "=== DONE ==="
+          REMOTE
