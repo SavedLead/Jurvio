@@ -307,7 +307,15 @@ jobs:
         run: |
           set -euo pipefail
           SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
-          timeout --signal=TERM --kill-after=30s 1500s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
+          # The SSH wrapper timeout MUST exceed the sum of release-production.sh's own
+          # inner deadlines, or a legitimately-slow release is killed before it can
+          # finish. Worst case with a pending migration: image pull (<=900s) + pre-release
+          # DB backup (<=1800s) + migration (<=300s) + app/worker startup (<=180s) +
+          # readiness (<=60s). The prior 1500s was SHORTER than the backup budget alone,
+          # so any migration deploy (which triggers the backup) timed out mid-dump. 3600s
+          # covers the full chain with headroom; the inner per-step timeouts still bound
+          # each phase.
+          timeout --signal=TERM --kill-after=30s 3600s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
       - name: Verify hosted command-center login externally
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
