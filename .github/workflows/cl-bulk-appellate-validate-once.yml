@@ -1,0 +1,88 @@
+name: CL bulk appellate validate (once)
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: CourtListener bulk snapshot date (YYYY-MM-DD)
+        required: false
+        default: "2026-06-30"
+      min_year:
+        description: Minimum decision year
+        required: false
+        default: "2018"
+      limit:
+        description: Max opinions/clusters to persist (bounded validation)
+        required: false
+        default: "2000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-cl-bulk-appellate
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 40
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date || '2026-06-30' }}
+      MIN_YEAR: ${{ inputs.min_year || '2018' }}
+      LIMIT: ${{ inputs.limit || '2000' }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Bounded bulk run + disk check over private VPC
+        run: |
+          set -euo pipefail
+          case "$SNAPSHOT_DATE" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::bad snapshot_date"; exit 1;; esac
+          case "$MIN_YEAR" in ''|*[!0-9]*) echo "::error::bad min_year"; exit 1;; esac
+          case "$LIMIT" in ''|*[!0-9]*) echo "::error::bad limit"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' MIN_YEAR='$MIN_YEAR' LIMIT='$LIMIT' bash -se" <<'REMOTE'
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          app="$(find_svc app)"; pg="$(find_svc postgres)"
+          [ -n "$app" ] && [ -n "$pg" ] || { echo "::error::app/postgres container missing"; exit 1; }
+
+          echo "=== running image (should be the new deploy) ==="
+          sudo -n docker inspect -f '{{.Config.Image}}' "$app"
+
+          echo "=== BEFORE: disk ==="
+          df -h / | tail -1
+          before_cases="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT count(*) FROM legal_case" 2>/dev/null || echo '?')"
+          echo "legal_case before = $before_cases"
+
+          echo "=== running bounded CL bulk appellate loader (snapshot=$SNAPSHOT_DATE min-year=$MIN_YEAR limit=$LIMIT) ==="
+          sudo -n docker exec "$app" node jobs/ingest-courtlistener-bulk-appellate.mjs --snapshot-date="$SNAPSHOT_DATE" --min-year="$MIN_YEAR" --limit="$LIMIT"
+          rc=$?
+          echo "loader exit code = $rc"
+
+          echo "=== AFTER: disk ==="
+          df -h / | tail -1
+          after_cases="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT count(*) FROM legal_case" 2>/dev/null || echo '?')"
+          echo "legal_case after = $after_cases"
+
+          echo "=== artifacts volume size (should NOT balloon) ==="
+          sudo -n du -x -h -d1 /var/lib/docker/volumes/jurvio_jurvio_artifacts 2>/dev/null | tail -1 || true
+          echo "=== DONE (rc=$rc) ==="
+          exit "$rc"
+          REMOTE
