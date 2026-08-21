@@ -1,0 +1,79 @@
+name: CL bulk check + cleanup (once)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kill_loader:
+        description: Kill an orphaned bulk-loader process if found (true/false)
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-cl-bulk-appellate
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      KILL_LOADER: ${{ inputs.kill_loader || 'true' }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Check + cleanup over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" "KILL_LOADER='$KILL_LOADER' bash -se" <<'REMOTE'
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          app="$(find_svc app)"
+
+          echo "=== disk ==="
+          df -h / | tail -1
+
+          echo "=== fleet health ==="
+          for s in app worker-core worker-coa worker-supervisor postgres; do
+            id="$(find_svc "$s")"; [ -n "$id" ] || { echo "$s: absent"; continue; }
+            echo "$s: state=$(sudo -n docker inspect -f '{{.State.Status}}' "$id") health=$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$id")"
+          done
+
+          echo "=== orphaned bulk-loader process? ==="
+          pids="$(sudo -n docker exec "$app" sh -lc "ps -eo pid,etime,args 2>/dev/null | grep 'ingest-courtlistener-bulk-appellate' | grep -v grep" || true)"
+          if [ -n "$pids" ]; then
+            echo "FOUND running loader process(es):"
+            printf '%s\n' "$pids"
+            if [ "$KILL_LOADER" = "true" ]; then
+              echo "--- stopping loader (pkill -f) ---"
+              sudo -n docker exec "$app" sh -lc "pkill -f 'ingest-courtlistener-bulk-appellate' || true"
+              sleep 2
+              still="$(sudo -n docker exec "$app" sh -lc "ps -eo pid,args 2>/dev/null | grep 'ingest-courtlistener-bulk-appellate' | grep -v grep" || true)"
+              [ -z "$still" ] && echo "loader stopped." || { echo "still present, SIGKILL"; sudo -n docker exec "$app" sh -lc "pkill -9 -f 'ingest-courtlistener-bulk-appellate' || true"; }
+            fi
+          else
+            echo "none — clean."
+          fi
+          echo "=== app memory snapshot ==="
+          free -h | sed -n '1,2p' || true
+          echo "=== DONE ==="
+          REMOTE
