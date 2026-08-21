@@ -1,0 +1,78 @@
+name: Diagnose ingestion lanes (once, read-only)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-lanes
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Ingestion-lanes breakdown over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "no postgres"; exit 1; }
+          psql() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio "$@"; }
+
+          echo "=== corpus growth windows ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT 'total=' || count(*) FROM legal_case
+            UNION ALL SELECT 'published=' || count(*) FROM legal_case WHERE publication='published'
+            UNION ALL SELECT 'created_1h=' || count(*) FROM legal_case WHERE created_at > now()-interval '1 hour'
+            UNION ALL SELECT 'created_24h=' || count(*) FROM legal_case WHERE created_at > now()-interval '24 hours'
+            UNION ALL SELECT 'created_7d=' || count(*) FROM legal_case WHERE created_at > now()-interval '7 days';" 2>/dev/null || echo "(growth query failed)"
+
+          echo "=== ingestion_run by type/status (most recent 40) ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT run_type || ' | ' || status || ' | n=' || count(*) || ' | latest=' || to_char(max(started_at),'MM-DD HH24:MI')
+            FROM ingestion_run GROUP BY run_type, status ORDER BY max(started_at) DESC LIMIT 40;" 2>/dev/null || echo "(ingestion_run query failed)"
+
+          echo "=== recently-created cases (7d) by court, top 25 ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT c.provider_court_id || ' n=' || count(*)
+            FROM legal_case lc JOIN court c ON c.id = lc.court_id
+            WHERE lc.created_at > now()-interval '7 days'
+            GROUP BY c.provider_court_id ORDER BY count(*) DESC LIMIT 25;" 2>/dev/null || echo "(court breakdown failed)"
+
+          echo "=== legal_case date columns available ==="
+          psql -Atc "SELECT column_name FROM information_schema.columns WHERE table_name='legal_case' AND (column_name LIKE '%date%' OR column_name LIKE '%decided%' OR column_name LIKE '%filed%') ORDER BY column_name;" 2>/dev/null || echo "(column probe failed)"
+
+          echo "=== decision-decade of cases created in last 7d (old vs new) ==="
+          psql -Atc "SET TIME ZONE 'America/New_York';
+            SELECT (extract(year from decision_date)::int/10*10)::text || 's = ' || count(*)
+            FROM legal_case
+            WHERE created_at > now()-interval '7 days' AND decision_date IS NOT NULL
+            GROUP BY 1 ORDER BY 1;" 2>/dev/null || echo "(decision_date not present or query failed)"
+
+          echo "=== DONE ==="
+          REMOTE
