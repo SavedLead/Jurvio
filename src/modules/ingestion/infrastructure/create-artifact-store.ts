@@ -32,6 +32,22 @@ export function createArtifactStore(opts: {
     const region = e.JURVIO_SPACES_REGION ?? host.split(".")[0] ?? "nyc3";
     return new SpacesArtifactStore({ bucket, region, host, accessKeyId, secretAccessKey });
   }
+  // Fail loud in production. Silently falling back to on-disk storage is exactly
+  // how the ingestion box filled to 100% on 2026-08-16: the scheduler workers were
+  // missing their Spaces credentials, so ~130 GB of source PDFs were written to the
+  // local volume instead of Spaces and nobody was alerted until the disk was full
+  // and postgres/workers wedged. In production we refuse the local fallback so the
+  // misconfiguration surfaces immediately at startup. A maintenance job that
+  // genuinely wants on-disk storage can opt in with JURVIO_ALLOW_LOCAL_ARTIFACT_STORE=1.
+  if (e.NODE_ENV === "production" && e.JURVIO_ALLOW_LOCAL_ARTIFACT_STORE !== "1") {
+    throw new Error(
+      "createArtifactStore: Spaces object storage is required in production but its " +
+        "credentials (JURVIO_SPACES_ACCESS_KEY_ID / JURVIO_SPACES_SECRET_ACCESS_KEY) " +
+        "are not set. Refusing to fall back to on-disk storage, which silently fills " +
+        "the box. Configure Spaces, or set JURVIO_ALLOW_LOCAL_ARTIFACT_STORE=1 to " +
+        "explicitly allow local storage for this process.",
+    );
+  }
   return new LocalArtifactStore(opts.localRoot);
 }
 

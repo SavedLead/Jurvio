@@ -27,4 +27,30 @@ describe("createArtifactStore", () => {
     });
     expect(store).toBeInstanceOf(LocalArtifactStore);
   });
+
+  it("throws in production when Spaces credentials are absent (no silent local fallback)", () => {
+    expect(() =>
+      createArtifactStore({ localRoot: ".data/raw", env: { NODE_ENV: "production" } }),
+    ).toThrow(/Spaces object storage is required in production/);
+  });
+
+  it("allows the local store in production only with the explicit override", () => {
+    const store = createArtifactStore({
+      localRoot: ".data/raw",
+      env: { NODE_ENV: "production", JURVIO_ALLOW_LOCAL_ARTIFACT_STORE: "1" },
+    });
+    expect(store).toBeInstanceOf(LocalArtifactStore);
+  });
+
+  it("still returns Spaces in production when credentials are present", () => {
+    const store = createArtifactStore({
+      localRoot: ".data/raw",
+      env: {
+        NODE_ENV: "production",
+        JURVIO_SPACES_ACCESS_KEY_ID: "AKIAEXAMPLE",
+        JURVIO_SPACES_SECRET_ACCESS_KEY: "secretexamplekey",
+      },
+    });
+    expect(store).toBeInstanceOf(SpacesArtifactStore);
+  });
 });
