@@ -7,7 +7,7 @@ import {
   startIngestionRunItem,
 } from "@/modules/ingestion/application/ingestion-run";
 import { ingestCourtListenerOpinionCluster } from "@/modules/ingestion/application/ingest-courtlistener-opinion-cluster";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import {
   APPELLATE_COURT_REGISTRY,
   appellateCourtByCode,
@@ -53,8 +53,10 @@ if (!Number.isInteger(maximumAttempts) || maximumAttempts < 1 || maximumAttempts
 }
 
 const sql = db();
+// Spaces-aware factory: artifacts go to object storage in production instead of
+// silently accumulating on the box's local disk (the 2026-08-16 incident).
 const artifactRoot = process.env.RAW_ARTIFACT_DIR ?? ".data/raw";
-const artifactStore = new LocalArtifactStore(artifactRoot);
+const artifactStore = createArtifactStore({ localRoot: artifactRoot });
 const sleep = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 

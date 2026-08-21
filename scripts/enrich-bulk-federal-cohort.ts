@@ -7,7 +7,7 @@ import {
   startIngestionRun,
   startIngestionRunItem,
 } from "@/modules/ingestion/application/ingestion-run";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 
 function option(name: string): string | undefined {
   const equals = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -36,9 +36,9 @@ if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
 
 env();
 const sql = db();
-const artifactStore = new LocalArtifactStore(
-  process.env.RAW_ARTIFACT_DIR ?? process.env.JURVIO_ARTIFACT_ROOT ?? ".data/raw",
-);
+const artifactStore = createArtifactStore({
+  localRoot: process.env.RAW_ARTIFACT_DIR ?? process.env.JURVIO_ARTIFACT_ROOT ?? ".data/raw",
+});
 
 try {
   const rows = await sql<{ case_id: string; public_id: string; docket_id: string }[]>`

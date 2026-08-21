@@ -4,7 +4,7 @@ import {
   DEFAULT_BULK_BASE_URL,
   ingestCourtListenerBulkAppellateOpinions,
 } from "@/modules/ingestion/application/ingest-courtlistener-bulk-appellate-opinions";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 
 function argument(name: string, fallback: string): string {
   return process.argv.find((value) => value.startsWith(`--${name}=`))
@@ -33,8 +33,12 @@ if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
 }
 
 const sql = db();
+// Use the Spaces-aware factory so bulk opinion artifacts land in object storage
+// in production (and fail loud if Spaces is misconfigured) rather than silently
+// filling the ingestion box's local disk -- the failure mode behind the
+// 2026-08-16 100%-full incident.
 const artifactRoot = process.env.RAW_ARTIFACT_DIR ?? ".data/raw";
-const artifactStore = new LocalArtifactStore(artifactRoot);
+const artifactStore = createArtifactStore({ localRoot: artifactRoot });
 
 try {
   env();

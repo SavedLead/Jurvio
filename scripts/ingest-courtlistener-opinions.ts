@@ -1,7 +1,7 @@
 import { closeDb, db } from "@/db/client";
 import { env } from "@/lib/config/env";
 import { ingestCourtListenerOpinionCluster } from "@/modules/ingestion/application/ingest-courtlistener-opinion-cluster";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import { fetchOpinionClusterIds } from "@/modules/ingestion/providers/courtlistener/client";
 import {
   finishIngestionRun,
@@ -32,7 +32,7 @@ if (order !== "newest" && order !== "cited") {
 }
 
 const artifactRoot = process.env.RAW_ARTIFACT_DIR ?? ".data/raw";
-const artifactStore = new LocalArtifactStore(artifactRoot);
+const artifactStore = createArtifactStore({ localRoot: artifactRoot });
 
 try {
   env();

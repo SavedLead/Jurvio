@@ -2,7 +2,7 @@ import { closeDb, db } from "@/db/client";
 import { ingestOfficialScotusOpinions } from "@/modules/ingestion/application/ingest-official-scotus-opinions";
 import { ingestOfficialScotusDockets } from "@/modules/ingestion/application/ingest-official-scotus-dockets";
 import { enrichOfficialScotusOpinionMetadata } from "@/modules/ingestion/application/enrich-official-scotus-opinion-metadata";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import { publishVerifiedOfficialScotusOpinions } from "@/modules/publication/application/publish-official-scotus-opinions";
 import { extractOfficialScotusOpinionText } from "@/modules/publication/application/extract-official-scotus-opinion-text";
 
@@ -42,7 +42,7 @@ const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? process.env.RAW_ARTIFACT_DIR
   ?? ".data/artifacts";
 const sql = db();
-const artifactStore = new LocalArtifactStore(artifactRoot);
+const artifactStore = createArtifactStore({ localRoot: artifactRoot });
 
 try {
   const ingestion = await ingestOfficialScotusOpinions(

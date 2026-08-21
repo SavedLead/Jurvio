@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import { env } from "../src/lib/config/env";
-import { LocalArtifactStore } from "../src/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "../src/modules/ingestion/infrastructure/create-artifact-store";
 import { ingestCourtListenerOpinionCluster } from "../src/modules/ingestion/application/ingest-courtlistener-opinion-cluster";
 
 const clusterId = Number(process.argv[2]);
@@ -12,7 +12,7 @@ const sql = postgres(env().DATABASE_URL, { max: 2 });
 try {
   const result = await ingestCourtListenerOpinionCluster(
     sql,
-    new LocalArtifactStore(process.env.RAW_ARTIFACT_DIR ?? ".data/raw"),
+    createArtifactStore({ localRoot: process.env.RAW_ARTIFACT_DIR ?? ".data/raw" }),
     clusterId,
   );
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

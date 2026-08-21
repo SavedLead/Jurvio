@@ -30,7 +30,7 @@ import {
   type FederalLoop,
   type StreamCursor,
 } from "@/modules/ingestion/domain/federal-stream";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import {
   fetchDocketPage,
   fetchOpinionClusterIds,
@@ -118,9 +118,9 @@ if (!Number.isInteger(lookbackDays) || lookbackDays < 1 || lookbackDays > 365) {
 }
 
 const sql = db();
-const artifactStore = new LocalArtifactStore(
-  process.env.RAW_ARTIFACT_DIR ?? process.env.JURVIO_ARTIFACT_ROOT ?? ".data/raw",
-);
+const artifactStore = createArtifactStore({
+  localRoot: process.env.RAW_ARTIFACT_DIR ?? process.env.JURVIO_ARTIFACT_ROOT ?? ".data/raw",
+});
 
 const concurrencySelection = {
   startConcurrency: adaptiveConfig.start,

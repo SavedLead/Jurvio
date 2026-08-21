@@ -1,6 +1,6 @@
 import { closeDb, db } from "@/db/client";
 import { ingestCourtListenerDocket } from "@/modules/ingestion/application/ingest-courtlistener-docket";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import { fetchModifiedDockets } from "@/modules/ingestion/providers/courtlistener/client";
 
 interface Options {
@@ -38,7 +38,7 @@ function parseOptions(): Options {
 
 const options = parseOptions();
 const sql = db();
-const artifactStore = new LocalArtifactStore(process.env.RAW_ARTIFACT_DIR ?? ".data/raw");
+const artifactStore = createArtifactStore({ localRoot: process.env.RAW_ARTIFACT_DIR ?? ".data/raw" });
 let runId: string | undefined;
 let seen = 0;
 let changed = 0;

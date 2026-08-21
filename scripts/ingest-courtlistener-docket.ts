@@ -1,6 +1,6 @@
 import { db, closeDb } from "@/db/client";
 import { ingestCourtListenerDocket } from "@/modules/ingestion/application/ingest-courtlistener-docket";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 
 const docketId = Number(process.argv[2]);
 if (!Number.isInteger(docketId) || docketId <= 0) {
@@ -10,7 +10,7 @@ if (!Number.isInteger(docketId) || docketId <= 0) {
 try {
   const result = await ingestCourtListenerDocket(
     db(),
-    new LocalArtifactStore(process.env.RAW_ARTIFACT_DIR ?? ".data/raw"),
+    createArtifactStore({ localRoot: process.env.RAW_ARTIFACT_DIR ?? ".data/raw" }),
     docketId,
   );
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

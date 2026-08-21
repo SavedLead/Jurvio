@@ -1,6 +1,6 @@
 import { closeDb, db } from "@/db/client";
 import { ingestOfficialScotusOpinions } from "@/modules/ingestion/application/ingest-official-scotus-opinions";
-import { LocalArtifactStore } from "@/modules/ingestion/infrastructure/local-artifact-store";
+import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
@@ -18,7 +18,7 @@ const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
 try {
   const result = await ingestOfficialScotusOpinions(
     db(),
-    new LocalArtifactStore(artifactRoot),
+    createArtifactStore({ localRoot: artifactRoot }),
     { termYear, limit, resume },
   );
   console.log(JSON.stringify(result));
