@@ -25,6 +25,17 @@ name: Lane watchdog (self-heal wedged scheduler workers)
 #   >180s stale. This watchdog simply finds jurvio worker containers reporting
 #   health=unhealthy and force-recreates them -- closing the gap compose leaves.
 #
+# TWO LOAD-BEARING SAFETIES ON EVERY RECREATE (omitting either caused an incident):
+#   * JURVIO_IMAGE must be the jurvio app image. It is derived from a container that
+#     actually runs that image (app, then worker-supervisor) and asserted to contain
+#     "jurvio" -- NEVER postgres, whose image is postgres:16-alpine and would
+#     crash-loop any worker recreated onto it (exit 127, no `node`).
+#   * JURVIO_DATABASE_BIND must be re-exported. `compose up --force-recreate`
+#     re-interpolates the whole file including postgres' published port
+#     "${JURVIO_DATABASE_BIND:-127.0.0.1}:5432:5432". That var lives in
+#     .env.production (which compose does NOT auto-load), so without exporting it the
+#     recreate rebinds postgres to loopback and cuts the public app off from the DB.
+#
 # WHERE IT RUNS: on the self-hosted builder, reaching jurvio-web-01 over the private
 #   VPC (10.116.0.2), the same route the deploy and other box-exec workflows use,
 #   because GitHub-hosted runners' egress IPs are firewalled off the box SSH.
@@ -119,23 +130,46 @@ jobs:
           echo "=== Unhealthy scheduler workers detected ==="
           printf '%s\n' "$unhealthy"
 
-          # JURVIO_IMAGE is supplied to compose at deploy time (release-production.sh
-          # exports it) and is NOT persisted on the box, so an out-of-band `compose up`
-          # must provide it or every ${JURVIO_IMAGE:?...} interpolation fails. Derive it
-          # from a stable running jurvio container (postgres, then app) -- the exact tag
-          # in production -- and pass it through to root's compose via `env`.
+          # SAFETY 1 -- JURVIO_IMAGE. It is supplied to compose at deploy time
+          # (release-production.sh exports it) and is NOT persisted on the box, so an
+          # out-of-band `compose up` must provide it or every ${JURVIO_IMAGE:?...}
+          # interpolation fails. Derive it from a container that ACTUALLY runs the
+          # jurvio image -- app, then worker-supervisor -- and NEVER postgres, whose
+          # image is postgres:16-alpine and would crash-loop any worker recreated onto
+          # it (exit 127, no `node`). Assert the resolved tag is a jurvio image.
           stable="$(sudo -n docker ps \
-            --filter 'label=com.docker.compose.project=jurvio' \
-            --filter 'label=com.docker.compose.service=postgres' \
-            --format '{{.ID}}' | head -n1)"
-          [ -n "$stable" ] || stable="$(sudo -n docker ps \
             --filter 'label=com.docker.compose.project=jurvio' \
             --filter 'label=com.docker.compose.service=app' \
             --format '{{.ID}}' | head -n1)"
-          [ -n "$stable" ] || { echo "::error::no stable running jurvio container (postgres/app) to derive JURVIO_IMAGE"; exit 1; }
+          [ -n "$stable" ] || stable="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-supervisor' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$stable" ] || { echo "::error::no running jurvio app/worker-supervisor container to derive JURVIO_IMAGE"; exit 1; }
           IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$stable")"
           [ -n "$IMG" ] || { echo "::error::could not resolve running JURVIO_IMAGE"; exit 1; }
+          case "$IMG" in
+            *jurvio*) : ;;
+            *) echo "::error::resolved JURVIO_IMAGE is not a jurvio image (got '${IMG}'); refusing to recreate workers onto it"; exit 1 ;;
+          esac
           echo "using JURVIO_IMAGE=${IMG}"
+
+          # SAFETY 2 -- JURVIO_DATABASE_BIND must be re-exported on every recreate, or
+          # compose rebinds postgres from the VPC IP to loopback and cuts off the
+          # public app. Read it from .env.production exactly like release-production.sh.
+          DB_BIND=""
+          if [ -f /opt/jurvio/.env.production ]; then
+            DB_BIND_LINE="$(grep -E '^JURVIO_DATABASE_BIND=' /opt/jurvio/.env.production | tail -1 || true)"
+            if [ -n "$DB_BIND_LINE" ]; then
+              DB_BIND="$(printf '%s' "${DB_BIND_LINE#JURVIO_DATABASE_BIND=}" | tr -d '\r')"
+            fi
+          fi
+          if [ -n "$DB_BIND" ]; then
+            echo "using JURVIO_DATABASE_BIND=${DB_BIND} (postgres port publication)"
+          else
+            echo "::error::JURVIO_DATABASE_BIND not found in /opt/jurvio/.env.production -- refusing to recreate (a recreate without it would rebind postgres to loopback and cut off the public app)"
+            exit 1
+          fi
 
           restarted=0
           while IFS= read -r cname; do
@@ -150,7 +184,8 @@ jobs:
               continue
             fi
             echo "--- Recreating ${svc} (container ${cname}) ---"
-            sudo -n env JURVIO_IMAGE="$IMG" docker compose -f docker-compose.production.yml up -d --force-recreate "$svc"
+            sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$DB_BIND" \
+              docker compose -f docker-compose.production.yml up -d --force-recreate "$svc"
             restarted=$((restarted + 1))
           done <<< "$unhealthy"
 
