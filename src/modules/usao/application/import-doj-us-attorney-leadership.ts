@@ -9,7 +9,7 @@ export const DOJ_US_ATTORNEYS_URL = "https://www.justice.gov/usao/us-attorneys-l
 export type DojUsAttorney = {
   districtLabel: string;
   displayName: string;
-  title: "U.S. Attorney" | "Acting U.S. Attorney" | "Interim U.S. Attorney";
+  title: "U.S. Attorney" | "Acting U.S. Attorney";
 };
 
 function text(value: string): string {
@@ -27,8 +27,7 @@ export function parseDojUsAttorneys(html: string): DojUsAttorney[] {
     const rawName = text(cells[1] ?? "");
     const displayName = rawName.replace(/[\s*^#]+$/g, "").trim();
     if (!districtLabel || !normalizeUsaoAttorneyName(displayName)) continue;
-    const title = rawName.endsWith("^") ? "Acting U.S. Attorney" :
-      rawName.endsWith("#") ? "Interim U.S. Attorney" : "U.S. Attorney";
+    const title = rawName.endsWith("^") ? "Acting U.S. Attorney" : "U.S. Attorney";
     records.push({ districtLabel, displayName, title });
   }
   return records;
