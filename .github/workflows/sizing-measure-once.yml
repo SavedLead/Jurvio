@@ -1,0 +1,76 @@
+name: Sizing measure (once, read-only)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-sizing
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Measure host + per-opinion storage over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+
+          echo "=== HOST: jurvio-web-01 specs ==="
+          echo "vCPU (nproc)   = $(nproc)"
+          echo "CPU model      = $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+          echo "RAM total      = $(free -h | awk '/^Mem:/{print $2}')  (used $(free -h | awk '/^Mem:/{print $3}'))"
+          echo "Swap total     = $(free -h | awk '/^Swap:/{print $2}')"
+          echo "Root disk:"; df -h / | tail -1
+          echo "postgres data volume size:"; sudo -n du -x -sh /var/lib/docker/volumes/jurvio_jurvio_postgres/_data 2>/dev/null || echo "  (n/a)"
+
+          echo "=== POSTGRES: corpus + per-opinion storage ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "
+            WITH m AS (
+              SELECT
+                pg_database_size('jurvio')                       AS db_total,
+                (SELECT count(*) FROM judicial_opinion)          AS opinions,
+                (SELECT count(*) FROM legal_case)                AS cases,
+                (SELECT count(*) FROM legal_case WHERE publication='published') AS published,
+                pg_total_relation_size('document_content')       AS c_content,
+                pg_total_relation_size('opinion_search_projection') AS c_search,
+                pg_total_relation_size('judicial_opinion')       AS c_op,
+                pg_total_relation_size('document')               AS c_doc,
+                pg_total_relation_size('opinion_cluster')        AS c_cluster
+            )
+            SELECT 'db_total='            || pg_size_pretty(db_total)                               FROM m
+            UNION ALL SELECT 'opinions_count='   || opinions                                        FROM m
+            UNION ALL SELECT 'cases_count='      || cases                                           FROM m
+            UNION ALL SELECT 'published_count='  || published                                       FROM m
+            UNION ALL SELECT 'text_tables_total='|| pg_size_pretty(c_content+c_search+c_op+c_doc+c_cluster) FROM m
+            UNION ALL SELECT 'bytes_per_opinion='|| CASE WHEN opinions>0 THEN round((c_content+c_search+c_op+c_doc+c_cluster)::numeric/opinions) ELSE 0 END FROM m
+            UNION ALL SELECT 'db_bytes_per_case='|| CASE WHEN cases>0    THEN round(db_total::numeric/cases) ELSE 0 END FROM m;
+          " 2>/dev/null || echo "(pg measure failed)"
+          echo "=== DONE ==="
+          REMOTE
