@@ -89,6 +89,7 @@ export async function importDojUsAttorneyLeadership(sql: Sql): Promise<{
         .find(([key]) => key.includes(wanted) || wanted.includes(key))?.[1];
       const normalized = normalizeUsaoAttorneyName(record.displayName);
       if (!office || !normalized) { unmatched.push(record.districtLabel); continue; }
+      const sourceRecordKey = `${office.officeCode}:${normalized}`;
       const existing = await sql<{ id: string }[]>`
         SELECT id FROM usao_attorney WHERE office_id = ${office.id} AND normalized_name = ${normalized} LIMIT 1
       `;
@@ -100,7 +101,7 @@ export async function importDojUsAttorneyLeadership(sql: Sql): Promise<{
         ) VALUES (
           ${createPublicId("attorney")}, ${office.id}, ${record.displayName}, ${normalized}, ${record.title},
           ${DOJ_US_ATTORNEYS_URL}, true, 'verified', 'doj-leadership',
-          `${office.officeCode}:${normalized}`, now(), now(),
+          ${sourceRecordKey}, now(), now(),
           ${attorneyProfileCompleteness({ title: record.title, officialProfileUrl: DOJ_US_ATTORNEYS_URL })}
         )
         ON CONFLICT (office_id, normalized_name) DO UPDATE SET
