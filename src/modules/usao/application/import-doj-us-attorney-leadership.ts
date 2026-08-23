@@ -35,10 +35,14 @@ export function parseDojUsAttorneys(html: string): DojUsAttorney[] {
 }
 
 function districtKey(value: string): string {
-  const clean = value.toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
-  const parts = clean.split(/\s*,\s*/);
-  if (parts.length === 2) return `${parts[1]} district of ${parts[0]}`;
+  const commaParts = value.split(",").map((part) =>
+    part.toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim()
+  );
+  const clean = commaParts.join(" ");
   if (clean.includes("guam") && clean.includes("northern mariana")) return "guam and northern mariana islands";
+  if (commaParts.length === 2 && commaParts[0] && commaParts[1]) {
+    return `${commaParts[1]} district of ${commaParts[0]}`;
+  }
   if (clean.startsWith("district of ")) return clean;
   return `district of ${clean}`;
 }
