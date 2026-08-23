@@ -44,6 +44,13 @@ const jobs: ScheduledJob[] = [
   },
   {
     lane: "core",
+    name: "usao-leadership-roster",
+    initialDelayMs: 5 * minute,
+    intervalMs: 24 * 60 * minute,
+    command: ["jobs/import-doj-us-attorney-leadership.mjs"],
+  },
+  {
+    lane: "core",
     name: "usao-case-attribution",
     initialDelayMs: 6 * minute,
     intervalMs: 30 * minute,
