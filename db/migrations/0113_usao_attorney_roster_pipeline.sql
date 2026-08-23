@@ -55,7 +55,7 @@ SELECT
 FROM usao_attorney attorney
 JOIN usao_office office ON office.id = attorney.office_id
 LEFT JOIN usao_attorney_case_appearance appearance ON appearance.attorney_id = attorney.id
-WHERE attorney.verification <> 'rejected'
+WHERE attorney.verification IN ('verified', 'stale')
 GROUP BY attorney.id, office.id;
 
 COMMIT;
