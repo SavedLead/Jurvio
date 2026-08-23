@@ -36,6 +36,14 @@ export interface BulkAppellateOpinionOptions {
   onProgress?: (progress: { opinionsWritten: number; opinionsSkipped: number }) => void;
 }
 
+// Generic bulk-opinion options: the docket filter is a provided set of court codes
+// (COA codes for the appellate lane, the full federal set for the federal lane) and
+// `lane` labels the object keys and response_metadata so the two runs stay separable.
+export interface BulkOpinionOptions extends BulkAppellateOpinionOptions {
+  courtCodes: ReadonlySet<string>;
+  lane: string;
+}
+
 export interface BulkAppellateOpinionResult {
   dockets: number;
   clusters: number;
@@ -43,9 +51,11 @@ export interface BulkAppellateOpinionResult {
   opinionsSkipped: number;
 }
 
-// Pass A retains one of these per COA docket; the internal ids are memoised in
+export type BulkOpinionResult = BulkAppellateOpinionResult;
+
+// Pass A retains one of these per matched docket; the internal ids are memoised in
 // place the first time a cluster on that docket is persisted.
-interface CoaDocket {
+interface DocketRef {
   courtCode: string;
   docketNumber: string;
   caseName: string;
@@ -116,7 +126,7 @@ function bulkFileUrls(baseUrl: string, snapshotDate: string) {
   };
 }
 
-function clusterFacts(row: CourtListenerBulkOpinionCluster, docket: CoaDocket): ClusterFacts {
+function clusterFacts(row: CourtListenerBulkOpinionCluster, docket: DocketRef): ClusterFacts {
   const caseName = row.case_name_full || row.case_name || row.case_name_short || docket.caseName;
   return {
     docketId: row.docket_id,
@@ -139,17 +149,27 @@ const CASE_PUBLICATION_CANDIDATE = {
   containsUnresolvedSensitiveData: true,
 };
 
-export async function ingestCourtListenerBulkAppellateOpinions(
+/**
+ * Generic CourtListener bulk-opinion loader. The docket filter is the provided
+ * `options.courtCodes` set and `options.lane` labels the object keys and
+ * response_metadata; the appellate and federal loaders are thin wrappers that
+ * supply the code set + lane. Streams dockets -> clusters -> citations -> opinions,
+ * never landing a bulk file on disk, and routes opinion artifacts through the
+ * injected (Spaces-aware) artifact store.
+ */
+export async function ingestCourtListenerBulkOpinions(
   sql: Sql,
   artifactStore: ArtifactStore,
-  options: BulkAppellateOpinionOptions,
-): Promise<BulkAppellateOpinionResult> {
+  options: BulkOpinionOptions,
+): Promise<BulkOpinionResult> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(options.snapshotDate)) {
     throw new Error("Bulk snapshot date must be YYYY-MM-DD");
   }
   const snapshotDate = options.snapshotDate;
   const minYear = options.minYear ?? 1900;
   const limit = options.limit;
+  const lane = options.lane;
+  const courtCodes = options.courtCodes;
   const urls = bulkFileUrls(options.baseUrl ?? DEFAULT_BULK_BASE_URL, snapshotDate);
 
   const [provider] = await sql<{ id: string }[]>`
@@ -158,12 +178,12 @@ export async function ingestCourtListenerBulkAppellateOpinions(
   if (!provider) throw new Error("CourtListener provider seed is missing");
   const providerId = provider.id;
 
-  const docketObjectKey = `courtlistener/bulk/appellate/${snapshotDate}/dockets.csv.bz2`;
-  const clusterObjectKey = `courtlistener/bulk/appellate/${snapshotDate}/opinion-clusters.csv.bz2`;
+  const docketObjectKey = `courtlistener/bulk/${lane}/${snapshotDate}/dockets.csv.bz2`;
+  const clusterObjectKey = `courtlistener/bulk/${lane}/${snapshotDate}/opinion-clusters.csv.bz2`;
 
-  // Persist the court + legal_case for a COA docket (idempotent), memoising the
+  // Persist the court + legal_case for a matched docket (idempotent), memoising the
   // ids on the docket so a docket with many clusters is written only once.
-  const ensureCase = async (docketId: string, docket: CoaDocket): Promise<void> => {
+  const ensureCase = async (docketId: string, docket: DocketRef): Promise<void> => {
     if (docket.caseInternalId && docket.courtId) return;
 
     const contentHash = bulkContentHash(
@@ -179,7 +199,7 @@ export async function ingestCourtListenerBulkAppellateOpinions(
           ${providerId}, ${bulkDocketSourceUri(snapshotDate, docketId)},
           ${docketId}, ${contentHash}, ${docketObjectKey}, 'text/csv',
           ${snapshotDate},
-          ${tx.json({ source: "courtlistener_bulk", snapshotDate, lane: "appellate" })}
+          ${tx.json({ source: "courtlistener_bulk", snapshotDate, lane })}
         )
         ON CONFLICT (provider_id, source_uri, content_hash)
         DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
@@ -199,7 +219,7 @@ export async function ingestCourtListenerBulkAppellateOpinions(
         DO UPDATE SET source_artifact_id = EXCLUDED.source_artifact_id, updated_at = now()
         RETURNING id
       `;
-      if (!court) throw new Error("Bulk appellate court was not persisted");
+      if (!court) throw new Error("Bulk court was not persisted");
 
       const canonicalMatches = await tx<{ case_id: string }[]>`
         SELECT legal_case.id AS case_id
@@ -225,7 +245,7 @@ export async function ingestCourtListenerBulkAppellateOpinions(
           WHERE id = ${canonicalMatches[0].case_id}
           RETURNING id, public_id
         `;
-        if (!updated) throw new Error("Bulk appellate case was not updated");
+        if (!updated) throw new Error("Bulk case was not updated");
         legalCase = updated;
       } else {
         const [created] = await tx<{ id: string; public_id: string }[]>`
@@ -245,7 +265,7 @@ export async function ingestCourtListenerBulkAppellateOpinions(
             source_updated_at = EXCLUDED.source_updated_at, updated_at = now()
           RETURNING id, public_id
         `;
-        if (!created) throw new Error("Bulk appellate case was not persisted");
+        if (!created) throw new Error("Bulk case was not persisted");
         legalCase = created;
       }
 
@@ -269,7 +289,7 @@ export async function ingestCourtListenerBulkAppellateOpinions(
             caseId: legalCase.public_id,
             source: "courtlistener_bulk",
             snapshotDate,
-            lane: "appellate",
+            lane,
           })}
         )
       `;
@@ -309,7 +329,7 @@ export async function ingestCourtListenerBulkAppellateOpinions(
         ) VALUES (
           ${providerId}, ${bulkClusterSourceUri(snapshotDate, clusterId)}, ${clusterId},
           ${contentHash}, ${clusterObjectKey}, 'text/csv', ${snapshotDate},
-          ${tx.json({ source: "courtlistener_bulk", snapshotDate, lane: "appellate" })}
+          ${tx.json({ source: "courtlistener_bulk", snapshotDate, lane })}
         )
         ON CONFLICT (provider_id, source_uri, content_hash)
         DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
@@ -382,7 +402,7 @@ export async function ingestCourtListenerBulkAppellateOpinions(
         ) VALUES (
           ${providerId}, ${bulkOpinionSourceUri(snapshotDate, opinion.id)}, ${opinion.id},
           ${contentHash}, ${stored.objectKey}, 'application/json', ${snapshotDate},
-          ${tx.json({ source: "courtlistener_bulk", snapshotDate, lane: "appellate" })}
+          ${tx.json({ source: "courtlistener_bulk", snapshotDate, lane })}
         )
         ON CONFLICT (provider_id, source_uri, content_hash)
         DO UPDATE SET retrieved_at = EXCLUDED.retrieved_at
@@ -510,13 +530,13 @@ export async function ingestCourtListenerBulkAppellateOpinions(
     });
   };
 
-  // Pass A: keep only COA dockets.
-  const dockets = new Map<string, CoaDocket>();
+  // Pass A: keep only dockets whose court is in the selected code set.
+  const dockets = new Map<string, DocketRef>();
   {
     const source = openBulkCsvFromUrl(urls.dockets);
     try {
       for await (const row of parseBulkCsv(source.stream, courtListenerBulkDocketSchema)) {
-        if (!COA_COURT_CODES.has(row.court_id)) continue;
+        if (!courtCodes.has(row.court_id)) continue;
         dockets.set(row.id, {
           courtCode: row.court_id,
           docketNumber: row.docket_number,
@@ -625,4 +645,21 @@ export async function ingestCourtListenerBulkAppellateOpinions(
     opinionsWritten,
     opinionsSkipped,
   };
+}
+
+/**
+ * Appellate lane: the original 13-circuit loader, now a thin wrapper over the
+ * generic core that supplies the COA (courts-of-appeals) code set and the
+ * "appellate" lane label. Behaviour is unchanged.
+ */
+export async function ingestCourtListenerBulkAppellateOpinions(
+  sql: Sql,
+  artifactStore: ArtifactStore,
+  options: BulkAppellateOpinionOptions,
+): Promise<BulkAppellateOpinionResult> {
+  return ingestCourtListenerBulkOpinions(sql, artifactStore, {
+    ...options,
+    courtCodes: COA_COURT_CODES,
+    lane: "appellate",
+  });
 }
