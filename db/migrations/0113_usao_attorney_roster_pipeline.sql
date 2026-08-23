@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS usao_roster_run (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   source_system text NOT NULL,
   source_url text NOT NULL,
+  source_content_hash text,
   started_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz,
   status text NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
