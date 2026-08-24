@@ -1,0 +1,119 @@
+name: SCOTUS freshness guard
+
+# Redundant production safety net for newly released Supreme Court opinions.
+# The on-box core scheduler already ingests SCOTUS every five minutes; this guard
+# independently runs the same idempotent ingest/enrich/publish/extract path so a
+# wedged or stale scheduler cannot leave a newly released opinion unpublished.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/scotus-freshness-guard.yml"
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-scotus-freshness-guard
+  cancel-in-progress: false
+
+jobs:
+  repair-and-verify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 12
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run current-term SCOTUS repair cycle
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+
+          app="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=app' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo '::error::No running Jurvio app container'; exit 1; }
+
+          month="$(date -u +%m)"
+          year="$(date -u +%Y)"
+          if [ "$month" -lt 10 ]; then year=$((year - 1)); fi
+          term="$(printf '%02d' $((year % 100)))"
+
+          echo "SCOTUS freshness repair: term=${term} @ $(TZ='America/New_York' date +'%Y-%m-%d %H:%M:%S %Z')"
+          sudo -n docker exec \
+            -e RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts \
+            -e JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts \
+            "$app" node jobs/ingest-enriched-official-scotus.mjs \
+            "--term=${term}" --limit=100 --resume=true --attempts=10
+
+          # The enriched job already publishes and extracts. Run the two idempotent
+          # drain steps once more so an older approved candidate cannot remain stuck
+          # behind a transient enrichment failure.
+          sudo -n docker exec "$app" node jobs/publish-official-scotus-opinions.mjs --limit=5000
+          sudo -n docker exec \
+            -e JURVIO_ARTIFACT_ROOT=/var/lib/jurvio/artifacts \
+            "$app" node jobs/extract-official-scotus-opinion-text.mjs --limit=5000
+          REMOTE
+
+      - name: Verify today's missed opinion is live in production
+        if: github.event_name != 'schedule'
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo '::error::No running Jurvio postgres container'; exit 1; }
+
+          result="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -F $'\t' -c "
+            SELECT legal_case.docket_number,
+                   legal_case.case_name,
+                   legal_case.publication,
+                   COALESCE(legal_case.decided_on::text, ''),
+                   (SELECT count(*)
+                      FROM document
+                     WHERE document.case_id = legal_case.id
+                       AND document.publication = 'published') AS published_documents
+              FROM legal_case
+              JOIN court ON court.id = legal_case.court_id
+             WHERE lower(court.provider_court_id) = 'scotus'
+               AND upper(replace(legal_case.docket_number, ' ', '')) = '26A124'
+             ORDER BY legal_case.updated_at DESC
+             LIMIT 1;")"
+
+          echo "26A124 production row: ${result:-MISSING}"
+          [ -n "$result" ] || { echo '::error::26A124 is still missing after SCOTUS repair cycle'; exit 1; }
+          publication="$(printf '%s' "$result" | cut -f3)"
+          docs="$(printf '%s' "$result" | cut -f5)"
+          [ "$publication" = "published" ] || { echo "::error::26A124 exists but is not published (${publication})"; exit 1; }
+          [ "${docs:-0}" -ge 1 ] || { echo '::error::26A124 has no published opinion document'; exit 1; }
+          echo '26A124 is published with at least one published opinion document.'
+          REMOTE
