@@ -3,6 +3,7 @@ import type { Route } from "next";
 import Link from "next/link";
 import { legalExplainers } from "@/modules/explainers/domain/explainers";
 import { glossaryDomains, glossaryTerms, popularGlossaryTerms } from "@/modules/explainers/domain/glossary";
+import { glossaryAdditions } from "@/modules/explainers/domain/glossary-additions";
 import { GlossaryBrowser } from "./glossary-browser";
 import styles from "./explainers.module.css";
 
@@ -20,13 +21,14 @@ export const metadata: Metadata = {
 
 export default function ExplainersPage() {
   const popular = popularGlossaryTerms();
+  const allGlossaryTerms = [...glossaryTerms, ...glossaryAdditions];
   const definedTermSet = {
     "@context": "https://schema.org",
     "@type": "DefinedTermSet",
     name: "Jurvio Legal Dictionary",
     description: "Plain-English definitions of legal terms across courts, agencies, tribunals, and areas of law.",
     url: "/explainers",
-    hasDefinedTerm: glossaryTerms.map((item) => ({
+    hasDefinedTerm: allGlossaryTerms.map((item) => ({
       "@type": "DefinedTerm",
       name: item.term,
       description: item.definition,
@@ -49,7 +51,7 @@ export default function ExplainersPage() {
       </section>
       <section className={styles.deep} aria-labelledby="areas-title"><div className={styles.sectionTitle}><p className={styles.eyebrow}>Browse broadly</p><h2 id="areas-title">Areas of law and legal forums</h2><p>Jurvio’s coverage is designed to expand with the corpus. These categories are navigation aids, not limits on what belongs in the dictionary.</p></div>
         <div className={styles.areaGrid}>{glossaryDomains.map((area) => {
-          const count = glossaryTerms.filter((item) => item.domains.includes(area.id)).length;
+          const count = allGlossaryTerms.filter((item) => item.domains.includes(area.id)).length;
           return <article className={styles.areaCard} key={area.id}><h3>{area.label}</h3><p>{count} current definitions</p></article>;
         })}</div>
       </section>
