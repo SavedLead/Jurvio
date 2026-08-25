@@ -7,14 +7,17 @@ import {
   glossaryDomains, glossaryJurisdictions, glossaryStages, glossaryTerms, procedureTracks,
   type GlossaryDomain, type GlossaryJurisdiction,
 } from "@/modules/explainers/domain/glossary";
+import { glossaryAdditions } from "@/modules/explainers/domain/glossary-additions";
 import styles from "./explainers.module.css";
+
+const allGlossaryTerms = [...glossaryTerms, ...glossaryAdditions];
 
 export function GlossaryBrowser() {
   const [query, setQuery] = useState("");
   const [jurisdiction, setJurisdiction] = useState<"all" | GlossaryJurisdiction>("all");
   const [domain, setDomain] = useState<"all" | GlossaryDomain>("all");
   const q = query.trim().toLocaleLowerCase();
-  const terms = useMemo(() => glossaryTerms.filter((item) => {
+  const terms = useMemo(() => allGlossaryTerms.filter((item) => {
     const courtMatch = jurisdiction === "all" || item.jurisdiction === jurisdiction || item.jurisdiction === "general";
     const domainMatch = domain === "all" || item.domains.includes(domain);
     const textMatch = !q || [item.term, item.definition, ...(item.aliases ?? [])].some((value) => value.toLocaleLowerCase().includes(q));
@@ -27,7 +30,7 @@ export function GlossaryBrowser() {
       <div className={styles.roadmapGrid}>{procedureTracks.map((item) => <article className={styles.roadmap} key={item.id}><h3>{item.label}</h3><ol>{item.steps.map((step) => <li key={step}>{step}</li>)}</ol></article>)}</div>
     </section>
     <section className={styles.glossary} aria-labelledby="glossary-title">
-      <div className={styles.sectionTitle}><p className={styles.eyebrow}>Legal dictionary</p><h2 id="glossary-title">Find a term in plain English.</h2><p>{glossaryTerms.length} frequently encountered terms, organized by where they tend to appear in a case.</p></div>
+      <div className={styles.sectionTitle}><p className={styles.eyebrow}>Legal dictionary</p><h2 id="glossary-title">Find a term in plain English.</h2><p>{allGlossaryTerms.length} frequently encountered terms, organized by where they tend to appear in a case.</p></div>
       <div className={styles.tools}>
         <label><span>Search terms and phrases</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Try “stay,” “cert denied,” or “deposition”" /></label>
         <div>
