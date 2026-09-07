@@ -110,8 +110,25 @@ credentials until the $0 enforcement tests pass (they do).
 
 ## Backup / restore
 
-- PostgreSQL: `scripts/backup-production.sh` (`pg_dump | gzip`, retains 2). Restore:
-  load a dump into a fresh `postgres` volume, then `deploy-production` to migrate.
+- **On-box (release rollback):** `scripts/backup-production.sh` (`pg_dump | gzip`,
+  retains 2 in `/opt/jurvio/backups`). It talks to the postgres container via
+  `docker exec`, deliberately NOT `docker compose exec` — compose interpolates the
+  whole file, and `JURVIO_IMAGE` is passed only at deploy time, so every
+  compose-based invocation outside a release aborted before dumping a byte.
+- **Off-box (disaster recovery):** `nightly-db-backup.yml` uploads each dump to a
+  separate Spaces bucket (`JURVIO_BACKUP_BUCKET`) encrypted with AES-256-GCM
+  (`JURVIO_BACKUP_ENCRYPTION_KEY`) via `jobs/upload-database-backup.mjs`. Keep a
+  copy of that key OFF this box — a key stored only on the box it protects is not
+  a recovery plan. The nightly run fails red if the newest off-site object is
+  missing, empty, or older than 36h.
+- **Restore rehearsal:** `verify-backup-restore.yml` (weekly + on demand) pulls the
+  newest off-site object, decrypts it, loads it into a throwaway postgres
+  container, and asserts the restored corpus is non-empty. It never touches the
+  production database or volumes and removes the scratch container and decrypted
+  dump in an `if: always()` step. **This is the check docs/38 requires before public
+  launch — dispatch it once and confirm it is green.**
+- Manual restore: load a decrypted dump into a fresh `postgres` volume, then
+  `deploy-production` to migrate.
 - Artifacts: immutable in Spaces (`jurvio-raw-evidence`); recovery = re-fetch by
   content-addressed key and verify the stored `x-amz-meta-content-hash`.
 

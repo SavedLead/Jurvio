@@ -21,6 +21,16 @@ const schema = z.object({
   JURVIO_SPACES_BUCKET: z.string().default("jurvio-raw-evidence"),
   JURVIO_SPACES_ENDPOINT: z.string().url().default("https://nyc3.digitaloceanspaces.com"),
   JURVIO_SPACES_REGION: z.string().default("nyc3"),
+  // Encrypted off-Droplet database backups. The bucket MUST differ from the raw
+  // artifact bucket so a credential or lifecycle mistake on one cannot destroy
+  // the other. Credentials fall back to the Spaces keys above when unset; the
+  // AES-256 key never does. See src/modules/operations/application/offsite-backup.ts.
+  JURVIO_BACKUP_BUCKET: z.string().optional(),
+  JURVIO_BACKUP_ENCRYPTION_KEY: z.string().optional(),
+  JURVIO_BACKUP_ACCESS_KEY_ID: z.string().optional(),
+  JURVIO_BACKUP_SECRET_ACCESS_KEY: z.string().optional(),
+  JURVIO_BACKUP_ENDPOINT: z.string().url().optional(),
+  JURVIO_BACKUP_REGION: z.string().optional(),
 });
 
 let cached: z.infer<typeof schema> | undefined;
