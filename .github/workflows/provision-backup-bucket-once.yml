@@ -4,10 +4,15 @@ name: Provision backup bucket (once)
 # backups, using the Spaces credentials already in /opt/jurvio/.env.production —
 # they never leave the box and never enter an Actions log.
 #
-# Idempotent: an existing bucket is reported as present, not as an error. Run
-# this once after the release that ships jobs/provision-backup-bucket.mjs, then
-# set JURVIO_BACKUP_ENCRYPTION_KEY by hand (see the run's warning) before the
-# first nightly upload.
+# Idempotent: an existing bucket is reported as present, not as an error. A
+# Spaces key scoped to a single bucket cannot create buckets and is refused with
+# 403 -- that is fine, and not a failure: what the job verifies is that the
+# credentials can USE the bucket. So if creation is denied, make the bucket in
+# the DigitalOcean console and re-run; the job then confirms access and privacy.
+#
+# Run this once after the release that ships jobs/provision-backup-bucket.mjs,
+# then set JURVIO_BACKUP_ENCRYPTION_KEY by hand (see the run's warning) before
+# the first nightly upload.
 
 on:
   workflow_dispatch:
