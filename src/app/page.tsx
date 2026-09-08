@@ -83,10 +83,10 @@ export default async function HomePage() {
               Search the public record. See where a case stands. Understand what happened,
               who is involved, and what may come next.
             </p>
-            <form action="/search" role="search" className="searchBox">
-              <label htmlFor="q">Search cases, people, companies, attorneys, judges, or legal issues</label>
+            <form action="/cases" role="search" className="searchBox">
+              <label htmlFor="q">Search published cases by case name, party, or docket number</label>
               <div>
-                <input id="q" name="q" placeholder="Enter a name, case, citation, topic, or plain-English question" />
+                <input id="q" name="q" type="search" placeholder="Enter a case name, party, or docket number" />
                 <button type="submit">Search Jurvio</button>
               </div>
               <p className="searchHint">Public-source results with readable context and links back to the record.</p>
