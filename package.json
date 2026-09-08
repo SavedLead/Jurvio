@@ -47,7 +47,8 @@
     "judges:import:brmag": "tsx scripts/import-brmag-judges.ts",
     "judges:import:photos": "tsx scripts/import-judge-photos.ts",
     "judges:match": "tsx scripts/match-judges.ts",
-    "usao:backfill:cases": "tsx scripts/backfill-usao-case-attribution.ts"
+    "usao:backfill:cases": "tsx scripts/backfill-usao-case-attribution.ts",
+    "diagnose:parties": "tsx scripts/diagnose-parties-coverage.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
