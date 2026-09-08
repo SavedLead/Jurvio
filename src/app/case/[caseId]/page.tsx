@@ -157,6 +157,15 @@ export default async function CasePage({ params }: CasePageProps) {
       available: Boolean(latestEvent),
     },
   ] as const;
+  const availableCaseAnswers = caseAnswers.filter((item) => item.available);
+  const hasMeaningfulIntelligence = Boolean(
+    legalCase.backgroundSummary
+    || legalCase.questionPresented
+    || legalCase.significanceSummary
+    || legalCase.exactHolding
+    || outcome
+    || legalCase.statusExplanation,
+  );
 
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
@@ -202,18 +211,38 @@ export default async function CasePage({ params }: CasePageProps) {
       <div className="caseWorkspace">
         <aside className="caseWorkspaceNav">
           <CaseNav caseId={caseId} />
+          <aside className="caseProvenanceRail" aria-label="Source and record details">
+            <section>
+              <p className="sectionKicker">Case status</p>
+              <dl className="railFacts">
+                <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
+                {readableDocuments.length > 0 ? <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div> : null}
+                {legalCase.decidedOn ? <div><dt>Decision date</dt><dd>{legalCase.decidedOn}</dd></div> : null}
+                {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
+                {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
+                <div><dt>Permanent ID</dt><dd>{caseId}</dd></div>
+              </dl>
+            </section>
+            {sourceDocument ? (
+              <section>
+                <p className="sectionKicker">Official source</p>
+                <p>This record includes source-linked court material.</p>
+                <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
+              </section>
+            ) : null}
+          </aside>
           <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
         </aside>
 
         <div className="caseWorkspaceMain">
-          <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
+          {hasMeaningfulIntelligence && availableCaseAnswers.length > 0 ? <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
             <p className="sectionKicker">Case intelligence</p>
-            <h2 id="case-answers-title">The key questions about this case</h2>
+            <h2 id="case-answers-title">What the verified record tells us</h2>
             <p className="caseAnswerIntro">
               Direct answers from the verified public record. Missing information is labeled instead of inferred.
             </p>
             <div className="caseAnswerGrid">
-              {caseAnswers.map((item) => (
+              {availableCaseAnswers.map((item) => (
                 <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
                   <h3>{item.question}</h3>
                   <p>{item.answer}</p>
@@ -224,7 +253,7 @@ export default async function CasePage({ params }: CasePageProps) {
                 </article>
               ))}
             </div>
-          </section>
+          </section> : null}
           <section className="caseLeadSection caseFeatureSection" aria-labelledby="understand-case">
             <div className="featureHeading">
               <span className="featureBadge" aria-hidden="true">A</span>
@@ -370,26 +399,6 @@ export default async function CasePage({ params }: CasePageProps) {
           ) : null}
         </div>
 
-        <aside className="caseProvenanceRail" aria-label="Source and record details">
-          <section>
-            <p className="sectionKicker">Case status</p>
-            <dl className="railFacts">
-              <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
-              {readableDocuments.length > 0 ? <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div> : null}
-              {legalCase.decidedOn ? <div><dt>Decision date</dt><dd>{legalCase.decidedOn}</dd></div> : null}
-              {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
-              {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
-              <div><dt>Permanent ID</dt><dd>{caseId}</dd></div>
-            </dl>
-          </section>
-          {sourceDocument ? (
-            <section>
-              <p className="sectionKicker">Official source</p>
-              <p>This record includes source-linked court material.</p>
-              <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
-            </section>
-          ) : null}
-        </aside>
       </div>
     </main>
   );
