@@ -5,9 +5,10 @@
 .caseMeta div { min-width: 150px; }
 .caseMeta dt, .railFacts dt { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
 .caseMeta dd, .railFacts dd { margin: 5px 0 0; overflow-wrap: anywhere; color: var(--ink); font-weight: 700; }
-.caseWorkspace { display: grid; grid-template-columns: minmax(150px, 190px) minmax(0, 1fr) minmax(220px, 260px); gap: clamp(24px, 3.2vw, 52px); align-items: start; margin-top: 42px; }
+.caseWorkspace { display: grid; grid-template-columns: minmax(180px, 210px) minmax(0, 1fr); gap: clamp(24px, 3.2vw, 52px); align-items: start; margin-top: 42px; }
 .caseWorkspaceNav, .caseProvenanceRail { position: sticky; top: 98px; min-width: 0; }
-.caseWorkspaceMain { min-width: 0; }
+.caseWorkspaceMain { min-width: 0; max-width: 980px; }
+.caseWorkspaceNav .caseProvenanceRail { position: static; margin-top: 20px; }
 .caseWorkspaceNav .caseNavDesktop { display: grid; gap: 4px; margin: 0; padding: 0 0 24px; overflow: visible; border-bottom: 1px solid var(--border); }
 .caseWorkspaceNav .caseNavDesktop a { min-height: 44px; padding: 11px 12px; }
 .caseNavMobile { display: none; }
@@ -90,7 +91,7 @@
 @media (min-width: 901px) { .caseShell > .caseNavDesktop { flex-wrap: wrap; overflow: visible; } }
 @media (max-width: 1100px) {
   .caseWorkspace { grid-template-columns: 170px minmax(0, 1fr); }
-  .caseProvenanceRail { position: static; grid-column: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .caseWorkspaceMain { max-width: none; }
   .opinionWorkspace { grid-template-columns: 210px minmax(0, 1fr); }
   .readerMetadataRail { position: static; grid-column: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; border-top: 1px solid var(--border); border-left: 0; }
 }
