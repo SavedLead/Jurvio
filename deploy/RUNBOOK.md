@@ -115,6 +115,10 @@ credentials until the $0 enforcement tests pass (they do).
   `docker exec`, deliberately NOT `docker compose exec` — compose interpolates the
   whole file, and `JURVIO_IMAGE` is passed only at deploy time, so every
   compose-based invocation outside a release aborted before dumping a byte.
+- **Bucket setup (once):** `provision-backup-bucket-once.yml` creates the private
+  backup bucket using the Spaces credentials already in `.env.production` (they
+  never leave the box). Idempotent, and it fails if the bucket allows anonymous
+  listing.
 - **Off-box (disaster recovery):** `nightly-db-backup.yml` uploads each dump to a
   separate Spaces bucket (`JURVIO_BACKUP_BUCKET`) encrypted with AES-256-GCM
   (`JURVIO_BACKUP_ENCRYPTION_KEY`) via `jobs/upload-database-backup.mjs`. Keep a

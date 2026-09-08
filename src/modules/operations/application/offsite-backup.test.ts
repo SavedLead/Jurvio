@@ -14,6 +14,7 @@ import {
   OffsiteBackupStore,
   parseEncryptionKey,
   parseListObjects,
+  resolveBackupBucketTarget,
   resolveOffsiteBackupConfig,
 } from "./offsite-backup";
 
@@ -36,6 +37,7 @@ const config = {
 function fakeSpaces(chunkSize = 8192) {
   const uploads = new Map<string, Buffer[]>();
   const objects = new Map<string, Buffer>();
+  const buckets = new Set<string>();
   const requests: Array<{ method: string; url: string }> = [];
 
   const respond = (status: number, body = "", headers: Record<string, string> = {}) => ({
@@ -51,7 +53,7 @@ function fakeSpaces(chunkSize = 8192) {
   ) => {
     requests.push({ method: init.method, url });
     const parsed = new URL(url);
-    const key = parsed.pathname.replace(`/${config.bucket}/`, "");
+    const key = parsed.pathname.replace(`/${config.bucket}`, "").replace(/^\//, "");
     const params = parsed.searchParams;
 
     if (init.method === "POST" && params.has("uploads")) {
@@ -73,10 +75,21 @@ function fakeSpaces(chunkSize = 8192) {
       uploads.delete(key);
       return respond(204);
     }
+    if (init.method === "PUT" && key === "") {
+      // Bucket-level PUT: create the bucket.
+      if (buckets.has(config.bucket)) return respond(409, "<Error><Code>BucketAlreadyOwnedByYou</Code></Error>");
+      buckets.add(config.bucket);
+      return respond(200);
+    }
+    if (init.method === "HEAD" && key === "") {
+      return buckets.has(config.bucket) ? respond(200) : respond(404);
+    }
     if (init.method === "HEAD") {
       return objects.has(key) ? respond(200) : respond(404);
     }
     if (init.method === "GET" && params.get("list-type") === "2") {
+      // Unsigned request = anonymous caller. A private bucket refuses it.
+      if (!init.headers.authorization) return respond(403, "<Error><Code>AccessDenied</Code></Error>");
       const prefix = params.get("prefix") ?? "";
       const contents = [...objects.entries()]
         .filter(([name]) => name.startsWith(prefix))
@@ -104,7 +117,7 @@ function fakeSpaces(chunkSize = 8192) {
     return respond(400, "<Error><Code>Unexpected</Code></Error>");
   };
 
-  return { fetch, objects, requests };
+  return { fetch, objects, requests, buckets };
 }
 
 describe("backup encryption framing", () => {
@@ -273,5 +286,86 @@ describe("encrypted upload and restore", () => {
     const newest = await store.latest("database/");
     expect(newest?.key).toContain("20260902T000000Z");
     expect(await store.exists(newest?.key ?? "")).toBe(true);
+  });
+});
+
+describe("bucket provisioning", () => {
+  it("creates the bucket, then reports it as already present on a re-run", async () => {
+    const spaces = fakeSpaces();
+    const store = new OffsiteBackupStore(config, { fetch: spaces.fetch });
+
+    const first = await store.ensureBucket();
+    expect(first).toMatchObject({ bucket: "jurvio-db-backups", created: true, publiclyListable: false });
+    expect(spaces.buckets.has("jurvio-db-backups")).toBe(true);
+
+    // Idempotent: a 409 from the create is the desired end state, not a failure.
+    const second = await store.ensureBucket();
+    expect(second).toMatchObject({ created: false, publiclyListable: false });
+  });
+
+  it("flags a bucket that anyone can list", async () => {
+    const spaces = fakeSpaces();
+    const permissive = async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body?: Uint8Array },
+    ) => (init.method === "GET" && !init.headers.authorization
+      ? { status: 200, headers: { get: () => null }, text: async () => "<ListBucketResult/>", body: null }
+      : spaces.fetch(url, init));
+
+    const store = new OffsiteBackupStore(config, { fetch: permissive });
+    expect((await store.ensureBucket()).publiclyListable).toBe(true);
+  });
+
+  it("fails when the credentials cannot reach the bucket they just claimed", async () => {
+    const spaces = fakeSpaces();
+    const unreachable = async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body?: Uint8Array },
+    ) => (init.method === "HEAD"
+      ? { status: 403, headers: { get: () => null }, text: async () => "", body: null }
+      : spaces.fetch(url, init));
+
+    const store = new OffsiteBackupStore(config, { fetch: unreachable });
+    await expect(store.ensureBucket()).rejects.toThrow(/not reachable/);
+  });
+
+  it("needs no encryption key to provision, but demands one to move content", async () => {
+    const spaces = fakeSpaces();
+    const withoutKey = {
+      bucket: config.bucket,
+      region: config.region,
+      host: config.host,
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+    };
+    const store = new OffsiteBackupStore(withoutKey, { fetch: spaces.fetch });
+
+    await expect(store.ensureBucket()).resolves.toMatchObject({ created: true });
+    await expect(store.downloadDecrypted("database/x.enc", "/dev/null")).rejects.toThrow(
+      /JURVIO_BACKUP_ENCRYPTION_KEY is required/,
+    );
+  });
+});
+
+describe("bucket target resolution", () => {
+  it("defaults the bucket name but never to the artifact bucket", () => {
+    const target = resolveBackupBucketTarget({
+      JURVIO_SPACES_ACCESS_KEY_ID: "k",
+      JURVIO_SPACES_SECRET_ACCESS_KEY: "s",
+    });
+    expect(target.bucket).toBe("jurvio-db-backups");
+
+    expect(() =>
+      resolveBackupBucketTarget({
+        JURVIO_SPACES_ACCESS_KEY_ID: "k",
+        JURVIO_SPACES_SECRET_ACCESS_KEY: "s",
+        JURVIO_SPACES_BUCKET: "jurvio-raw-evidence",
+        JURVIO_BACKUP_BUCKET: "jurvio-raw-evidence",
+      }),
+    ).toThrow(/raw-artifact bucket/);
+  });
+
+  it("requires credentials", () => {
+    expect(() => resolveBackupBucketTarget({})).toThrow(/credentials are not configured/);
   });
 });

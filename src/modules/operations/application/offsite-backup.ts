@@ -23,14 +23,18 @@ import { amzDate, encodeRfc3986, sha256Hex, signRequest } from "@/modules/ingest
  * ~19 GB and growing, so nothing here may buffer a whole file.
  */
 
-/** Object-storage + encryption configuration for off-site backups. */
-export interface OffsiteBackupConfig {
+/** Where the backups live. Sufficient on its own to create or inspect the bucket. */
+export interface ObjectStorageTarget {
   readonly bucket: string;
   readonly region: string;
   /** Endpoint host for path-style addressing, e.g. "nyc3.digitaloceanspaces.com". */
   readonly host: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
+}
+
+/** Storage target plus the key. Required to read or write backup CONTENT. */
+export interface OffsiteBackupConfig extends ObjectStorageTarget {
   /** 32-byte AES-256 key. */
   readonly encryptionKey: Buffer;
 }
@@ -130,6 +134,52 @@ export function resolveOffsiteBackupConfig(
     accessKeyId: accessKeyId as string,
     secretAccessKey: secretAccessKey as string,
     encryptionKey: parseEncryptionKey(rawKey as string),
+  };
+}
+
+/**
+ * Resolves only WHERE the backups go, for operations that need no key: creating
+ * the bucket, or checking that it exists. The default bucket name is applied
+ * here rather than in resolveOffsiteBackupConfig, which must keep demanding an
+ * explicit bucket so a backup can never silently land in the artifact bucket.
+ */
+export function resolveBackupBucketTarget(
+  env: Record<string, string | undefined> = process.env,
+  defaultBucket = "jurvio-db-backups",
+): ObjectStorageTarget {
+  const accessKeyId = env.JURVIO_BACKUP_ACCESS_KEY_ID ?? env.JURVIO_SPACES_ACCESS_KEY_ID;
+  const secretAccessKey =
+    env.JURVIO_BACKUP_SECRET_ACCESS_KEY ?? env.JURVIO_SPACES_SECRET_ACCESS_KEY;
+  if (!accessKeyId || !secretAccessKey) {
+    throw new Error(
+      "Object-storage credentials are not configured. Set JURVIO_BACKUP_ACCESS_KEY_ID / " +
+        "JURVIO_BACKUP_SECRET_ACCESS_KEY (or the JURVIO_SPACES_* equivalents) in " +
+        "/opt/jurvio/.env.production.",
+    );
+  }
+
+  const bucket = env.JURVIO_BACKUP_BUCKET ?? defaultBucket;
+  const artifactBucket = env.JURVIO_SPACES_BUCKET ?? "jurvio-raw-evidence";
+  // The whole point of a separate bucket is that a lifecycle rule, an accidental
+  // deletion, or a compromised key on one store cannot take the other with it.
+  if (bucket === artifactBucket) {
+    throw new Error(
+      `Refusing to use "${bucket}" for database backups: it is the raw-artifact bucket. ` +
+        "Backups must live in their own bucket.",
+    );
+  }
+
+  const endpoint =
+    env.JURVIO_BACKUP_ENDPOINT ??
+    env.JURVIO_SPACES_ENDPOINT ??
+    "https://nyc3.digitaloceanspaces.com";
+  const host = new URL(endpoint).host;
+  return {
+    bucket,
+    host,
+    region: env.JURVIO_BACKUP_REGION ?? env.JURVIO_SPACES_REGION ?? host.split(".")[0] ?? "nyc3",
+    accessKeyId,
+    secretAccessKey,
   };
 }
 
@@ -237,11 +287,26 @@ export class OffsiteBackupStore {
   private readonly fetch: FetchLike;
   private readonly now: () => Date;
 
-  constructor(private readonly config: OffsiteBackupConfig, deps: OffsiteBackupDeps = {}) {
+  constructor(
+    private readonly config: ObjectStorageTarget & { readonly encryptionKey?: Buffer },
+    deps: OffsiteBackupDeps = {},
+  ) {
     const injected = deps.fetch ?? (globalThis.fetch as unknown as FetchLike | undefined);
     if (!injected) throw new Error("OffsiteBackupStore requires a fetch implementation");
     this.fetch = injected;
     this.now = deps.now ?? (() => new Date());
+  }
+
+  /**
+   * The encryption key, for the operations that move backup content. Creating or
+   * inspecting a bucket needs only credentials, so the key is optional on the
+   * store and demanded here instead of at construction.
+   */
+  private encryptionKey(): Buffer {
+    if (!this.config.encryptionKey) {
+      throw new Error("JURVIO_BACKUP_ENCRYPTION_KEY is required to read or write backup content");
+    }
+    return this.config.encryptionKey;
   }
 
   private url(path: string, query: string): string {
@@ -294,6 +359,60 @@ export class OffsiteBackupStore {
     throw new Error(`${what} failed with status ${res.status}${detail ? ` (${detail})` : ""}`);
   }
 
+  /**
+   * Creates the backup bucket if it does not already exist, then proves the
+   * credentials can reach it. Idempotent: an existing bucket this account owns
+   * is reported as such rather than treated as an error.
+   *
+   * The bucket is created PRIVATE (`x-amz-acl: private`). Encrypted or not, a
+   * publicly listable bucket of database dumps is not acceptable, so a bucket
+   * that reads as public-listable fails this check loudly.
+   */
+  async ensureBucket(): Promise<{ bucket: string; created: boolean; publiclyListable: boolean }> {
+    const path = `/${this.config.bucket}`;
+    const created = await this.fetch(this.url(path, ""), {
+      method: "PUT",
+      headers: this.sign("PUT", path, "", sha256Hex(""), { "x-amz-acl": "private" }),
+    });
+
+    let didCreate = false;
+    if (created.status >= 200 && created.status < 300) {
+      didCreate = true;
+    } else if (created.status !== 409) {
+      const code = firstXmlTagText(await created.text().catch(() => ""), "Code");
+      // 409 is BucketAlreadyExists / BucketAlreadyOwnedByYou — the desired end state.
+      throw new Error(
+        `Creating bucket ${this.config.bucket} failed with status ${created.status}` +
+          `${code ? ` (${code})` : ""}`,
+      );
+    }
+
+    // Authenticated reachability: HEAD proves these credentials can use the
+    // bucket, which a create that returned 409 does not.
+    const head = await this.fetch(this.url(path, ""), {
+      method: "HEAD",
+      headers: this.sign("HEAD", path, "", sha256Hex("")),
+    });
+    if (head.status !== 200) {
+      throw new Error(
+        `Bucket ${this.config.bucket} is not reachable with these credentials ` +
+          `(HEAD returned ${head.status})`,
+      );
+    }
+
+    // Unauthenticated listing must be refused. A 200 here means anyone with the
+    // URL can enumerate the backups.
+    const anonymous = await this.fetch(
+      `https://${this.config.host}${path}?list-type=2&max-keys=1`,
+      { method: "GET", headers: {} },
+    );
+    return {
+      bucket: this.config.bucket,
+      created: didCreate,
+      publiclyListable: anonymous.status === 200,
+    };
+  }
+
   /** Lists objects under a prefix, oldest first. */
   async list(prefix: string): Promise<BackupObjectSummary[]> {
     const res = await this.expectOk(
@@ -327,7 +446,7 @@ export class OffsiteBackupStore {
   async uploadEncrypted(filePath: string, objectKey: string): Promise<UploadResult> {
     const { size: plaintextBytes } = await stat(filePath);
     const iv = randomBytes(IV_BYTES);
-    const cipher = createCipheriv("aes-256-gcm", this.config.encryptionKey, iv);
+    const cipher = createCipheriv("aes-256-gcm", this.encryptionKey(), iv);
     const plaintextDigest = createHash("sha256");
 
     const created = await this.expectOk(
@@ -414,6 +533,10 @@ export class OffsiteBackupStore {
    * backup fails here rather than halfway through a restore.
    */
   async downloadDecrypted(objectKey: string, destPath: string): Promise<{ bytes: number; sha256: string }> {
+    // Demanded before the request: a missing key makes the download useless, and
+    // discovering that after streaming several gigabytes wastes the transfer and
+    // reports the wrong cause.
+    const encryptionKey = this.encryptionKey();
     const res = await this.expectOk(
       await this.send("GET", objectKey, {}),
       `Spaces GET ${objectKey}`,
@@ -421,7 +544,6 @@ export class OffsiteBackupStore {
     const body = res.body as AsyncIterable<Uint8Array> | null;
     if (!body) throw new Error(`Spaces GET ${objectKey} returned no body`);
 
-    const config = this.config;
     const digest = createHash("sha256");
     let bytes = 0;
     // Typed as the GCM variant so setAuthTag is available: the union that
@@ -440,7 +562,7 @@ export class OffsiteBackupStore {
           header = Buffer.concat([header, buffer]);
           if (header.length < BACKUP_HEADER_BYTES) continue;
           const { iv } = decodeBackupHeader(header);
-          decipher = createDecipheriv("aes-256-gcm", config.encryptionKey, iv) as DecipherGCM;
+          decipher = createDecipheriv("aes-256-gcm", encryptionKey, iv) as DecipherGCM;
           buffer = header.subarray(BACKUP_HEADER_BYTES);
           header = Buffer.alloc(0);
         }

@@ -71,6 +71,7 @@ The production image contains pre-bundled ingestion jobs but no compiler or deve
 
 The local pre-migration dump retained on the Droplet supports release rollback but is not disaster recovery: it dies with the box. Two mechanisms close that gap.
 
+- `provision-backup-bucket-once.yml` creates that bucket, private, from the credentials already on the box. Run it once after the release that ships the job.
 - `nightly-db-backup.yml` dumps the database and copies it to a **separate** Spaces bucket, encrypted with AES-256-GCM before it leaves the Droplet. Configure `JURVIO_BACKUP_BUCKET` and `JURVIO_BACKUP_ENCRYPTION_KEY` in `/opt/jurvio/.env.production`; credentials fall back to the `JURVIO_SPACES_*` keys. The bucket must not be the raw-artifact bucket, and a copy of the encryption key must be held outside the Droplet — a key stored only on the box it protects is not a recovery plan. The run fails if the newest off-site object is missing, empty, or older than 36 hours.
 - `verify-backup-restore.yml` is the restore test: it decrypts the newest off-site backup, loads it into a throwaway PostgreSQL container, and asserts the restored corpus is non-empty. It touches no production database or volume.
 
