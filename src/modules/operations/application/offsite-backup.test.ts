@@ -316,6 +316,38 @@ describe("bucket provisioning", () => {
     expect((await store.ensureBucket()).publiclyListable).toBe(true);
   });
 
+  it("accepts a pre-made bucket when the key may use but not create buckets", async () => {
+    // The least-privilege setup: the bucket was made in the console and the key
+    // is scoped to it, so the create is refused but everything else works.
+    const spaces = fakeSpaces();
+    spaces.buckets.add(config.bucket);
+    const scopedKey = async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body?: Uint8Array },
+    ) => (init.method === "PUT" && new URL(url).pathname === `/${config.bucket}`
+      ? { status: 403, headers: { get: () => null }, text: async () => "<Error><Code>AccessDenied</Code></Error>", body: null }
+      : spaces.fetch(url, init));
+
+    const store = new OffsiteBackupStore(config, { fetch: scopedKey });
+    await expect(store.ensureBucket()).resolves.toMatchObject({
+      created: false,
+      publiclyListable: false,
+    });
+  });
+
+  it("explains the remedy when the key can neither create nor reach the bucket", async () => {
+    const spaces = fakeSpaces();
+    const noAccess = async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body?: Uint8Array },
+    ) => (init.method === "PUT" || init.method === "HEAD"
+      ? { status: 403, headers: { get: () => null }, text: async () => "<Error><Code>AccessDenied</Code></Error>", body: null }
+      : spaces.fetch(url, init));
+
+    const store = new OffsiteBackupStore(config, { fetch: noAccess });
+    await expect(store.ensureBucket()).rejects.toThrow(/JURVIO_BACKUP_ACCESS_KEY_ID/);
+  });
+
   it("fails when the credentials cannot reach the bucket they just claimed", async () => {
     const spaces = fakeSpaces();
     const unreachable = async (
@@ -326,7 +358,7 @@ describe("bucket provisioning", () => {
       : spaces.fetch(url, init));
 
     const store = new OffsiteBackupStore(config, { fetch: unreachable });
-    await expect(store.ensureBucket()).rejects.toThrow(/not reachable/);
+    await expect(store.ensureBucket()).rejects.toThrow(/not usable with these credentials/);
   });
 
   it("needs no encryption key to provision, but demands one to move content", async () => {

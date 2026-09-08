@@ -375,29 +375,31 @@ export class OffsiteBackupStore {
       headers: this.sign("PUT", path, "", sha256Hex(""), { "x-amz-acl": "private" }),
     });
 
-    let didCreate = false;
-    if (created.status >= 200 && created.status < 300) {
-      didCreate = true;
-    } else if (created.status !== 409) {
-      const code = firstXmlTagText(await created.text().catch(() => ""), "Code");
-      // 409 is BucketAlreadyExists / BucketAlreadyOwnedByYou — the desired end state.
-      throw new Error(
-        `Creating bucket ${this.config.bucket} failed with status ${created.status}` +
-          `${code ? ` (${code})` : ""}`,
-      );
-    }
+    const didCreate = created.status >= 200 && created.status < 300;
+    // A failed create is NOT decided here. Spaces keys can be scoped to
+    // individual buckets, and such a key is refused (403) on bucket creation
+    // while still being perfectly able to use a bucket somebody made in the
+    // console — the normal setup for a least-privilege backup key. 409 likewise
+    // means the bucket already exists, which is the desired end state. So the
+    // authenticated HEAD below decides: what matters is whether these
+    // credentials can use this bucket, not whether they could create it.
+    const createCode = didCreate
+      ? null
+      : firstXmlTagText(await created.text().catch(() => ""), "Code");
 
-    // Authenticated reachability: HEAD proves these credentials can use the
-    // bucket, which a create that returned 409 does not.
     const head = await this.fetch(this.url(path, ""), {
       method: "HEAD",
       headers: this.sign("HEAD", path, "", sha256Hex("")),
     });
     if (head.status !== 200) {
-      throw new Error(
-        `Bucket ${this.config.bucket} is not reachable with these credentials ` +
-          `(HEAD returned ${head.status})`,
-      );
+      const because =
+        created.status === 403
+          ? `These credentials may not create buckets (create returned 403 ${createCode ?? "AccessDenied"}), ` +
+            `and the bucket is not reachable either (HEAD ${head.status}). Create "${this.config.bucket}" ` +
+            "in the DigitalOcean console, then either grant this key access to it or set " +
+            "JURVIO_BACKUP_ACCESS_KEY_ID / JURVIO_BACKUP_SECRET_ACCESS_KEY to a key scoped to it."
+          : `create returned ${created.status}${createCode ? ` (${createCode})` : ""}, HEAD returned ${head.status}`;
+      throw new Error(`Bucket ${this.config.bucket} is not usable with these credentials. ${because}`);
     }
 
     // Unauthenticated listing must be refused. A 200 here means anyone with the

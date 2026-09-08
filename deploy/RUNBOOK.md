@@ -118,7 +118,11 @@ credentials until the $0 enforcement tests pass (they do).
 - **Bucket setup (once):** `provision-backup-bucket-once.yml` creates the private
   backup bucket using the Spaces credentials already in `.env.production` (they
   never leave the box). Idempotent, and it fails if the bucket allows anonymous
-  listing.
+  listing. A bucket-scoped Spaces key cannot create buckets (403 on create) —
+  that is not a failure: create the bucket in the DigitalOcean console and
+  re-run, and the job verifies the key can use it. To keep the backup key
+  least-privilege, point `JURVIO_BACKUP_ACCESS_KEY_ID` /
+  `JURVIO_BACKUP_SECRET_ACCESS_KEY` at a key scoped to the backup bucket only.
 - **Off-box (disaster recovery):** `nightly-db-backup.yml` uploads each dump to a
   separate Spaces bucket (`JURVIO_BACKUP_BUCKET`) encrypted with AES-256-GCM
   (`JURVIO_BACKUP_ENCRYPTION_KEY`) via `jobs/upload-database-backup.mjs`. Keep a
