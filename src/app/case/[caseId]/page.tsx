@@ -211,7 +211,7 @@ export default async function CasePage({ params }: CasePageProps) {
       <div className="caseWorkspace">
         <aside className="caseWorkspaceNav">
           <CaseNav caseId={caseId} />
-          <aside className="caseProvenanceRail" aria-label="Source and record details">
+          <div className="caseProvenanceRail" aria-label="Source and record details">
             <section>
               <p className="sectionKicker">Case status</p>
               <dl className="railFacts">
@@ -230,7 +230,7 @@ export default async function CasePage({ params }: CasePageProps) {
                 <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
               </section>
             ) : null}
-          </aside>
+          </div>
           <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
         </aside>
 
