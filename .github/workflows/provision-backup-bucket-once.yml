@@ -1,0 +1,83 @@
+name: Provision backup bucket (once)
+
+# Creates the private Spaces bucket that holds encrypted off-site database
+# backups, using the Spaces credentials already in /opt/jurvio/.env.production —
+# they never leave the box and never enter an Actions log.
+#
+# Idempotent: an existing bucket is reported as present, not as an error. Run
+# this once after the release that ships jobs/provision-backup-bucket.mjs, then
+# set JURVIO_BACKUP_ENCRYPTION_KEY by hand (see the run's warning) before the
+# first nightly upload.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bucket:
+        description: "Bucket name (default: JURVIO_BACKUP_BUCKET, else jurvio-db-backups)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-provision-backup-bucket
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      BUCKET: ${{ inputs.bucket }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Create the backup bucket and verify it is private
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "${BUCKET:-}" <<'REMOTE'
+          set -euo pipefail
+          bucket="${1:-}"
+          cd /opt/jurvio
+          test -s .env.production || { echo "::error::.env.production missing on box"; exit 1; }
+
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          test -n "$image" || { echo "::error::could not resolve the running app image"; exit 1; }
+
+          bucket_args=""
+          [ -n "$bucket" ] && bucket_args="--bucket $bucket"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            "$image" \
+            node jobs/provision-backup-bucket.mjs $bucket_args
+          REMOTE
+
+      - name: Next step
+        run: |
+          echo "Bucket is ready. Remaining manual step, if the run warned about it:"
+          echo "  1. openssl rand -base64 32"
+          echo "  2. Add JURVIO_BACKUP_ENCRYPTION_KEY=<that value> to /opt/jurvio/.env.production (mode 600)"
+          echo "  3. Store a copy of the key OUTSIDE this Droplet"
+          echo "  4. Dispatch 'Nightly database backup', then 'Verify backup restore'"

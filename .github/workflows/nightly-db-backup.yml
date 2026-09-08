@@ -4,7 +4,13 @@ name: Nightly database backup (out-of-band)
 # releases now skip the slow pre-release backup (see scripts/release-production.sh),
 # this scheduled job guarantees the database is backed up at least nightly. Runs on
 # the box over the private VPC and reuses the same backup-production.sh the release
-# uses (compressed pg_dump, retains the last few).
+# uses (compressed pg_dump, retains the last few on the box).
+#
+# The dump is then copied to ENCRYPTED OFF-DROPLET object storage. An on-box dump
+# alone is a release-rollback aid, not disaster recovery: it dies with the box.
+# docs/38-production-readiness-checklist.md makes the off-site copy plus a
+# successful restore test a precondition of public launch. The restore rehearsal
+# that reads these objects back is verify-backup-restore.yml.
 
 on:
   schedule:
@@ -22,7 +28,7 @@ jobs:
   backup:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 40
+    timeout-minutes: 90
     env:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
@@ -50,7 +56,62 @@ jobs:
           set -euo pipefail
           cd /opt/jurvio
           test -x scripts/backup-production.sh || { echo "::error::backup script missing on box"; exit 1; }
-          scripts/backup-production.sh
+          # The script prints the dump path on stdout; keep it for the upload step.
+          backup_path="$(scripts/backup-production.sh | tail -1)"
+          test -s "$backup_path" || { echo "::error::backup script produced no file"; exit 1; }
+          printf '%s\n' "$backup_path" > /tmp/jurvio-latest-backup-path
           echo "=== backups on box (newest first) ==="
           ls -lh backups/ | head -6
+          REMOTE
+
+      - name: Copy the dump to encrypted off-site storage
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          backup_path="$(cat /tmp/jurvio-latest-backup-path)"
+          test -s "$backup_path" || { echo "::error::no dump recorded by the previous step"; exit 1; }
+          test -s .env.production || { echo "::error::.env.production missing on box"; exit 1; }
+
+          # JURVIO_IMAGE is never persisted on the box (release-production.sh passes
+          # it at deploy time), so derive the exact production tag from the running
+          # app container rather than requiring the variable — requiring it is what
+          # broke every nightly backup between at least 2026-08-19 and 2026-09-07.
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          test -n "$image" || { echo "::error::could not resolve the running app image"; exit 1; }
+
+          # Run as the invoking user so the container can read the mode-600 dump
+          # owned by the deployment account. Read-only mount: the uploader never
+          # writes to the backup directory.
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            -v /opt/jurvio/backups:/backups:ro \
+            "$image" \
+            node jobs/upload-database-backup.mjs --file "/backups/$(basename "$backup_path")"
+          REMOTE
+
+      - name: Confirm an off-site recovery point exists
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          # Cheap freshness gate: the newest off-site object must exist, be
+          # non-empty, and be younger than the nightly cadence. Pulling multiple
+          # gigabytes back down every night would be wasteful, so the full
+          # decrypt-and-restore rehearsal runs weekly (verify-backup-restore.yml).
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            "$image" \
+            node jobs/verify-database-backup.mjs --head-only --max-age-hours 36
           REMOTE

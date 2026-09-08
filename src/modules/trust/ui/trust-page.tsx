@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import type { Route } from "next";
 
 export type TrustSection = {
@@ -11,11 +12,18 @@ export function TrustPage({
   title,
   introduction,
   sections,
+  children,
 }: {
   eyebrow: string;
   title: string;
   introduction: string;
   sections: readonly TrustSection[];
+  /**
+   * Optional live evidence, rendered above the prose. A trust page that states
+   * a policy should show the measurement that policy produced, and the reader
+   * should meet the numbers before the explanation of them.
+   */
+  children?: ReactNode;
 }) {
   return (
     <main className="trustPage">
@@ -35,6 +43,7 @@ export function TrustPage({
           <Link href={"/public-records-policy" as Route}>Public-records policy</Link>
         </aside>
         <article>
+          {children}
           {sections.map((section) => (
             <section key={section.title}>
               <h2>{section.title}</h2>

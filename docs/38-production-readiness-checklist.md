@@ -47,7 +47,7 @@ The deployment workflow builds an immutable commit-tagged image, pushes it to Gi
 - `/internal/publication` and `/internal/analytics` are inaccessible without Cloudflare Access.
 - `robots.txt`, `llms.txt`, `sitemap.xml`, and a machine-readable case URL behave as designed.
 - A draft case, document, or suppressed record cannot be fetched publicly or through `ai.json`.
-- A database backup is non-empty, decompresses successfully, and has been copied off the Droplet.
+- A database backup is non-empty, decompresses successfully, and has been copied off the Droplet (`nightly-db-backup.yml` green), and `verify-backup-restore.yml` has restored it successfully at least once.
 - DNS changes occur only after every preceding check passes.
 
 ## First corpus run
@@ -67,6 +67,14 @@ paying for AI enrichment.
 
 The production image contains pre-bundled ingestion jobs but no compiler or developer toolchain. Run jobs as short-lived containers; do not install ad-hoc packages into the running web container. A continuously scheduled worker is deferred until measured ingestion volume requires it.
 
-## Known boundary
+## Backups and recovery
 
-The local pre-migration dump retained on the Droplet supports release rollback but is not disaster recovery. A separate encrypted backup location and a successful restore test are required before public launch.
+The local pre-migration dump retained on the Droplet supports release rollback but is not disaster recovery: it dies with the box. Two mechanisms close that gap.
+
+- `provision-backup-bucket-once.yml` creates that bucket, private, from the credentials already on the box. Run it once after the release that ships the job.
+- `nightly-db-backup.yml` dumps the database and copies it to a **separate** Spaces bucket, encrypted with AES-256-GCM before it leaves the Droplet. Configure `JURVIO_BACKUP_BUCKET` and `JURVIO_BACKUP_ENCRYPTION_KEY` in `/opt/jurvio/.env.production`; credentials fall back to the `JURVIO_SPACES_*` keys. The bucket must not be the raw-artifact bucket, and a copy of the encryption key must be held outside the Droplet — a key stored only on the box it protects is not a recovery plan. The run fails if the newest off-site object is missing, empty, or older than 36 hours.
+- `verify-backup-restore.yml` is the restore test: it decrypts the newest off-site backup, loads it into a throwaway PostgreSQL container, and asserts the restored corpus is non-empty. It touches no production database or volume.
+
+**Launch gate:** `verify-backup-restore.yml` must have completed successfully at least once against a real off-site backup before DNS cutover or before `JURVIO_PUBLIC_LAUNCH` is set to `true`.
+
+Between at least 2026-08-19 and 2026-09-07 every nightly backup run failed: `backup-production.sh` invoked `docker compose exec`, which interpolates the whole compose file and therefore required `JURVIO_IMAGE`, a value only the deploy passes. The script now uses `docker exec` against the postgres container, which needs no image tag. It also prunes images with an `until` filter rather than `-af`, so the previous release's image — the rollback target — survives the nightly run.

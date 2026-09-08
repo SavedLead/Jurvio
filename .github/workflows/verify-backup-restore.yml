@@ -1,0 +1,144 @@
+name: Verify backup restore (weekly rehearsal)
+
+# Closes the readiness checklist's known boundary: "A separate encrypted backup
+# location and a successful restore test are required before public launch."
+#
+# Pulls the newest ENCRYPTED off-site backup, decrypts it, and restores it into a
+# THROWAWAY postgres container with its own ephemeral volume, then runs sanity
+# counts against the restored copy. An object that exists is not a recovery
+# point; an object that loads and carries the corpus is.
+#
+# Safety: this workflow never touches the production database, the production
+# compose project, or any production volume. The scratch container has a
+# distinct name and no published port, and it is removed in a step that always
+# runs — including on cancellation.
+
+on:
+  schedule:
+    - cron: "0 9 * * 0" # Sundays 09:00 UTC, after the nightly backup
+  workflow_dispatch:
+    inputs:
+      object_key:
+        description: "Specific backup object key to restore (default: newest)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backup-restore-check
+  cancel-in-progress: false
+
+jobs:
+  restore-rehearsal:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 180
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      OBJECT_KEY: ${{ inputs.object_key }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Download, decrypt and inspect the newest off-site backup
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "${OBJECT_KEY:-}" <<'REMOTE'
+          set -euo pipefail
+          object_key="${1:-}"
+          cd /opt/jurvio
+          rm -rf /opt/jurvio/restore-check
+          mkdir -p /opt/jurvio/restore-check
+          chmod 700 /opt/jurvio/restore-check
+
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          test -n "$image" || { echo "::error::could not resolve the running app image"; exit 1; }
+
+          key_args=""
+          [ -n "$object_key" ] && key_args="--key $object_key"
+          # Verifies the GCM tag, gunzips end to end, and asserts the dump
+          # carries both schema (CREATE TABLE) and data (COPY) before we spend
+          # an hour loading it.
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            -v /opt/jurvio/restore-check:/restore \
+            "$image" \
+            node jobs/verify-database-backup.mjs --dest /restore/jurvio-restore.sql.gz $key_args
+          ls -lh /opt/jurvio/restore-check/
+          REMOTE
+
+      - name: Restore into a throwaway postgres and count the corpus
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          # Distinct name and NO published port: this container is unreachable
+          # from outside the box and shares nothing with the production stack.
+          docker rm -f jurvio-restore-check >/dev/null 2>&1 || true
+          docker run -d --name jurvio-restore-check \
+            -e POSTGRES_USER=jurvio -e POSTGRES_PASSWORD=restore-rehearsal \
+            -e POSTGRES_DB=jurvio \
+            --tmpfs /dev/shm:size=1g \
+            postgres:16-alpine >/dev/null
+
+          for _ in $(seq 1 60); do
+            docker exec jurvio-restore-check pg_isready -U jurvio -d jurvio >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec jurvio-restore-check pg_isready -U jurvio -d jurvio >/dev/null
+
+          echo "=== loading the decrypted dump ==="
+          gunzip -c /opt/jurvio/restore-check/jurvio-restore.sql.gz \
+            | docker exec -i jurvio-restore-check psql -v ON_ERROR_STOP=1 -q -U jurvio -d jurvio >/dev/null
+
+          echo "=== restored corpus (from the backup, not production) ==="
+          docker exec -i jurvio-restore-check psql -U jurvio -d jurvio -t -A -F'|' <<'SQL'
+          SELECT 'cases', count(*)::text FROM legal_case
+          UNION ALL SELECT 'published_cases', count(*)::text FROM legal_case WHERE publication='published'
+          UNION ALL SELECT 'documents', count(*)::text FROM document
+          UNION ALL SELECT 'opinions', count(*)::text FROM judicial_opinion
+          UNION ALL SELECT 'docket_entries', count(*)::text FROM docket_entry
+          UNION ALL SELECT 'raw_artifacts', count(*)::text FROM raw_artifact;
+          SQL
+
+          # A restore that yields an empty corpus is a failed restore, however
+          # cleanly psql exited.
+          published="$(docker exec -i jurvio-restore-check psql -U jurvio -d jurvio -t -A \
+            -c "SELECT count(*) FROM legal_case WHERE publication='published'")"
+          echo "restored published cases: $published"
+          [ "$published" -gt 0 ] || { echo "::error::restored database contains no published cases"; exit 1; }
+          echo "Restore rehearsal succeeded."
+          REMOTE
+
+      - name: Tear down the scratch database and decrypted dump
+        if: always()
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          # -v also removes the anonymous volume the scratch container created,
+          # so a rehearsal never leaves a copy of the corpus on the box.
+          docker rm -f -v jurvio-restore-check >/dev/null 2>&1 || true
+          rm -rf /opt/jurvio/restore-check
+          df -h /opt/jurvio
+          REMOTE
