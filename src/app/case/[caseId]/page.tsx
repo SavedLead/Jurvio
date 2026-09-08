@@ -157,15 +157,10 @@ export default async function CasePage({ params }: CasePageProps) {
       available: Boolean(latestEvent),
     },
   ] as const;
-  const availableCaseAnswers = caseAnswers.filter((item) => item.available);
-  const hasMeaningfulIntelligence = Boolean(
-    legalCase.backgroundSummary
-    || legalCase.questionPresented
-    || legalCase.significanceSummary
-    || legalCase.exactHolding
-    || outcome
-    || legalCase.statusExplanation,
-  );
+  const filedAt = legalCase.filedOn ? Date.parse(`${legalCase.filedOn}T00:00:00Z`) : Number.NaN;
+  const recentlyFiled = !legalCase.decidedOn
+    && Number.isFinite(filedAt)
+    && Date.now() - filedAt <= 45 * 24 * 60 * 60 * 1000;
 
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
@@ -235,14 +230,16 @@ export default async function CasePage({ params }: CasePageProps) {
         </aside>
 
         <div className="caseWorkspaceMain">
-          {hasMeaningfulIntelligence && availableCaseAnswers.length > 0 ? <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
+          <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
             <p className="sectionKicker">Case intelligence</p>
-            <h2 id="case-answers-title">What the verified record tells us</h2>
+            <h2 id="case-answers-title">{recentlyFiled ? "This case was recently filed" : "What the verified record tells us"}</h2>
             <p className="caseAnswerIntro">
-              Direct answers from the verified public record. Missing information is labeled instead of inferred.
+              {recentlyFiled
+                ? "The court record is new. Verified answers, documents, and developments will appear here as they become available."
+                : "Direct answers from the verified public record. Missing information is labeled instead of inferred."}
             </p>
             <div className="caseAnswerGrid">
-              {availableCaseAnswers.map((item) => (
+              {caseAnswers.map((item) => (
                 <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
                   <h3>{item.question}</h3>
                   <p>{item.answer}</p>
@@ -253,10 +250,9 @@ export default async function CasePage({ params }: CasePageProps) {
                 </article>
               ))}
             </div>
-          </section> : null}
+          </section>
           <section className="caseLeadSection caseFeatureSection" aria-labelledby="understand-case">
             <div className="featureHeading">
-              <span className="featureBadge" aria-hidden="true">A</span>
               <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Verified case record</h2></div>
             </div>
             {verified && legalCase.statusExplanation ? (
@@ -278,7 +274,7 @@ export default async function CasePage({ params }: CasePageProps) {
 
           {legalCase.questionPresented ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="question-presented">
-              <div className="featureHeading"><span className="featureBadge" aria-hidden="true">B</span><h2 id="question-presented">Question presented</h2></div>
+              <div className="featureHeading"><h2 id="question-presented">Question presented</h2></div>
               <p>{legalCase.questionPresented}</p>
               {legalCase.questionSourceUrl ? <a className="sectionLink" href={legalCase.questionSourceUrl} rel="nofollow noopener">Read the official petition →</a> : null}
             </section>
@@ -287,8 +283,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {outcome || legalCase.exactHolding ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-outcome">
               <div className="featureHeading">
-                <span className="featureBadge" aria-hidden="true">C</span>
-                <h2 id="case-outcome">Holding and outcome</h2>
+                  <h2 id="case-outcome">Holding and outcome</h2>
               </div>
               {outcome ? <div className="outcomeCallout"><strong>{outcome}.</strong></div> : null}
               {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>Exact sourced holding</h3><p>{legalCase.exactHolding}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
@@ -298,7 +293,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {decisionLabel || opinionType || legalCase.decisionLineup ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="decision-lineup">
               <div className="featureHeading decisionHeading">
-                <span className="featureBadge" aria-hidden="true">D</span>
                 <h2 id="decision-lineup">Decision lineup</h2>
                 {decisionLabel ? <strong className="decisionLabel">{decisionLabel}</strong> : null}
               </div>
@@ -327,7 +321,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {timelineEvents.length > 0 ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">
               <div className="featureHeading">
-                <span className="featureBadge" aria-hidden="true">E</span>
                 <h2 id="case-timeline">Case timeline</h2>
               </div>
               <ol className="caseMilestones">
@@ -345,7 +338,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {documents.length > 0 ? (
             <section className="contentSection availableDocuments caseFeatureSection" aria-labelledby="available-documents">
               <div className="featureHeading">
-                <span className="featureBadge featureBadgeWide" aria-hidden="true">F–G</span>
                 <div><p className="sectionKicker">Available court materials</p><h2 id="available-documents">Documents and argument</h2></div>
               </div>
               <div className="availableDocumentTypes" aria-label="Available document types">
@@ -374,7 +366,6 @@ export default async function CasePage({ params }: CasePageProps) {
           {opinionPath ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="read-opinion">
               <div className="featureHeading">
-                <span className="featureBadge" aria-hidden="true">H</span>
                 <h2 id="read-opinion">Read the opinion</h2>
               </div>
               <nav className="opinionQuickLinks" aria-label="Opinion reading tools">
