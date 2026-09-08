@@ -19,3 +19,7 @@ CREATE INDEX IF NOT EXISTS entity_display_name_search_trgm_idx
 
 CREATE INDEX IF NOT EXISTS party_appearance_case_id_idx
   ON party_appearance (case_id);
+
+ANALYZE legal_case;
+ANALYZE party_appearance;
+ANALYZE entity;
