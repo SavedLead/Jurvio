@@ -8,11 +8,10 @@
 //   - listPublicEntities  (src/modules/directory/application/public-directory.ts)
 //   - listPublicParties   (src/modules/cases/application/list-public-case-sections.ts)
 //
-// Note the two surfaces disagree on the default for a missing entity-level
-// publication_decision: the directory treats it as displayable, the per-case tab
-// treats it as NOT displayable. Nothing in the codebase writes an entity decision
-// outside the manual publication-review workflow, so that difference is reported
-// explicitly below.
+// Both surfaces treat a missing entity-level publication_decision as
+// displayable; only an explicit decision suppresses a party. Nothing writes an
+// entity decision outside the manual publication-review workflow, so the count
+// of explicit suppressions is reported below to make that visible.
 //
 // This script only reads. It writes nothing and publishes nothing.
 import { closeDb, db } from "@/db/client";
@@ -91,16 +90,20 @@ try {
     FROM candidate
   `;
 
-  // The per-case Parties tab differs from the directory only in requiring an
-  // explicit entity-level decision (missing decision => not displayable).
+  // The per-case Parties tab, using the shipped predicate from
+  // listPublicParties, alongside the explicit suppressions that can remove a
+  // party from both surfaces.
   const [caseTab] = await sql<{
-    entity_decisions: string; entity_decisions_displayable: string;
-    appearances_visible: string;
+    entity_decisions: string; entity_suppressed: string; appearances_visible: string;
   }[]>`
     SELECT
       (SELECT count(*)::text FROM publication_decision WHERE object_type = 'entity') AS entity_decisions,
-      (SELECT count(DISTINCT object_id)::text FROM publication_decision decision
-        WHERE decision.object_type = 'entity' AND decision.displayable) AS entity_decisions_displayable,
+      (SELECT count(DISTINCT entity.id)::text FROM entity
+        WHERE NOT COALESCE((
+          SELECT decision.displayable FROM publication_decision decision
+          WHERE decision.object_type = 'entity' AND decision.object_id = entity.id
+          ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+        ), true)) AS entity_suppressed,
       (SELECT count(*)::text FROM party_appearance appearance
         JOIN legal_case ON legal_case.id = appearance.case_id
         JOIN entity ON entity.id = appearance.entity_id
@@ -114,7 +117,7 @@ try {
             SELECT decision.displayable FROM publication_decision decision
             WHERE decision.object_type = 'entity' AND decision.object_id = entity.id
             ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-          ), false)) AS appearances_visible
+          ), true)) AS appearances_visible
   `;
 
   // Which ingestion path produced the party rows we do have. Only the
