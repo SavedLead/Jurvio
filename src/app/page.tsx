@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { formatEasternDate } from "@/lib/time/eastern";
 import type { Route } from "next";
+import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { listRecentlyUpdatedPublicCases } from "@/modules/cases/application/list-recently-updated-public-cases";
 import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
@@ -65,12 +66,32 @@ const audienceItems = [
 
 export const dynamic = "force-dynamic";
 
+const getCachedRecentlyUpdated = unstable_cache(
+  async () => listRecentlyUpdatedPublicCases(db(), 6),
+  ["homepage-recently-updated"],
+  { revalidate: 300, tags: ["public-cases"] },
+);
+
+async function getRecentlyUpdatedWithFallback() {
+  try {
+    return await Promise.race([
+      getCachedRecentlyUpdated(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Homepage activity feed timed out")), 1_500),
+      ),
+    ]);
+  } catch (error) {
+    console.error("Homepage activity feed unavailable; rendering without it", error);
+    return [];
+  }
+}
+
 function formatActivityDate(value: string) {
   return formatEasternDate(value);
 }
 
 export default async function HomePage() {
-  const recentlyUpdated = await listRecentlyUpdatedPublicCases(db(), 6);
+  const recentlyUpdated = await getRecentlyUpdatedWithFallback();
 
   return (
     <main>
