@@ -29,6 +29,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: jurvio-backup-restore-check
@@ -148,3 +149,10 @@ jobs:
           rm -rf /opt/jurvio/restore-check
           df -h /opt/jurvio
           REMOTE
+      - name: Record phase receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_STATUS: ${{ job.status }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Phase 1.4 restore [$GATE_STATUS]" --body "Status: **$GATE_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
