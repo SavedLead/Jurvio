@@ -18,6 +18,7 @@ describe("branded case captions", () => {
 
   it("removes a malformed leading one from government captions", () => {
     expect(cleanCaseCaption("1USA v. ESTRADA-CARRILLO et al")).toBe("USA v. ESTRADA-CARRILLO et al");
+    expect(cleanCaseCaption("1 USA v. IBOBO")).toBe("USA v. IBOBO");
     expect(cleanCaseCaption("1United States v. IBOBO")).toBe("United States v. IBOBO");
   });
 
