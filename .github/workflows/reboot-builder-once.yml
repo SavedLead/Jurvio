@@ -9,6 +9,10 @@ name: Reboot builder once
 
 on:
   workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/reboot-builder.trigger"
 
 permissions:
   contents: read
