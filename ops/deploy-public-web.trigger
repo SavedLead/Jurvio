@@ -1,1 +1,1 @@
-Deploy PR #415: compact case overview pages
+Deploy corrected government case captions from PRs #418 and #419.
