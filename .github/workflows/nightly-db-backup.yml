@@ -11,6 +11,13 @@ name: Nightly database backup (out-of-band)
 # docs/38-production-readiness-checklist.md makes the off-site copy plus a
 # successful restore test a precondition of public launch. The restore rehearsal
 # that reads these objects back is verify-backup-restore.yml.
+#
+# Note on `ssh host bash -s <<'REMOTE'`: the remote script arrives on stdin, so any
+# command inside it that drains stdin consumes the script's own remaining lines.
+# That is not hypothetical -- it silently truncated this workflow on 2026-09-09.
+# Hence `< /dev/null` on remote commands here, and the dump path is carried by a
+# step output on the runner rather than a file on the box, so a truncated remote
+# script fails loudly instead of appearing to succeed.
 
 on:
   schedule:
@@ -50,28 +57,44 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Run compressed database backup on the box
+        id: dump
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          out="$(ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
           test -x scripts/backup-production.sh || { echo "::error::backup script missing on box"; exit 1; }
-          # The script prints the dump path on stdout; keep it for the upload step.
-          backup_path="$(scripts/backup-production.sh | tail -1)"
+          # </dev/null so nothing inside the script can drain -- and thereby eat --
+          # the rest of THIS script, which bash is reading from stdin.
+          backup_path="$(scripts/backup-production.sh </dev/null | tail -1)"
           test -s "$backup_path" || { echo "::error::backup script produced no file"; exit 1; }
-          printf '%s\n' "$backup_path" > /tmp/jurvio-latest-backup-path
           echo "=== backups on box (newest first) ==="
           ls -lh backups/ | head -6
+          # Last line, and the only one the runner parses.
+          printf 'BACKUP_PATH=%s\n' "$backup_path"
           REMOTE
+          )"
+          printf '%s\n' "$out"
+
+          path="$(printf '%s\n' "$out" | sed -n 's/^BACKUP_PATH=//p' | tail -1)"
+          # If the remote script were truncated (see the header note), the marker
+          # would be missing while ssh still exited 0. Refuse to call that a backup.
+          test -n "$path" || {
+            echo "::error::the remote backup step finished without reporting a dump path — its script was truncated or the dump did not complete"
+            exit 1
+          }
+          echo "path=$path" >> "$GITHUB_OUTPUT"
 
       - name: Copy the dump to encrypted off-site storage
+        env:
+          BACKUP_PATH: ${{ steps.dump.outputs.path }}
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "$BACKUP_PATH" <<'REMOTE'
           set -euo pipefail
+          backup_path="$1"
           cd /opt/jurvio
-          backup_path="$(cat /tmp/jurvio-latest-backup-path)"
-          test -s "$backup_path" || { echo "::error::no dump recorded by the previous step"; exit 1; }
+          test -s "$backup_path" || { echo "::error::dump $backup_path is missing on the box"; exit 1; }
           test -s .env.production || { echo "::error::.env.production missing on box"; exit 1; }
 
           # JURVIO_IMAGE is never persisted on the box (release-production.sh passes
@@ -92,7 +115,7 @@ jobs:
             --env-file .env.production \
             -v /opt/jurvio/backups:/backups:ro \
             "$image" \
-            node jobs/upload-database-backup.mjs --file "/backups/$(basename "$backup_path")"
+            node jobs/upload-database-backup.mjs --file "/backups/$(basename "$backup_path")" </dev/null
           REMOTE
 
       - name: Confirm an off-site recovery point exists
@@ -113,5 +136,5 @@ jobs:
             --user "$(id -u):$(id -g)" \
             --env-file .env.production \
             "$image" \
-            node jobs/verify-database-backup.mjs --head-only --max-age-hours 36
+            node jobs/verify-database-backup.mjs --head-only --max-age-hours 36 </dev/null
           REMOTE
