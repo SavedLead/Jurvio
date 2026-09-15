@@ -2,6 +2,10 @@ name: Repair builder runner once
 
 on:
   workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/repair-builder-runner.trigger"
 
 permissions:
   contents: read
