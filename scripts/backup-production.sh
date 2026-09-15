@@ -56,9 +56,17 @@ trap 'rm -f "$PARTIAL"' EXIT
 # `docker exec` (not `compose exec`) for the reason documented above. Failing
 # here must fail the script: `pg_dump | gzip` would otherwise mask a dump error
 # behind gzip's successful exit, so pipefail is essential (set at the top).
-docker exec -i "$PG_CONTAINER" \
+#
+# NO `-i`, and stdin explicitly closed. pg_dump reads nothing from stdin, but
+# `docker exec -i` attaches and drains it anyway — and when this script is called
+# from a caller that is itself being read from stdin (`ssh host bash -s <<'EOF'`,
+# which is how the nightly workflow invokes it), draining stdin consumes the
+# caller's own remaining script. On 2026-09-09 that silently ate the rest of the
+# backup step after this line: the dump succeeded, but the commands that recorded
+# its path and listed the directory never ran, and the step still exited 0.
+docker exec "$PG_CONTAINER" \
   pg_dump --username jurvio --dbname jurvio --no-owner --no-acl \
-  | gzip -1 > "$PARTIAL"
+  < /dev/null | gzip -1 > "$PARTIAL"
 
 test -s "$PARTIAL"
 gzip -t "$PARTIAL"
