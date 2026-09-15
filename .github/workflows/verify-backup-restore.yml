@@ -83,7 +83,7 @@ jobs:
             --env-file .env.production \
             -v /opt/jurvio/restore-check:/restore \
             "$image" \
-            node jobs/verify-database-backup.mjs --dest /restore/jurvio-restore.sql.gz $key_args
+            node jobs/verify-database-backup.mjs --dest /restore/jurvio-restore.sql.gz $key_args </dev/null
           ls -lh /opt/jurvio/restore-check/
           REMOTE
 
@@ -99,7 +99,7 @@ jobs:
             -e POSTGRES_USER=jurvio -e POSTGRES_PASSWORD=restore-rehearsal \
             -e POSTGRES_DB=jurvio \
             --tmpfs /dev/shm:size=1g \
-            postgres:16-alpine >/dev/null
+            postgres:16-alpine >/dev/null </dev/null
 
           for _ in $(seq 1 60); do
             docker exec jurvio-restore-check pg_isready -U jurvio -d jurvio >/dev/null 2>&1 && break
@@ -123,8 +123,10 @@ jobs:
 
           # A restore that yields an empty corpus is a failed restore, however
           # cleanly psql exited.
-          published="$(docker exec -i jurvio-restore-check psql -U jurvio -d jurvio -t -A \
-            -c "SELECT count(*) FROM legal_case WHERE publication='published'")"
+          # No -i: this query needs no stdin, and `docker exec -i` here would drain
+          # the ssh heredoc that IS this script (see nightly-db-backup.yml header).
+          published="$(docker exec jurvio-restore-check psql -U jurvio -d jurvio -t -A \
+            -c "SELECT count(*) FROM legal_case WHERE publication='published'" </dev/null)"
           echo "restored published cases: $published"
           [ "$published" -gt 0 ] || { echo "::error::restored database contains no published cases"; exit 1; }
           echo "Restore rehearsal succeeded."
