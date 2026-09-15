@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   repair:
@@ -85,3 +86,10 @@ jobs:
           fi
           REMOTE
           echo "Runner repair attempted; firewall restored by trap."
+      - name: Record runner repair receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPAIR_STATUS: ${{ job.status }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Builder runner repair [$REPAIR_STATUS]" --body "Status: **$REPAIR_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
