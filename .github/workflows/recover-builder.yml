@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: jurvio-recover-builder
@@ -43,3 +44,10 @@ jobs:
           done
           echo "::error::builder did not become active in time"
           exit 1
+      - name: Record builder reboot receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REBOOT_STATUS: ${{ job.status }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Builder reboot [$REBOOT_STATUS]" --body "Status: **$REBOOT_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
