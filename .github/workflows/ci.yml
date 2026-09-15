@@ -22,9 +22,9 @@ concurrency:
 
 jobs:
   verify:
-    # Fork PRs and the bounded Judge Autopilot recovery validation use isolated hosted runners.
-    # Main and all ordinary Jurvio-owned PRs remain on the self-hosted builder.
-    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.head_ref == 'agent/judge-autopilot-control-loop')) && 'ubuntu-latest' || 'self-hosted' }}
+    # CI is isolated from production and requires no private VPC access.
+    # Keep the DigitalOcean builder available for deploy, backup, restore, and audits.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       DATABASE_URL: postgresql://jurvio:jurvio@localhost:5432/jurvio
