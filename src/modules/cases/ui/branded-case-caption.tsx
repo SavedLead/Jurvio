@@ -5,9 +5,11 @@ interface BrandedCaseCaptionProps {
 }
 
 const revisionSuffix = /\s+(?:revisions?|revised)\s*:\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*$/i;
+const malformedGovernmentCaptionPrefix = /^1(?=(?:USA|United States)\s+v\.\s+)/i;
 
 export function cleanCaseCaption(caption: string) {
   let cleaned = caption.replace(/\s+/g, " ").trim();
+  cleaned = cleaned.replace(malformedGovernmentCaptionPrefix, "");
   while (revisionSuffix.test(cleaned)) cleaned = cleaned.replace(revisionSuffix, "").trim();
   return cleaned;
 }
