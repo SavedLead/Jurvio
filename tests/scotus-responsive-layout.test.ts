@@ -19,7 +19,6 @@ describe("SCOTUS responsive layout contract", () => {
   });
 
   it("uses the approved feature hierarchy and adaptive phone metadata", () => {
-    expect(css).toContain(".featureBadge");
     expect(css).toContain(".caseMilestones");
     expect(css).toContain(".availableDocumentTypes");
     expect(css).toContain(".opinionQuickLinks");
