@@ -1,0 +1,93 @@
+name: Phase 1 launch gate audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/phase-one-gate.trigger"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-phase-one-gate
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      REMOTE_USER: ${{ secrets.DO_USER }}
+    steps:
+      - name: Resolve servers and configure SSH
+        id: hosts
+        run: |
+          set -euo pipefail
+          droplets="$(curl -fsS -H "Authorization: Bearer $DO_TOKEN" https://api.digitalocean.com/v2/droplets?per_page=200)"
+          public="$(jq -r '.droplets[] | select(.name=="jurvio-public-01") | .networks.v4[] | select(.type=="private") | .ip_address' <<<"$droplets" | head -1)"
+          ingestion="10.116.0.2"
+          test -n "$public"
+          echo "public=$public" >> "$GITHUB_OUTPUT"
+          echo "ingestion=$ingestion" >> "$GITHUB_OUTPUT"
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Public health and admin indexing boundary
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 20 https://jurvio.com/api/health | grep -q '"status":"ok"'
+          curl -fsS --max-time 20 https://jurvio.com/api/ready | grep -q '"status":"ready"'
+          curl -fsS --max-time 20 https://z.jurvio.com/robots.txt | grep -qi 'Disallow: /'
+          curl -LfsS --max-time 20 https://z.jurvio.com/ | grep -qi 'noindex'
+          test "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 https://jurvio.com/internal/publication)" = "404"
+          test "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 https://jurvio.com/internal/analytics)" = "404"
+
+      - name: Ingestion services, backup and rollback image
+        env:
+          HOST: ${{ steps.hosts.outputs.ingestion }}
+        run: |
+          set -euo pipefail
+          ssh "$REMOTE_USER@$HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          test -s .env.production
+          test "$(docker ps --filter 'label=com.docker.compose.project=jurvio' --format '{{.ID}}' | wc -l)" -gt 0
+          latest="$(find backups -maxdepth 1 -type f -name '*.sql.gz' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
+          test -n "$latest" && test -s "$latest"
+          gzip -t "$latest"
+          current="$(docker inspect -f '{{.Config.Image}}' "$(docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -1)")"
+          test -n "$current"
+          repo="${current%:*}"
+          count="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -F "$repo:" | sort -u | wc -l)"
+          echo "ingestion current image=$current retained release images=$count latest backup=$latest"
+          test "$count" -ge 2
+          REMOTE
+
+      - name: Public container and rollback image
+        env:
+          HOST: ${{ steps.hosts.outputs.public }}
+        run: |
+          set -euo pipefail
+          ssh "$REMOTE_USER@$HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          current="$(docker inspect -f '{{.Config.Image}}' jurvio-public-app)"
+          test -n "$current"
+          repo="${current%:*}"
+          count="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -F "$repo:" | sort -u | wc -l)"
+          echo "public current image=$current retained release images=$count"
+          test "$count" -ge 2
+          REMOTE
