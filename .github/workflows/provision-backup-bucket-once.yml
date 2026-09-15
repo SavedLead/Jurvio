@@ -76,7 +76,7 @@ jobs:
             --user "$(id -u):$(id -g)" \
             --env-file .env.production \
             "$image" \
-            node jobs/provision-backup-bucket.mjs $bucket_args
+            node jobs/provision-backup-bucket.mjs $bucket_args </dev/null
           REMOTE
 
       - name: Next step
