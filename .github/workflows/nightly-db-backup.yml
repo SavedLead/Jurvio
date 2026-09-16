@@ -33,7 +33,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: jurvio-nightly-backup
+  group: jurvio-nightly-backup-hosted-v2
   cancel-in-progress: false
 
 jobs:
