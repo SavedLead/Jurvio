@@ -27,6 +27,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BACKUP_BUCKET: ${{ secrets.JURVIO_BACKUP_BUCKET }}
       BACKUP_ENCRYPTION_KEY: ${{ secrets.JURVIO_BACKUP_ENCRYPTION_KEY }}
+      BACKUP_ACCESS_KEY_ID: ${{ secrets.JURVIO_BACKUP_ACCESS_KEY_ID }}
+      BACKUP_SECRET_ACCESS_KEY: ${{ secrets.JURVIO_BACKUP_SECRET_ACCESS_KEY }}
     steps:
       - name: Require protected off-site backup configuration
         run: |
@@ -34,6 +36,8 @@ jobs:
           missing=()
           [ -n "${BACKUP_BUCKET:-}" ] || missing+=(JURVIO_BACKUP_BUCKET)
           [ -n "${BACKUP_ENCRYPTION_KEY:-}" ] || missing+=(JURVIO_BACKUP_ENCRYPTION_KEY)
+          [ -n "${BACKUP_ACCESS_KEY_ID:-}" ] || missing+=(JURVIO_BACKUP_ACCESS_KEY_ID)
+          [ -n "${BACKUP_SECRET_ACCESS_KEY:-}" ] || missing+=(JURVIO_BACKUP_SECRET_ACCESS_KEY)
           if [ "${#missing[@]}" -gt 0 ]; then
             echo "::error::Missing protected production secret(s): ${missing[*]}"
             exit 1
@@ -125,7 +129,10 @@ jobs:
           chmod 600 "$payload"
           IFS= read -r bucket < "$payload"
           key="$(sed -n '2p' "$payload")"
+          access_key_id="$(sed -n '3p' "$payload")"
+          secret_access_key="$(sed -n '4p' "$payload")"
           test -n "$bucket" && test -n "$key"
+          test -n "$access_key_id" && test -n "$secret_access_key"
           cd /opt/jurvio
           test -s .env.production
           tmp="$(mktemp)"
@@ -134,7 +141,7 @@ jobs:
           printf 'JURVIO_BACKUP_BUCKET=%s\nJURVIO_BACKUP_ENCRYPTION_KEY=%s\n' "$bucket" "$key" >> "$tmp"
           chmod 600 "$tmp"
           mv "$tmp" .env.production
-          echo "Backup bucket and encryption key synchronized (values not printed)."
+          echo "Dedicated backup bucket credentials and encryption key synchronized (values not printed)."
           REMOTE
           rm -f "$payload"
           trap - EXIT
