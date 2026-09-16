@@ -123,6 +123,16 @@ jobs:
           cd /opt/jurvio
           test -s .env.production
           test -s docker-compose.public.yml
+
+          current_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app 2>/dev/null || true)"
+          test -n "$current_id" || { echo "::error::current public app container was not found"; exit 1; }
+          previous_image="$(docker inspect -f '{{.Config.Image}}' "$current_id")"
+          test -n "$previous_image"
+          docker image inspect "$previous_image" >/dev/null
+          umask 077
+          printf '%s\n' "$previous_image" > .previous-public-image
+          echo "Rollback target recorded: $previous_image"
+
           docker pull "$1"
           docker run --rm --env-file .env.production "$1" node scripts/migrate.mjs
           JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml up -d --no-deps app
@@ -133,7 +143,13 @@ jobs:
           done
           [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
           curl -fsS -H 'Host: jurvio.com' http://127.0.0.1:3000/robots.txt | grep -Fq 'Disallow: /'
+          rollback_image="$(cat .previous-public-image)"
+          test -n "$rollback_image"
+          docker image inspect "$rollback_image" >/dev/null
+          printf 'ROLLBACK_READY=%s\n' "$rollback_image"
           REMOTE
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" \
+            --body '1.5 rollback readiness: previous public image recorded and retained locally; new container health and noindex verified.'
 
       - name: Verify public and private boundaries externally
         run: |
