@@ -37,20 +37,29 @@ jobs:
           test -n "$public" && test -n "$ingestion"
           public_id="$(jq -r .id <<<"$public")"
           public_ip="$(jq -r '.networks.v4[] | select(.type=="public") | .ip_address' <<<"$public")"
+          public_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$public")"
+          ingestion_id="$(jq -r .id <<<"$ingestion")"
           ingestion_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$ingestion")"
           firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
           firewall_id="$(jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
-          test -n "$firewall_id" && test -n "$public_ip" && test -n "$ingestion_private"
+          ingestion_firewall_id="$(jq -r --argjson id "$ingestion_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
+          test -n "$firewall_id" && test -n "$ingestion_firewall_id" && test -n "$public_ip" && test -n "$public_private" && test -n "$ingestion_private"
           runner_ip="$(curl -fsS https://api.ipify.org)"
           runner_cidr="$runner_ip/32"
-          rule="$(jq -n --arg src "$runner_cidr" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
-          curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$rule" >/dev/null
+          public_private_cidr="$public_private/32"
           {
             echo "PUBLIC_IP=$public_ip"
             echo "INGESTION_PRIVATE=$ingestion_private"
             echo "FIREWALL_ID=$firewall_id"
+            echo "INGESTION_FIREWALL_ID=$ingestion_firewall_id"
+            echo "PUBLIC_ID=$public_id"
+            echo "PUBLIC_PRIVATE_CIDR=$public_private_cidr"
             echo "RUNNER_CIDR=$runner_cidr"
           } >> "$GITHUB_ENV"
+          rule="$(jq -n --arg src "$runner_cidr" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
+          curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$rule" >/dev/null
+          private_rule="$(jq -n --arg src "$public_private_cidr" --argjson id "$public_id" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src],droplet_ids:[$id]}}]}')"
+          curl -fsS -X POST "${auth[@]}" "$api/firewalls/$ingestion_firewall_id/rules" -d "$private_rule" >/dev/null
           gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.3 alternate path: `██░░░░░░░░ 20%` Temporary /32 SSH access opened to jurvio-public-01; database remains private.'
 
       - name: Configure ephemeral SSH
@@ -102,10 +111,17 @@ jobs:
         if: always()
         run: |
           set +e
+          api=https://api.digitalocean.com/v2
           if [ -n "${FIREWALL_ID:-}" ] && [ -n "${RUNNER_CIDR:-}" ]; then
-            api=https://api.digitalocean.com/v2
             rule="$(jq -n --arg src "$RUNNER_CIDR" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
             curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$FIREWALL_ID/rules" -d "$rule"
+          fi
+          if [ -n "${INGESTION_FIREWALL_ID:-}" ] && [ -n "${PUBLIC_PRIVATE_CIDR:-}" ] && [ -n "${PUBLIC_ID:-}" ]; then
+            private_rule="$(jq -n --arg src "$PUBLIC_PRIVATE_CIDR" --argjson id "$PUBLIC_ID" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src],droplet_ids:[$id]}}]}')"
+            curl -fsS -X DELETE \
+              -H "Authorization: Bearer $DO_TOKEN" \
+              -H "Content-Type: application/json" \
+              "$api/firewalls/$INGESTION_FIREWALL_ID/rules" -d "$private_rule"
           fi
           rm -f ~/.ssh/id_ed25519 ~/.ssh/config
           gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body "1.3 alternate path finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
