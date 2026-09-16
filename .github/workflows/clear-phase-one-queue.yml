@@ -1,0 +1,34 @@
+name: Clear stale Phase 1 builder queue
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/clear-phase-one-queue.trigger"
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Cancel stale phase-one runs only
+        run: |
+          set -euo pipefail
+          current="$GITHUB_RUN_ID"
+          names='^(CI|Deploy production|Nightly database backup \(out-of-band\)|Verify backup restore \(weekly rehearsal\)|Phase 1 launch gate audit)$'
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" --jq '.workflow_runs[] | [.id,.name,.status] | @tsv' |
+          while IFS=$'\t' read -r id name status; do
+            [ "$id" = "$current" ] && continue
+            [[ "$status" == queued || "$status" == in_progress || "$status" == waiting || "$status" == pending ]] || continue
+            [[ "$name" =~ $names ]] || continue
+            echo "Cancelling stale run $id: $name ($status)"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel" || true
+          done
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.3 recovery: stale Phase 1 builder runs cleared; preparing one clean backup run.'
