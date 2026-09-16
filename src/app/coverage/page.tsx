@@ -5,7 +5,6 @@ import { getCoverageSnapshot } from "@/modules/trust/application/get-coverage-sn
 import { CoverageReport } from "@/modules/trust/ui/coverage-report";
 import { TrustPage } from "@/modules/trust/ui/trust-page";
 
-export const dynamic = "force-dynamic";
 export const revalidate = 300;
 
 export const metadata: Metadata = {
