@@ -1,0 +1,111 @@
+name: Phase 1.3 backup via public jump
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/phase-1-3-via-public-jump.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: jurvio-phase-1-3-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 90
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Open a temporary SSH path to the public jump host
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          public="$(jq -c '[.droplets[] | select(.name=="jurvio-public-01")][0] // empty' <<<"$droplets")"
+          ingestion="$(jq -c '[.droplets[] | select(.name=="jurvio-web-01")][0] // empty' <<<"$droplets")"
+          test -n "$public" && test -n "$ingestion"
+          public_id="$(jq -r .id <<<"$public")"
+          public_ip="$(jq -r '.networks.v4[] | select(.type=="public") | .ip_address' <<<"$public")"
+          ingestion_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$ingestion")"
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          firewall_id="$(jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
+          test -n "$firewall_id" && test -n "$public_ip" && test -n "$ingestion_private"
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+          runner_cidr="$runner_ip/32"
+          rule="$(jq -n --arg src "$runner_cidr" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
+          curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$rule" >/dev/null
+          {
+            echo "PUBLIC_IP=$public_ip"
+            echo "INGESTION_PRIVATE=$ingestion_private"
+            echo "FIREWALL_ID=$firewall_id"
+            echo "RUNNER_CIDR=$runner_cidr"
+          } >> "$GITHUB_ENV"
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.3 alternate path: `██░░░░░░░░ 20%` Temporary /32 SSH access opened to jurvio-public-01; database remains private.'
+
+      - name: Configure ephemeral SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host public-jump
+            HostName $PUBLIC_IP
+            User root
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          Host ingestion-private
+            HostName $INGESTION_PRIVATE
+            User $INGESTION_USER
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump public-jump
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 ~/.ssh/config
+          ssh public-jump true
+          ssh ingestion-private true
+
+      - name: Create, upload, and verify the recovery point
+        run: |
+          set -euo pipefail
+          ssh ingestion-private bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          test -x scripts/backup-production.sh
+          backup_path="$(scripts/backup-production.sh </dev/null | tail -1)"
+          test -s "$backup_path"
+          gzip -t "$backup_path"
+          image="$(docker inspect -f '{{.Config.Image}}'             "$(docker ps --filter 'label=com.docker.compose.project=jurvio'                          --filter 'label=com.docker.compose.service=app'                          --format '{{.ID}}' | head -n1)")"
+          test -n "$image"
+          docker run --rm             --user "$(id -u):$(id -g)"             --env-file .env.production             -v /opt/jurvio/backups:/backups:ro             "$image"             node jobs/upload-database-backup.mjs --file "/backups/$(basename "$backup_path")" </dev/null
+          docker run --rm             --user "$(id -u):$(id -g)"             --env-file .env.production             "$image"             node jobs/verify-database-backup.mjs --head-only --max-age-hours 36 </dev/null
+          printf 'BACKUP_VERIFIED=%s\n' "$backup_path"
+          REMOTE
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.3 alternate path: `██████████ 100%` Compressed database dump created, encrypted off-site upload completed, and recovery-point freshness verified.'
+
+      - name: Remove temporary SSH access
+        if: always()
+        run: |
+          set +e
+          if [ -n "${FIREWALL_ID:-}" ] && [ -n "${RUNNER_CIDR:-}" ]; then
+            api=https://api.digitalocean.com/v2
+            rule="$(jq -n --arg src "$RUNNER_CIDR" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
+            curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$FIREWALL_ID/rules" -d "$rule"
+          fi
+          rm -f ~/.ssh/id_ed25519 ~/.ssh/config
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body "1.3 alternate path finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
