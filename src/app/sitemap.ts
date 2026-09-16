@@ -17,6 +17,10 @@ const PUBLIC_ROUTES = [
   "/methodology",
   "/editorial-standards",
   "/public-records-policy",
+  "/privacy",
+  "/terms",
+  "/contact",
+  "/corrections",
 ] as const;
 
 export default function sitemap(): MetadataRoute.Sitemap {
