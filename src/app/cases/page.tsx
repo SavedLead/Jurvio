@@ -2,7 +2,7 @@ import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
-import { listPublicCases } from "@/modules/cases/application/list-public-cases";
+import { listPublicCaseCourts, listPublicCases } from "@/modules/cases/application/list-public-cases";
 import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import styles from "./cases.module.css";
 
@@ -17,6 +17,12 @@ const listCachedPublicCases = unstable_cache(
   ["public-case-directory"],
   { revalidate: 300, tags: ["public-cases"] },
 );
+const listCachedPublicCaseCourts = unstable_cache(
+  async () => listPublicCaseCourts(db()),
+  ["public-case-court-facets"],
+  { revalidate: 300, tags: ["public-cases"] },
+);
+
 export const metadata: Metadata = {
   title: "Find a court case",
   description: "Search verified, published court cases by case name, party, docket number, or court.",
@@ -43,9 +49,13 @@ export default async function CasesPage({
   const query = raw.q?.trim() || null;
   // Browsing traffic and crawlers reuse a five-minute snapshot. Free-text
   // searches remain live so user-entered queries never pollute the shared cache.
-  const result = query
-    ? await listPublicCases(db(), { page, pageSize: 50, court: court ?? undefined, query })
-    : await listCachedPublicCases(page, court);
+  const [caseResult, courts] = await Promise.all([
+    query
+      ? listPublicCases(db(), { page, pageSize: 50, court: court ?? undefined, query })
+      : listCachedPublicCases(page, court),
+    listCachedPublicCaseCourts(),
+  ]);
+  const result = { ...caseResult, courts };
   const pages = Math.max(1, Math.ceil(result.total / result.pageSize));
   const showingSearch = Boolean(result.query);
 
