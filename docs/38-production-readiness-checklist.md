@@ -27,6 +27,10 @@ Create a protected GitHub environment named `production` and require owner appro
 - `DO_USER`: non-root deployment user.
 - `DO_SSH_KEY`: deployment-only private key.
 - `DO_KNOWN_HOSTS`: the verified Droplet SSH host-key line obtained through the DigitalOcean console, not an unverified network scan.
+- `JURVIO_BACKUP_BUCKET`: the private off-site backup bucket, separate from the raw-artifact bucket.
+- `JURVIO_BACKUP_ENCRYPTION_KEY`: a 32-byte backup encryption key. Retain a recoverable copy outside GitHub and outside every Droplet.
+
+The hosted 1.3 fallback preflights both backup secrets before it opens a firewall rule, connects over SSH, or starts a dump. It then writes them into `/opt/jurvio/.env.production` with mode `600` without printing their values.
 
 The deployment workflow builds an immutable commit-tagged image, pushes it to GitHub Container Registry, copies only release controls, makes a pre-migration database dump, applies additive migrations, starts the new image, checks readiness, and restores the prior application image if readiness fails.
 
@@ -49,6 +53,17 @@ The deployment workflow builds an immutable commit-tagged image, pushes it to Gi
 - A draft case, document, or suppressed record cannot be fetched publicly or through `ai.json`.
 - A database backup is non-empty, decompresses successfully, and has been copied off the Droplet (`nightly-db-backup.yml` green), and `verify-backup-restore.yml` has restored it successfully at least once.
 - DNS changes occur only after every preceding check passes.
+
+## Pre-launch hosted fallback order
+
+When the persistent DigitalOcean builder is unavailable, use the guarded GitHub-hosted workflows in this order:
+
+1. Dispatch `phase-1-3-via-public-jump.yml`. It opens a temporary runner-only SSH rule, reaches the private database through `jurvio-public-01`, uploads the encrypted backup, verifies freshness, and removes the temporary rule.
+2. Dispatch `verify-backup-restore.yml`. It decrypts the newest off-site object into a throwaway PostgreSQL container and records the restore receipt without touching production data or volumes.
+3. Only after both runs are green, dispatch `deploy-public-web-hosted.yml` with the required `DEPLOY` confirmation. It requires current `main` and green CI, records and retains the previous public image, deploys the new image, verifies the public/private route boundary, and runs the live route/performance gate.
+4. Keep `JURVIO_PUBLIC_LAUNCH` unset or non-`true` during this entire sequence. The deployment must prove `robots.txt` still contains `Disallow: /`; indexing is a separate, final decision.
+
+Every hosted fallback removes its temporary firewall rule in an `always()` cleanup step.
 
 ## First corpus run
 
