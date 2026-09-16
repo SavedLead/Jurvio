@@ -33,6 +33,20 @@ describe("host security boundaries", () => {
     expect(response.headers.get("x-robots-tag")).toContain("noindex");
   });
 
+  it("redirects legacy command-center prefixes to clean root paths", () => {
+    const root = middleware(request("/in", "z.jurvio.com"));
+    expect(root.status).toBe(308);
+    expect(root.headers.get("location")).toBe("https://z.jurvio.com/");
+
+    const uptime = middleware(request("/in/uptime", "z.jurvio.com"));
+    expect(uptime.status).toBe(308);
+    expect(uptime.headers.get("location")).toBe("https://z.jurvio.com/uptime");
+
+    const internal = middleware(request("/internal/analytics", "z.jurvio.com"));
+    expect(internal.status).toBe(308);
+    expect(internal.headers.get("location")).toBe("https://z.jurvio.com/analytics");
+  });
+
   it("allows public pages while retaining pre-launch noindex", () => {
     delete process.env.JURVIO_PUBLIC_LAUNCH;
     const response = middleware(request("/cases"));
