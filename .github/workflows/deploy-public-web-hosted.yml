@@ -1,0 +1,151 @@
+name: Deploy public web via hosted runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY to release the current main commit'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+concurrency:
+  group: jurvio-public-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ github.ref == 'refs/heads/main' && inputs.confirm == 'DEPLOY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require current main and successful CI
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          test "$GITHUB_SHA" = "$current" || {
+            echo "::error::This run is not the current main commit ($current)."
+            exit 1
+          }
+          conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=20"             --jq '[.workflow_runs[] | select(.conclusion=="success")][0].conclusion // empty')"
+          test "$conclusion" = success || {
+            echo "::error::Current main does not have a successful CI run."
+            exit 1
+          }
+
+      - name: Open temporary /32 SSH access
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          public="$(jq -c '[.droplets[] | select(.name=="jurvio-public-01")][0] // empty' <<<"$droplets")"
+          test -n "$public"
+          public_id="$(jq -r .id <<<"$public")"
+          public_ip="$(jq -r '.networks.v4[] | select(.type=="public") | .ip_address' <<<"$public")"
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          firewall_id="$(jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
+          test -n "$firewall_id" && test -n "$public_ip"
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+          runner_cidr="$runner_ip/32"
+          {
+            echo "PUBLIC_IP=$public_ip"
+            echo "FIREWALL_ID=$firewall_id"
+            echo "RUNNER_CIDR=$runner_cidr"
+          } >> "$GITHUB_ENV"
+          rule="$(jq -n --arg src "$runner_cidr" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
+          curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$rule" >/dev/null
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body '2.6 deploy fallback: temporary /32 SSH route opened to jurvio-public-01.'
+
+      - name: Configure ephemeral SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+          cat > ~/.ssh/config <<EOF
+          Host public-web
+            HostName $PUBLIC_IP
+            User root
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 20
+            ServerAliveInterval 30
+            ServerAliveCountMax 120
+            TCPKeepAlive yes
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 ~/.ssh/config
+          ssh public-web true
+
+      - name: Build and publish current main image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Authenticate image registry
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$GH_TOKEN" | ssh public-web 'docker login ghcr.io -u SavedLead --password-stdin'
+
+      - name: Replace public app container
+        run: |
+          set -euo pipefail
+          scp docker-compose.public.yml public-web:/opt/jurvio/docker-compose.public.yml
+          ssh public-web bash -s -- "${IMAGE,,}" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          test -s .env.production
+          test -s docker-compose.public.yml
+          docker pull "$1"
+          docker run --rm --env-file .env.production "$1" node scripts/migrate.mjs
+          JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml up -d --no-deps app
+          app_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app)"
+          for _ in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ] && break
+            sleep 3
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
+          curl -fsS -H 'Host: jurvio.com' http://127.0.0.1:3000/robots.txt | grep -Fq 'Disallow: /'
+          REMOTE
+
+      - name: Verify public and private boundaries externally
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 12 --retry-delay 5 --max-time 30 https://jurvio.com/robots.txt |
+            grep -Fq 'Disallow: /'
+          login_body="$(curl -fsS --retry 12 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
+          printf '%s' "$login_body" | grep -Fiq 'PRIVATE COMMAND CENTER'
+          public_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://jurvio.com/login)"
+          test "$public_status" = 404
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body '2.6 deploy fallback: current main deployed to jurvio.com; noindex and public/private route boundaries verified.'
+
+      - name: Remove temporary SSH access
+        if: always()
+        run: |
+          set +e
+          api=https://api.digitalocean.com/v2
+          if [ -n "${FIREWALL_ID:-}" ] && [ -n "${RUNNER_CIDR:-}" ]; then
+            rule="$(jq -n --arg src "$RUNNER_CIDR" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
+            curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$FIREWALL_ID/rules" -d "$rule"
+          fi
+          rm -f ~/.ssh/id_ed25519 ~/.ssh/config
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body "2.6 deploy fallback finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
