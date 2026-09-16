@@ -1,0 +1,153 @@
+name: Phase 1.3 clean production backup
+
+# Keeps a fresh recovery point independent of deploys. Because ordinary app-only
+# releases now skip the slow pre-release backup (see scripts/release-production.sh),
+# this scheduled job guarantees the database is backed up at least nightly. Runs on
+# the box over the private VPC and reuses the same backup-production.sh the release
+# uses (compressed pg_dump, retains the last few on the box).
+#
+# The dump is then copied to ENCRYPTED OFF-DROPLET object storage. An on-box dump
+# alone is a release-rollback aid, not disaster recovery: it dies with the box.
+# docs/38-production-readiness-checklist.md makes the off-site copy plus a
+# successful restore test a precondition of public launch. The restore rehearsal
+# that reads these objects back is verify-backup-restore.yml.
+#
+# Note on `ssh host bash -s <<'REMOTE'`: the remote script arrives on stdin, so any
+# command inside it that drains stdin consumes the script's own remaining lines.
+# That is not hypothetical -- it silently truncated this workflow on 2026-09-09.
+# Hence `< /dev/null` on remote commands here, and the dump path is carried by a
+# step output on the runner rather than a file on the box, so a truncated remote
+# script fails loudly instead of appearing to succeed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/phase-1-3-clean-backup.trigger"
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: jurvio-phase-1-3-clean-backup-v4
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 90
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.3 backup: `█░░░░░░░░░ 10%` Builder acquired; private-VPC SSH configured.'
+
+      - name: Run compressed database backup on the box
+        id: dump
+        run: |
+          set -euo pipefail
+          out="$(ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          test -x scripts/backup-production.sh || { echo "::error::backup script missing on box"; exit 1; }
+          # </dev/null so nothing inside the script can drain -- and thereby eat --
+          # the rest of THIS script, which bash is reading from stdin.
+          backup_path="$(scripts/backup-production.sh </dev/null | tail -1)"
+          test -s "$backup_path" || { echo "::error::backup script produced no file"; exit 1; }
+          echo "=== backups on box (newest first) ==="
+          ls -lh backups/ | head -6
+          # Last line, and the only one the runner parses.
+          printf 'BACKUP_PATH=%s\n' "$backup_path"
+          REMOTE
+          )"
+          printf '%s\n' "$out"
+
+          path="$(printf '%s\n' "$out" | sed -n 's/^BACKUP_PATH=//p' | tail -1)"
+          # If the remote script were truncated (see the header note), the marker
+          # would be missing while ssh still exited 0. Refuse to call that a backup.
+          test -n "$path" || {
+            echo "::error::the remote backup step finished without reporting a dump path — its script was truncated or the dump did not complete"
+            exit 1
+          }
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body "1.3 backup: \`██████░░░░ 55%\` Database dump completed and gzip verified: $path"
+
+      - name: Copy the dump to encrypted off-site storage
+        env:
+          BACKUP_PATH: ${{ steps.dump.outputs.path }}
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "$BACKUP_PATH" <<'REMOTE'
+          set -euo pipefail
+          backup_path="$1"
+          cd /opt/jurvio
+          test -s "$backup_path" || { echo "::error::dump $backup_path is missing on the box"; exit 1; }
+          test -s .env.production || { echo "::error::.env.production missing on box"; exit 1; }
+
+          # JURVIO_IMAGE is never persisted on the box (release-production.sh passes
+          # it at deploy time), so derive the exact production tag from the running
+          # app container rather than requiring the variable — requiring it is what
+          # broke every nightly backup between at least 2026-08-19 and 2026-09-07.
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          test -n "$image" || { echo "::error::could not resolve the running app image"; exit 1; }
+
+          # Run as the invoking user so the container can read the mode-600 dump
+          # owned by the deployment account. Read-only mount: the uploader never
+          # writes to the backup directory.
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            -v /opt/jurvio/backups:/backups:ro \
+            "$image" \
+            node jobs/upload-database-backup.mjs --file "/backups/$(basename "$backup_path")" </dev/null
+          REMOTE
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.3 backup: `████████░░ 80%` Encrypted off-site upload completed.'
+
+      - name: Confirm an off-site recovery point exists
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          # Cheap freshness gate: the newest off-site object must exist, be
+          # non-empty, and be younger than the nightly cadence. Pulling multiple
+          # gigabytes back down every night would be wasteful, so the full
+          # decrypt-and-restore rehearsal runs weekly (verify-backup-restore.yml).
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            "$image" \
+            node jobs/verify-database-backup.mjs --head-only --max-age-hours 36 </dev/null
+          REMOTE
+      - name: Record phase receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_STATUS: ${{ job.status }}
+        run: |
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body "1.3 backup finished with status: **$GATE_STATUS**. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Phase 1.3 backup [$GATE_STATUS]" --body "Status: **$GATE_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
