@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { unstable_cache } from "next/cache";
 import { formatEasternDate } from "@/lib/time/eastern";
 import type { Route } from "next";
 import { db } from "@/db/client";
@@ -63,14 +64,20 @@ const audienceItems = [
   ["The public", "Read court activity in clear language without removing the legal context.", "/explainers"],
 ] as const;
 
-export const dynamic = "force-dynamic";
+export const revalidate = 300;
+
+const loadRecentlyUpdated = unstable_cache(
+  async () => listRecentlyUpdatedPublicCases(db(), 6),
+  ["homepage-recently-updated-cases"],
+  { revalidate: 300, tags: ["public-cases"] },
+);
 
 function formatActivityDate(value: string) {
   return formatEasternDate(value);
 }
 
 export default async function HomePage() {
-  const recentlyUpdated = await listRecentlyUpdatedPublicCases(db(), 6);
+  const recentlyUpdated = await loadRecentlyUpdated();
 
   return (
     <main>
