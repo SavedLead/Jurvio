@@ -162,6 +162,49 @@ jobs:
           test "$public_status" = 404
           gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body '2.6 deploy fallback: current main deployed to jurvio.com; noindex and public/private route boundaries verified.'
 
+      - name: Verify launch routes and performance
+        run: |
+          set -euo pipefail
+          results="$(mktemp)"
+          trap 'rm -f "$results"' EXIT
+
+          check_route() {
+            name="$1"
+            url="$2"
+            limit="$3"
+            metrics="$(curl -sS -o /dev/null --retry 2 --retry-delay 2 --max-time 30 \
+              -w '%{http_code} %{time_starttransfer} %{time_total}' "$url")"
+            read -r code ttfb total <<<"$metrics"
+            printf '%s|%s|%s|%s\n' "$name" "$code" "$ttfb" "$total" >> "$results"
+            test "$code" = 200 || {
+              echo "::error::$name returned HTTP $code"
+              return 1
+            }
+            awk -v value="$total" -v ceiling="$limit" 'BEGIN { exit !(value <= ceiling) }' || {
+              echo "::error::$name took ${total}s; launch ceiling is ${limit}s"
+              return 1
+            }
+          }
+
+          check_route Homepage https://jurvio.com/ 10
+          check_route Cases https://jurvio.com/cases 10
+          check_route Coverage https://jurvio.com/coverage 10
+          check_route Search 'https://jurvio.com/search?q=Trump%20v.%20Slaughter' 15
+
+          {
+            echo '### Live health and performance gate'
+            echo ''
+            echo '| Route | HTTP | TTFB | Total |'
+            echo '|---|---:|---:|---:|'
+            while IFS='|' read -r name code ttfb total; do
+              printf '| %s | %s | %ss | %ss |\n' "$name" "$code" "$ttfb" "$total"
+            done < "$results"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          summary="$(while IFS='|' read -r name code ttfb total; do printf '%s: HTTP %s, %ss total; ' "$name" "$code" "$total"; done < "$results")"
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" \
+            --body "1.6/2.6 live gate passed. $summary Indexing remains disabled."
+
       - name: Remove temporary SSH access
         if: always()
         run: |
