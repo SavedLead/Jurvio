@@ -1,10 +1,11 @@
 "use client";
 
+import type { Route } from "next";
 import Link from "next/link";
 import { useRef } from "react";
 
 interface MobileNavigationProps {
-  items: ReadonlyArray<readonly [label: string, href: string]>;
+  items: ReadonlyArray<readonly [label: string, href: Route]>;
 }
 
 export function MobileNavigation({ items }: MobileNavigationProps) {
