@@ -75,6 +75,9 @@ jobs:
             IdentityFile ~/.ssh/id_ed25519
             BatchMode yes
             ConnectTimeout 15
+            ServerAliveInterval 30
+            ServerAliveCountMax 120
+            TCPKeepAlive yes
             StrictHostKeyChecking accept-new
           Host ingestion-private
             HostName $INGESTION_PRIVATE
@@ -83,6 +86,9 @@ jobs:
             ProxyJump public-jump
             BatchMode yes
             ConnectTimeout 15
+            ServerAliveInterval 30
+            ServerAliveCountMax 120
+            TCPKeepAlive yes
             StrictHostKeyChecking accept-new
           EOF
           chmod 600 ~/.ssh/config
