@@ -17,6 +17,16 @@
 body { margin: 0; background: var(--canvas); }
 a { color: var(--brand); text-decoration: none; }
 a:hover { text-decoration: underline; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 3px solid #3155d9;
+  outline-offset: 3px;
+}
+.skipLink {
+  position: fixed; top: 8px; left: 8px; z-index: 1000; padding: 10px 14px;
+  border-radius: 7px; background: var(--ink); color: white; font-weight: 750;
+  transform: translateY(-160%);
+}
+.skipLink:focus { transform: translateY(0); }
 .siteHeader {
   min-height: 72px; display: flex; align-items: center; justify-content: space-between;
   padding: 0 max(28px, calc((100vw - 1360px) / 2)); border-bottom: 1px solid var(--border); background: rgba(255,255,255,.96);
