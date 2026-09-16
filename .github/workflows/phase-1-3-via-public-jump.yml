@@ -25,7 +25,21 @@ jobs:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BACKUP_BUCKET: ${{ secrets.JURVIO_BACKUP_BUCKET }}
+      BACKUP_ENCRYPTION_KEY: ${{ secrets.JURVIO_BACKUP_ENCRYPTION_KEY }}
     steps:
+      - name: Require protected off-site backup configuration
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${BACKUP_BUCKET:-}" ] || missing+=(JURVIO_BACKUP_BUCKET)
+          [ -n "${BACKUP_ENCRYPTION_KEY:-}" ] || missing+=(JURVIO_BACKUP_ENCRYPTION_KEY)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing protected production secret(s): ${missing[*]}"
+            exit 1
+          fi
+          echo "Protected off-site backup configuration is present (values not printed)."
+
       - name: Open a temporary SSH path to the public jump host
         run: |
           set -euo pipefail
@@ -95,6 +109,36 @@ jobs:
           ssh public-jump true
           ssh ingestion-private true
 
+      - name: Synchronize protected backup configuration to the server
+        run: |
+          set -euo pipefail
+          umask 077
+          payload="$(mktemp)"
+          remote_payload="/tmp/jurvio-backup-config-${GITHUB_RUN_ID}"
+          trap 'rm -f "$payload"' EXIT
+          printf '%s\n%s\n' "$BACKUP_BUCKET" "$BACKUP_ENCRYPTION_KEY" > "$payload"
+          scp "$payload" "ingestion-private:$remote_payload"
+          ssh ingestion-private bash -s -- "$remote_payload" <<'REMOTE'
+          set -euo pipefail
+          payload="$1"
+          trap 'rm -f "$payload"' EXIT
+          chmod 600 "$payload"
+          IFS= read -r bucket < "$payload"
+          key="$(sed -n '2p' "$payload")"
+          test -n "$bucket" && test -n "$key"
+          cd /opt/jurvio
+          test -s .env.production
+          tmp="$(mktemp)"
+          trap 'rm -f "$payload" "$tmp"' EXIT
+          grep -vE '^JURVIO_BACKUP_(BUCKET|ENCRYPTION_KEY)=' .env.production > "$tmp" || true
+          printf 'JURVIO_BACKUP_BUCKET=%s\nJURVIO_BACKUP_ENCRYPTION_KEY=%s\n' "$bucket" "$key" >> "$tmp"
+          chmod 600 "$tmp"
+          mv "$tmp" .env.production
+          echo "Backup bucket and encryption key synchronized (values not printed)."
+          REMOTE
+          rm -f "$payload"
+          trap - EXIT
+
       - name: Create, upload, and verify the recovery point
         run: |
           set -euo pipefail
@@ -102,9 +146,14 @@ jobs:
           set -euo pipefail
           cd /opt/jurvio
           test -x scripts/backup-production.sh
-          backup_path="$(scripts/backup-production.sh </dev/null | tail -1)"
-          test -s "$backup_path"
-          gzip -t "$backup_path"
+          backup_path="$(find backups -maxdepth 1 -type f -name 'jurvio-*.sql.gz' -mmin -240 -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+          if [ -n "$backup_path" ] && [ -s "$backup_path" ] && gzip -t "$backup_path"; then
+            echo "Reusing the fresh verified local dump: $backup_path"
+          else
+            backup_path="$(scripts/backup-production.sh </dev/null | tail -1)"
+            test -s "$backup_path"
+            gzip -t "$backup_path"
+          fi
           image="$(docker inspect -f '{{.Config.Image}}'             "$(docker ps --filter 'label=com.docker.compose.project=jurvio'                          --filter 'label=com.docker.compose.service=app'                          --format '{{.ID}}' | head -n1)")"
           test -n "$image"
           docker run --rm             --user "$(id -u):$(id -g)"             --env-file .env.production             -v /opt/jurvio/backups:/backups:ro             "$image"             node jobs/upload-database-backup.mjs --file "/backups/$(basename "$backup_path")" </dev/null
