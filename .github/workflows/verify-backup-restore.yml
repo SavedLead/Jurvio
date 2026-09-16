@@ -37,34 +37,89 @@ concurrency:
 
 jobs:
   restore-rehearsal:
-    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 180
     env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
-      DB_HOST: 10.116.0.2
       OBJECT_KEY: ${{ inputs.object_key }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Configure SSH
+      - name: Open a temporary SSH path through the public host
+        run: |
+          set -euo pipefail
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS "${auth[@]}" "$api/droplets?per_page=200")"
+          public="$(jq -c '[.droplets[] | select(.name=="jurvio-public-01")][0] // empty' <<<"$droplets")"
+          ingestion="$(jq -c '[.droplets[] | select(.name=="jurvio-web-01")][0] // empty' <<<"$droplets")"
+          test -n "$public" && test -n "$ingestion"
+          public_id="$(jq -r .id <<<"$public")"
+          public_ip="$(jq -r '.networks.v4[] | select(.type=="public") | .ip_address' <<<"$public")"
+          public_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$public")"
+          ingestion_id="$(jq -r .id <<<"$ingestion")"
+          ingestion_private="$(jq -r '.networks.v4[] | select(.type=="private") | .ip_address' <<<"$ingestion")"
+          firewalls="$(curl -fsS "${auth[@]}" "$api/firewalls?per_page=200")"
+          firewall_id="$(jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
+          ingestion_firewall_id="$(jq -r --argjson id "$ingestion_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))][0].id // empty' <<<"$firewalls")"
+          test -n "$firewall_id" && test -n "$ingestion_firewall_id"
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+          runner_cidr="$runner_ip/32"
+          public_private_cidr="$public_private/32"
+          {
+            echo "PUBLIC_IP=$public_ip"
+            echo "INGESTION_PRIVATE=$ingestion_private"
+            echo "FIREWALL_ID=$firewall_id"
+            echo "INGESTION_FIREWALL_ID=$ingestion_firewall_id"
+            echo "PUBLIC_ID=$public_id"
+            echo "PUBLIC_PRIVATE_CIDR=$public_private_cidr"
+            echo "RUNNER_CIDR=$runner_cidr"
+          } >> "$GITHUB_ENV"
+          public_rule="$(jq -n --arg src "$runner_cidr" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
+          curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$public_rule" >/dev/null
+          private_rule="$(jq -n --arg src "$public_private_cidr" --argjson id "$public_id" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src],droplet_ids:[$id]}}]}')"
+          curl -fsS -X POST "${auth[@]}" "$api/firewalls/$ingestion_firewall_id/rules" -d "$private_rule" >/dev/null
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.4 restore: `█░░░░░░░░░ 10%` Temporary SSH route opened; production database remains untouched.'
+
+      - name: Configure ephemeral SSH
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          cat > ~/.ssh/config <<'CFG'
-          Host *
+          cat > ~/.ssh/config <<EOF
+          Host public-jump
+            HostName $PUBLIC_IP
+            User root
             IdentityFile ~/.ssh/id_ed25519
             BatchMode yes
             ConnectTimeout 15
+            ServerAliveInterval 30
+            ServerAliveCountMax 120
+            TCPKeepAlive yes
             StrictHostKeyChecking accept-new
-          CFG
+          Host ingestion-private
+            HostName $INGESTION_PRIVATE
+            User $INGESTION_USER
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump public-jump
+            BatchMode yes
+            ConnectTimeout 15
+            ServerAliveInterval 30
+            ServerAliveCountMax 120
+            TCPKeepAlive yes
+            StrictHostKeyChecking accept-new
+          EOF
           chmod 600 ~/.ssh/config
+          ssh public-jump true
+          ssh ingestion-private true
 
       - name: Download, decrypt and inspect the newest off-site backup
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" bash -s -- "${OBJECT_KEY:-}" <<'REMOTE'
+          ssh ingestion-private bash -s -- "${OBJECT_KEY:-}" <<'REMOTE'
           set -euo pipefail
           object_key="${1:-}"
           cd /opt/jurvio
@@ -95,7 +150,7 @@ jobs:
       - name: Restore into a throwaway postgres and count the corpus
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          ssh ingestion-private bash -s <<'REMOTE'
           set -euo pipefail
           # Distinct name and NO published port: this container is unreachable
           # from outside the box and shares nothing with the production stack.
@@ -141,7 +196,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          ssh ingestion-private bash -s <<'REMOTE'
           set -euo pipefail
           # -v also removes the anonymous volume the scratch container created,
           # so a rehearsal never leaves a copy of the corpus on the box.
@@ -156,3 +211,19 @@ jobs:
           GATE_STATUS: ${{ job.status }}
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" --title "Phase 1.4 restore [$GATE_STATUS]" --body "Status: **$GATE_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Remove temporary SSH access
+        if: always()
+        run: |
+          set +e
+          api=https://api.digitalocean.com/v2
+          if [ -n "${FIREWALL_ID:-}" ] && [ -n "${RUNNER_CIDR:-}" ]; then
+            public_rule="$(jq -n --arg src "$RUNNER_CIDR" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
+            curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$FIREWALL_ID/rules" -d "$public_rule"
+          fi
+          if [ -n "${INGESTION_FIREWALL_ID:-}" ] && [ -n "${PUBLIC_PRIVATE_CIDR:-}" ] && [ -n "${PUBLIC_ID:-}" ]; then
+            private_rule="$(jq -n --arg src "$PUBLIC_PRIVATE_CIDR" --argjson id "$PUBLIC_ID" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src],droplet_ids:[$id]}}]}')"
+            curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$INGESTION_FIREWALL_ID/rules" -d "$private_rule"
+          fi
+          rm -f ~/.ssh/id_ed25519 ~/.ssh/config
+          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body "1.4 hosted restore finished with status: **${{ job.status }}**. Scratch data and temporary SSH access cleanup attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
