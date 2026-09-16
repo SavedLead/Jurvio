@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import "./globals.css";
 import "./scotus-layout.css";
+import { robotsFor } from "@/lib/seo/indexing";
 import { PrivacySafeAnalytics } from "./privacy-safe-analytics";
 
 const primaryNavigation = [
@@ -24,16 +25,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.SITE_URL ?? "https://jurvio.com"),
   title: { default: "Jurvio | Public Legal Intelligence", template: "%s | Jurvio" },
   description: "Public litigation made searchable, understandable, and connected.",
-  robots: {
-    index: false,
-    follow: false,
-    nocache: true,
-    googleBot: {
-      index: false,
-      follow: false,
-      noimageindex: true,
-    },
-  },
+  robots: robotsFor(true),
   icons: { icon: "/brand/jurvio-icon-light.svg", shortcut: "/brand/jurvio-icon-light.svg", apple: "/brand/jurvio-icon-light.svg" },
 };
 
