@@ -8,7 +8,6 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: "/internal/heartbeat", destination: "/heartbeat", permanent: true },
-      { source: "/in/heartbeat", destination: "/heartbeat", permanent: true },
     ];
   },
 };
