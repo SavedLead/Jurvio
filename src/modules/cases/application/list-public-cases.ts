@@ -14,7 +14,7 @@ interface PublicCaseRow {
   hasPublicDocument: boolean;
 }
 
-interface CourtFacet {
+export interface CourtFacet {
   value: string;
   label: string;
   count: number;
@@ -25,6 +25,25 @@ interface ListPublicCasesOptions {
   pageSize: number;
   court?: string;
   query?: string;
+}
+
+export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
+  return sql<CourtFacet[]>`
+    SELECT court.public_id AS value, court.name AS label, count(*)::int AS count
+    FROM legal_case
+    JOIN court ON court.id = legal_case.court_id
+    WHERE legal_case.publication = 'published'
+      AND COALESCE((
+        SELECT decision.displayable
+        FROM publication_decision decision
+        WHERE decision.object_type = 'legal_case'
+          AND decision.object_id = legal_case.id
+        ORDER BY decision.decided_at DESC, decision.id DESC
+        LIMIT 1
+      ), false)
+    GROUP BY court.id, court.public_id, court.name
+    ORDER BY count DESC, court.name
+  `;
 }
 
 export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions) {
@@ -64,7 +83,7 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
     )
   `;
 
-  const [totals, cases, courts] = await Promise.all([
+  const [totals, cases] = await Promise.all([
     sql<Array<{ total: number }>>`
       SELECT count(*)::int AS total
       FROM legal_case
@@ -107,19 +126,10 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
         legal_case.caption, legal_case.id
       LIMIT ${pageSize} OFFSET ${offset}
     `,
-    sql<CourtFacet[]>`
-      SELECT court.public_id AS value, court.name AS label, count(*)::int AS count
-      FROM legal_case
-      JOIN court ON court.id = legal_case.court_id
-      WHERE ${publicationGate}
-      GROUP BY court.id, court.public_id, court.name
-      ORDER BY count DESC, court.name
-    `,
   ]);
 
   return {
     cases,
-    courts,
     total: totals[0]?.total ?? 0,
     page,
     pageSize,
