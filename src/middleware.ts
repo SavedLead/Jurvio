@@ -31,8 +31,8 @@ function isFrameworkOrAssetPath(pathname: string) {
     pathname === "/favicon.ico" || /\.[^/]+$/.test(pathname);
 }
 function legacyCommandCenterPath(pathname: string) {
-  if (pathname === "/internal") return "/in";
-  if (pathname.startsWith("/internal/")) return `/in${pathname.slice("/internal".length)}`;
+  if (pathname === "/internal") return "/";
+  if (pathname.startsWith("/internal/")) return pathname.slice("/internal".length);
   return null;
 }
 
@@ -59,15 +59,15 @@ export function middleware(request: NextRequest) {
       return withLockdownHeaders(NextResponse.redirect(redirectUrl, 308));
     }
     if (pathname === "/in" || pathname.startsWith("/in/")) {
-      const rewriteUrl = request.nextUrl.clone();
-      const suffix = pathname.slice("/in".length);
-      rewriteUrl.pathname = suffix ? `/internal${suffix}` : "/internal";
-      return commandCenterResponse(NextResponse.rewrite(rewriteUrl));
+      const redirectUrl = request.nextUrl.clone();
+      redirectUrl.pathname = pathname === "/in" ? "/" : pathname.slice("/in".length);
+      return commandCenterResponse(NextResponse.redirect(redirectUrl, 308));
     }
     if (
       pathname === "/login" ||
       pathname === "/change-password" ||
       pathname.startsWith("/api/internal-auth/") ||
+      pathname === "/heartbeat" ||
       isFrameworkOrAssetPath(pathname)
     ) return withLockdownHeaders(NextResponse.next());
 
