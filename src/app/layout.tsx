@@ -19,7 +19,7 @@ const footerNavigation = [
   { title: "Research", links: [["Cases", "/cases"], ["Search", "/search"], ["Supreme Court", "/supreme-court"], ["Government litigation", "/government-litigation"]] },
   { title: "People & institutions", links: [["Parties", "/parties"], ["Attorneys", "/attorneys"], ["Law firms", "/law-firms"], ["Judges", "/judges"], ["Courts", "/courts"]] },
   { title: "Learn", links: [["Legal explainers", "/explainers"], ["Legal procedure", "/explainers"], ["Jurisdiction", "/explainers"], ["Glossary", "/explainers"]] },
-  { title: "Data & trust", links: [["Coverage", "/coverage"], ["Sources & methodology", "/methodology"], ["Editorial standards", "/editorial-standards"], ["Public-records policy", "/public-records-policy"], ["Sitemap", "/sitemap.xml"]] },
+  { title: "Data & trust", links: [["Coverage", "/coverage"], ["Sources & methodology", "/methodology"], ["Editorial standards", "/editorial-standards"], ["Public-records policy", "/public-records-policy"], ["Privacy", "/privacy"], ["Terms", "/terms"], ["Contact", "/contact"], ["Corrections", "/corrections"], ["Sitemap", "/sitemap.xml"]] },
 ] as const;
 
 export const metadata: Metadata = {

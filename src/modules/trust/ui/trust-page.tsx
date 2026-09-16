@@ -41,6 +41,10 @@ export function TrustPage({
           <Link href={"/methodology" as Route}>Methodology</Link>
           <Link href={"/editorial-standards" as Route}>Editorial standards</Link>
           <Link href={"/public-records-policy" as Route}>Public-records policy</Link>
+          <Link href={"/corrections" as Route}>Corrections</Link>
+          <Link href={"/privacy" as Route}>Privacy</Link>
+          <Link href={"/terms" as Route}>Terms</Link>
+          <Link href={"/contact" as Route}>Contact</Link>
         </aside>
         <article>
           {children}
