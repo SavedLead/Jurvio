@@ -33,6 +33,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en"><body>
+      <a className="skipLink" href="#main-content">Skip to main content</a>
       <PrivacySafeAnalytics />
       <header className="siteHeader">
         <Link className="brand" href="/" aria-label="Jurvio home">
@@ -44,7 +45,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         </nav>
         <MobileNavigation items={primaryNavigation} />
       </header>
-      {children}
+      <div id="main-content">{children}</div>
       <footer className="siteFooter">
         <div className="footerIntro">
           <Link className="brand footerBrand" href="/" aria-label="Jurvio home">
