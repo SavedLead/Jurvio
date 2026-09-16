@@ -36,6 +36,18 @@ function legacyCommandCenterPath(pathname: string) {
   return null;
 }
 
+function isPrivatePublicHostPath(pathname: string) {
+  return [
+    "/login",
+    "/change-password",
+    "/internal",
+    "/in",
+    "/heartbeat",
+    "/preview",
+  ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)) ||
+    pathname.startsWith("/api/internal-auth/");
+}
+
 export function middleware(request: NextRequest) {
   const hosts = requestHosts(request);
   const { pathname } = request.nextUrl;
@@ -64,11 +76,7 @@ export function middleware(request: NextRequest) {
     return commandCenterResponse(NextResponse.rewrite(rewriteUrl));
   }
 
-  if ([...hosts].some((host) => PUBLIC_HOSTS.has(host)) && (
-    pathname === "/login" || pathname === "/change-password" ||
-    pathname.startsWith("/api/internal-auth/") ||
-    pathname === "/internal" || pathname.startsWith("/internal/")
-  )) {
+  if ([...hosts].some((host) => PUBLIC_HOSTS.has(host)) && isPrivatePublicHostPath(pathname)) {
     return new NextResponse(null, {
       status: 404,
       headers: { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow, noarchive" },
