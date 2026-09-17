@@ -14,7 +14,7 @@ export default function CorrectionsPage() {
     introduction="Jurvio reviews specific, documented concerns about factual accuracy, identity, privacy, sealing, and publication status."
     sections={[
       { title: "What to send", paragraphs: [
-        "Email legal-records@jurvio.com with the exact Jurvio URL, the specific statement or field at issue, the correction you believe is required, and an authoritative source supporting the request.",
+        "Email legal@jurvio.com with the exact Jurvio URL, the specific statement or field at issue, the correction you believe is required, and an authoritative source supporting the request.",
         "Helpful sources include an official docket entry, court order, corrected opinion, source-agency page, or identity documentation limited to what is necessary. Please redact unrelated sensitive information.",
       ]},
       { title: "How Jurvio reviews requests", paragraphs: [
