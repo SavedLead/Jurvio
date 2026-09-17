@@ -27,7 +27,7 @@ jobs:
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
-      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+      IMAGE: ghcr.io/savedlead/jurvio:${{ github.sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
