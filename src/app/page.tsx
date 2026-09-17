@@ -64,6 +64,7 @@ const audienceItems = [
   ["The public", "Read court activity in clear language without removing the legal context.", "/explainers"],
 ] as const;
 
+export const dynamic = "force-dynamic";
 export const revalidate = 300;
 
 const loadRecentlyUpdated = unstable_cache(
