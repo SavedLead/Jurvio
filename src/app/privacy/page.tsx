@@ -23,11 +23,11 @@ export default function PrivacyPage() {
       ]},
       { title: "Public legal records", paragraphs: [
         "Court records and related public-source information appearing on Jurvio are publication content, not visitor-tracking data. Jurvio applies separate sourcing, verification, privacy, correction, restriction, and suppression controls to that material.",
-        "To request a correction or raise a privacy concern about published material, email legal-records@jurvio.com with the Jurvio URL and supporting documentation.",
+        "To request a correction or raise a privacy concern about published material, email legal@jurvio.com with the Jurvio URL and supporting documentation.",
       ]},
       { title: "Retention and requests", paragraphs: [
         "Jurvio retains operational, security, correspondence, and analytics information only as reasonably needed for the purpose collected, legal obligations, dispute resolution, and protection of the service.",
-        "Questions and privacy requests may be sent to legal-records@jurvio.com. This policy is effective September 16, 2026 and may be updated as Jurvio adds accounts, payments, or other features.",
+        "Questions and privacy requests may be sent to legal@jurvio.com. This policy is effective September 16, 2026 and may be updated as Jurvio adds accounts, payments, or other features.",
       ]},
     ]}
   />;
