@@ -1,1 +1,1 @@
-Deploy corrected government case captions from PRs #418 and #419.
+Deploy generalized numeric government case caption cleanup from PR #461.
