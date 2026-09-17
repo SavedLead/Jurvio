@@ -120,7 +120,11 @@ jobs:
           payload="$(mktemp)"
           remote_payload="/tmp/jurvio-backup-config-${GITHUB_RUN_ID}"
           trap 'rm -f "$payload"' EXIT
-          printf '%s\n%s\n' "$BACKUP_BUCKET" "$BACKUP_ENCRYPTION_KEY" > "$payload"
+          printf '%s\n%s\n%s\n%s\n' \
+            "$BACKUP_BUCKET" \
+            "$BACKUP_ENCRYPTION_KEY" \
+            "$BACKUP_ACCESS_KEY_ID" \
+            "$BACKUP_SECRET_ACCESS_KEY" > "$payload"
           scp "$payload" "ingestion-private:$remote_payload"
           ssh ingestion-private bash -s -- "$remote_payload" <<'REMOTE'
           set -euo pipefail
@@ -137,8 +141,9 @@ jobs:
           test -s .env.production
           tmp="$(mktemp)"
           trap 'rm -f "$payload" "$tmp"' EXIT
-          grep -vE '^JURVIO_BACKUP_(BUCKET|ENCRYPTION_KEY)=' .env.production > "$tmp" || true
-          printf 'JURVIO_BACKUP_BUCKET=%s\nJURVIO_BACKUP_ENCRYPTION_KEY=%s\n' "$bucket" "$key" >> "$tmp"
+          grep -vE '^JURVIO_BACKUP_(BUCKET|ENCRYPTION_KEY|ACCESS_KEY_ID|SECRET_ACCESS_KEY)=' .env.production > "$tmp" || true
+          printf 'JURVIO_BACKUP_BUCKET=%s\nJURVIO_BACKUP_ENCRYPTION_KEY=%s\nJURVIO_BACKUP_ACCESS_KEY_ID=%s\nJURVIO_BACKUP_SECRET_ACCESS_KEY=%s\n' \
+            "$bucket" "$key" "$access_key_id" "$secret_access_key" >> "$tmp"
           chmod 600 "$tmp"
           mv "$tmp" .env.production
           echo "Dedicated backup bucket credentials and encryption key synchronized (values not printed)."
