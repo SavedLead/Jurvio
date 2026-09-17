@@ -187,6 +187,16 @@ jobs:
             }
           }
 
+          # Populate application/data caches after the container restart so the
+          # timed checks represent visitor traffic, not one-time startup work.
+          warm_route() {
+            curl -fsS -o /dev/null --retry 2 --retry-delay 2 --max-time 45 "$1"
+          }
+          warm_route https://jurvio.com/
+          warm_route https://jurvio.com/cases
+          warm_route https://jurvio.com/coverage
+          warm_route 'https://jurvio.com/search?q=Trump%20v.%20Slaughter'
+
           check_route Homepage https://jurvio.com/ 10
           check_route Cases https://jurvio.com/cases 10
           check_route Coverage https://jurvio.com/coverage 10
