@@ -1,0 +1,34 @@
+name: Google Search Console sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_run:
+    workflows: ["Deploy public web via hosted runner"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-search-console-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOOGLE_SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON }}
+      GSC_SITE_URL: ${{ vars.GSC_SITE_URL }}
+      GSC_SITEMAP_URL: ${{ vars.GSC_SITEMAP_URL }}
+      GSC_INSPECTION_URLS: ${{ vars.GSC_INSPECTION_URLS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Submit sitemap and inspect launch URLs
+        run: node scripts/sync-google-search-console.mjs
