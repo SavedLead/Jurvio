@@ -26,7 +26,7 @@ export default function TermsPage() {
         "The service is provided as available without a promise that every record, court, feature, or page will always be complete, current, uninterrupted, or error-free.",
       ]},
       { title: "Requests and updates", paragraphs: [
-        "Report an error, privacy concern, or rights issue to legal-records@jurvio.com and include the relevant Jurvio URL and supporting information.",
+        "Report an error, privacy concern, or rights issue to legal@jurvio.com and include the relevant Jurvio URL and supporting information.",
         "These terms are effective September 16, 2026. Jurvio may update them as the service develops, including before accounts, subscriptions, or paid features are introduced.",
       ]},
     ]}
