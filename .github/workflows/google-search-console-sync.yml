@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: google-search-console-sync
@@ -21,14 +22,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      GOOGLE_SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON }}
+      GCP_SERVICE_ACCOUNT: jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com
       GSC_SITE_URL: ${{ vars.GSC_SITE_URL }}
       GSC_SITEMAP_URL: ${{ vars.GSC_SITEMAP_URL }}
       GSC_INSPECTION_URLS: ${{ vars.GSC_INSPECTION_URLS }}
     steps:
       - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        id: google-auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/936072370485/locations/global/workloadIdentityPools/github-actions/providers/jurvio
+          service_account: jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com
+          access_token_scopes: https://www.googleapis.com/auth/webmasters
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Submit sitemap and inspect launch URLs
+      - name: Verify connection, submit sitemap, and inspect launch URLs
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
         run: node scripts/sync-google-search-console.mjs
