@@ -1,6 +1,7 @@
 import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { headers } from "next/headers";
+import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { listOpinionSearchFacets, normalizeOpinionSearchFilters, searchPublicOpinions } from "@/modules/search/application/search-public-opinions";
@@ -17,10 +18,21 @@ function cleanExcerpt(value:string){return value.replaceAll(/<[^>]*>/g, "");}
 function label(value:string){return value.replace(/^\d{3}-/,"").replaceAll("-"," ");}
 function pageHref(params:Params,page:number){const next=new URLSearchParams();for(const [key,value] of Object.entries(params)){if(value&&key!=="page")next.set(key,value);}next.set("page",String(page));return `/search?${next}` as Route;}
 
+const loadCachedSearch = unstable_cache(
+  async (filters: ReturnType<typeof normalizeOpinionSearchFilters>) => searchPublicOpinions(db(), filters),
+  ["public-opinion-search"],
+  { revalidate: 300 },
+);
+const loadCachedFacets = unstable_cache(
+  async () => listOpinionSearchFacets(db()),
+  ["public-opinion-search-facets"],
+  { revalidate: 300 },
+);
+
 export default async function SearchPage({ searchParams }:{searchParams:Promise<Params>}) {
   const raw=await searchParams; const filters=normalizeOpinionSearchFilters(raw);
   const active=filters.query.length>=2||Boolean(filters.court||filters.dateFrom||filters.dateTo||filters.precedentialStatus||filters.opinionType);
-  const [response,facets]=await Promise.all([searchPublicOpinions(db(),filters),listOpinionSearchFacets(db())]);
+  const [response,facets]=await Promise.all([loadCachedSearch(filters),loadCachedFacets()]);
   if(active){const requestHeaders=await headers();await recordDemandEvent(db(),{eventType:"internal_search",userAgent:requestHeaders.get("user-agent"),referrer:requestHeaders.get("referer"),path:"/search",contentKind:"search",rawSearchQuery:filters.query,resultCount:response.total});}
   const pages=Math.max(1,Math.ceil(response.total/response.pageSize));
   return <main className={styles.page}><div className={styles.inner}>
