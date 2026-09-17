@@ -16,15 +16,17 @@ describe("branded case captions", () => {
     expect(cleanCaseCaption("Landor v. Louisiana Revised: 6/28/2026")).toBe("Landor v. Louisiana");
   });
 
-  it("removes a malformed leading one from government captions", () => {
+  it("removes malformed leading sequence numbers from government captions", () => {
     expect(cleanCaseCaption("1USA v. ESTRADA-CARRILLO et al")).toBe("USA v. ESTRADA-CARRILLO et al");
     expect(cleanCaseCaption("1 USA v. IBOBO")).toBe("USA v. IBOBO");
+    expect(cleanCaseCaption("7 USA v. Luna et al")).toBe("USA v. Luna et al");
     expect(cleanCaseCaption("1United States v. IBOBO")).toBe("United States v. IBOBO");
   });
 
   it("preserves legitimate leading numbers", () => {
     expect(cleanCaseCaption("1-800 Contacts, Inc. v. Lens.com, Inc.")).toBe("1-800 Contacts, Inc. v. Lens.com, Inc.");
     expect(cleanCaseCaption("1USA Holdings v. Example Corp.")).toBe("1USA Holdings v. Example Corp.");
+    expect(cleanCaseCaption("7 USA Holdings v. Example Corp.")).toBe("7 USA Holdings v. Example Corp.");
   });
 
   it("normalizes repeated whitespace and preserves ordinary captions", () => {
