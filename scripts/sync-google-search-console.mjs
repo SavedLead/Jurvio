@@ -35,7 +35,7 @@ console.log(`Search Console connection verified for ${siteUrl} as ${serviceAccou
 
 const robots = await fetch("https://jurvio.com/robots.txt");
 const robotsText = robots.ok ? await robots.text() : "";
-if (!robots.ok || /Disallow:\\s*\\/\\s*$/im.test(robotsText)) {
+if (!robots.ok || /Disallow:\s*\/\s*$/im.test(robotsText)) {
   console.log("Jurvio is still pre-launch/noindex; sitemap submission and URL inspection skipped safely.");
   process.exit(0);
 }
