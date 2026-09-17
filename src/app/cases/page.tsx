@@ -6,6 +6,7 @@ import { listPublicCaseCourts, listPublicCases } from "@/modules/cases/applicati
 import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import styles from "./cases.module.css";
 
+export const dynamic = "force-dynamic";
 export const revalidate = 300;
 
 const listCachedPublicCases = unstable_cache(
