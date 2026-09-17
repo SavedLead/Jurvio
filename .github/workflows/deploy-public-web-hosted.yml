@@ -174,7 +174,13 @@ jobs:
           done
           [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
           local_robots="$(curl -fsS -H 'Host: jurvio.com' http://127.0.0.1:3000/robots.txt)"
-          if grep -Eq '^JURVIO_PUBLIC_LAUNCH=true"$(cat .previous-public-image)"
+          if grep -Eq '^JURVIO_PUBLIC_LAUNCH=true$' .env.production; then
+            printf '%s' "$local_robots" | grep -Fq 'Allow: /'
+            printf '%s' "$local_robots" | grep -Fq 'Sitemap: https://jurvio.com/sitemap.xml'
+          else
+            printf '%s' "$local_robots" | grep -Fq 'Disallow: /'
+          fi
+          rollback_image="$(cat .previous-public-image)"
           test -n "$rollback_image"
           docker image inspect "$rollback_image" >/dev/null
           printf 'ROLLBACK_READY=%s\n' "$rollback_image"
@@ -257,95 +263,6 @@ jobs:
           summary="$(while IFS='|' read -r name code ttfb total; do printf '%s: HTTP %s, %ss total; ' "$name" "$code" "$total"; done < "$results")"
           gh issue comment 426 --repo "$GITHUB_REPOSITORY" \
             --body "1.6/2.6 live gate passed. $summary Indexing is $INDEXING_STATUS."
-
-      - name: Remove temporary SSH access
-        if: always()
-        run: |
-          set +e
-          api=https://api.digitalocean.com/v2
-          if [ -n "${FIREWALL_ID:-}" ] && [ -n "${RUNNER_CIDR:-}" ]; then
-            rule="$(jq -n --arg src "$RUNNER_CIDR" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
-            curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$FIREWALL_ID/rules" -d "$rule"
-          fi
-          rm -f ~/.ssh/id_ed25519 ~/.ssh/config
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body "2.6 deploy fallback finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
- .env.production; then
-            printf '%s' "$local_robots" | grep -Fq 'Allow: /'
-            printf '%s' "$local_robots" | grep -Fq 'Sitemap: https://jurvio.com/sitemap.xml'
-          else
-            printf '%s' "$local_robots" | grep -Fq 'Disallow: /'
-          fi
-          rollback_image="$(cat .previous-public-image)"
-          test -n "$rollback_image"
-          docker image inspect "$rollback_image" >/dev/null
-          printf 'ROLLBACK_READY=%s\n' "$rollback_image"
-          REMOTE
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY" \
-            --body '1.5 rollback readiness: previous public image recorded and retained locally; new container health and noindex verified.'
-
-      - name: Verify public and private boundaries externally
-        run: |
-          set -euo pipefail
-          curl -fsS --retry 12 --retry-delay 5 --max-time 30 https://jurvio.com/robots.txt |
-            grep -Fq 'Disallow: /'
-          login_body="$(curl -fsS --retry 12 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
-          printf '%s' "$login_body" | grep -Fiq 'PRIVATE COMMAND CENTER'
-          public_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://jurvio.com/login)"
-          test "$public_status" = 404
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body '2.6 deploy fallback: current main deployed to jurvio.com; noindex and public/private route boundaries verified.'
-
-      - name: Verify launch routes and performance
-        run: |
-          set -euo pipefail
-          results="$(mktemp)"
-          trap 'rm -f "$results"' EXIT
-
-          check_route() {
-            name="$1"
-            url="$2"
-            limit="$3"
-            metrics="$(curl -sS -o /dev/null --retry 2 --retry-delay 2 --max-time 30 \
-              -w '%{http_code} %{time_starttransfer} %{time_total}' "$url")"
-            read -r code ttfb total <<<"$metrics"
-            printf '%s|%s|%s|%s\n' "$name" "$code" "$ttfb" "$total" >> "$results"
-            test "$code" = 200 || {
-              echo "::error::$name returned HTTP $code"
-              return 1
-            }
-            awk -v value="$total" -v ceiling="$limit" 'BEGIN { exit !(value <= ceiling) }' || {
-              echo "::error::$name took ${total}s; launch ceiling is ${limit}s"
-              return 1
-            }
-          }
-
-          # Populate application/data caches after the container restart so the
-          # timed checks represent visitor traffic, not one-time startup work.
-          warm_route() {
-            curl -fsS -o /dev/null --retry 2 --retry-delay 2 --max-time 45 "$1"
-          }
-          warm_route https://jurvio.com/
-          warm_route https://jurvio.com/cases
-          warm_route https://jurvio.com/coverage
-          warm_route 'https://jurvio.com/search?q=Trump%20v.%20Slaughter'
-
-          check_route Homepage https://jurvio.com/ 10
-          check_route Cases https://jurvio.com/cases 10
-          check_route Coverage https://jurvio.com/coverage 10
-          check_route Search 'https://jurvio.com/search?q=Trump%20v.%20Slaughter' 15
-
-          {
-            echo '### Live health and performance gate'
-            echo ''
-            echo '| Route | HTTP | TTFB | Total |'
-            echo '|---|---:|---:|---:|'
-            while IFS='|' read -r name code ttfb total; do
-              printf '| %s | %s | %ss | %ss |\n' "$name" "$code" "$ttfb" "$total"
-            done < "$results"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          summary="$(while IFS='|' read -r name code ttfb total; do printf '%s: HTTP %s, %ss total; ' "$name" "$code" "$total"; done < "$results")"
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY" \
-            --body "1.6/2.6 live gate passed. $summary Indexing remains disabled."
 
       - name: Remove temporary SSH access
         if: always()
