@@ -18,7 +18,7 @@ export async function generateMetadata({ params }: SectionPageProps): Promise<Me
   if (!legalCase) return { title: "Parties not found" };
   const caption = cleanCaseCaption(legalCase.caption);
   return {
-    title: `Parties for ${caption}`,
+    title: [caption, "Parties", legalCase.docketNumber, legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified parties currently available for ${caption}, docket ${legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${caseId}/parties` },
   };

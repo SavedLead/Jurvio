@@ -30,7 +30,12 @@ export async function countPublicSitemapRecords(sql: Sql) {
     governmentLitigation: number;
   }[]>`
     SELECT
-      (SELECT count(*)::int * 5 FROM legal_case
+      (SELECT COALESCE(sum(
+          1
+          + CASE WHEN EXISTS (SELECT 1 FROM docket_entry WHERE docket_entry.case_id = legal_case.id) THEN 2 ELSE 0 END
+          + CASE WHEN EXISTS (SELECT 1 FROM document WHERE document.case_id = legal_case.id AND document.publication = 'published') THEN 1 ELSE 0 END
+          + CASE WHEN EXISTS (SELECT 1 FROM party_appearance WHERE party_appearance.case_id = legal_case.id) THEN 1 ELSE 0 END
+        ), 0)::int FROM legal_case
         WHERE ${sql.unsafe(indexableCase)}
       ) AS cases,
       (SELECT count(*)::int FROM document
@@ -111,11 +116,24 @@ export async function listCaseSitemapRecords(sql: Sql, page: number) {
     SELECT '/case/' || eligible.public_id || suffix.value AS path,
       eligible.updated_at::text AS "updatedAt"
     FROM (
-      SELECT legal_case.public_id, legal_case.updated_at
+      SELECT legal_case.id, legal_case.public_id, legal_case.updated_at
       FROM legal_case
       WHERE ${sql.unsafe(indexableCase)}
     ) eligible
-    CROSS JOIN (VALUES (''), ('/docket'), ('/documents'), ('/parties'), ('/timeline')) AS suffix(value)
+    CROSS JOIN LATERAL (
+      SELECT value
+      FROM (VALUES
+        ('', true),
+        ('/docket', EXISTS (SELECT 1 FROM docket_entry WHERE docket_entry.case_id = eligible.id)),
+        ('/timeline', EXISTS (SELECT 1 FROM docket_entry WHERE docket_entry.case_id = eligible.id)),
+        ('/documents', EXISTS (
+          SELECT 1 FROM document
+          WHERE document.case_id = eligible.id AND document.publication = 'published'
+        )),
+        ('/parties', EXISTS (SELECT 1 FROM party_appearance WHERE party_appearance.case_id = eligible.id))
+      ) AS candidate(value, has_content)
+      WHERE has_content
+    ) suffix
     ORDER BY eligible.public_id, suffix.value
     LIMIT ${SITEMAP_PAGE_SIZE} OFFSET ${(page - 1) * SITEMAP_PAGE_SIZE}
   `;

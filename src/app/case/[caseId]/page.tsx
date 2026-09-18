@@ -34,6 +34,9 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
   const loaded = await loadCase(params);
   if (!loaded) return { title: "Case not found" };
   const caption = cleanCaseCaption(loaded.legalCase.caption);
+  const title = [caption, "Case", loaded.legalCase.docketNumber, loaded.legalCase.courtName]
+    .filter(Boolean)
+    .join(" | ");
   const description = [
     caption,
     loaded.legalCase.courtName,
@@ -44,10 +47,10 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     loaded.legalCase.officialCitation,
   ].filter(Boolean).join(". ");
   return {
-    title: caption,
+    title,
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
-    openGraph: { title: caption, description, type: "article" },
+    openGraph: { title, description, type: "article" },
   };
 }
 

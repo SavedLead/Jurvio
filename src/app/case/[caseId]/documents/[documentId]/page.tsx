@@ -27,12 +27,19 @@ export async function generateMetadata({ params }: OpinionPageProps): Promise<Me
   const opinion = await load(params);
   if (!opinion) return { title: "Opinion not found" };
   const caption = cleanCaseCaption(opinion.caseCaption);
+  const title = [
+    caption,
+    "Judicial Opinion",
+    opinion.officialCitation ?? opinion.filedOn ?? opinion.title,
+    opinion.docketNumber,
+    opinion.courtName,
+  ].filter(Boolean).join(" | ");
   const description = opinion.contentText.replace(/\s+/g, " ").trim().slice(0, 155);
   return {
-    title: `${caption} — Judicial Opinion`,
+    title,
     description,
     alternates: { canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` },
-    openGraph: { title: `${caption} — Judicial Opinion`, description, type: "article" },
+    openGraph: { title, description, type: "article" },
     robots: robotsFor(opinion.indexable),
   };
 }
