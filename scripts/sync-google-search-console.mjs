@@ -21,6 +21,30 @@ async function google(url, init = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+async function fetchXml(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Sitemap fetch failed: ${response.status} ${url}`);
+  return response.text();
+}
+
+async function countSitemapUrls(indexUrl) {
+  const indexXml = await fetchXml(indexUrl);
+  const childUrls = [...indexXml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) =>
+    match[1].replaceAll("&amp;", "&"),
+  );
+  if (!/<sitemapindex\b/.test(indexXml)) {
+    return { childSitemaps: 0, urls: (indexXml.match(/<url>/g) || []).length };
+  }
+
+  let urls = 0;
+  for (let offset = 0; offset < childUrls.length; offset += 10) {
+    const batch = childUrls.slice(offset, offset + 10);
+    const children = await Promise.all(batch.map(fetchXml));
+    urls += children.reduce((total, xml) => total + (xml.match(/<url>/g) || []).length, 0);
+  }
+  return { childSitemaps: childUrls.length, urls };
+}
+
 if (!token) {
   throw new Error("Google Workload Identity authentication did not provide an access token.");
 }
@@ -40,6 +64,7 @@ if (!robots.ok || /Disallow:\s*\/\s*$/im.test(robotsText)) {
   process.exit(0);
 }
 
+const sitemapCount = await countSitemapUrls(sitemapUrl);
 const encodedSite = encodeURIComponent(siteUrl);
 const encodedSitemap = encodeURIComponent(sitemapUrl);
 
@@ -68,6 +93,8 @@ console.log(JSON.stringify({
   siteUrl,
   sitemap: {
     path: sitemap?.path ?? sitemapUrl,
+    childSitemaps: sitemapCount.childSitemaps,
+    submittedUrls: sitemapCount.urls,
     lastSubmitted: sitemap?.lastSubmitted ?? null,
     lastDownloaded: sitemap?.lastDownloaded ?? null,
     pending: sitemap?.isPending ?? null,
