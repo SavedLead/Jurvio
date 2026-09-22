@@ -58,6 +58,24 @@ jobs:
             --format '{{.ID}}' | head -n1)"
           [ -n "$pg" ] || { echo "::error::no running jurvio postgres container on ingestion box"; exit 1; }
 
+          echo "=== Jurvio traffic snapshot (read-only, Eastern time) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York'; SELECT jsonb_pretty(jsonb_build_object(
+            'checked_at', now(),
+            'first_event_at', (SELECT min(occurred_at) FROM demand_event),
+            'total_events_all_time', (SELECT count(*) FROM demand_event),
+            'human_events_all_time', (SELECT count(*) FROM demand_event WHERE visitor_class = 'human'),
+            'human_content_views_all_time', (SELECT count(*) FROM demand_event WHERE visitor_class = 'human' AND event_type IN ('page_view','document_view')),
+            'human_searches_all_time', (SELECT count(*) FROM demand_event WHERE visitor_class = 'human' AND event_type = 'internal_search'),
+            'machine_events_all_time', (SELECT count(*) FROM demand_event WHERE visitor_class <> 'human'),
+            'human_events_24h', (SELECT count(*) FROM demand_event WHERE visitor_class = 'human' AND occurred_at > now() - interval '24 hours'),
+            'human_content_views_24h', (SELECT count(*) FROM demand_event WHERE visitor_class = 'human' AND event_type IN ('page_view','document_view') AND occurred_at > now() - interval '24 hours'),
+            'machine_events_24h', (SELECT count(*) FROM demand_event WHERE visitor_class <> 'human' AND occurred_at > now() - interval '24 hours'),
+            'distinct_pages_viewed_by_humans', (SELECT count(DISTINCT path_template) FROM demand_event WHERE visitor_class = 'human' AND event_type IN ('page_view','document_view')),
+            'search_bot_events', (SELECT count(*) FROM demand_event WHERE visitor_class = 'search_bot'),
+            'ai_bot_events', (SELECT count(*) FROM demand_event WHERE visitor_class = 'ai_bot'),
+            'agent_api_events', (SELECT count(*) FROM demand_event WHERE visitor_class IN ('agent','api'))
+          ));"
+
           echo "=== Headline corpus snapshot (read-only, Eastern time) ==="
           sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York'; SELECT json_build_object(
             'checked_at', now(),
