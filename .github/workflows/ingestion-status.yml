@@ -9,6 +9,8 @@ name: Ingestion status (read-only, VPC route)
 
 on:
   workflow_dispatch: {}
+  push:
+    branches: [codex/read-traffic-20260922]
 
 permissions:
   contents: read
