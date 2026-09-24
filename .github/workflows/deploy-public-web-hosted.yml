@@ -243,11 +243,16 @@ jobs:
           warm_route https://jurvio.com/
           warm_route https://jurvio.com/cases
           warm_route https://jurvio.com/coverage
+          # Build the cached sitemap count before Googlebot reaches the new container.
+          sitemap_index="$(curl -fsS --retry 2 --retry-delay 3 --max-time 120 https://jurvio.com/sitemap.xml)"
+          printf '%s' "$sitemap_index" | grep -Fq '<sitemapindex'
+          printf '%s' "$sitemap_index" | grep -Fq 'https://jurvio.com/sitemaps/static.xml'
           warm_route 'https://jurvio.com/search?q=Trump%20v.%20Slaughter'
 
           check_route Homepage https://jurvio.com/ 10
           check_route Cases https://jurvio.com/cases 10
           check_route Coverage https://jurvio.com/coverage 10
+          check_route Sitemap https://jurvio.com/sitemap.xml 10
           check_route Search 'https://jurvio.com/search?q=Trump%20v.%20Slaughter' 15
 
           {
