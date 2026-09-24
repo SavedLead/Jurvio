@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
 import {
@@ -9,6 +10,14 @@ import { xmlEscape, xmlResponse } from "@/modules/discovery/http/xml";
 
 export const dynamic = "force-dynamic";
 
+// The counts query scans the published corpus. Reuse a snapshot across crawler
+// requests; the sitemap can safely lag publication by up to fifteen minutes.
+const cachedCounts = unstable_cache(
+  async () => countPublicSitemapRecords(db()),
+  ["public-sitemap-counts"],
+  { revalidate: 900 },
+);
+
 const directoryCounts: Array<[DirectorySitemapKind, "parties" | "lawFirms" | "courts" | "judges" | "governmentLitigation"]> = [
   ["parties", "parties"],
   ["law-firms", "lawFirms"],
@@ -18,7 +27,7 @@ const directoryCounts: Array<[DirectorySitemapKind, "parties" | "lawFirms" | "co
 ];
 
 export async function GET() {
-  const counts = await countPublicSitemapRecords(db());
+  const counts = await cachedCounts();
   const origin = siteOrigin();
   const locations = [
     `${origin}/sitemaps/static.xml`,
