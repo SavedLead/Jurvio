@@ -1,0 +1,127 @@
+name: Traffic report (read-only)
+
+# Read-only answer to "how much REAL HUMAN traffic has Jurvio had?".
+#
+# Jurvio records every public request into demand_event with a visitor_class
+# assigned from the user agent (human / search_bot / ai_bot / agent / api /
+# internal / unknown — see src/modules/demand/domain/classify-visitor.ts), so
+# human demand can be reported without counting crawlers as adoption. Bot
+# traffic is reported alongside, separately and labelled, because a new site's
+# first visitors are almost entirely crawlers and conflating the two is how a
+# launch looks far more successful than it is.
+#
+# Performs NO writes, NO ingestion, and NO publication: SELECT only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days of history to summarize (default 30)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-traffic-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      DAYS: ${{ inputs.days }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Demand report (read-only)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se -- "${DAYS:-30}" <<'REMOTE'
+          set -euo pipefail
+          days="${1:-30}"
+          case "$days" in ''|*[!0-9]*) days=30 ;; esac
+
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no running jurvio postgres container on ingestion box"; exit 1; }
+
+          # </dev/null on every docker exec: this script is itself arriving on
+          # stdin (ssh bash -s), and a draining exec would eat the rest of it.
+          run() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" </dev/null; }
+
+          echo "=== Lifetime totals by visitor class (all time) ==="
+          run "SELECT visitor_class || '=' || count(*) FROM demand_event
+               GROUP BY visitor_class ORDER BY count(*) DESC;"
+
+          echo "=== First and last recorded event ==="
+          run "SELECT 'first=' || coalesce(min(occurred_at)::text,'none')
+               || '  last=' || coalesce(max(occurred_at)::text,'none')
+               || '  total=' || count(*) FROM demand_event;"
+
+          echo "=== HUMAN traffic, last ${days} days by day ==="
+          run "SELECT event_date || '  events=' || count(*)
+               || '  sessions=' || count(DISTINCT session_hash)
+               || '  visitors=' || count(DISTINCT visitor_hash)
+               FROM demand_event
+               WHERE visitor_class='human'
+                 AND event_date > (now() AT TIME ZONE 'UTC')::date - ${days}
+               GROUP BY event_date ORDER BY event_date;"
+
+          echo "=== HUMAN totals for the window ==="
+          run "SELECT 'events=' || count(*)
+               || '  distinct_sessions=' || count(DISTINCT session_hash)
+               || '  distinct_visitors=' || count(DISTINCT visitor_hash)
+               FROM demand_event
+               WHERE visitor_class='human'
+                 AND event_date > (now() AT TIME ZONE 'UTC')::date - ${days};"
+
+          echo "=== Where humans came from (referrer host, last ${days} days) ==="
+          run "SELECT coalesce(referrer_host,'(direct/none)') || '=' || count(*)
+               FROM demand_event
+               WHERE visitor_class='human'
+                 AND event_date > (now() AT TIME ZONE 'UTC')::date - ${days}
+               GROUP BY 1 ORDER BY count(*) DESC LIMIT 15;"
+
+          echo "=== Crawler activity by family (last ${days} days) ==="
+          run "SELECT visitor_class || '/' || coalesce(bot_family,'unnamed') || '=' || count(*)
+               FROM demand_event
+               WHERE visitor_class IN ('search_bot','ai_bot','agent')
+                 AND event_date > (now() AT TIME ZONE 'UTC')::date - ${days}
+               GROUP BY 1 ORDER BY count(*) DESC LIMIT 20;"
+
+          echo "=== Googlebot crawl by day (is Google actually fetching pages?) ==="
+          run "SELECT event_date || '  googlebot_hits=' || count(*)
+               FROM demand_event
+               WHERE bot_family='google'
+                 AND event_date > (now() AT TIME ZONE 'UTC')::date - ${days}
+               GROUP BY event_date ORDER BY event_date;"
+
+          echo "=== What humans looked at (event types, last ${days} days) ==="
+          run "SELECT event_type || '=' || count(*)
+               FROM demand_event
+               WHERE visitor_class='human'
+                 AND event_date > (now() AT TIME ZONE 'UTC')::date - ${days}
+               GROUP BY 1 ORDER BY count(*) DESC;"
+          REMOTE
