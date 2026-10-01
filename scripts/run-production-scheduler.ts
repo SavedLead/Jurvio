@@ -30,6 +30,13 @@ function currentScotusTerm(): string {
 const jobs: ScheduledJob[] = [
   {
     lane: "core",
+    name: "case-citation-graph",
+    initialDelayMs: 5 * minute,
+    intervalMs: 2 * minute,
+    command: ["jobs/run-case-citations.mjs", "--limit=1000", "--discover=10"],
+  },
+  {
+    lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
     intervalMs: 15 * minute,
@@ -386,3 +393,4 @@ writeHeartbeat();
 timers.push(setInterval(writeHeartbeat, 30_000));
 
 logStatus("scheduler", `ready lane=${configuredLane} with ${activeJobs.length} server-side schedules`);
+
