@@ -16,6 +16,9 @@ import { CaseNav } from "@/modules/cases/ui/case-nav";
 import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import "./case-intelligence.css";
+import { publicCitationTargets, relatedCitationCases } from "@/modules/citations/application/public-citations";
+import { CitedCaseText } from "@/modules/citations/ui/cited-case-text";
+import { CitationCaseList } from "@/modules/citations/ui/citation-case-list";
 
 export const dynamic = "force-dynamic";
 
@@ -75,10 +78,12 @@ export default async function CasePage({ params }: CasePageProps) {
   if (!loaded) notFound();
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents] = await Promise.all([
+  const [docketEntries, parties, documents, citedCases, citingCases] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
+    relatedCitationCases(sql, caseId, "cited"),
+    relatedCitationCases(sql, caseId, "citing"),
   ]);
   const verified = legalCase.verification === "verified";
   const statusDetails = verified ? visibleCaseStatusDetails(legalCase) : [];
@@ -165,6 +170,11 @@ export default async function CasePage({ params }: CasePageProps) {
     && Number.isFinite(filedAt)
     && Date.now() - filedAt <= 45 * 24 * 60 * 60 * 1000;
 
+  const narrativeTargets=await publicCitationTargets(sql, [
+    ...caseAnswers.map(answer=>answer.answer), legalCase.backgroundSummary,
+    legalCase.significanceSummary, legalCase.questionPresented, legalCase.exactHolding,
+  ].filter(Boolean).join(" "));
+  const linkedText=(text:string)=><CitedCaseText text={text} targets={narrativeTargets} />;
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
     eventType: "page_view",
@@ -245,7 +255,7 @@ export default async function CasePage({ params }: CasePageProps) {
               {caseAnswers.map((item) => (
                 <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
                   <h3>{item.question}</h3>
-                  <p>{item.answer}</p>
+                  <p>{linkedText(item.answer)}</p>
                   <footer>
                     <span>{item.available ? "Source-backed answer" : "Not yet available"}</span>
                     {item.sourceUrl ? <a href={item.sourceUrl} rel="nofollow noopener">View source</a> : null}
@@ -259,15 +269,15 @@ export default async function CasePage({ params }: CasePageProps) {
               <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Verified case record</h2></div>
             </div>
             {verified && legalCase.statusExplanation ? (
-              <p className="statusExplanation">{legalCase.statusExplanation}</p>
+              <p className="statusExplanation">{linkedText(legalCase.statusExplanation)}</p>
             ) : (
               <p className="verifiedFactSummary">
                 The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as {legalCase.courtName} docket {legalCase.docketNumber}.
                 {readableDocuments.length > 0 ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.` : ""}
               </p>
             )}
-            {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{legalCase.backgroundSummary}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
-            {legalCase.significanceSummary ? <div className="verifiedNarrative"><h3>Why it matters</h3><p>{legalCase.significanceSummary}</p>{legalCase.significanceSourceUrl ? <a href={legalCase.significanceSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+            {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{linkedText(legalCase.backgroundSummary)}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+            {legalCase.significanceSummary ? <div className="verifiedNarrative"><h3>Why it matters</h3><p>{linkedText(legalCase.significanceSummary)}</p>{legalCase.significanceSourceUrl ? <a href={legalCase.significanceSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
             {supportingStatusDetails.length > 0 ? (
               <dl className="caseStatusGrid">
                 {supportingStatusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
@@ -278,7 +288,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {legalCase.questionPresented ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="question-presented">
               <div className="featureHeading"><h2 id="question-presented">Question presented</h2></div>
-              <p>{legalCase.questionPresented}</p>
+              <p>{linkedText(legalCase.questionPresented)}</p>
               {legalCase.questionSourceUrl ? <a className="sectionLink" href={legalCase.questionSourceUrl} rel="nofollow noopener">Read the official petition →</a> : null}
             </section>
           ) : null}
@@ -289,7 +299,7 @@ export default async function CasePage({ params }: CasePageProps) {
                   <h2 id="case-outcome">Holding and outcome</h2>
               </div>
               {outcome ? <div className="outcomeCallout"><strong>{outcome}.</strong></div> : null}
-              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>Exact sourced holding</h3><p>{legalCase.exactHolding}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>Exact sourced holding</h3><p>{linkedText(legalCase.exactHolding)}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
             </section>
           ) : null}
 
@@ -320,6 +330,9 @@ export default async function CasePage({ params }: CasePageProps) {
               )}
             </section>
           ) : null}
+
+          <CitationCaseList title="Cases cited" cases={citedCases} />
+          <CitationCaseList title="Cited by" cases={citingCases} />
 
           {timelineEvents.length > 0 ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">
@@ -397,3 +410,4 @@ export default async function CasePage({ params }: CasePageProps) {
     </main>
   );
 }
+

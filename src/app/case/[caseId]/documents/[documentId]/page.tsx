@@ -7,9 +7,12 @@ import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { OpinionReaderTools } from "@/modules/cases/ui/opinion-reader-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
-import { distinguishReportersNote, extractCitationLabels, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
+import { distinguishReportersNote, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
 import { AnnotatedLegalText } from "@/modules/legal-context/ui/annotated-legal-text";
 import { robotsFor } from "@/lib/seo/indexing";
+
+import { publicCitationTargets } from "@/modules/citations/application/public-citations";
+import { linkCaseCitations } from "@/modules/citations/domain/link-citations";
 
 export const dynamic = "force-dynamic";
 
@@ -62,10 +65,8 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     targetType: "document",
     targetPublicId: opinion.documentPublicId,
   });
-  const citationLinks = extractCitationLabels(opinion.citations).map((citation) => ({
-    citation,
-    href: `/search?q=${encodeURIComponent(citation)}`,
-  }));
+  const citationTargets = await publicCitationTargets(db(), opinion.contentText, opinion.contentHtml);
+  const linkedHtml = linkCaseCitations(opinion.contentHtml, citationTargets);
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "DigitalDocument",
@@ -79,6 +80,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
       officialCitation ? { "@type": "PropertyValue", name: "Official citation", value: officialCitation } : null,
     ].filter(Boolean),
     isPartOf: { "@type": "LegalCase", name: caption, url: `https://jurvio.com/case/${opinion.casePublicId}` },
+    citation: citationTargets.filter(target => target.machineAccessible).map(target => `https://jurvio.com/case/${target.casePublicId}`),
     provider: { "@type": "Organization", name: "Jurvio" },
     url: permanentUrl,
   };
@@ -119,9 +121,8 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
           <div id="opinion-text" className="opinionTextSurface" data-reader-size="regular" data-reader-width="standard" data-reader-theme="paper">
             <AnnotatedLegalText
               className="opinionBody"
-              html={distinguishReportersNote(opinion.contentHtml)}
+              html={distinguishReportersNote(linkedHtml)}
               terms={inlineLegalTerms}
-              citations={citationLinks}
             />
           </div>
           <aside className="readerMetadataRail" aria-label="Opinion source and record details">
@@ -136,6 +137,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
                 <div><dt>Permanent ID</dt><dd>{opinion.documentPublicId}</dd></div>
               </dl>
             </section>
+            {citationTargets.length ? <section><h2>Cases cited</h2><ul>{[...new Map(citationTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{target.caption}</Link></li>)}</ul></section> : null}
             {opinion.sourceDownloadUrl ? <section><p className="sectionKicker">Provenance</p><p>Published by {opinion.courtName}.</p><a href={opinion.sourceDownloadUrl} rel="nofollow noopener">Official court document</a></section> : null}
           </aside>
         </div>
@@ -144,3 +146,4 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     </main>
   );
 }
+

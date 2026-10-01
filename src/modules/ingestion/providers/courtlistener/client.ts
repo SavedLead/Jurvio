@@ -51,7 +51,7 @@ function headers(useConfiguredApiToken: boolean): HeadersInit {
   };
 }
 
-async function retrieve(url: URL): Promise<{ response: Response; body: string }> {
+async function retrieve(url: URL, init: RequestInit = {}): Promise<{ response: Response; body: string }> {
   const maximumAttempts = 4;
   // CourtListener's bulk docket/opinion-cluster queries can be slow; a 30s abort
   // was tripping on legitimately-heavy pages and crashing the lane. Allow a longer
@@ -68,6 +68,7 @@ async function retrieve(url: URL): Promise<{ response: Response; body: string }>
     let response: Response;
     try {
       response = await fetch(url, {
+        ...init,
         headers: headers(useConfiguredApiToken),
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -323,4 +324,27 @@ export async function fetchDocketEntries(
   }
 
   throw new Error(`CourtListener docket-entry pagination exceeded ${maximumPages} pages`);
+}
+
+
+// Exact lookup. Retain the response as source evidence; ambiguous results are
+// never silently reduced to the first cluster.
+export async function fetchCitationLookup(citation: string): Promise<RetrievedRecord<Array<{
+  status: number; clusters: Array<{id: number; citations: unknown[]}>;
+}>>> {
+  const url = new URL("citation-lookup/", `${env().COURTLISTENER_API_BASE_URL}/`);
+  const {response, body} = await retrieve(url, {method: "POST", body: new URLSearchParams({text: citation})});
+  const parsed: unknown = JSON.parse(body);
+  if (!Array.isArray(parsed)) throw new Error("Malformed citation lookup response");
+  const record = parsed.map(value => {
+    if (!value || typeof value !== "object" || typeof value.status !== "number" || !Array.isArray(value.clusters)) throw new Error("Malformed citation lookup result");
+    const clusters = value.clusters.map((cluster: unknown) => {
+      if (!cluster || typeof cluster !== "object") throw new Error("Malformed citation cluster");
+      const object=cluster as Record<string, unknown>;
+      if (!Number.isSafeInteger(object.id) || Number(object.id)<=0 || !Array.isArray(object.citations)) throw new Error("Malformed citation cluster identity");
+      return {id:Number(object.id), citations:object.citations};
+    });
+    return {status:value.status, clusters};
+  });
+  return wrap(record,url.toString(),body,response);
 }

@@ -27,7 +27,7 @@ export function AnnotatedLegalText({ html, terms, citations = [], className }: A
     while (walker.nextNode()) {
       const node = walker.currentNode as Text;
       const parent = node.parentElement;
-      if (parent && !skippedParents.has(parent.tagName) && node.data.trim()) nodes.push(node);
+      if (parent && !parent.closest([...skippedParents].join(",")) && node.data.trim()) nodes.push(node);
     }
     nodes.forEach((node) => annotateNode(node, patterns));
 
@@ -140,3 +140,4 @@ function createCitation(text: string, context: CitedCaseContext): HTMLElement {
 function escapeRegExp(value: string) {
   return value.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
 }
+
