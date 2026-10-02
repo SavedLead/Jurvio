@@ -4,6 +4,10 @@ on:
     branches: [main]
     paths: ["ops/citation-coverage-replay.trigger"]
   workflow_dispatch: {}
+  workflow_run:
+    workflows: ["Deploy production"]
+    types: [completed]
+    branches: [main]
 permissions:
   contents: read
 concurrency:
@@ -11,6 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   replay:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 15
@@ -36,13 +41,15 @@ jobs:
           # Refuse a replay under the old worker: the public migration can finish
           # before production's backup and worker replacement.
           sudo -n docker exec "$app" node -e 'const fs=require("node:fs"); if(!fs.readFileSync("jobs/run-case-citations.mjs","utf8").includes("reporter-citations-v2-flp-3.2.66"))process.exit(1)'
-          sudo -n docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U jurvio -d jurvio <<'SQL'
+          sudo -n docker exec "$app" node -e 'const fs=require("node:fs"); if(!fs.readFileSync("jobs/run-case-citations.mjs","utf8").includes("visible_sources AS MATERIALIZED"))process.exit(1)'
+          worker_started_at="$(sudo -n docker inspect -f '{{.State.StartedAt}}' "$app")"
+          sudo -n docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -v worker_started_at="$worker_started_at" -U jurvio -d jurvio <<'SQL'
           BEGIN;
           SET LOCAL statement_timeout='120s';
           -- A disconnected old worker can leave a long SELECT running and its
           -- session advisory lock held until PostgreSQL notices the disconnect.
           -- Inspect that exact lock, then release ONLY a holder whose
-          -- connection predates the confirmed 2026-10-02 worker replacement.
+          -- connection predates the running worker container's replacement.
           -- A current worker or an unrelated database session is never targeted.
           SELECT a.pid,a.backend_start,a.state,a.wait_event_type,a.wait_event,
             left(a.query,240) AS query_prefix
@@ -58,7 +65,7 @@ jobs:
             AND l.objid=((hashtext('jurvio-case-citations-v1')::bigint & 4294967295)::oid)
             AND l.classid=(((hashtext('jurvio-case-citations-v1')::bigint >> 32) & 4294967295)::oid)
             AND a.backend_type='client backend'
-            AND a.backend_start<'2026-10-02T15:55:19Z'::timestamptz
+            AND a.backend_start<:'worker_started_at'::timestamptz
             AND a.pid<>pg_backend_pid();
           INSERT INTO case_citation_work(case_id)
           SELECT id FROM legal_case c WHERE official_citation IS NOT NULL

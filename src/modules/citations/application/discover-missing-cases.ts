@@ -5,24 +5,30 @@ import { ingestCourtListenerOpinionCluster } from "@/modules/ingestion/applicati
 import { ingestOfficialScotusBoundVolume } from "@/modules/ingestion/application/ingest-official-scotus-bound-volume";
 import { identityCitations, citationKey, extractCaseCitations } from "../domain/citations";
 type Sql = ReturnType<typeof postgres>;
-export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit: number) {
-  // Discovery stays bounded but no longer waits for every unrelated identity
-  // queue row. Exact provider-cluster checks below prevent duplicate ingestion
-  // when a local case's identity has not yet been backfilled.
-  const citations = await sql<{citation_key:string; citation_label:string}[]>`
+export async function discoveryCandidates(sql: Sql, limit: number) {
+  // Materialize public sources once. Checking publication decisions separately
+  // for every private-only missing citation made production selection unbounded.
+  return sql<{citation_key:string; citation_label:string}[]>`
+    WITH visible_sources AS MATERIALIZED (
+      SELECT d.id,content.content_hash FROM document d
+      JOIN legal_case c ON c.id=d.case_id
+      JOIN document_content content ON content.document_id=d.id
+      WHERE d.publication='published' AND c.publication='published'
+        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+    ), public_citations AS MATERIALIZED (
+      SELECT DISTINCT ref.citation_key FROM visible_sources source
+      JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash
+    )
     SELECT missing.citation_key, missing.citation_label FROM missing_case_citation missing
+    JOIN public_citations cited ON cited.citation_key=missing.citation_key
     WHERE missing.state IN ('pending','not_found','ambiguous') AND missing.next_attempt_at<=now()
       AND NOT EXISTS(SELECT 1 FROM case_citation_identity i WHERE i.citation_key=missing.citation_key)
-      AND EXISTS(
-        SELECT 1 FROM document_case_citation ref
-        JOIN document d ON d.id=ref.document_id JOIN legal_case c ON c.id=d.case_id
-        JOIN document_content content ON content.document_id=d.id AND content.content_hash=ref.source_content_hash
-        WHERE ref.citation_key=missing.citation_key AND d.publication='published' AND c.publication='published'
-          AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
-          AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
-      )
     ORDER BY missing.next_attempt_at, missing.citation_key LIMIT ${limit}
   `;
+}
+export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit: number) {
+  const citations = await discoveryCandidates(sql,limit);
   let discovered=0, held=0, matchedLocal=0, volumeFetched=false;
   for (const cite of citations) {
     try {

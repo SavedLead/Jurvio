@@ -17,6 +17,20 @@ export function citedOpinionPublicationReasons(candidate: Candidate): string[] {
 }
 export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
   const candidates=await sql<Candidate[]>`
+    WITH visible_sources AS MATERIALIZED (
+      SELECT d.id,d.case_id,content.content_hash FROM document d
+      JOIN legal_case c ON c.id=d.case_id JOIN document_content content ON content.document_id=d.id
+      WHERE d.publication='published' AND c.publication='published'
+        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+    ), public_citations AS MATERIALIZED (
+      SELECT DISTINCT ref.citation_key,source.case_id FROM visible_sources source
+      JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash
+    ), cited_targets AS MATERIALIZED (
+      SELECT DISTINCT i.case_id FROM case_citation_identity i
+      JOIN public_citations ref ON ref.citation_key=i.citation_key AND ref.case_id<>i.case_id
+      WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=i.citation_key AND other.case_id<>i.case_id)
+    )
     SELECT c.id AS "caseId", d.id AS "documentId", c.publication, d.publication AS "documentPublication",
       c.caption, c.docket_number AS "docketNumber", court.jurisdiction AS "courtJurisdiction",
       court.provider_court_id AS "courtProviderId", court.verification AS "courtVerification",
@@ -33,6 +47,7 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
         OR EXISTS(SELECT 1 FROM publication_review pr WHERE pr.object_id IN(c.id,d.id) AND (pr.status IN('rejected','needs_changes') OR (pr.reviewer_id IS NOT NULL AND pr.status<>'approved')))
       ) AS blocked
     FROM document d JOIN legal_case c ON c.id=d.case_id JOIN court ON court.id=c.court_id
+    JOIN cited_targets cited ON cited.case_id=c.id
     JOIN document_content content ON content.document_id=d.id
     JOIN judicial_opinion judicial ON judicial.document_id=d.id
     JOIN raw_artifact a ON a.id=c.source_artifact_id JOIN provider p ON p.id=a.provider_id
@@ -40,14 +55,6 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
     WHERE NOT EXISTS(SELECT 1 FROM citation_publication_hold h WHERE h.document_id=d.id AND h.content_hash=content.content_hash)
       AND d.publication='draft' AND c.publication IN('draft','published')
       AND court.provider_court_id<>'scotus'
-      AND EXISTS(
-        SELECT 1 FROM case_citation_identity i JOIN document_case_citation ref ON ref.citation_key=i.citation_key
-        JOIN document source_doc ON source_doc.id=ref.document_id JOIN legal_case source_case ON source_case.id=source_doc.case_id
-        JOIN document_content source_content ON source_content.document_id=source_doc.id AND source_content.content_hash=ref.source_content_hash
-        WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=i.citation_key AND other.case_id<>i.case_id) AND i.case_id=c.id AND source_case.id<>c.id AND source_doc.publication='published' AND source_case.publication='published'
-          AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=source_case.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
-          AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=source_doc.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
-      )
     ORDER BY d.created_at,d.id LIMIT ${limit}
   `;
   let published=0,held=0;

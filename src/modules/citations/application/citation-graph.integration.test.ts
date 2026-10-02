@@ -5,6 +5,7 @@ import postgres from 'postgres';
 import { syncCitationGraph } from './sync-citation-graph';
 import { publishCitedFederalOpinions } from './publish-cited-federal-opinions';
 import { publicCitationTargets, relatedCitationCases } from './public-citations';
+import { discoveryCandidates } from './discover-missing-cases';
 const databaseUrl=process.env.DATABASE_URL;
 describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
   it('backfills, updates, hides restricted edges and refuses ambiguous identities',async()=>{
@@ -95,6 +96,27 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       await sql`UPDATE document_content SET content_text='See 123 F.3d 456',content_hash='third' WHERE document_id=${document!.id}`;
       await syncCitationGraph(sql,100);
       expect(await sql`SELECT citation_key FROM missing_case_citation WHERE citation_key='123f3d456'`).toEqual([expect.objectContaining({citation_key:'123f3d456'})]);
+      // Discovery starts with current, displayable public sources, even when
+      // the missing-citation table contains unrelated private-only records.
+      await sql`INSERT INTO missing_case_citation(citation_key,citation_label)
+        SELECT 'private-'||n,'private citation '||n FROM generate_series(1,1000) n`;
+      expect(await discoveryCandidates(sql,1)).toEqual([{citation_key:'123f3d456',citation_label:'123 F.3d 456'}]);
+      await sql`UPDATE document SET publication='suppressed' WHERE id=${document!.id}`;
+      expect(await discoveryCandidates(sql,10)).toEqual([]);
+      await sql`UPDATE document SET publication='published' WHERE id=${document!.id}`;
+      await sql`INSERT INTO publication_decision(object_type,object_id,displayable,indexable,machine_accessible,downloadable,summary_eligible,reason_code,rule_version)
+        VALUES('legal_case',${sourceId},false,false,false,false,false,'privacy','v3')`;
+      expect(await discoveryCandidates(sql,10)).toEqual([]);
+      await sql`INSERT INTO publication_decision(object_type,object_id,displayable,indexable,machine_accessible,downloadable,summary_eligible,reason_code,rule_version)
+        VALUES('legal_case',${sourceId},true,true,true,false,false,'fixture','v4')`;
+      expect(await discoveryCandidates(sql,10)).toHaveLength(1);
+      await sql`INSERT INTO publication_decision(object_type,object_id,displayable,indexable,machine_accessible,downloadable,summary_eligible,reason_code,rule_version)
+        VALUES('document',${document!.id},false,false,false,false,false,'privacy','v5')`;
+      expect(await discoveryCandidates(sql,10)).toEqual([]);
+      await sql`INSERT INTO publication_decision(object_type,object_id,displayable,indexable,machine_accessible,downloadable,summary_eligible,reason_code,rule_version)
+        VALUES('document',${document!.id},true,true,true,false,false,'fixture','v6')`;
+      await sql`UPDATE document_content SET content_hash='unparsed-revision' WHERE document_id=${document!.id}`;
+      expect(await discoveryCandidates(sql,10)).toEqual([]);
     } finally {
       await sql.unsafe(`SET search_path TO public; DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(()=>undefined);
       await sql.end();
