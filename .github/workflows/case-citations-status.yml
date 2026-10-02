@@ -35,6 +35,7 @@ jobs:
           app="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=worker-core --format '{{.ID}}' | head -n1)"
           test -n "$app"
           sudo -n docker exec "$app" node jobs/report-case-citations.mjs
+          sudo -n docker logs --since 15m --tail 2000 "$app" 2>&1 | grep -Ei 'citation|"synced"|discovery_remaining' || true
           REMOTE
       - name: Remove ephemeral SSH key
         if: always()
