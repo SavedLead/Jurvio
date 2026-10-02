@@ -1,0 +1,56 @@
+name: Refresh citation coverage after rollout
+on:
+  push:
+    branches: [main]
+    paths: ["ops/citation-coverage-replay.trigger"]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: jurvio-citation-coverage-replay
+  cancel-in-progress: false
+jobs:
+  replay:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+      - name: Requeue existing content only after the new worker is running
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new "$INGESTION_USER@$DB_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          app="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=worker-core --format '{{.ID}}' | head -n1)"
+          postgres="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format '{{.ID}}' | head -n1)"
+          test -n "$app" && test -n "$postgres"
+          # Refuse a replay under the old worker: the public migration can finish
+          # before production's backup and worker replacement.
+          sudo -n docker exec "$app" node -e 'const fs=require("node:fs"); if(!fs.readFileSync("jobs/run-case-citations.mjs","utf8").includes("reporter-citations-v2-flp-3.2.66"))process.exit(1)'
+          sudo -n docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U jurvio -d jurvio <<'SQL'
+          BEGIN;
+          SET LOCAL statement_timeout='120s';
+          INSERT INTO case_citation_work(case_id)
+          SELECT id FROM legal_case c WHERE official_citation IS NOT NULL
+            OR EXISTS(SELECT 1 FROM opinion_cluster cl WHERE cl.case_id=c.id)
+          ON CONFLICT(case_id) DO NOTHING;
+          INSERT INTO document_citation_work(document_id)
+          SELECT document_id FROM document_content
+          ON CONFLICT(document_id) DO NOTHING;
+          COMMIT;
+          SQL
+          sudo -n docker exec "$app" node jobs/report-case-citations.mjs
+          sudo -n docker logs --since 10m --tail 2000 "$app" 2>&1 | grep -i 'citation' || true
+          REMOTE
+      - name: Remove ephemeral SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
