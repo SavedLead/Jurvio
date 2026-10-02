@@ -49,7 +49,7 @@ jobs:
           COMMIT;
           SQL
           sudo -n docker exec "$app" node jobs/report-case-citations.mjs
-          sudo -n docker logs --since 10m --tail 2000 "$app" 2>&1 | grep -i 'citation' || true
+          sudo -n docker logs --since 15m --tail 2000 "$app" 2>&1 | grep -Ei 'citation|"synced"|discovery_remaining' || true
           REMOTE
       - name: Remove ephemeral SSH key
         if: always()
