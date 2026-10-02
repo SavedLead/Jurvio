@@ -9,7 +9,7 @@ export function linkCaseCitations(html: string, targets: readonly CitationLink[]
   const skipped=new Set(['a','script','style','code','pre','textarea']);
   const rewritten=html.replace(/<a\b[^>]*href=["']https:\/\/www\.courtlistener\.com\/opinion\/\d+\/[^"']*["'][^>]*>[\s\S]*?<\/a>/gi, anchor=>{
     const cluster=extractCourtListenerLinks(anchor)[0];
-    const href=(cluster?links.get(cluster.key):undefined)??extractCaseCitations(anchor.replace(/<[^>]*>/g,'')).map(cite=>links.get(cite.key)).find(Boolean);
+    const href=(cluster?links.get(cluster.key):undefined)??extractCaseCitations(anchor.replace(/<[^>]*>/g,'')).filter(cite=>!cite.ambiguous).map(cite=>links.get(cite.key)).find(Boolean);
     if(!href)return anchor;
     const body=anchor.slice(anchor.indexOf('>')+1,anchor.lastIndexOf('</'));
     return `<a href="${href}" class="jurvioCaseCitation">${body}</a>`;
@@ -25,6 +25,7 @@ export function linkCaseCitations(html: string, targets: readonly CitationLink[]
     const citations=extractCaseCitations(part);
     let result='', cursor=0;
     for(const cite of citations){
+      if (cite.ambiguous) continue;
       const href=links.get(cite.key);
       if (!href) continue;
       result+=part.slice(cursor,cite.start)+`<a href="${href}" class="jurvioCaseCitation">${cite.label}</a>`;

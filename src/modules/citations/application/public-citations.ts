@@ -3,7 +3,7 @@ import { extractCaseCitations, extractCourtListenerLinks } from "../domain/citat
 type Sql = ReturnType<typeof postgres>;
 export interface PublicCitationTarget { citationKey: string; casePublicId: string; caption: string; courtName: string; decidedOn: string | null; machineAccessible: boolean }
 export async function publicCitationTargets(sql: Sql, text: string, html=""): Promise<PublicCitationTarget[]> {
-  const keys = [...new Set([...extractCaseCitations(text),...extractCourtListenerLinks(html)].map(cite=>cite.key))];
+  const keys = [...new Set([...extractCaseCitations(text),...extractCourtListenerLinks(html)].filter(cite=>!cite.ambiguous).map(cite=>cite.key))];
   if (!keys.length) return [];
   return sql<PublicCitationTarget[]>`
     SELECT identity.citation_key AS "citationKey", c.public_id AS "casePublicId", c.caption,
