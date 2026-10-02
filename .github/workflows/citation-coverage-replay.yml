@@ -39,6 +39,27 @@ jobs:
           sudo -n docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U jurvio -d jurvio <<'SQL'
           BEGIN;
           SET LOCAL statement_timeout='120s';
+          -- A disconnected old worker can leave a long SELECT running and its
+          -- session advisory lock held until PostgreSQL notices the disconnect.
+          -- Inspect that exact lock, then release ONLY a holder whose
+          -- connection predates the confirmed 2026-10-02 worker replacement.
+          -- A current worker or an unrelated database session is never targeted.
+          SELECT a.pid,a.backend_start,a.state,a.wait_event_type,a.wait_event,
+            left(a.query,240) AS query_prefix
+          FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+          WHERE l.locktype='advisory' AND l.granted AND l.objsubid=1
+            AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database())
+            AND l.objid=((hashtext('jurvio-case-citations-v1')::bigint & 4294967295)::oid)
+            AND l.classid=(((hashtext('jurvio-case-citations-v1')::bigint >> 32) & 4294967295)::oid);
+          SELECT a.pid,pg_terminate_backend(a.pid) AS released_orphaned_citation_lock
+          FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+          WHERE l.locktype='advisory' AND l.granted AND l.objsubid=1
+            AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database())
+            AND l.objid=((hashtext('jurvio-case-citations-v1')::bigint & 4294967295)::oid)
+            AND l.classid=(((hashtext('jurvio-case-citations-v1')::bigint >> 32) & 4294967295)::oid)
+            AND a.backend_type='client backend'
+            AND a.backend_start<'2026-10-02T15:55:19Z'::timestamptz
+            AND a.pid<>pg_backend_pid();
           INSERT INTO case_citation_work(case_id)
           SELECT id FROM legal_case c WHERE official_citation IS NOT NULL
             OR EXISTS(SELECT 1 FROM opinion_cluster cl WHERE cl.case_id=c.id)
