@@ -1,8 +1,9 @@
 import type postgres from "postgres";
+import type { CaseListingSort } from "@/modules/cases/domain/case-listing";
 
 type Sql = ReturnType<typeof postgres>;
 
-interface PublicCaseRow {
+export interface PublicCaseListItem {
   publicId: string;
   caption: string;
   docketNumber: string;
@@ -12,6 +13,35 @@ interface PublicCaseRow {
   officialCitation: string | null;
   courtName: string;
   hasPublicDocument: boolean;
+  verification: string;
+  latestEntryOn: string | null;
+  latestEntryDescription: string | null;
+  opinionAuthor: string | null;
+  perCuriam: boolean;
+  holding: string | null;
+}
+
+interface PublicCaseRow {
+  id: string;
+  publicId: string;
+  caption: string;
+  docketNumber: string;
+  filedOn: string | null;
+  decidedOn: string | null;
+  supremeCourtTerm: number | null;
+  officialCitation: string | null;
+  courtName: string;
+  hasPublicDocument: boolean;
+  verification: string;
+}
+
+interface PublicCaseDetailRow {
+  id: string;
+  latestEntryOn: string | null;
+  latestEntryDescription: string | null;
+  opinionAuthor: string | null;
+  perCuriam: boolean;
+  holding: string | null;
 }
 
 export interface CourtFacet {
@@ -20,11 +50,32 @@ export interface CourtFacet {
   count: number;
 }
 
-interface ListPublicCasesOptions {
+export interface ListPublicCasesOptions {
   page: number;
   pageSize: number;
-  court?: string;
-  query?: string;
+  court?: string | null;
+  query?: string | null;
+  party?: string | null;
+  firm?: string | null;
+  decided?: boolean;
+  opinion?: boolean;
+  verified?: boolean;
+  fromYear?: number | null;
+  toYear?: number | null;
+  sort?: CaseListingSort;
+}
+
+/** Escapes LIKE wildcards so user text is matched literally. */
+export function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+export function containsPattern(value: string) {
+  return `%${escapeLike(value)}%`;
+}
+
+function clean(value: string | null | undefined) {
+  return value?.trim().replace(/\s+/g, " ") || null;
 }
 
 export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
@@ -50,50 +101,132 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
   const page = Math.max(1, options.page);
   const pageSize = Math.min(100, Math.max(1, options.pageSize));
   const offset = (page - 1) * pageSize;
-  const courtFilter = options.court?.trim() || null;
-  const query = options.query?.trim().replace(/\s+/g, " ") || null;
+  const courtFilter = clean(options.court);
+  const query = clean(options.query);
+  const party = clean(options.party);
+  const firm = clean(options.firm);
+  const queryPattern = query ? containsPattern(query) : null;
+  const sort: CaseListingSort = options.sort === "best" && !query ? "recent" : options.sort ?? (query ? "best" : "recent");
 
-  const publicationGate = sql`
-    legal_case.publication = 'published'
-    AND COALESCE((
+  const displayableEntity = sql`
+    COALESCE((
+      SELECT decision.displayable FROM publication_decision decision
+      WHERE decision.object_type = 'entity' AND decision.object_id = entity.id
+      ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+    ), true)
+  `;
+
+  const publicDocumentExists = sql`
+    EXISTS (
+      SELECT 1
+      FROM document
+      WHERE document.case_id = legal_case.id
+        AND document.publication = 'published'
+        AND COALESCE((
+          SELECT decision.displayable
+          FROM publication_decision decision
+          WHERE decision.object_type = 'document'
+            AND decision.object_id = document.id
+          ORDER BY decision.decided_at DESC, decision.id DESC
+          LIMIT 1
+        ), false)
+    )
+  `;
+
+  const conditions = [
+    sql`legal_case.publication = 'published'`,
+    sql`COALESCE((
       SELECT decision.displayable
       FROM publication_decision decision
       WHERE decision.object_type = 'legal_case'
         AND decision.object_id = legal_case.id
       ORDER BY decision.decided_at DESC, decision.id DESC
       LIMIT 1
-    ), false)
-  `;
-
-  const searchGate = sql`
-    (
-      ${query}::text IS NULL
-      OR legal_case.caption ILIKE '%' || ${query} || '%'
-      OR legal_case.docket_number ILIKE '%' || ${query} || '%'
+    ), false)`,
+  ];
+  if (queryPattern) {
+    conditions.push(sql`(
+      legal_case.caption ILIKE ${queryPattern}
+      OR legal_case.docket_number ILIKE ${queryPattern}
+      OR legal_case.official_citation ILIKE ${queryPattern}
+      OR EXISTS (
+        SELECT 1
+        FROM scotus_case_enrichment enrichment
+        WHERE enrichment.case_id = legal_case.id
+          AND enrichment.verification = 'verified'
+          AND enrichment.exact_holding ILIKE ${queryPattern}
+      )
       OR EXISTS (
         SELECT 1
         FROM party_appearance
         JOIN entity ON entity.id = party_appearance.entity_id
         WHERE party_appearance.case_id = legal_case.id
           AND (
-            party_appearance.party_name_as_filed ILIKE '%' || ${query} || '%'
-            OR entity.display_name ILIKE '%' || ${query} || '%'
+            party_appearance.party_name_as_filed ILIKE ${queryPattern}
+            OR entity.display_name ILIKE ${queryPattern}
           )
       )
-    )
-  `;
+    )`);
+  }
+  if (courtFilter) conditions.push(sql`court.public_id = ${courtFilter}`);
+  if (party) {
+    const pattern = containsPattern(party);
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM party_appearance appearance
+      JOIN entity ON entity.id = appearance.entity_id
+      WHERE appearance.case_id = legal_case.id
+        AND entity.entity_type <> 'law_firm'
+        AND (appearance.party_name_as_filed ILIKE ${pattern} OR entity.display_name ILIKE ${pattern})
+        AND ${displayableEntity}
+    )`);
+  }
+  if (firm) {
+    const pattern = containsPattern(firm);
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM party_appearance appearance
+      JOIN entity ON entity.id = appearance.entity_id
+      WHERE appearance.case_id = legal_case.id
+        AND entity.entity_type = 'law_firm'
+        AND entity.display_name ILIKE ${pattern}
+        AND ${displayableEntity}
+    )`);
+  }
+  if (options.decided) conditions.push(sql`legal_case.decided_on IS NOT NULL`);
+  if (options.verified) conditions.push(sql`legal_case.verification = 'verified'`);
+  if (options.opinion) conditions.push(publicDocumentExists);
+  if (options.fromYear) conditions.push(sql`COALESCE(legal_case.decided_on, legal_case.filed_on) >= make_date(${options.fromYear}::int, 1, 1)`);
+  if (options.toYear) conditions.push(sql`COALESCE(legal_case.decided_on, legal_case.filed_on) < make_date(${options.toYear}::int + 1, 1, 1)`);
 
-  const [totals, cases] = await Promise.all([
+  const where = conditions.reduce((combined, condition) => sql`${combined} AND ${condition}`);
+
+  const ordering = sort === "best" && query
+    ? sql`
+      CASE
+        WHEN legal_case.docket_number ILIKE ${escapeLike(query)} THEN 0
+        WHEN legal_case.official_citation ILIKE ${`${escapeLike(query)}%`} THEN 0
+        WHEN legal_case.caption ILIKE ${queryPattern} THEN 1
+        ELSE 2
+      END,
+      COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST,
+      legal_case.caption, legal_case.id`
+    : sort === "oldest"
+      ? sql`COALESCE(legal_case.decided_on, legal_case.filed_on) ASC NULLS LAST, legal_case.caption, legal_case.id`
+      : sort === "az"
+        ? sql`legal_case.caption, legal_case.id`
+        : sql`COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST, legal_case.caption, legal_case.id`;
+
+  const [totals, rows] = await Promise.all([
     sql<Array<{ total: number }>>`
       SELECT count(*)::int AS total
       FROM legal_case
       JOIN court ON court.id = legal_case.court_id
-      WHERE ${publicationGate}
-        AND ${searchGate}
-        AND (${courtFilter}::text IS NULL OR court.public_id = ${courtFilter})
+      WHERE ${where}
     `,
     sql<PublicCaseRow[]>`
-      SELECT legal_case.public_id AS "publicId",
+      SELECT legal_case.id::text AS id,
+        legal_case.public_id AS "publicId",
         legal_case.caption,
         legal_case.docket_number AS "docketNumber",
         legal_case.filed_on::text AS "filedOn",
@@ -101,32 +234,28 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
         legal_case.supreme_court_term AS "supremeCourtTerm",
         legal_case.official_citation AS "officialCitation",
         court.name AS "courtName",
-        EXISTS (
-          SELECT 1
-          FROM document
-          WHERE document.case_id = legal_case.id
-            AND document.publication = 'published'
-            AND COALESCE((
-              SELECT decision.displayable
-              FROM publication_decision decision
-              WHERE decision.object_type = 'document'
-                AND decision.object_id = document.id
-              ORDER BY decision.decided_at DESC, decision.id DESC
-              LIMIT 1
-            ), false)
-        ) AS "hasPublicDocument"
+        legal_case.verification::text AS verification,
+        ${publicDocumentExists} AS "hasPublicDocument"
       FROM legal_case
       JOIN court ON court.id = legal_case.court_id
-      WHERE ${publicationGate}
-        AND ${searchGate}
-        AND (${courtFilter}::text IS NULL OR court.public_id = ${courtFilter})
-      ORDER BY
-        CASE WHEN ${query}::text IS NOT NULL AND legal_case.docket_number ILIKE ${query} THEN 0 ELSE 1 END,
-        COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST,
-        legal_case.caption, legal_case.id
+      WHERE ${where}
+      ORDER BY ${ordering}
       LIMIT ${pageSize} OFFSET ${offset}
     `,
   ]);
+
+  const details = rows.length ? await listPublicCaseDetails(sql, rows.map((row) => row.id)) : new Map<string, PublicCaseDetailRow>();
+  const cases: PublicCaseListItem[] = rows.map(({ id, ...row }) => {
+    const detail = details.get(id);
+    return {
+      ...row,
+      latestEntryOn: detail?.latestEntryOn ?? null,
+      latestEntryDescription: detail?.latestEntryDescription ?? null,
+      opinionAuthor: detail?.opinionAuthor ?? null,
+      perCuriam: detail?.perCuriam ?? false,
+      holding: detail?.holding ?? null,
+    };
+  });
 
   return {
     cases,
@@ -135,5 +264,56 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
     pageSize,
     court: courtFilter,
     query,
+    sort,
   };
+}
+
+/**
+ * Loads the per-row details shown on the listing for one page of cases only, using
+ * the same publication gates as the case page: the latest dated public docket
+ * entry, the primary readable opinion's author, and the verified holding.
+ */
+async function listPublicCaseDetails(sql: Sql, caseIds: string[]) {
+  const rows = await sql<PublicCaseDetailRow[]>`
+    SELECT legal_case.id::text AS id,
+      latest_entry.filed_on::text AS "latestEntryOn",
+      latest_entry.description AS "latestEntryDescription",
+      primary_opinion.author_name AS "opinionAuthor",
+      COALESCE(primary_opinion.per_curiam, false) AS "perCuriam",
+      enrichment.exact_holding AS holding
+    FROM legal_case
+    LEFT JOIN scotus_case_enrichment enrichment
+      ON enrichment.case_id = legal_case.id AND enrichment.verification = 'verified'
+    LEFT JOIN LATERAL (
+      SELECT entry.filed_on, entry.description
+      FROM docket_entry entry
+      WHERE entry.case_id = legal_case.id
+        AND entry.filed_on IS NOT NULL
+        AND COALESCE((
+          SELECT decision.displayable FROM publication_decision decision
+          WHERE decision.object_type = 'docket_entry' AND decision.object_id = entry.id
+          ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+        ), false)
+      ORDER BY entry.filed_on DESC, entry.entry_number DESC NULLS LAST
+      LIMIT 1
+    ) latest_entry ON true
+    LEFT JOIN LATERAL (
+      SELECT judicial.author_name, judicial.per_curiam
+      FROM document
+      JOIN document_content content ON content.document_id = document.id
+      LEFT JOIN judicial_opinion judicial ON judicial.document_id = document.id
+      WHERE document.case_id = legal_case.id
+        AND document.publication = 'published'
+        AND (judicial.opinion_type IS NOT NULL OR document.document_type LIKE '%opinion%')
+        AND COALESCE((
+          SELECT decision.displayable FROM publication_decision decision
+          WHERE decision.object_type = 'document' AND decision.object_id = document.id
+          ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+        ), false)
+      ORDER BY document.filed_on DESC NULLS LAST, document.title
+      LIMIT 1
+    ) primary_opinion ON true
+    WHERE legal_case.id IN ${sql(caseIds)}
+  `;
+  return new Map(rows.map((row) => [row.id, row]));
 }

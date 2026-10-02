@@ -2,20 +2,39 @@ import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
-import { listPublicCaseCourts, listPublicCases } from "@/modules/cases/application/list-public-cases";
-import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import {
+  listPublicCaseCourts,
+  listPublicCases,
+  type ListPublicCasesOptions,
+  type PublicCaseListItem,
+} from "@/modules/cases/application/list-public-cases";
+import {
+  activeFilterChips,
+  buildCaseListingHref,
+  exactMatchKind,
+  hasActiveFilters,
+  hasUserText,
+  parseCaseListingParams,
+  pickLatestCaseEvent,
+  truncateLabel,
+  type CaseListingFilters,
+  type CaseListingParams,
+  type CaseListingSort,
+} from "@/modules/cases/domain/case-listing";
+import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
+import { BrandedCaseCaption, HighlightedText } from "@/modules/cases/ui/branded-case-caption";
+import { CopyCitationButton } from "@/modules/cases/ui/copy-citation-button";
+import { FilterDisclosure } from "@/modules/cases/ui/filter-disclosure";
 import styles from "./cases.module.css";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 300;
 
+const PAGE_SIZE = 50;
+
 const listCachedPublicCases = unstable_cache(
-  async (page: number, court: string | null) => listPublicCases(db(), {
-    page,
-    pageSize: 50,
-    court: court ?? undefined,
-  }),
-  ["public-case-directory"],
+  async (options: ListPublicCasesOptions) => listPublicCases(db(), options),
+  ["public-case-directory-v2"],
   { revalidate: 300, tags: ["public-cases"] },
 );
 const listCachedPublicCaseCourts = unstable_cache(
@@ -24,114 +43,318 @@ const listCachedPublicCaseCourts = unstable_cache(
   { revalidate: 300, tags: ["public-cases"] },
 );
 
-export const metadata: Metadata = {
-  title: "Find a court case",
-  description: "Search verified, published court cases by case name, party, docket number, or court.",
-  alternates: { canonical: "/cases" },
-};
-
-type Params = { page?: string; court?: string; q?: string };
-
-function pageHref(page: number, court?: string | null, query?: string | null) {
-  const params = new URLSearchParams({ page: String(page) });
-  if (court) params.set("court", court);
-  if (query) params.set("q", query);
-  return `/cases?${params}` as Route;
+export async function generateMetadata({ searchParams }: { searchParams: Promise<CaseListingParams> }): Promise<Metadata> {
+  const filters = parseCaseListingParams(await searchParams);
+  const variant = hasActiveFilters(filters) || filters.density === "compact" || filters.sort !== (filters.query ? "best" : "recent");
+  return {
+    title: "Find a court case",
+    description: "Search verified, published court cases by case name, party, docket number, citation, or court.",
+    alternates: { canonical: "/cases" },
+    // Filtered, re-sorted and re-styled views duplicate /cases; keep them out of the index.
+    ...(variant ? { robots: { index: false, follow: true } } : {}),
+  };
 }
 
-export default async function CasesPage({
-  searchParams,
-}: {
-  searchParams: Promise<Params>;
-}) {
-  const raw = await searchParams;
-  const page = Math.max(1, Number.parseInt(raw.page ?? "1", 10) || 1);
-  const court = raw.court?.trim() || null;
-  const query = raw.q?.trim() || null;
-  // Browsing traffic and crawlers reuse a five-minute snapshot. Free-text
-  // searches remain live so user-entered queries never pollute the shared cache.
-  const [caseResult, courts] = await Promise.all([
-    query
-      ? listPublicCases(db(), { page, pageSize: 50, court: court ?? undefined, query })
-      : listCachedPublicCases(page, court),
+const SORT_LABELS: Record<CaseListingSort, string> = {
+  best: "Best match",
+  recent: "Most recent",
+  oldest: "Oldest",
+  az: "Case name A–Z",
+};
+
+const SORT_DESCRIPTIONS: Record<CaseListingSort, string> = {
+  best: "Exact docket and citation matches first, then matching case names, then newest.",
+  recent: "Most recent filing or decision first.",
+  oldest: "Oldest filing or decision first.",
+  az: "Sorted alphabetically by case name.",
+};
+
+function toQueryOptions(filters: CaseListingFilters): ListPublicCasesOptions {
+  return {
+    page: filters.page,
+    pageSize: PAGE_SIZE,
+    court: filters.court,
+    query: filters.query,
+    party: filters.party,
+    firm: filters.firm,
+    decided: filters.decided,
+    opinion: filters.opinion,
+    verified: filters.verified,
+    fromYear: filters.fromYear,
+    toYear: filters.toYear,
+    sort: filters.sort,
+  };
+}
+
+function statusFor(legalCase: PublicCaseListItem) {
+  if (legalCase.verification !== "verified") return { label: "Source review in progress", tone: styles.statusPending };
+  return { label: legalCase.decidedOn ? "Decided" : "Status verified", tone: styles.statusVerified };
+}
+
+function pageWindow(current: number, last: number) {
+  const pages = new Set([1, last, current - 1, current, current + 1].filter((page) => page >= 1 && page <= last));
+  return [...pages].sort((left, right) => left - right);
+}
+
+export default async function CasesPage({ searchParams }: { searchParams: Promise<CaseListingParams> }) {
+  const filters = parseCaseListingParams(await searchParams);
+  // Browsing traffic and crawlers reuse a five-minute snapshot. Searches containing
+  // user-entered text stay live so free text never pollutes the shared cache.
+  const [result, courts] = await Promise.all([
+    hasUserText(filters) ? listPublicCases(db(), toQueryOptions(filters)) : listCachedPublicCases(toQueryOptions(filters)),
     listCachedPublicCaseCourts(),
   ]);
-  const result = { ...caseResult, courts };
   const pages = Math.max(1, Math.ceil(result.total / result.pageSize));
-  const showingSearch = Boolean(result.query);
+  const activeCourt = filters.court ? courts.find((court) => court.value === filters.court) ?? null : null;
+  const chips = activeFilterChips(filters, activeCourt?.label ?? null);
+  const filtered = chips.length > 0;
+  const compact = filters.density === "compact";
+  const exact = result.page === 1 && result.cases[0] && exactMatchKind(filters.query, result.cases[0])
+    ? { legalCase: result.cases[0], kind: exactMatchKind(filters.query, result.cases[0]) }
+    : null;
+  const sortOptions: CaseListingSort[] = filters.query ? ["best", "recent", "oldest", "az"] : ["recent", "oldest", "az"];
+  const firstShown = result.total === 0 ? 0 : (result.page - 1) * result.pageSize + 1;
+  const lastShown = Math.min(result.total, result.page * result.pageSize);
+  const recordFilterCount = [filters.party, filters.firm, filters.court, filters.decided, filters.opinion, filters.verified, filters.fromYear || filters.toYear]
+    .filter(Boolean).length;
+
+  const hiddenFilterInputs = (omit: Array<keyof CaseListingFilters>) => (
+    <>
+      {filters.court && !omit.includes("court") ? <input type="hidden" name="court" value={filters.court} /> : null}
+      {filters.party && !omit.includes("party") ? <input type="hidden" name="party" value={filters.party} /> : null}
+      {filters.firm && !omit.includes("firm") ? <input type="hidden" name="firm" value={filters.firm} /> : null}
+      {filters.decided && !omit.includes("decided") ? <input type="hidden" name="decided" value="1" /> : null}
+      {filters.opinion && !omit.includes("opinion") ? <input type="hidden" name="opinion" value="1" /> : null}
+      {filters.verified && !omit.includes("verified") ? <input type="hidden" name="verified" value="1" /> : null}
+      {filters.fromYear && !omit.includes("fromYear") ? <input type="hidden" name="from" value={filters.fromYear} /> : null}
+      {filters.toYear && !omit.includes("toYear") ? <input type="hidden" name="to" value={filters.toYear} /> : null}
+      {compact && !omit.includes("density") ? <input type="hidden" name="view" value="compact" /> : null}
+    </>
+  );
 
   return (
     <main className={styles.page}>
       <section className={styles.hero}>
         <div className={styles.inner}>
-          <p className={styles.eyebrow}>Public case library</p>
-          <h1>Find a federal court case.</h1>
-          <p>
-            Search published cases by case name, party, or docket number. Results only include source-backed court records that Jurvio has cleared for public display.
-          </p>
+          <nav className={styles.breadcrumb} aria-label="Breadcrumb">
+            <Link href="/">Home</Link> <span aria-hidden="true">/</span> Cases
+          </nav>
+          <div className={styles.heroHeading}>
+            <div>
+              <h1>Find a federal court case</h1>
+              <p>Search source-backed court records by case name, party, docket number, or citation. Every listing links back to the official record.</p>
+            </div>
+            <Link className={styles.verifyLink} href="/methodology">How Jurvio verifies records</Link>
+          </div>
+          <form className={styles.search} role="search" action="/cases">
+            <label htmlFor="q" className={styles.visuallyHidden}>Search cases</label>
+            <input id="q" name="q" type="search" defaultValue={filters.query ?? ""} placeholder="Case name, party, docket number, or citation" autoComplete="off" />
+            {hiddenFilterInputs([])}
+            <button type="submit">Search</button>
+          </form>
         </div>
       </section>
 
-      <div className={styles.inner}>
-        <form className={styles.filters} action="/cases">
-          <div className={styles.searchField}>
-            <label htmlFor="q">Search cases</label>
-            <input id="q" name="q" type="search" defaultValue={result.query ?? ""} placeholder="Case name, party, or docket number" />
+      <div className={`${styles.inner} ${styles.layout}`}>
+        <FilterDisclosure
+          className={styles.filters}
+          keepOpen={recordFilterCount > 0}
+          summary={<>Filters{recordFilterCount > 0 ? ` · ${recordFilterCount}` : ""}</>}
+        >
+          <form action="/cases" className={styles.filterForm} aria-label="Filter cases">
+            {filters.query ? <input type="hidden" name="q" value={filters.query} /> : null}
+            {filters.sort !== (filters.query ? "best" : "recent") ? <input type="hidden" name="sort" value={filters.sort} /> : null}
+            {compact ? <input type="hidden" name="view" value="compact" /> : null}
+
+            <div className={styles.filterGroup}>
+              <label htmlFor="court">Court</label>
+              <select id="court" name="court" defaultValue={filters.court ?? ""}>
+                <option value="">All courts</option>
+                {courts.map((court) => (
+                  <option key={court.value} value={court.value}>
+                    {court.label} ({court.count.toLocaleString()})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className={styles.filterGroup}>
+              <label htmlFor="party">Party</label>
+              <input id="party" name="party" type="search" defaultValue={filters.party ?? ""} placeholder="Find a party" autoComplete="off" />
+              <Link href="/parties">Browse all parties</Link>
+            </div>
+
+            <div className={styles.filterGroup}>
+              <label htmlFor="firm">Law firm</label>
+              <input id="firm" name="firm" type="search" defaultValue={filters.firm ?? ""} placeholder="Find a law firm" autoComplete="off" />
+              <p>Firms come from counsel appearances in the published record. <Link href="/law-firms">Browse law firms</Link></p>
+            </div>
+
+            <fieldset className={styles.filterGroup}>
+              <legend>Record</legend>
+              <label className={styles.check}><input type="checkbox" name="decided" value="1" defaultChecked={filters.decided} /> Decision issued</label>
+              <label className={styles.check}><input type="checkbox" name="opinion" value="1" defaultChecked={filters.opinion} /> Readable opinion</label>
+              <label className={styles.check}><input type="checkbox" name="verified" value="1" defaultChecked={filters.verified} /> Status verified</label>
+            </fieldset>
+
+            <fieldset className={styles.filterGroup}>
+              <legend>Filed or decided</legend>
+              <div className={styles.years}>
+                <label>From<input name="from" inputMode="numeric" pattern="\d{4}" placeholder="YYYY" defaultValue={filters.fromYear ?? ""} /></label>
+                <label>To<input name="to" inputMode="numeric" pattern="\d{4}" placeholder="YYYY" defaultValue={filters.toYear ?? ""} /></label>
+              </div>
+            </fieldset>
+
+            <div className={styles.filterActions}>
+              <button type="submit">Apply filters</button>
+              {filtered ? <Link href="/cases">Reset all</Link> : null}
+            </div>
+          </form>
+          <aside className={styles.trustNote}>
+            <strong>Only cleared records appear here</strong>
+            Cases are listed once their court metadata is verified and cleared for public display. <Link href="/public-records-policy">Publication policy</Link>
+          </aside>
+        </FilterDisclosure>
+
+        <div className={styles.results}>
+          {activeCourt ? (
+            <section className={styles.courtCard} aria-label="Court profile">
+              <div>
+                <p className={styles.kicker}>Court</p>
+                <p className={styles.courtName}>{activeCourt.label}</p>
+                <p>Court information and every published case from this court.</p>
+              </div>
+              <Link href={`/courts/${activeCourt.value}` as Route}>Court profile →</Link>
+            </section>
+          ) : null}
+
+          <div className={styles.resultHead}>
+            <div>
+              <h2 aria-live="polite">
+                {result.total.toLocaleString()} {filtered ? "matching" : "published"} {result.total === 1 ? "case" : "cases"}
+              </h2>
+              <p>{SORT_DESCRIPTIONS[result.sort]}</p>
+            </div>
+            <div className={styles.controls}>
+              <nav aria-label="Sort cases" className={styles.segmented}>
+                {sortOptions.map((option) => (
+                  <Link
+                    key={option}
+                    href={buildCaseListingHref({ ...filters, page: 1 }, { sort: option }) as Route}
+                    aria-current={result.sort === option ? "true" : undefined}
+                    rel="nofollow"
+                  >
+                    {SORT_LABELS[option]}
+                  </Link>
+                ))}
+              </nav>
+              <nav aria-label="Density" className={styles.segmented}>
+                <Link href={buildCaseListingHref(filters, { density: "comfortable" }) as Route} aria-current={!compact ? "true" : undefined} rel="nofollow">Comfortable</Link>
+                <Link href={buildCaseListingHref(filters, { density: "compact" }) as Route} aria-current={compact ? "true" : undefined} rel="nofollow">Compact</Link>
+              </nav>
+            </div>
           </div>
-          <div className={styles.courtField}>
-            <label htmlFor="court">Court</label>
-            <select id="court" name="court" defaultValue={result.court ?? ""}>
-              <option value="">All courts</option>
-              {result.courts.map((court) => (
-                <option key={court.value} value={court.value}>
-                  {court.label} ({court.count.toLocaleString()})
-                </option>
+
+          {chips.length > 0 ? (
+            <ul className={styles.chips} aria-label="Active filters">
+              {chips.map((chip) => (
+                <li key={chip.label}>
+                  <Link href={chip.href as Route} aria-label={`Remove filter ${chip.label}`}>
+                    {chip.label}<span aria-hidden="true">×</span>
+                  </Link>
+                </li>
               ))}
-            </select>
-          </div>
-          <button type="submit">Search</button>
-          {(result.court || result.query) ? <Link href="/cases">Clear</Link> : null}
-        </form>
+            </ul>
+          ) : null}
 
-        <div className={styles.resultHead}>
-          <h2>{result.total.toLocaleString()} {showingSearch ? "matching" : "published"} {result.total === 1 ? "case" : "cases"}</h2>
-          <p>{showingSearch ? `Results for “${result.query}”` : "Showing newest filed cases first."}</p>
+          {exact ? (
+            <Link className={styles.exactMatch} href={`/case/${exact.legalCase.publicId}` as Route}>
+              <span className={styles.exactKind}>{exact.kind === "citation" ? "Citation match" : "Docket match"}</span>
+              <span className={styles.exactCaption}>
+                <BrandedCaseCaption caption={exact.legalCase.caption} />
+                <span> · {exact.legalCase.docketNumber}</span>
+              </span>
+              <span className={styles.exactGo}>Go to case →</span>
+            </Link>
+          ) : null}
+
+          {result.cases.length === 0 ? (
+            <section className={styles.empty}>
+              <h2>No public cases match yet</h2>
+              <p>Try a shorter party name, the docket number alone, or remove a filter. Some cases are still being verified before publication.</p>
+              <Link href="/cases">Clear search and filters</Link>
+            </section>
+          ) : (
+            <ol className={`${styles.list} ${compact ? styles.compact : ""}`}>
+              {result.cases.map((legalCase) => {
+                const status = statusFor(legalCase);
+                const latest = pickLatestCaseEvent(legalCase);
+                const latestDate = latest ? formatPublicCaseDate(latest.date) ?? latest.date : null;
+                const opinionLabel = legalCase.perCuriam ? "Per curiam opinion" : legalCase.opinionAuthor ? `Opinion by ${legalCase.opinionAuthor}` : null;
+                return (
+                  <li key={legalCase.publicId}>
+                    <article className={styles.caseRow}>
+                      <div className={styles.caseMain}>
+                        <div className={styles.meta}>
+                          <span className={styles.court}>{legalCase.courtName}</span>
+                          <span className={styles.mono}>{legalCase.docketNumber}</span>
+                          {legalCase.officialCitation ? <span className={styles.mono}>{legalCase.officialCitation}</span> : null}
+                          {opinionLabel ? <span>{opinionLabel}</span> : null}
+                        </div>
+                        <h3>
+                          <Link href={`/case/${legalCase.publicId}` as Route}>
+                            <BrandedCaseCaption caption={legalCase.caption} highlight={filters.query} />
+                          </Link>
+                        </h3>
+                        {!compact && legalCase.holding ? (
+                          <p className={styles.holding}>
+                            <span className={styles.kind}>Holding</span>{" "}
+                            <HighlightedText text={legalCase.holding} highlight={filters.query} />
+                          </p>
+                        ) : null}
+                        <div className={styles.facts}>
+                          <span className={`${styles.status} ${status.tone}`}><span aria-hidden="true" />{status.label}</span>
+                          {latest ? (
+                            <span className={styles.latest}>
+                              <span>Latest:</span> <strong>{truncateLabel(latest.label)}</strong>{latestDate ? ` · ${latestDate}` : ""}
+                            </span>
+                          ) : null}
+                          {legalCase.hasPublicDocument ? <span className={styles.readable}>Readable opinion</span> : null}
+                        </div>
+                      </div>
+                      <div className={styles.actions}>
+                        {legalCase.officialCitation ? <CopyCitationButton citation={legalCase.officialCitation} className={styles.copy} /> : null}
+                        <Link href={`/case/${legalCase.publicId}/timeline` as Route}>Timeline →</Link>
+                      </div>
+                    </article>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+
+          {result.total > 0 ? (
+            <nav className={styles.pagination} aria-label="Case directory pages">
+              <span>Showing {firstShown.toLocaleString()}–{lastShown.toLocaleString()} of {result.total.toLocaleString()}</span>
+              <div>
+                {result.page > 1
+                  ? <Link href={buildCaseListingHref(filters, { page: result.page - 1 }) as Route}>Previous</Link>
+                  : <span aria-disabled="true">Previous</span>}
+                {pageWindow(result.page, pages).map((pageNumber, index, all) => (
+                  <span key={pageNumber} className={styles.pageGroup}>
+                    {index > 0 && pageNumber - (all[index - 1] ?? 0) > 1 ? <span className={styles.gap}>…</span> : null}
+                    {pageNumber === result.page
+                      ? <span aria-current="page" className={styles.currentPage}>{pageNumber}</span>
+                      : <Link href={buildCaseListingHref(filters, { page: pageNumber }) as Route}>{pageNumber}</Link>}
+                  </span>
+                ))}
+                {result.page < pages
+                  ? <Link href={buildCaseListingHref(filters, { page: result.page + 1 }) as Route}>Next</Link>
+                  : <span aria-disabled="true">Next</span>}
+              </div>
+            </nav>
+          ) : null}
         </div>
-
-        {result.cases.length === 0 ? (
-          <section className={styles.empty}>
-            <h2>No public cases match that search yet.</h2>
-            <p>Try a different spelling, a shorter party name, or the docket number.</p>
-            <Link href="/cases">Browse all public cases</Link>
-          </section>
-        ) : (
-          <div className={styles.list}>
-            {result.cases.map((legalCase) => (
-              <article key={legalCase.publicId} className={styles.caseCard}>
-                <div className={styles.meta}>
-                  <span>{legalCase.courtName}</span>
-                  {legalCase.filedOn ? <span>Filed {legalCase.filedOn}</span> : null}
-                </div>
-                <h2>
-                  <Link href={`/case/${legalCase.publicId}` as Route}><BrandedCaseCaption caption={legalCase.caption} /></Link>
-                </h2>
-                <p>Docket {legalCase.docketNumber}</p>
-                <div className={styles.status}>
-                  <span>Verified court metadata</span>
-                  <span>{legalCase.hasPublicDocument ? "Readable opinion available" : "Opinion text processing"}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-
-        {pages > 1 ? (
-          <nav className={styles.pagination} aria-label="Case directory pages">
-            {result.page > 1 ? <Link href={pageHref(result.page - 1, result.court, result.query)}>← Previous</Link> : <span />}
-            <span>Page {result.page} of {pages}</span>
-            {result.page < pages ? <Link href={pageHref(result.page + 1, result.court, result.query)}>Next →</Link> : <span />}
-          </nav>
-        ) : null}
       </div>
     </main>
   );
