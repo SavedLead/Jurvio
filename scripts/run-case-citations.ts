@@ -10,6 +10,9 @@ if (!Number.isInteger(limit)||limit<1||limit>5000||!Number.isInteger(discover)||
 // One connection keeps the session advisory lock attached to this worker.
 const sql=postgres(env().DATABASE_URL,{max:1});
 try {
+  // Notice a disconnected worker during long queries so a replaced container
+  // cannot retain this session's advisory lock indefinitely.
+  await sql`SET client_connection_check_interval='5s'`;
   const [lock]=await sql<{locked:boolean}[]>`SELECT pg_try_advisory_lock(hashtext('jurvio-case-citations-v1')) AS locked`;
   if (!lock?.locked) console.log(JSON.stringify({skipped:'citation worker already running'}));
   else {
