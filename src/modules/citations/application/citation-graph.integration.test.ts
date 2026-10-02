@@ -18,6 +18,7 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       }
       await sql`ALTER TABLE legal_case ADD COLUMN official_citation text, ADD COLUMN decided_on date`;
       await sql.unsafe(await readFile('db/migrations/0114_case_citation_graph.sql','utf8'));
+      await sql.unsafe(await readFile('db/migrations/0115_citation_reporter_refresh.sql','utf8'));
       const [provider]=await sql<{id:string}[]>`SELECT id FROM provider WHERE code='courtlistener'`;
       const [artifact]=await sql<{id:string}[]>`INSERT INTO raw_artifact(provider_id,source_uri,content_hash,object_key,media_type,retrieved_at) VALUES(${provider!.id},'https://www.courtlistener.com/api/rest/v4/opinions/2/',${'a'.repeat(64)},'fixture','application/json',now()) RETURNING id`;
       const [court]=await sql<{id:string}[]>`INSERT INTO court(public_id,name,verification) VALUES('jc-test1234','Test Court','verified') RETURNING id`;
@@ -35,6 +36,14 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       expect((await publicCitationTargets(sql,'See 347 U.S. 483'))[0]?.casePublicId).toBe('jv-target12');
       expect((await relatedCitationCases(sql,'jv-source12','cited'))[0]?.casePublicId).toBe('jv-target12');
       expect((await relatedCitationCases(sql,'jv-target12','citing'))[0]?.casePublicId).toBe('jv-source12');
+      // Verified parallel citations are source-backed, durable and rebuildable.
+      await sql`INSERT INTO case_citation_verified_alias(case_id,citation_key,citation_label,source_artifact_id)
+        VALUES(${targetId},'100ny2d1','100 N.Y.2d 1',${artifact!.id})`;
+      await syncCitationGraph(sql,100);
+      expect((await publicCitationTargets(sql,'100 N.Y.2d 1'))[0]?.casePublicId).toBe('jv-target12');
+      await sql`DELETE FROM case_citation_verified_alias WHERE case_id=${targetId}`;
+      await syncCitationGraph(sql,100);
+      expect(await publicCitationTargets(sql,'100 N.Y.2d 1')).toEqual([]);
       await sql`UPDATE document SET publication='suppressed' WHERE id=${document!.id}`;
       expect(await relatedCitationCases(sql,'jv-target12','citing')).toEqual([]);
       await sql`UPDATE document SET publication='published' WHERE id=${document!.id}`;

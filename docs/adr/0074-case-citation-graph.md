@@ -30,13 +30,25 @@ collision checks and preserved rejection/privacy decisions. Other courts and
 records failing validation remain in the existing review path. Source acquisition
 uses the existing free source adapters, not paid PACER.
 
-The parser currently supports full U.S., Supreme Court, federal and major regional
-reporter citations and exact CourtListener opinion links. Short forms (Id., supra,
-pin-only), uncommon/state-specific reporters, slip citations without pages and
-citations split across HTML elements are not guessed. The reader's Cases cited
-list still provides confirmed destinations when inline typography spans tags.
-Extending fixtures/reporters or adopting a separately versioned Eyecite parser
-is the next coverage step; it must preserve source spans and ambiguity.
+The version-2 parser vendors the BSD-2-Clause Free Law Project reporters-db
+3.2.66 edition/alias index, including historical and state reporters, electronic
+citation pages and nominative Supreme Court citations. A bounded overlapping
+candidate scan with indexed reporter lookup avoids a huge runtime regex.
+Aliases map to an edition only when the dataset identifies one source reporter;
+ambiguous abbreviations cannot become identities, links or discovery requests.
+The data-generation script is development-only; production requires no Python.
+Migration 0115 requeues existing identities/content for alias normalization and
+indexes queue order. This adds citation recognition, not automatic state-court
+publication. Short forms (Id., supra, pin-only), slip placeholders and citations
+split across HTML elements are still not guessed.
+
+Bounded missing-case discovery no longer waits for the entire identity backlog.
+After exact source verification, it checks the source cluster against local cases:
+one match retains a verified parallel-citation alias with its lookup artifact and
+prioritizes an identity refresh without reingestion or privacy resets;
+multiple matches remain ambiguous. This lets genuinely missing cited sources
+progress during unrelated historical backfill. Existing publication validation
+and source acquisition limits are unchanged.
 
 Alternatives: resolving on every visitor request would spend source API budget
 and slow pages; linking all citations to search leaves destinations uncertain;
@@ -52,3 +64,5 @@ lint/typechecks/tests and production job/web builds. Production completeness is
 measured by queue counts and sampled real HTML/backlinks, not by deployment alone.
 
 Reference: https://wiki.free.law/c/courtlistener/help/api/rest/v4/citation-lookup
+
+Reporter dataset: https://github.com/freelawproject/reporters-db

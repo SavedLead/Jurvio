@@ -18,6 +18,30 @@ describe("case citation identities",()=>{
     for(const cite of extractCaseCitations(text))expect(text.slice(cite.start,cite.end)).toBe(cite.label);
     expect(extractCaseCitations(text)).toHaveLength(2);
   });
+  it("recognizes state reporters, local aliases and long electronic citation pages",()=>{
+    const text='100 N.Y.2d 1; 12 Cal. App. 4th 321; 7 Mass. 123; 2008 U.S. Dist. LEXIS 12345678; 2020 WL 1234567';
+    expect(extractCaseCitations(text).map(c=>c.key)).toEqual(['100ny2d1','12calapp4th321','7mass123','2008usdistlexis12345678','2020wl1234567']);
+    expect(citationKey('347 U. S. Rep. 483')).toBe('347us483');
+  });
+  it("recognizes nominative Supreme Court citations without overlapping inner matches",()=>{
+    const text='Marbury, 5 U.S. (1 Cranch) 137; 17 U. S. (4 Wheat.) 316.';
+    const cites=extractCaseCitations(text);
+    expect(cites.map(c=>c.key)).toEqual(['5us137','17us316']);
+    for(const cite of cites)expect(text.slice(cite.start,cite.end)).toBe(cite.label);
+    expect(identityCitations('5 U.S. (1 Cranch) 137')).toEqual(['5 U.S. (1 Cranch) 137']);
+  });
+  it("does not guess an ambiguous historical reporter even with a supplied destination",()=>{
+    expect(extractCaseCitations('1 P.R. 1')[0]?.ambiguous).toBe(true);
+    expect(identityCitations('1 P.R. 1')).toEqual([]);
+    expect(linkCaseCitations('<p>1 P.R. 1</p>',[{citationKey:'1pr1',casePublicId:'jv-abcd1234'}])).toBe('<p>1 P.R. 1</p>');
+  });
+  it("does not let earlier unrelated numbers swallow later citations",()=>{
+    expect(extractCaseCitations('2024 discussion of 100 N.Y.2d 1 and 347 U.S. 483').map(c=>c.key)).toEqual(['100ny2d1','347us483']);
+  });
+  it("handles a long opinion with bounded reporter scanning",()=>{
+    const text='The court considered 347 U.S. 483 and 12 Cal. App. 4th 321. '.repeat(2000);
+    expect(extractCaseCitations(text)).toHaveLength(4000);
+  });
 });
 describe("crawlable court text links",()=>{
   const targets=[{citationKey:'347us483',casePublicId:'jv-abcd1234'}];

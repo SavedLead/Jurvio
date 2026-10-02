@@ -1,5 +1,8 @@
 name: Verify case citation graph
 on:
+  push:
+    branches: [main]
+    paths: ["ops/citation-report.trigger"]
   workflow_run:
     workflows: ["Deploy production"]
     types: [completed]
@@ -9,7 +12,7 @@ permissions:
   contents: read
 jobs:
   report:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 10

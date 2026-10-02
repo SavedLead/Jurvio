@@ -3,13 +3,12 @@ import type { ArtifactStore } from "@/modules/ingestion/application/artifact-sto
 import { fetchCitationLookup, fetchOpinionCluster, fetchDocket } from "@/modules/ingestion/providers/courtlistener/client";
 import { ingestCourtListenerOpinionCluster } from "@/modules/ingestion/application/ingest-courtlistener-opinion-cluster";
 import { ingestOfficialScotusBoundVolume } from "@/modules/ingestion/application/ingest-official-scotus-bound-volume";
-import { identityCitations, citationKey } from "../domain/citations";
+import { identityCitations, citationKey, extractCaseCitations } from "../domain/citations";
 type Sql = ReturnType<typeof postgres>;
 export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit: number) {
-  // Do not spend source requests rediscovering local cases before their identity
-  // backfill is complete. Publication restrictions are never reset here.
-  const [backlog] = await sql<{waiting: boolean}[]>`SELECT EXISTS(SELECT 1 FROM case_citation_work) AS waiting`;
-  if (backlog?.waiting) return {discovered:0, held:0, deferred:'identity_backfill'};
+  // Discovery stays bounded but no longer waits for every unrelated identity
+  // queue row. Exact provider-cluster checks below prevent duplicate ingestion
+  // when a local case's identity has not yet been backfilled.
   const citations = await sql<{citation_key:string; citation_label:string}[]>`
     SELECT missing.citation_key, missing.citation_label FROM missing_case_citation missing
     WHERE missing.state IN ('pending','not_found','ambiguous') AND missing.next_attempt_at<=now()
@@ -24,7 +23,7 @@ export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit
       )
     ORDER BY missing.next_attempt_at, missing.citation_key LIMIT ${limit}
   `;
-  let discovered=0, held=0, volumeFetched=false;
+  let discovered=0, held=0, matchedLocal=0, volumeFetched=false;
   for (const cite of citations) {
     try {
       const clusterId=cite.citation_key.startsWith('cl-cluster:') ? Number(cite.citation_key.slice('cl-cluster:'.length)) : null;
@@ -50,9 +49,33 @@ export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit
         continue;
       }
       const cluster=result!.clusters[0]!;
+      const local=await sql<{case_id:string}[]>`
+        SELECT DISTINCT cl.case_id FROM opinion_cluster cl JOIN provider p ON p.id=cl.provider_id
+        WHERE p.code='courtlistener' AND cl.provider_cluster_id=${String(cluster.id)}
+      `;
+      if(local.length>1){
+        await sql`UPDATE missing_case_citation SET state='ambiguous',attempts=attempts+1,
+          next_attempt_at=now()+interval '1 day',source_artifact_id=${artifact.id},
+          detail='Exact source cluster belongs to multiple local cases; not merged or published',updated_at=now() WHERE citation_key=${cite.citation_key}`;
+        held++; continue;
+      }
+      if(local.length===1){
+        await sql`INSERT INTO case_citation_verified_alias(case_id,citation_key,citation_label,source_artifact_id)
+          VALUES(${local[0]!.case_id},${cite.citation_key},${cite.citation_label},${artifact.id})
+          ON CONFLICT(case_id,citation_key) DO UPDATE SET citation_label=EXCLUDED.citation_label,
+            source_artifact_id=EXCLUDED.source_artifact_id,verified_at=now()`;
+        // Prioritize this exact known target for the next identity batch. Do not
+        // reset privacy decisions or reingest a case already held locally.
+        await sql`INSERT INTO case_citation_work(case_id,queued_at) VALUES(${local[0]!.case_id},'epoch'::timestamptz)
+          ON CONFLICT(case_id) DO UPDATE SET queued_at='epoch'::timestamptz`;
+        await sql`UPDATE missing_case_citation SET state='pending',attempts=attempts+1,
+          next_attempt_at=now()+interval '2 minutes',source_artifact_id=${artifact.id},
+          detail='Exact local source cluster found; citation identity refresh prioritized',updated_at=now() WHERE citation_key=${cite.citation_key}`;
+        matchedLocal++; continue;
+      }
       // SCOTUS docket numbers are reused by Term. Use the existing official
       // volume importer and publisher, rather than merging by docket alone.
-      const usReport=identityCitations(cluster.citations).find(label=>/^\d+\s+U\.?\s*S\.?\s+\d+$/.test(label));
+      const usReport=identityCitations(cluster.citations).find(label=>/^\d+us\d+$/.test(extractCaseCitations(label)[0]?.key??''));
       let scotus=Boolean(usReport);
       if (!scotus) {
         const sourceCluster=await fetchOpinionCluster(cluster.id);
@@ -89,5 +112,5 @@ export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit
       if (/429|401|403/.test(message)) break;
     }
   }
-  return {discovered,held};
+  return {discovered,held,matchedLocal};
 }
