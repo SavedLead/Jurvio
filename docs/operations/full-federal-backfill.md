@@ -11,7 +11,36 @@ through the existing publication lanes and their rules.
 
 ## 0. Sizing (measured 2026-10-05, snapshot 2026-09-30)
 
-<!-- SIZING -->
+Counted exactly by scanning the full dockets and clusters files (SCOTUS excluded):
+
+| Records | Federal in scope | Notes |
+|---|---|---|
+| Dockets | **64,304,018** of 72,998,758 | 37,030,872 bankruptcy |
+| Opinion clusters | **2,978,607** of 10,174,551 | 81,470 bankruptcy; 403 before 1800, 47,602 in the 1800s |
+| Opinions | ~4.0 million (estimate) | ~1.35 opinions per cluster across the whole file |
+
+Measured cost per row (local PostgreSQL 16, real data, indexes included):
+~680 bytes per docket and ~26 KB per opinion.
+
+| Item | Estimate |
+|---|---|
+| Dockets in PostgreSQL | ~45–60 GB |
+| Opinions in PostgreSQL | ~105 GB |
+| Clusters, citations, metadata | ~10 GB (not separately measured) |
+| **Database growth** | **~160–180 GB** |
+| WAL headroom during the load (`max_wal_size`) | 16 GB |
+| **Volume to provision** | **400 GB** (resizable upward later) |
+| Snapshot on the loader | ~66 GB; Spaces mirror the same |
+
+Duration at the measured rates (about 7,800 dockets/s and 300 opinions/s on
+4 vCPU): ~2.3 h for dockets, ~10 min for clusters, ~3.7 h for opinions. Over the
+VPC against a database that is also serving live traffic, plan for 12–24 hours
+of loader time. The pilot (section 4) replaces these estimates with production
+numbers.
+
+`docker-compose.loader.yml` stops cleanly (exit 75) once the database reaches
+300 GB (`JURVIO_BACKFILL_MAX_DATABASE_GB`), so a wrong estimate cannot fill a
+400 GB volume.
 
 ## 1. DigitalOcean changes (operator)
 

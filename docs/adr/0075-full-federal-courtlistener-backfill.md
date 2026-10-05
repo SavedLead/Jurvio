@@ -258,6 +258,11 @@ metadata. Moving HTML to Spaces and dropping the duplicate body would save
 roughly a third. That touches five writers and the search query, so it is a
 separate change, to be decided with the pilot's numbers.
 
+Exact federal scope in the 2026-09-30 snapshot (SCOTUS excluded): 64,304,018
+dockets (37,030,872 bankruptcy) and 2,978,607 opinion clusters, so roughly 4
+million opinions. Projected database growth is ~160–180 GB; the runbook sizes the
+volume at 400 GB and caps the loader at 300 GB.
+
 **Not done here, and why:**
 
 - *Backups at scale* (section 5) are a prerequisite for the full run but not

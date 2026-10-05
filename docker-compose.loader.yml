@@ -31,4 +31,4 @@ services:
       - jobs/backfill-courtlistener-federal.mjs
       - --snapshot-date=${SNAPSHOT_DATE:?SNAPSHOT_DATE is required}
       - --snapshot-dir=/snapshots/${SNAPSHOT_DATE:?SNAPSHOT_DATE is required}
-      - --max-database-gb=${JURVIO_BACKFILL_MAX_DATABASE_GB:-400}
+      - --max-database-gb=${JURVIO_BACKFILL_MAX_DATABASE_GB:-300}
