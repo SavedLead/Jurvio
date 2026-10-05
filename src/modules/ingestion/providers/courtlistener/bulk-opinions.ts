@@ -3,7 +3,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import https from "node:https";
 import type { ClientRequest } from "node:http";
 import { z } from "zod";
-import { bulkCsvProcessCompleted, parseBulkCsv, type BulkCsvSource } from "./bulk";
+import {
+  bulkCsvProcessCompleted,
+  bzip2Decompressor,
+  parseBulkCsv,
+  type BulkCsvSource,
+} from "./bulk";
 
 // CourtListener bulk-data schemas for the FREE public opinion export
 // (com-courtlistener-storage S3 bucket; no account, no API key, no rate limit).
@@ -175,10 +180,12 @@ export function bulkContentHash(value: string): string {
 const BULK_URL_REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
 // Stream a multi-GB `.bz2` bulk file straight from S3 over HTTPS, decompressing
-// through `bzip2 -dc` without ever landing the file on disk: the http response
-// is piped into bzip2's stdin and the decompressed CSV comes out of stdout.
+// through the bz2 decompressor (lbzip2 when installed) without ever landing the
+// file on disk: the http response is piped into its stdin and the decompressed CSV
+// comes out of stdout.
 export function openBulkCsvFromUrl(url: string): BulkCsvSource {
-  const decompressor: ChildProcessWithoutNullStreams = spawn("bzip2", ["-dc"], {
+  const tool = bzip2Decompressor();
+  const decompressor: ChildProcessWithoutNullStreams = spawn(tool.command, tool.args, {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let standardError = "";
@@ -226,7 +233,7 @@ export function openBulkCsvFromUrl(url: string): BulkCsvSource {
     },
     completion: new Promise<void>((resolve, reject) => {
       decompressor.once("error", (error) =>
-        reject(new Error(`bzip2 failed to start for ${url}: ${error.message}`)),
+        reject(new Error(`${tool.command} failed to start for ${url}: ${error.message}`)),
       );
       decompressor.once("close", (code) => {
         if (transportError !== null) {
@@ -234,7 +241,7 @@ export function openBulkCsvFromUrl(url: string): BulkCsvSource {
         } else if (bulkCsvProcessCompleted(code, closedByConsumer)) {
           resolve();
         } else {
-          reject(new Error(`bzip2 exited with code ${code}: ${standardError.trim()}`));
+          reject(new Error(`${tool.command} exited with code ${code}: ${standardError.trim()}`));
         }
       });
     }),

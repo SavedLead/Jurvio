@@ -1,0 +1,34 @@
+# Temporary bulk loader for the full federal CourtListener backfill (ADR 0075).
+# Runs on its own droplet (jurvio-loader-01) in the VPC, never on web-01, and
+# writes to PostgreSQL on web-01 over the private network. Destroy the droplet
+# when the backfill is verified. Runbook: docs/operations/full-federal-backfill.md
+#
+#   SNAPSHOT_DATE=2026-09-30 JURVIO_IMAGE=ghcr.io/... \
+#     docker compose -f docker-compose.loader.yml up --exit-code-from backfill
+#
+# Pilot or one stage: `docker compose -f docker-compose.loader.yml run --rm backfill
+#   node jobs/backfill-courtlistener-federal.mjs --snapshot-date=... --courts=ca1,mad`
+name: jurvio-loader
+
+services:
+  backfill:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    init: true
+    restart: "no"
+    # DATABASE_URL (web-01's VPC address), INGESTION_USER_AGENT. Never commit it.
+    env_file: .env.loader
+    environment:
+      TZ: America/New_York
+      NODE_ENV: production
+      # Empty means every core on this droplet.
+      JURVIO_BZIP2_THREADS: ${JURVIO_BZIP2_THREADS:-}
+    volumes:
+      - ${JURVIO_SNAPSHOT_ROOT:-/mnt/courtlistener}:/snapshots:ro
+    # SIGTERM finishes the batch in flight and commits its cursor; give it time.
+    stop_grace_period: 5m
+    command:
+      - node
+      - jobs/backfill-courtlistener-federal.mjs
+      - --snapshot-date=${SNAPSHOT_DATE:?SNAPSHOT_DATE is required}
+      - --snapshot-dir=/snapshots/${SNAPSHOT_DATE:?SNAPSHOT_DATE is required}
+      - --max-database-gb=${JURVIO_BACKFILL_MAX_DATABASE_GB:-400}

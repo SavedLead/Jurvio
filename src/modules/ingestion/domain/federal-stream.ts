@@ -163,6 +163,21 @@ export function orderFederalCourtsByPriority<T extends FederalCourtWorkload>(cou
   return [...courts].sort(compareFederalCourtPriority);
 }
 
+const PROVIDER_SCOPED_DOCKET_NUMBER = /^courtlistener-docket-\d+$/;
+
+/**
+ * Key for a CourtListener docket that carries no court docket number. It keeps
+ * such dockets distinct under the (court, docket_number) key, but it is not a
+ * number the court assigned, so it must never be presented as one.
+ */
+export function providerScopedDocketNumber(docketId: string): string {
+  return `courtlistener-docket-${docketId}`;
+}
+
+export function isProviderScopedDocketNumber(docketNumber: string): boolean {
+  return PROVIDER_SCOPED_DOCKET_NUMBER.test(docketNumber);
+}
+
 export function evaluateFederalPublicationCandidate(
   candidate: FederalPublicationCandidate,
 ): FederalPublicationDecision {
@@ -170,6 +185,11 @@ export function evaluateFederalPublicationCandidate(
   const restricted = isRestrictedDocketText(candidate.restrictedText);
   if (!candidate.caption.trim() || !candidate.docketNumber.trim()) {
     reasons.push("missing_stable_identity");
+  }
+  // Public pages print the docket number; hold until they can say "no docket
+  // number" instead of showing the internal key.
+  if (isProviderScopedDocketNumber(candidate.docketNumber.trim())) {
+    reasons.push("provider_scoped_docket_number");
   }
   if (!isFederalJurisdiction(candidate.courtJurisdiction)) {
     reasons.push("unverified_federal_court");

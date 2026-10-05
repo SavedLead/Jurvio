@@ -30,7 +30,9 @@ WORKDIR /app
 # image-only scans that have no text layer, which pdftotext alone cannot -- the
 # ~7,500 appellate opinions otherwise parked as "ocr_required". tesseract is free
 # and fully local, so this adds no per-page cost, only CPU time.
-RUN apk add --no-cache bzip2 poppler-utils tesseract-ocr tesseract-ocr-data-eng
+# lbzip2 decompresses one bz2 stream on every core (~5x bzip2 on the 2026-09-30
+# CourtListener opinions export); the bulk loaders prefer it and fall back to bzip2.
+RUN apk add --no-cache bzip2 lbzip2 poppler-utils tesseract-ocr tesseract-ocr-data-eng
 
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs

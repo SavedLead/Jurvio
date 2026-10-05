@@ -8,12 +8,15 @@ services:
     # scheduler child (each with its own pool) have aggregate connection headroom
     # for the higher-concurrency ingestion/publication lanes. Modest shared_buffers
     # bump for the resized box; both are safe well within 8 GB.
+    # JURVIO_PG_SHARED_BUFFERS (set in both .env and .env.production) raises it to
+    # ~25% of RAM when the droplet is resized for the federal backfill (ADR 0075);
+    # unset, the resolved command is unchanged, so no deploy recreates postgres.
     command:
       - "postgres"
       - "-c"
       - "max_connections=200"
       - "-c"
-      - "shared_buffers=512MB"
+      - "shared_buffers=${JURVIO_PG_SHARED_BUFFERS:-512MB}"
     env_file: .env.production
     environment:
       # Render timestamps in Eastern time (EST/EDT). Postgres stores timestamptz

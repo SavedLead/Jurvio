@@ -1,6 +1,8 @@
 # Full federal CourtListener backfill: topology, storage and load strategy
 
-Status: Proposed for David Rosenberg's approval (requested 2026-10-05).
+Status: Approved by David Rosenberg on 2026-10-05 ("Approved start with the code").
+Implementation: see "Implementation notes" at the end and the runbook,
+[docs/operations/full-federal-backfill.md](../operations/full-federal-backfill.md).
 
 Scope requested: every federal court in the CourtListener bulk snapshot, all
 years back to the 1700s, **including bankruptcy**, without degrading live
@@ -185,3 +187,85 @@ Snapshots are reproducible from Spaces. Imports resume after failure.
 - Public p95 latency on cached opinion pages regresses after launch.
 - PostgreSQL full-text search fails the ADR 0002 relevance or latency benchmark.
 - CourtListener changes the bulk format, cadence or license.
+
+## Implementation notes (2026-10-05)
+
+What was built, and where it deliberately differs from the decision text above.
+
+**Loader** (`src/modules/ingestion/application/bulk-backfill/`,
+`scripts/backfill-courtlistener-federal.ts`, migration `0116`):
+
+- Stages run dockets → clusters → citations → opinions from a local snapshot
+  directory whose `SHA256SUMS` comes from `scripts/fetch-courtlistener-snapshot.sh`.
+- No in-memory docket or cluster maps. The first-generation loader held every
+  matched docket in a JavaScript `Map`, and full federal scope is roughly three
+  quarters of all dockets. Docket and cluster membership now lives in the
+  database; a bitset of ids (~10 MB at CourtListener's id range) prefilters rows
+  so out-of-scope records are never parsed into objects.
+- Writes are set-based per batch: rows go in as one `jsonb_to_recordset`
+  parameter into a temp table, then one statement per target table. This
+  replaces the planned `COPY` path; it keeps one code path with ordinary
+  parameters, and measured throughput (below) did not justify the extra
+  complexity yet.
+- Each batch commits its stage cursor in the same transaction. A stop or crash
+  resumes at the last committed batch, and replays skip unchanged rows.
+- Provenance is one `raw_artifact` per snapshot file, with its SHA-256 and
+  Spaces mirror key. The row's provider id (docket, cluster or opinion)
+  locates it within the file. The per-opinion JSON upload to Spaces is gone;
+  the mirrored snapshot already holds those bytes.
+- `judicial_opinion.provider_metadata` keeps every opinion column except the
+  eight text renderings, recording which existed and their lengths.
+- Bulk never overwrites a cluster or opinion whose current source is the live
+  API, so those keep the provenance the publication checks require.
+- No per-row `outbox_event` or `publication_review`: tens of millions of bare
+  dockets would flood both, and the publication lanes select drafts directly.
+- Dockets with no docket number (about 6% of the sample, mostly historic) get
+  the key `courtlistener-docket-<id>`. The old loader would have merged every
+  such docket in a court into one case. Both automated publishers hold these
+  (`provider_scoped_docket_number`) until pages can show "no docket number".
+- The Supreme Court is excluded by default; its official-source lane keys cases
+  by term and citation, and CourtListener's SCOTUS dockets would duplicate them.
+- `lbzip2` is used when installed and added to the image; the CSV scanner was
+  rewritten to slice between delimiters. It produces output identical to the
+  old parser, checked by a randomized equivalence test and by matching hashes
+  over real 2026-09-30 data.
+
+**Infrastructure:**
+
+- PostgreSQL moves to the volume by mounting it at Docker's own path for the
+  `jurvio_postgres` volume. No compose change, so no workflow can point
+  PostgreSQL at a different data directory.
+- Load-window settings are reloadable (`ops/postgres/bulk-load-tuning.sql`, and
+  a reset file). Only `shared_buffers` needs a restart; it is now
+  `${JURVIO_PG_SHARED_BUFFERS:-512MB}`, which resolves to today's command when
+  unset.
+- `docker-compose.loader.yml` runs the job on the temporary loader droplet.
+
+**Measured on a 4-vCPU container with a local PostgreSQL 16, using real
+2026-09-30 data:**
+
+| Step | Result |
+|---|---|
+| Decompression, `lbzip2` vs `bzip2` (opinions) | ~165 MB/s vs ~32 MB/s |
+| CSV scan, new vs old parser (opinions) | ~83 MB/s vs ~22 MB/s |
+| Opinions file scan with prefilter, end to end | ~130 MB/s |
+| Docket merge | ~7,800 dockets/s; ~680 bytes per docket stored incl. indexes |
+| Opinion merge | ~300 opinions/s; ~26 KB per opinion stored incl. indexes |
+
+Per-opinion storage was about 20% HTML, 16% plain text, 16% the duplicate
+`opinion_search_projection.body`, 20% the `tsvector`, the rest indexes and
+metadata. Moving HTML to Spaces and dropping the duplicate body would save
+roughly a third. That touches five writers and the search query, so it is a
+separate change, to be decided with the pilot's numbers.
+
+**Not done here, and why:**
+
+- *Backups at scale* (section 5) are a prerequisite for the full run but not
+  for the pilot. `pg_dump | gzip` to web-01's root disk, keeping two copies,
+  will not fit the disk or the 90-minute job at the projected size. Separate PR.
+- *Edge caching* (section 4) does not affect the load and the site is not yet
+  indexable. Separate PR.
+- *People, citation-map, parentheticals and oral-argument files* are mirrored
+  but not loaded. The existing judges importer covers people; the citation map
+  would seed the citation graph and needs its own design.
+
