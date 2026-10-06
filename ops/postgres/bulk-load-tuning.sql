@@ -4,8 +4,10 @@
 --     psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 < ops/postgres/bulk-load-tuning.sql
 -- and undo with ops/postgres/bulk-load-tuning-reset.sql after the load.
 --
--- Values assume web-01 resized to 16 GB RAM with PostgreSQL on a block volume that
--- has at least 32 GB free beyond the database (max_wal_size can use 16 GB of WAL).
+-- Values fit web-01 as it is today (8 GB RAM, shared with the app, workers and
+-- the loader) with PostgreSQL on the block volume, which needs at least 32 GB free
+-- beyond the database (max_wal_size can use 16 GB of WAL). If web-01 is resized
+-- up for the load, raise maintenance_work_mem and effective_cache_size with it.
 
 -- Fewer, larger checkpoints: bulk writes otherwise force a checkpoint every few
 -- minutes and rewrite the same pages again and again.
@@ -16,8 +18,8 @@ ALTER SYSTEM SET checkpoint_completion_target = 0.9;
 ALTER SYSTEM SET wal_compression = on;
 
 -- Index builds and vacuums of tables with tens of millions of rows.
-ALTER SYSTEM SET maintenance_work_mem = '1GB';
-ALTER SYSTEM SET effective_cache_size = '11GB';
+ALTER SYSTEM SET maintenance_work_mem = '512MB';
+ALTER SYSTEM SET effective_cache_size = '5GB';
 
 -- Let autovacuum keep pace with the insert rate instead of falling behind and
 -- then running for hours against the largest tables.

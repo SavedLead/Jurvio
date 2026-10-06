@@ -1,10 +1,13 @@
-# Temporary bulk loader for the full federal CourtListener backfill (ADR 0075).
-# Runs on its own droplet (jurvio-loader-01) in the VPC, never on web-01, and
-# writes to PostgreSQL on web-01 over the private network. Destroy the droplet
-# when the backfill is verified. Runbook: docs/operations/full-federal-backfill.md
+# Bulk loader for the full federal CourtListener backfill (ADR 0075). Runs on
+# jurvio-web-01 next to PostgreSQL, as its own compose project so production
+# deploys never start, stop or recreate it. It joins the production network and
+# uses .env.production, so it needs no extra secrets. CPU and memory are capped so
+# PostgreSQL, the workers and the app keep their share of the box.
+# Runbook: docs/operations/full-federal-backfill.md
 #
+#   cd /opt/jurvio
 #   SNAPSHOT_DATE=2026-09-30 JURVIO_IMAGE=ghcr.io/... \
-#     docker compose -f docker-compose.loader.yml up --exit-code-from backfill
+#     docker compose -f docker-compose.loader.yml up -d
 #
 # Pilot or one stage: `docker compose -f docker-compose.loader.yml run --rm backfill
 #   node jobs/backfill-courtlistener-federal.mjs --snapshot-date=... --courts=ca1,mad`
@@ -14,16 +17,19 @@ services:
   backfill:
     image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
     init: true
+    # Never auto-restart: exit 75 can mean the database-size cap was reached, which
+    # needs a person. Transient database errors are already retried per batch.
     restart: "no"
-    # DATABASE_URL (web-01's VPC address), INGESTION_USER_AGENT. Never commit it.
-    env_file: .env.loader
+    env_file: .env.production
     environment:
       TZ: America/New_York
       NODE_ENV: production
-      # Empty means every core on this droplet.
-      JURVIO_BZIP2_THREADS: ${JURVIO_BZIP2_THREADS:-}
+      JURVIO_BZIP2_THREADS: ${JURVIO_BZIP2_THREADS:-2}
+    cpus: ${JURVIO_BACKFILL_CPUS:-2}
+    mem_limit: ${JURVIO_BACKFILL_MEMORY:-2g}
     volumes:
-      - ${JURVIO_SNAPSHOT_ROOT:-/mnt/courtlistener}:/snapshots:ro
+      - ${JURVIO_SNAPSHOT_ROOT:-/mnt/jurvio-data/courtlistener}:/snapshots:ro
+    networks: [jurvio_private]
     # SIGTERM finishes the batch in flight and commits its cursor; give it time.
     stop_grace_period: 5m
     command:
@@ -32,3 +38,8 @@ services:
       - --snapshot-date=${SNAPSHOT_DATE:?SNAPSHOT_DATE is required}
       - --snapshot-dir=/snapshots/${SNAPSHOT_DATE:?SNAPSHOT_DATE is required}
       - --max-database-gb=${JURVIO_BACKFILL_MAX_DATABASE_GB:-300}
+
+networks:
+  jurvio_private:
+    # The `private` network of the `jurvio` production project.
+    external: true

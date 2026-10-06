@@ -239,7 +239,8 @@ What was built, and where it deliberately differs from the decision text above.
   a reset file). Only `shared_buffers` needs a restart; it is now
   `${JURVIO_PG_SHARED_BUFFERS:-512MB}`, which resolves to today's command when
   unset.
-- `docker-compose.loader.yml` runs the job on the temporary loader droplet.
+- `docker-compose.loader.yml` runs the job on web-01 itself (see the
+  2026-10-06 amendment below).
 
 **Measured on a 4-vCPU container with a local PostgreSQL 16, using real
 2026-09-30 data:**
@@ -273,4 +274,27 @@ volume at 400 GB and caps the loader at 300 GB.
 - *People, citation-map, parentheticals and oral-argument files* are mirrored
   but not loaded. The existing judges importer covers people; the citation map
   would seed the citation graph and needs its own design.
+
+## Amendment (2026-10-06): no new droplet
+
+David Rosenberg asked to use the three existing droplets only. The temporary
+loader droplet (section 1) is dropped:
+
+- The loader runs on `jurvio-web-01` as a separate compose project
+  (`docker-compose.loader.yml`). It joins the production network, reads
+  `.env.production`, and is capped at 2 CPUs and 2 GB of memory by default, on
+  top of the batch-latency back-off.
+- `jurvio-builder-01` is not used: it serializes deploys, backups and restores,
+  and a multi-day job there would block them. `jurvio-public-01` keeps serving
+  the site.
+- The snapshot is downloaded to the same block volume as PostgreSQL
+  (`/mnt/jurvio-data/courtlistener`) and deleted after the load; Spaces keeps the
+  mirror. The volume is sized at 500 GB.
+- The web-01 resize becomes optional. Bulk-load settings default to today's
+  8 GB plan.
+
+Cost: no new compute. The trade-off is time. Sharing four vCPUs with live work,
+the load is expected to take 1–3 days instead of under one, to be confirmed by
+the pilot. The block volume is still required: web-01's own disk cannot hold the
+~170 GB of growth.
 
