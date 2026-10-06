@@ -19,6 +19,14 @@ export interface PublicCaseListItem {
   opinionAuthor: string | null;
   perCuriam: boolean;
   holding: string | null;
+  /** Verified, public judges assigned to the case as an opinion author. */
+  authorJudges: AuthorJudgeCandidate[];
+}
+
+export interface AuthorJudgeCandidate {
+  publicId: string;
+  displayName: string;
+  normalizedName: string;
 }
 
 interface PublicCaseRow {
@@ -42,6 +50,7 @@ interface PublicCaseDetailRow {
   opinionAuthor: string | null;
   perCuriam: boolean;
   holding: string | null;
+  authorJudges: AuthorJudgeCandidate[];
 }
 
 export interface CourtFacet {
@@ -254,6 +263,7 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
       opinionAuthor: detail?.opinionAuthor ?? null,
       perCuriam: detail?.perCuriam ?? false,
       holding: detail?.holding ?? null,
+      authorJudges: detail?.authorJudges ?? [],
     };
   });
 
@@ -271,7 +281,8 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
 /**
  * Loads the per-row details shown on the listing for one page of cases only, using
  * the same publication gates as the case page: the latest dated public docket
- * entry, the primary readable opinion's author, and the verified holding.
+ * entry, the primary readable opinion's author, the verified holding, and the
+ * verified public judges assigned to the case as opinion authors.
  */
 async function listPublicCaseDetails(sql: Sql, caseIds: string[]) {
   const rows = await sql<PublicCaseDetailRow[]>`
@@ -280,7 +291,27 @@ async function listPublicCaseDetails(sql: Sql, caseIds: string[]) {
       latest_entry.description AS "latestEntryDescription",
       primary_opinion.author_name AS "opinionAuthor",
       COALESCE(primary_opinion.per_curiam, false) AS "perCuriam",
-      enrichment.exact_holding AS holding
+      enrichment.exact_holding AS holding,
+      (
+        SELECT COALESCE(json_agg(json_build_object(
+          'publicId', judge.public_id,
+          'displayName', judge.display_name,
+          'normalizedName', judge.normalized_name
+        ) ORDER BY judge.public_id), '[]'::json)
+        FROM (
+          SELECT DISTINCT judge.public_id, judge.display_name, judge.normalized_name
+          FROM judge_case_assignment assignment
+          JOIN judge ON judge.id = assignment.judge_id
+          WHERE assignment.case_id = legal_case.id
+            AND assignment.assignment_role = 'opinion_author'
+            AND judge.verification = 'verified'
+            AND COALESCE((
+              SELECT decision.displayable FROM publication_decision decision
+              WHERE decision.object_type = 'judge' AND decision.object_id = judge.id
+              ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+            ), false)
+        ) judge
+      ) AS "authorJudges"
     FROM legal_case
     LEFT JOIN scotus_case_enrichment enrichment
       ON enrichment.case_id = legal_case.id AND enrichment.verification = 'verified'

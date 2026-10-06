@@ -74,6 +74,7 @@
 .caseMain { min-width: 0; }
 .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; color: var(--muted); font-size: 13px; }
 .court { color: #33405a; font-weight: 700; }
+.authorLink { font-weight: 650; }
 .mono { color: #33405a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 .caseRow h3 { margin: 8px 0; font-size: 24px; font-weight: 750; line-height: 1.25; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .caseRow h3 a { color: var(--ink); }
@@ -109,7 +110,20 @@
 .pageGroup { display: inline-flex; align-items: center; gap: 6px; }
 .gap { padding: 0 4px; }
 
+/* Loading skeleton */
+.skeleton { border-radius: 8px; background: linear-gradient(90deg, #eceff4 0%, #f6f7fa 50%, #eceff4 100%); background-size: 200% 100%; animation: skeletonShimmer 1.4s ease-in-out infinite; }
+.skeletonSearch { height: 56px; margin-top: 26px; border-radius: 10px; }
+.skeletonFilters { display: flex; flex-direction: column; gap: 24px; }
+.skeletonField { height: 64px; }
+.skeletonCount { width: 220px; height: 28px; }
+.skeletonMeta { width: 45%; height: 14px; }
+.skeletonTitle { width: 70%; height: 26px; margin: 12px 0; }
+.skeletonLine { width: 55%; height: 14px; }
+@keyframes skeletonShimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+
 @media (max-width: 900px) {
+  .skeletonFilters { display: none; }
   .layout { grid-template-columns: minmax(0, 1fr); gap: 20px; padding-top: 20px; }
   .filters { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
   .filters > summary { display: flex; align-items: center; min-height: 48px; padding: 0 16px; font-weight: 750; cursor: pointer; }
