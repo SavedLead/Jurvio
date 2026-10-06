@@ -1,0 +1,33 @@
+name: Actions migration infrastructure inventory
+on:
+  push:
+    branches: [ops/actions-cost-migration-20261006]
+    paths: [.github/workflows/actions-migration-inventory.yml]
+permissions:
+  contents: read
+concurrency:
+  group: actions-migration-inventory
+  cancel-in-progress: false
+jobs:
+  inventory:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 5
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+    steps:
+      - name: Inspect host capacity and DigitalOcean droplet inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner=$RUNNER_NAME user=$(id -un)"
+          nproc
+          free -m
+          df -h /
+          systemctl list-units 'actions.runner.*' --all --no-legend
+          if [ -z "$DO_TOKEN" ]; then
+            echo "::error::DigitalOcean credential unavailable"
+            exit 1
+          fi
+          curl -fsS --max-time 25 -H "Authorization: Bearer $DO_TOKEN" https://api.digitalocean.com/v2/droplets?per_page=200 |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps([{"name":x["name"],"id":x["id"],"status":x["status"],"memory":x["memory"],"vcpus":x["vcpus"],"networks":x["networks"]} for x in d["droplets"]],indent=2))'
