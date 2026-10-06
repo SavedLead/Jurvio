@@ -11,7 +11,8 @@ on:
     paths-ignore:
       - "**.md"
       - "scripts/diag/**"
-      - ".github/workflows/*-once.yml"
+      # Workflow-only changes are verified in PR CI; they do not change the app.
+      - ".github/workflows/**"
 
 permissions:
   contents: read
