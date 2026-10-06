@@ -1,0 +1,44 @@
+name: MyRanc team credential inventory
+on:
+  push:
+    branches: [ops/myranc-team-inventory-20261006]
+    paths: [.github/workflows/myranc-team-inventory-once.yml]
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+    steps:
+      - name: Resolve requested host and inspect repository credential team
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,socket,urllib.request,urllib.error
+          hostname="app.myranc.com"
+          try:
+              addresses=sorted({a[4][0] for a in socket.getaddrinfo(hostname,None)})
+              print("Requested host:",hostname,"DNS addresses:",addresses)
+          except OSError as e:
+              addresses=[]
+              print("DNS lookup failed:",type(e).__name__)
+          token=os.environ.get("DO_TOKEN","")
+          if not token:
+              print("Repository-level DigitalOcean credential is unavailable; production credential was not used.")
+              raise SystemExit(0)
+          request=urllib.request.Request("https://api.digitalocean.com/v2/droplets?per_page=200",headers={"Authorization":"Bearer "+token})
+          try:
+              with urllib.request.urlopen(request,timeout=25) as response:
+                  data=json.load(response)
+          except urllib.error.HTTPError as e:
+              print("Repository-level DigitalOcean credential HTTP status:",e.code)
+              raise SystemExit(0)
+          droplets=data.get("droplets",[])
+          for d in droplets:
+              public=[n["ip_address"] for n in d["networks"]["v4"] if n["type"]=="public"]
+              print(json.dumps({"name":d["name"],"id":d["id"],"status":d["status"],"memory":d["memory"],"vcpus":d["vcpus"],"public_addresses":public,"matches_requested_host":bool(set(addresses)&set(public))}))
+          print("Account droplets returned:",len(droplets))
+          PY
