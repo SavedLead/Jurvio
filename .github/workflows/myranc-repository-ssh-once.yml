@@ -1,0 +1,39 @@
+name: Check existing repository SSH credential for MyRanc
+on:
+  push:
+    branches: [ops/myranc-team-inventory-20261006]
+    paths: [.github/workflows/myranc-repository-ssh-once.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      CONFIGURED_USER: ${{ secrets.DO_USER }}
+    steps:
+      - name: Check the existing deployment identity without exposing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$SSH_KEY_B64" ]; then
+            echo "Repository-level deployment SSH key is unavailable."
+            exit 0
+          fi
+          keydir="$(mktemp -d)"
+          chmod 700 "$keydir"
+          trap 'rm -rf "$keydir"' EXIT
+          printf '%s' "$SSH_KEY_B64" | base64 --decode > "$keydir/key"
+          chmod 600 "$keydir/key"
+          ssh-keyscan -T 5 app.myranc.com > "$keydir/known_hosts" 2>/dev/null
+          chmod 600 "$keydir/known_hosts"
+          candidates=(forge)
+          if [ -n "$CONFIGURED_USER" ] && [ "$CONFIGURED_USER" != forge ]; then candidates+=("$CONFIGURED_USER"); fi
+          for ssh_user in "${candidates[@]}"; do
+            if timeout 20 ssh -i "$keydir/key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o UserKnownHostsFile="$keydir/known_hosts" -o StrictHostKeyChecking=yes "$ssh_user@app.myranc.com" 'hostname; id -un; nproc; free -m; df -h /; command -v node || true; command -v npm || true; command -v crontab || true' </dev/null; then
+              echo "Existing repository deployment identity is authorized on MyRanc."
+              exit 0
+            fi
+          done
+          echo "Existing repository deployment identity is not authorized on MyRanc."
