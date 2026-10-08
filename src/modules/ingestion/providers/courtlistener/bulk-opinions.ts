@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import https from "node:https";
-import type { ClientRequest } from "node:http";
+import http, { type ClientRequest } from "node:http";
 import { z } from "zod";
 import { bulkCsvProcessCompleted, parseBulkCsv, type BulkCsvSource } from "./bulk";
 
@@ -174,9 +174,26 @@ export function bulkContentHash(value: string): string {
 
 const BULK_URL_REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
-// Stream a multi-GB `.bz2` bulk file straight from S3 over HTTPS, decompressing
-// through `bzip2 -dc` without ever landing the file on disk: the http response
-// is piped into bzip2's stdin and the decompressed CSV comes out of stdout.
+// How many consecutive reconnection attempts that make NO forward progress are
+// tolerated before giving up. The budget is reset to this value whenever a
+// connection delivers at least one new byte, so a long run that drops and resumes
+// many times (each time making progress) can continue indefinitely; only a stream
+// that is genuinely wedged -- this many reconnects in a row with zero bytes -- fails.
+const BULK_STREAM_MAX_STALLED_RECONNECTS = 20;
+
+// Stream a multi-GB `.bz2` bulk file straight from S3, decompressing through
+// `bzip2 -dc` without ever landing the file on disk: the HTTP response bytes are
+// fed into bzip2's stdin and the decompressed CSV comes out of stdout.
+//
+// RESILIENCE: a single HTTP connection held open for a multi-hour federal pass is
+// routinely aborted by S3 / the network ("aborted" / ECONNRESET) long before the
+// multi-GB body finishes. Rather than lose the whole pass, we track how many
+// compressed bytes have been handed to bzip2 and, on any mid-stream drop, reconnect
+// with a `Range: bytes=<received>-` request and keep feeding the SAME decompressor.
+// bzip2 consumes one continuous compressed byte stream and is indifferent to HTTP
+// connection boundaries, so its decode state is preserved across reconnects and the
+// output is identical to an uninterrupted download. (http:// is honored too, for
+// tests; production uses https://.)
 export function openBulkCsvFromUrl(url: string): BulkCsvSource {
   const decompressor: ChildProcessWithoutNullStreams = spawn("bzip2", ["-dc"], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -184,38 +201,138 @@ export function openBulkCsvFromUrl(url: string): BulkCsvSource {
   let standardError = "";
   let transportError: string | null = null;
   let closedByConsumer = false;
+  let stdinSettled = false;
   let activeRequest: ClientRequest | undefined;
+  let received = 0; // compressed bytes already written to bzip2 stdin
+  let total: number | null = null; // full compressed length, once a response reveals it
+  let reconnectsLeft = BULK_STREAM_MAX_STALLED_RECONNECTS;
+
   decompressor.stderr.setEncoding("utf8");
   decompressor.stderr.on("data", (chunk: string) => {
     standardError += chunk;
   });
 
+  // Error terminal: record the first error and tear down the decompressor so
+  // `completion` rejects with it.
   const fail = (message: string) => {
     if (transportError === null) transportError = message;
-    decompressor.stdin.destroy();
+    if (!stdinSettled) {
+      stdinSettled = true;
+      decompressor.stdin.destroy();
+    }
+  };
+  // Success terminal: the full body has been delivered; flush and close stdin so
+  // bzip2 finishes cleanly.
+  const finish = () => {
+    if (!stdinSettled) {
+      stdinSettled = true;
+      decompressor.stdin.end();
+    }
   };
 
-  const request = (target: string, redirectsLeft: number): void => {
-    activeRequest = https.get(target, (response) => {
+  const scheduleResume = (reason: string): void => {
+    if (closedByConsumer || stdinSettled) return;
+    if (total === null || reconnectsLeft <= 0) {
+      fail(
+        `${reason}; cannot resume (received=${received}, total=${total ?? "unknown"}, ` +
+          `reconnectsLeft=${reconnectsLeft})`,
+      );
+      return;
+    }
+    reconnectsLeft -= 1;
+    const backoffMs = Math.min(8000, 500 * (BULK_STREAM_MAX_STALLED_RECONNECTS - reconnectsLeft));
+    setTimeout(() => {
+      if (!closedByConsumer && !stdinSettled) connect(url, 5);
+    }, backoffMs);
+  };
+
+  const connect = (target: string, redirectsLeft: number): void => {
+    if (closedByConsumer || stdinSettled) return;
+    let connectionSettled = false; // at most one terminal action per connection
+    const client = target.startsWith("http:") ? http : https;
+    const headers: Record<string, string> = {};
+    if (received > 0) headers.Range = `bytes=${received}-`;
+
+    activeRequest = client.get(target, { headers }, (response) => {
       const status = response.statusCode ?? 0;
       const location = response.headers.location;
       if (BULK_URL_REDIRECT_CODES.has(status) && location && redirectsLeft > 0) {
+        connectionSettled = true; // handed off to the redirect target
         response.resume();
-        request(new URL(location, target).toString(), redirectsLeft - 1);
+        connect(new URL(location, target).toString(), redirectsLeft - 1);
         return;
       }
-      if (status !== 200) {
+      // We asked to resume from an offset but the server ignored Range and is
+      // replaying from byte 0: we cannot splice that into the in-flight decoder.
+      if (received > 0 && status === 200) {
+        connectionSettled = true;
+        response.resume();
+        fail(`server ignored Range (HTTP 200) resuming ${target} at byte ${received}`);
+        return;
+      }
+      if (status !== 200 && status !== 206) {
+        connectionSettled = true;
         response.resume();
         fail(`HTTP ${status} ${response.statusMessage ?? ""} for ${target}`.trim());
         return;
       }
-      response.on("error", (error) => fail(`HTTP stream error for ${target}: ${error.message}`));
-      response.pipe(decompressor.stdin);
+      if (total === null) {
+        if (status === 200) {
+          const length = Number(response.headers["content-length"]);
+          if (Number.isFinite(length) && length > 0) total = length;
+        } else {
+          // 206: Content-Range is "bytes <start>-<end>/<total>".
+          const contentRange = response.headers["content-range"];
+          const match = contentRange ? /\/(\d+)\s*$/.exec(contentRange) : null;
+          if (match) total = Number(match[1]);
+        }
+      }
+
+      let progressed = false;
+      response.on("data", (chunk: Buffer) => {
+        if (closedByConsumer || stdinSettled) return;
+        received += chunk.length;
+        if (!progressed) {
+          progressed = true;
+          reconnectsLeft = BULK_STREAM_MAX_STALLED_RECONNECTS; // forward progress resets the budget
+        }
+        if (!decompressor.stdin.write(chunk)) {
+          response.pause();
+          decompressor.stdin.once("drain", () => {
+            if (!closedByConsumer && !stdinSettled) response.resume();
+          });
+        }
+      });
+      response.on("end", () => {
+        if (connectionSettled) return;
+        connectionSettled = true;
+        if (closedByConsumer || stdinSettled) return;
+        if (total !== null && received < total) {
+          scheduleResume(`stream ended early at ${received}/${total} for ${target}`);
+        } else {
+          finish();
+        }
+      });
+      const onBroken = (reason: string) => {
+        if (connectionSettled) return;
+        connectionSettled = true;
+        scheduleResume(reason);
+      };
+      response.on("aborted", () =>
+        onBroken(`HTTP stream aborted for ${target} at ${received}/${total ?? "unknown"}`),
+      );
+      response.on("error", (error) =>
+        onBroken(`HTTP stream error for ${target}: ${error.message}`),
+      );
     });
-    activeRequest.on("error", (error) => fail(`HTTP request error for ${target}: ${error.message}`));
+    activeRequest.on("error", (error) => {
+      if (connectionSettled) return;
+      connectionSettled = true;
+      scheduleResume(`HTTP request error for ${target}: ${error.message}`);
+    });
   };
 
-  request(url, 5);
+  connect(url, 5);
 
   return {
     stream: decompressor.stdout,
