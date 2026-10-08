@@ -150,6 +150,24 @@ const CASE_PUBLICATION_CANDIDATE = {
 };
 
 /**
+ * The in-range rule a bulk opinion-cluster must satisfy to be ingested: it is kept
+ * unless it carries a parseable filing year strictly before `minYear`. A cluster
+ * with no (or an unparseable) filing date is kept, matching the loader's long-
+ * standing behavior.
+ *
+ * Both the Pass A0 docket pre-scan and the Pass B cluster-persist step call this, so
+ * they decide "in range" identically. That lockstep is what makes the Pass A0 memory
+ * optimization behavior-preserving: a docket is retained in Pass A iff some cluster
+ * Pass B would actually keep points at it. `dateFiled` is the already-normalized
+ * value from {@link safeDate} (an ISO date string, or null).
+ */
+export function bulkClusterWithinMinYear(dateFiled: string | null, minYear: number): boolean {
+  if (!dateFiled) return true;
+  const year = Number(dateFiled.slice(0, 4));
+  return !(Number.isFinite(year) && year < minYear);
+}
+
+/**
  * Generic CourtListener bulk-opinion loader. The docket filter is the provided
  * `options.courtCodes` set and `options.lane` labels the object keys and
  * response_metadata; the appellate and federal loaders are thin wrappers that
@@ -530,13 +548,31 @@ export async function ingestCourtListenerBulkOpinions(
     });
   };
 
-  // Pass A: keep only dockets whose court is in the selected code set.
+  // Pass A0: record the ids of dockets that are actually referenced by a cluster we
+  // would keep, applying the SAME in-range rule Pass B uses below. A docket matters
+  // only if some kept cluster points at it, so this lets Pass A retain just those
+  // dockets instead of every docket for the selected courts. That difference is the
+  // whole ballgame for the federal lane: the dockets bulk file holds millions of
+  // opinion-less PACER district dockets, and loading them all would blow the Node
+  // heap (and could OOM the box's postgres). The id set is bounded by the opinion
+  // corpus we are ingesting -- far smaller than the full docket space -- and is
+  // freed as soon as Pass A finishes. (The appellate lane keeps only 13 courts, so
+  // this is a no-op win there; output is identical either way.)
+  const referencedDocketIds = new Set<string>();
+  for await (const row of readBulkOpinionClusters(openBulkCsvFromUrl(urls.clusters))) {
+    if (!bulkClusterWithinMinYear(safeDate(row.date_filed), minYear)) continue;
+    referencedDocketIds.add(row.docket_id);
+  }
+
+  // Pass A: keep only dockets whose court is in the selected code set AND that an
+  // in-range cluster actually references (see Pass A0).
   const dockets = new Map<string, DocketRef>();
   {
     const source = openBulkCsvFromUrl(urls.dockets);
     try {
       for await (const row of parseBulkCsv(source.stream, courtListenerBulkDocketSchema)) {
         if (!courtCodes.has(row.court_id)) continue;
+        if (!referencedDocketIds.has(row.id)) continue;
         dockets.set(row.id, {
           courtCode: row.court_id,
           docketNumber: row.docket_number,
@@ -549,6 +585,8 @@ export async function ingestCourtListenerBulkOpinions(
       source.close();
     }
   }
+  // The referenced-id set is no longer needed; release it before the heavier passes.
+  referencedDocketIds.clear();
 
   // Pass B: eager-persist every matched cluster (and its case) and retain only the
   // minimal join facts. The full parsed row lands in provider_metadata at write
@@ -557,8 +595,7 @@ export async function ingestCourtListenerBulkOpinions(
   for await (const row of readBulkOpinionClusters(openBulkCsvFromUrl(urls.clusters))) {
     const docket = dockets.get(row.docket_id);
     if (!docket) continue;
-    const dateFiled = safeDate(row.date_filed);
-    if (dateFiled && Number(dateFiled.slice(0, 4)) < minYear) continue;
+    if (!bulkClusterWithinMinYear(safeDate(row.date_filed), minYear)) continue;
 
     const facts = clusterFacts(row, docket);
     await ensureCase(facts.docketId, docket);

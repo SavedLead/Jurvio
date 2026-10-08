@@ -150,7 +150,12 @@ jobs:
           set -- --snapshot-date="$SNAPSHOT" --min-year="$MIN_YEAR"
           [ -n "$LIMIT" ] && set -- "$@" --limit="$LIMIT"
           [ "$INCLUDE_BANKRUPTCY" = "true" ] && set -- "$@" --include-bankruptcy
-          sudo -n docker exec "$worker" node jobs/ingest-courtlistener-bulk-federal.mjs "$@"
+          # Cap the Node heap so a pathological pass fails THIS job cleanly instead of
+          # growing until the kernel OOM-kills postgres on the shared 16 GB box. 8 GiB
+          # leaves comfortable headroom for postgres + the resident workers; the fixed
+          # loader's working set is a small fraction of this.
+          sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
+            node jobs/ingest-courtlistener-bulk-federal.mjs "$@"
 
           echo "=== Disk after ==="
           df -h / | tail -1
