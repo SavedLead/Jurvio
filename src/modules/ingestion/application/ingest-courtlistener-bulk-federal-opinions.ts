@@ -16,6 +16,9 @@ export interface BulkFederalOpinionOptions {
   snapshotDate: string;
   baseUrl?: string;
   minYear?: number;
+  /** Inclusive upper bound on cluster filing year; undefined = no upper bound. Used
+   * to run the federal corpus in bounded year windows (see the generic loader). */
+  maxYear?: number;
   limit?: number;
   /**
    * Include federal bankruptcy courts ({FB, FBP}) in the court-code set. Bankruptcy
@@ -73,6 +76,7 @@ export async function ingestCourtListenerBulkFederalOpinions(
     snapshotDate: options.snapshotDate,
     baseUrl,
     minYear: options.minYear,
+    maxYear: options.maxYear,
     limit: options.limit,
     onProgress: options.onProgress,
     courtCodes,

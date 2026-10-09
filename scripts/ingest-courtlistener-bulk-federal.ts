@@ -27,6 +27,8 @@ function booleanFlag(name: string): boolean {
 const snapshotDate = argument("snapshot-date", "").trim();
 const baseUrl = argument("base-url", DEFAULT_BULK_BASE_URL).trim();
 const minYear = Number(argument("min-year", "1900"));
+const maxYearRaw = optionalArgument("max-year");
+const maxYear = maxYearRaw === undefined ? undefined : Number(maxYearRaw);
 const limitRaw = optionalArgument("limit");
 const limit = limitRaw === undefined ? undefined : Number(limitRaw);
 const includeBankruptcy = booleanFlag("include-bankruptcy");
@@ -36,6 +38,12 @@ if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) {
 }
 if (!Number.isInteger(minYear) || minYear < 1700 || minYear > 2100) {
   throw new Error("--min-year must be an integer from 1700 to 2100");
+}
+if (maxYear !== undefined && (!Number.isInteger(maxYear) || maxYear < 1700 || maxYear > 2100)) {
+  throw new Error("--max-year must be an integer from 1700 to 2100");
+}
+if (maxYear !== undefined && maxYear < minYear) {
+  throw new Error("--max-year must be >= --min-year");
 }
 if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
   throw new Error("--limit must be a positive integer");
@@ -55,6 +63,7 @@ try {
     snapshotDate,
     baseUrl,
     minYear,
+    maxYear,
     limit,
     includeBankruptcy,
     onProgress: ({ opinionsWritten, opinionsSkipped }) => {
@@ -72,6 +81,7 @@ try {
     snapshotDate,
     baseUrl,
     minYear,
+    maxYear: maxYear ?? null,
     limit: limit ?? null,
     ...result,
   }));

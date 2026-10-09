@@ -32,6 +32,12 @@ export interface BulkAppellateOpinionOptions {
   snapshotDate: string;
   baseUrl?: string;
   minYear?: number;
+  /**
+   * Inclusive upper bound on cluster filing year. Left undefined there is no upper
+   * bound. Used to slice a very large lane (the federal corpus) into bounded
+   * year-window runs so each run finishes in a few hours instead of a day-plus.
+   */
+  maxYear?: number;
   limit?: number;
   onProgress?: (progress: { opinionsWritten: number; opinionsSkipped: number }) => void;
 }
@@ -151,9 +157,10 @@ const CASE_PUBLICATION_CANDIDATE = {
 
 /**
  * The in-range rule a bulk opinion-cluster must satisfy to be ingested: it is kept
- * unless it carries a parseable filing year strictly before `minYear`. A cluster
- * with no (or an unparseable) filing date is kept, matching the loader's long-
- * standing behavior.
+ * unless it carries a parseable filing year outside [minYear, maxYear]. A cluster
+ * with no (or an unparseable) filing date is always kept, matching the loader's
+ * long-standing behavior -- and, for year-windowed runs, that means undated clusters
+ * are (idempotently) revisited by every window rather than being dropped.
  *
  * Both the Pass A0 docket pre-scan and the Pass B cluster-persist step call this, so
  * they decide "in range" identically. That lockstep is what makes the Pass A0 memory
@@ -161,10 +168,23 @@ const CASE_PUBLICATION_CANDIDATE = {
  * Pass B would actually keep points at it. `dateFiled` is the already-normalized
  * value from {@link safeDate} (an ISO date string, or null).
  */
-export function bulkClusterWithinMinYear(dateFiled: string | null, minYear: number): boolean {
+export function bulkClusterWithinYearRange(
+  dateFiled: string | null,
+  minYear: number,
+  maxYear: number,
+): boolean {
   if (!dateFiled) return true;
   const year = Number(dateFiled.slice(0, 4));
-  return !(Number.isFinite(year) && year < minYear);
+  if (!Number.isFinite(year)) return true;
+  return year >= minYear && year <= maxYear;
+}
+
+/**
+ * Lower-bound-only convenience retained for existing callers/tests: equivalent to
+ * {@link bulkClusterWithinYearRange} with no upper bound.
+ */
+export function bulkClusterWithinMinYear(dateFiled: string | null, minYear: number): boolean {
+  return bulkClusterWithinYearRange(dateFiled, minYear, Number.MAX_SAFE_INTEGER);
 }
 
 /**
@@ -185,6 +205,7 @@ export async function ingestCourtListenerBulkOpinions(
   }
   const snapshotDate = options.snapshotDate;
   const minYear = options.minYear ?? 1900;
+  const maxYear = options.maxYear ?? Number.MAX_SAFE_INTEGER;
   const limit = options.limit;
   const lane = options.lane;
   const courtCodes = options.courtCodes;
@@ -560,7 +581,7 @@ export async function ingestCourtListenerBulkOpinions(
   // this is a no-op win there; output is identical either way.)
   const referencedDocketIds = new Set<string>();
   for await (const row of readBulkOpinionClusters(openBulkCsvFromUrl(urls.clusters))) {
-    if (!bulkClusterWithinMinYear(safeDate(row.date_filed), minYear)) continue;
+    if (!bulkClusterWithinYearRange(safeDate(row.date_filed), minYear, maxYear)) continue;
     referencedDocketIds.add(row.docket_id);
   }
 
@@ -595,7 +616,7 @@ export async function ingestCourtListenerBulkOpinions(
   for await (const row of readBulkOpinionClusters(openBulkCsvFromUrl(urls.clusters))) {
     const docket = dockets.get(row.docket_id);
     if (!docket) continue;
-    if (!bulkClusterWithinMinYear(safeDate(row.date_filed), minYear)) continue;
+    if (!bulkClusterWithinYearRange(safeDate(row.date_filed), minYear, maxYear)) continue;
 
     const facts = clusterFacts(row, docket);
     await ensureCase(facts.docketId, docket);

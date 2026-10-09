@@ -30,6 +30,11 @@ on:
         required: false
         default: "1900"
         type: string
+      max_year:
+        description: "Latest cluster filing year to ingest (blank = no upper bound). Set to run bounded year windows."
+        required: false
+        default: ""
+        type: string
       limit:
         description: "Cap opinions written (blank = no cap = full backfill; set for a smoke test)"
         required: false
@@ -65,6 +70,7 @@ jobs:
       DB_HOST: 10.116.0.2
       SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
       MIN_YEAR: ${{ inputs.min_year }}
+      MAX_YEAR: ${{ inputs.max_year }}
       LIMIT: ${{ inputs.limit }}
       INCLUDE_BANKRUPTCY: ${{ inputs.include_bankruptcy }}
       SERVICE: ${{ inputs.service }}
@@ -88,6 +94,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$MIN_YEAR" in ''|*[!0-9]*) echo "::error::min_year must be numeric"; exit 1;; esac
+          if [ -n "$MAX_YEAR" ]; then
+            case "$MAX_YEAR" in ''|*[!0-9]*) echo "::error::max_year must be numeric or empty"; exit 1;; esac
+          fi
           if [ -n "$SNAPSHOT_DATE" ]; then
             case "$SNAPSHOT_DATE" in
               [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
@@ -102,9 +111,9 @@ jobs:
           # Pass inputs as env (not positional args): an empty snapshot_date would be
           # dropped by ssh's remote re-split, shifting args and tripping set -u.
           ssh "$INGESTION_USER@$DB_HOST" \
-            "SNAPSHOT_DATE='$SNAPSHOT_DATE' MIN_YEAR='$MIN_YEAR' LIMIT='$LIMIT' INCLUDE_BANKRUPTCY='$INCLUDE_BANKRUPTCY' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' MIN_YEAR='$MIN_YEAR' MAX_YEAR='$MAX_YEAR' LIMIT='$LIMIT' INCLUDE_BANKRUPTCY='$INCLUDE_BANKRUPTCY' SERVICE='$SERVICE' bash -se" <<'REMOTE'
           set -euo pipefail
-          SNAPSHOT="${SNAPSHOT_DATE:-}"; MIN_YEAR="${MIN_YEAR:-1900}"; LIMIT="${LIMIT:-}"
+          SNAPSHOT="${SNAPSHOT_DATE:-}"; MIN_YEAR="${MIN_YEAR:-1900}"; MAX_YEAR="${MAX_YEAR:-}"; LIMIT="${LIMIT:-}"
           INCLUDE_BANKRUPTCY="${INCLUDE_BANKRUPTCY:-false}"; SERVICE="${SERVICE:-worker-core}"
           BUCKET="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
           find_svc() { sudo -n docker ps \
@@ -146,8 +155,9 @@ jobs:
             "SELECT 'legal_case=' || count(*) FROM legal_case
              UNION ALL SELECT 'published=' || count(*) FROM legal_case WHERE publication='published';" 2>/dev/null || echo "(baseline query failed)"
 
-          echo "=== CourtListener bulk FEDERAL ingest (snapshot ${SNAPSHOT}, min-year ${MIN_YEAR}, limit ${LIMIT:-none}, bankruptcy ${INCLUDE_BANKRUPTCY}) ==="
+          echo "=== CourtListener bulk FEDERAL ingest (snapshot ${SNAPSHOT}, min-year ${MIN_YEAR}, max-year ${MAX_YEAR:-none}, limit ${LIMIT:-none}, bankruptcy ${INCLUDE_BANKRUPTCY}) ==="
           set -- --snapshot-date="$SNAPSHOT" --min-year="$MIN_YEAR"
+          [ -n "$MAX_YEAR" ] && set -- "$@" --max-year="$MAX_YEAR"
           [ -n "$LIMIT" ] && set -- "$@" --limit="$LIMIT"
           [ "$INCLUDE_BANKRUPTCY" = "true" ] && set -- "$@" --include-bankruptcy
           # Cap the Node heap so a pathological pass fails THIS job cleanly instead of
