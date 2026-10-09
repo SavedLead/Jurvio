@@ -1,0 +1,86 @@
+name: Create federal dedup index (once)
+
+# Creates the expression index that backs the ensureCase normalized-docket dedup
+# lookup, which the diagnostic proved was a 1.5s full seq scan of legal_case per
+# case (the federal write bottleneck). Built CONCURRENTLY so the live site is NOT
+# locked while the 612k-row index builds. Idempotent (IF NOT EXISTS). The matching
+# migration 0117 records it for fresh environments and no-ops here.
+#
+# Runs on the self-hosted builder over the private VPC, like the other *-once
+# controls. The index expression is IMMUTABLE (lower + regexp_replace) and matches
+# the dedup query exactly, so the planner can use it.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-create-federal-dedup-index
+  cancel-in-progress: false
+
+jobs:
+  create-index:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Create index CONCURRENTLY over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no postgres container"; exit 1; }
+          # psql -c runs in autocommit (no explicit txn), so CREATE INDEX CONCURRENTLY is allowed.
+          psql() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 "$@"; }
+
+          echo "=== Pre-check: any existing/invalid dedup index? ==="
+          psql -Atc "SELECT indexrelid::regclass::text, indisvalid
+                     FROM pg_index WHERE indexrelid = 'legal_case_normalized_docket_idx'::regclass" 2>/dev/null \
+            || echo "(no existing index named legal_case_normalized_docket_idx)"
+
+          echo "=== CREATE INDEX CONCURRENTLY (no table lock; may take ~1 min on 612k rows) ==="
+          psql -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS legal_case_normalized_docket_idx
+                   ON legal_case (lower(regexp_replace(docket_number, '[^a-zA-Z0-9]', '', 'g')));"
+
+          echo "=== Verify index is valid and show its size ==="
+          psql -Atc "SELECT indisvalid FROM pg_index WHERE indexrelid = 'legal_case_normalized_docket_idx'::regclass;"
+          psql -Atc "SELECT pg_size_pretty(pg_relation_size('legal_case_normalized_docket_idx'));"
+
+          echo "=== Confirm the dedup lookup now uses the index (EXPLAIN ANALYZE) ==="
+          psql -c "EXPLAIN (ANALYZE, BUFFERS, SUMMARY)
+            SELECT legal_case.id
+            FROM legal_case
+            JOIN court ON court.id = legal_case.court_id
+            WHERE lower(coalesce(court.provider_court_id,'')) = lower('cand')
+              AND lower(regexp_replace(legal_case.docket_number,'[^a-zA-Z0-9]','','g'))
+                = lower(regexp_replace('3:20-cv-09999-TEST','[^a-zA-Z0-9]','','g'))
+            ORDER BY (legal_case.verification='verified') DESC,
+                     (legal_case.publication='published') DESC, legal_case.created_at
+            LIMIT 2;"
+          echo "=== DONE ==="
+          REMOTE
