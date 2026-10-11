@@ -89,6 +89,13 @@ jobs:
                  || ' last_finished=' || coalesce(max(import_finished_at)::text,'(none)')
              FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';"
 
+          echo "=== extraction progress (chunks + matched records + newest extraction) ==="
+          q "SELECT 'chunks=' || count(*)
+                 || ' matched_records=' || coalesce(sum(record_count),0)
+                 || ' newest_extracted=' || coalesce(to_char(max(extracted_at),'MM-DD HH24:MI:SS'),'(none)')
+                 || ' age_s=' || coalesce(round(extract(epoch FROM now()-max(extracted_at)))::text,'(none)')
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';"
+
           echo "=== recent failures (last_error) ==="
           q "SELECT chunk_key || ': ' || left(coalesce(last_error,''),160)
              FROM federal_import_chunk
@@ -106,6 +113,15 @@ jobs:
             sudo -n docker exec "$worker" sh -lc "tail -n 15 '$logf'" || echo "(tail failed)"
           else
             echo "(no import logfile yet)"
+          fi
+
+          echo "=== newest extract logfile tail (detached census) ==="
+          elogf="$(sudo -n docker exec "$worker" sh -lc 'ls -t /var/lib/jurvio/artifacts/federal-chunks/extract-*.log 2>/dev/null | head -1' || true)"
+          if [ -n "$elogf" ]; then
+            echo "logfile: $elogf"
+            sudo -n docker exec "$worker" sh -lc "tail -n 15 '$elogf'" || echo "(tail failed)"
+          else
+            echo "(no extract logfile yet)"
           fi
           echo "=== DONE ==="
           REMOTE

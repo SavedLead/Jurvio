@@ -37,6 +37,11 @@ on:
         required: false
         default: "/var/lib/jurvio/federal-chunks"
         type: string
+      detached:
+        description: "Run the extractor detached on the box (frees the builder; output tees to a persistent logfile that survives workflow cancellation)"
+        required: false
+        default: false
+        type: boolean
       service:
         description: "Worker container to run in"
         required: false
@@ -64,6 +69,7 @@ jobs:
       SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
       CHUNK_SIZE: ${{ inputs.chunk_size }}
       OUT_DIR: ${{ inputs.out_dir }}
+      DETACHED: ${{ inputs.detached }}
       SERVICE: ${{ inputs.service }}
     steps:
       - name: Configure SSH
@@ -92,12 +98,13 @@ jobs:
             esac
           fi
           case "$OUT_DIR" in /*) ;; *) echo "::error::out_dir must be an absolute path"; exit 1;; esac
+          case "$DETACHED" in true|false) ;; *) echo "::error::detached must be true/false"; exit 1;; esac
           case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
           ssh "$INGESTION_USER@$DB_HOST" \
-            "SNAPSHOT_DATE='$SNAPSHOT_DATE' CHUNK_SIZE='$CHUNK_SIZE' OUT_DIR='$OUT_DIR' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' CHUNK_SIZE='$CHUNK_SIZE' OUT_DIR='$OUT_DIR' DETACHED='$DETACHED' SERVICE='$SERVICE' bash -se" <<'REMOTE'
           set -euo pipefail
           SNAPSHOT="${SNAPSHOT_DATE:-}"; CHUNK_SIZE="${CHUNK_SIZE:-25000}"
-          OUT_DIR="${OUT_DIR:-/var/lib/jurvio/federal-chunks}"; SERVICE="${SERVICE:-worker-core}"
+          OUT_DIR="${OUT_DIR:-/var/lib/jurvio/federal-chunks}"; DETACHED="${DETACHED:-false}"; SERVICE="${SERVICE:-worker-core}"
           BUCKET="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
           find_svc() { sudo -n docker ps \
             --filter 'label=com.docker.compose.project=jurvio' \
@@ -135,9 +142,25 @@ jobs:
                  || ' completed=' || count(*) FILTER (WHERE status='completed')
              FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';" 2>/dev/null || echo "(ledger query failed)"
 
-          echo "=== Extract chunks (snapshot ${SNAPSHOT}, chunk-size ${CHUNK_SIZE}, out ${OUT_DIR}) ==="
+          echo "=== Extract chunks (snapshot ${SNAPSHOT}, chunk-size ${CHUNK_SIZE}, out ${OUT_DIR}, detached ${DETACHED}) ==="
           # 8 GiB heap cap: the only large structure is the ingested-cluster id Set; this
           # leaves comfortable headroom alongside postgres + resident workers on the 16 GB box.
+          if [ "$DETACHED" = "true" ]; then
+            # Launch detached inside the container so this SSH step (and the builder) returns
+            # immediately and the scan is not tied to the GitHub run (a cancelled run no longer
+            # orphans a scanner writing to a dead stdout). Output tees to a persistent logfile
+            # on the artifacts volume, so the final split-done totals survive regardless.
+            # The splitter's advisory lock still guarantees only one scanner runs at a time.
+            LOG="/var/lib/jurvio/artifacts/federal-chunks/extract-${SNAPSHOT}.log"
+            sudo -n docker exec "$worker" sh -lc "mkdir -p /var/lib/jurvio/artifacts/federal-chunks"
+            sudo -n docker exec -d -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
+              sh -lc "echo \"=== extract start \$(date -u +%FT%TZ) snapshot ${SNAPSHOT} chunk-size ${CHUNK_SIZE} ===\" >> '$LOG'; node jobs/split-federal-opinions.mjs --snapshot-date='$SNAPSHOT' --chunk-size='$CHUNK_SIZE' --out-dir='$OUT_DIR' >> '$LOG' 2>&1"
+            echo "detached extractor launched; logfile in container: $LOG"
+            echo "inspect progress with: diagnose-federal-chunk-progress-once (snapshot ${SNAPSHOT})"
+            echo "=== DONE (detached) ==="
+            exit 0
+          fi
+
           sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
             node jobs/split-federal-opinions.mjs \
               --snapshot-date="$SNAPSHOT" --chunk-size="$CHUNK_SIZE" --out-dir="$OUT_DIR"
