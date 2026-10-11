@@ -1,0 +1,129 @@
+name: Verify federal import (once, read-only)
+
+# Hard verification for the chunked federal import, over the private VPC. Read-only.
+# 1) Ledger forensics: how many chunks exist, by status and by storage location
+#    (persistent artifacts volume vs the old container-overlay path) and when they were
+#    extracted -- this explains how the ledger came to hold the chunk count it does.
+# 2) Record completeness for ONE completed chunk: pull that chunk's opinion ids from its
+#    file and confirm each has judicial_opinion + document + document_content +
+#    opinion_search_projection rows, and split INSERTS vs UPDATES by created_at.
+# 3) Coverage: ingested CourtListener clusters + opinions, and ledger import totals.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD"
+        required: false
+        default: "2026-09-30"
+        type: string
+      verify_chunk_key:
+        description: "A completed chunk_key to verify record-by-record (e.g. 2026-09-30/000001)"
+        required: false
+        default: "2026-09-30/000001"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-federal-verify
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      VERIFY_CHUNK_KEY: ${{ inputs.verify_chunk_key }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Verify over private VPC
+        run: |
+          set -euo pipefail
+          case "$SNAPSHOT_DATE" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::bad snapshot_date"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' VERIFY_CHUNK_KEY='$VERIFY_CHUNK_KEY' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="$SNAPSHOT_DATE"; CHUNK_KEY="$VERIFY_CHUNK_KEY"
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null || echo "(query failed)"; }
+
+          echo "=== (1) LEDGER FORENSICS: chunks by status ==="
+          q "SELECT 'ready='||count(*) FILTER (WHERE status='ready')
+                 ||' importing='||count(*) FILTER (WHERE status='importing')
+                 ||' completed='||count(*) FILTER (WHERE status='completed')
+                 ||' failed='||count(*) FILTER (WHERE status='failed')
+                 ||' total='||count(*)
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';"
+          echo "--- by storage location + extraction time (explains chunk count) ---"
+          q "SELECT (CASE WHEN file_path LIKE '%/artifacts/%' THEN 'persistent-volume' ELSE 'container-overlay' END)
+                 ||': n='||count(*)
+                 ||' idx['||min(chunk_index)||'..'||max(chunk_index)||']'
+                 ||' extracted['||to_char(min(extracted_at),'HH24:MI:SS')||'..'||to_char(max(extracted_at),'HH24:MI:SS')||']'
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}'
+             GROUP BY 1 ORDER BY 1;"
+
+          echo "=== (2) RECORD COMPLETENESS for chunk ${CHUNK_KEY} ==="
+          row="$(q "SELECT file_path||'|'||status||'|'||coalesce(import_started_at::text,'') FROM federal_import_chunk WHERE chunk_key='${CHUNK_KEY}';")"
+          CHUNK_FILE="${row%%|*}"; rest="${row#*|}"; CHUNK_STATUS="${rest%%|*}"; IMPORT_START="${rest#*|}"
+          echo "chunk status=${CHUNK_STATUS} file=${CHUNK_FILE} import_started=${IMPORT_START}"
+          if sudo -n docker exec "$worker" sh -lc "test -f '${CHUNK_FILE}'"; then
+            # Pull this chunk's opinion ids from the file itself (node: robust JSON parse).
+            IDS="$(sudo -n docker exec "$worker" sh -lc "zcat '${CHUNK_FILE}' | node -e 'const rl=require(\"readline\").createInterface({input:process.stdin});const a=[];rl.on(\"line\",l=>{if(l.trim())a.push(JSON.parse(l).id)});rl.on(\"close\",()=>process.stdout.write(a.join(\",\")))'")"
+            NIDS="$(printf '%s' "$IDS" | awk -F, '{print NF}')"
+            echo "opinion ids in chunk file: ${NIDS}"
+            # For those ids: coverage across the 4 record types + inserts vs updates by created_at.
+            q "WITH p AS (SELECT id FROM provider WHERE code='courtlistener'),
+                    ids AS (SELECT unnest(ARRAY[${IDS}]::text[]) AS oid)
+               SELECT 'ids='||(SELECT count(*) FROM ids)
+                   ||' have_opinion='||count(jo.id)
+                   ||' have_document='||count(d.id)
+                   ||' have_content='||count(dc.document_id)
+                   ||' have_projection='||count(osp.document_id)
+                   ||' inserts(created>=start)='||count(*) FILTER (WHERE jo.created_at >= '${IMPORT_START}')
+                   ||' updates(created<start)='||count(*) FILTER (WHERE jo.id IS NOT NULL AND jo.created_at < '${IMPORT_START}')
+               FROM ids
+               LEFT JOIN judicial_opinion jo ON jo.provider_id=(SELECT id FROM p) AND jo.provider_opinion_id=ids.oid
+               LEFT JOIN document d ON d.id=jo.document_id
+               LEFT JOIN document_content dc ON dc.document_id=d.id
+               LEFT JOIN opinion_search_projection osp ON osp.document_id=d.id;"
+            echo "--- duplicate check (schema has UNIQUE(provider_id,provider_opinion_id); confirm 0 dups among these ids) ---"
+            q "WITH p AS (SELECT id FROM provider WHERE code='courtlistener'),
+                    ids AS (SELECT unnest(ARRAY[${IDS}]::text[]) AS oid)
+               SELECT 'rows='||count(*)||' distinct_ids='||count(DISTINCT jo.provider_opinion_id)
+               FROM judicial_opinion jo JOIN ids ON jo.provider_opinion_id=ids.oid
+               WHERE jo.provider_id=(SELECT id FROM p);"
+          else
+            echo "::warning::chunk file missing on disk (${CHUNK_FILE}) -- cannot verify records for ${CHUNK_KEY}"
+          fi
+
+          echo "=== (3) COVERAGE (current scope) ==="
+          q "SELECT 'opinion_cluster_courtlistener='||count(*) FROM opinion_cluster
+             WHERE provider_id=(SELECT id FROM provider WHERE code='courtlistener');"
+          q "SELECT 'judicial_opinion_courtlistener='||count(*) FROM judicial_opinion
+             WHERE provider_id=(SELECT id FROM provider WHERE code='courtlistener');"
+          q "SELECT 'ledger_opinions_written_total='||coalesce(sum(opinions_written),0)
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' AND status='completed';"
+          echo "=== DONE ==="
+          REMOTE

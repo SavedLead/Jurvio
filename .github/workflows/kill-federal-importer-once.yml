@@ -1,0 +1,105 @@
+name: Kill federal importer (once)
+
+# Interrupt-test helper: forcibly stop the federal importer PROCESS inside the worker
+# container (cancelling the Actions run alone does not guarantee the detached process
+# dies). Records partial progress from the ledger before the kill, kills any process
+# running jobs/import-federal-opinion-chunks.mjs by scanning /proc (portable -- no procps
+# needed), then confirms none remain. The interrupted chunk is left 'importing' with its
+# partial opinions_written until a later import run reclaims it (stale_minutes).
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD"
+        required: false
+        default: "2026-09-30"
+        type: string
+      service:
+        description: "Worker container the importer runs in"
+        required: false
+        default: worker-core
+        type: choice
+        options: [worker-core, worker-coa, app]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-federal-kill
+  cancel-in-progress: false
+
+jobs:
+  kill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      SERVICE: ${{ inputs.service }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Kill importer over private VPC
+        run: |
+          set -euo pipefail
+          case "$SNAPSHOT_DATE" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::bad snapshot_date"; exit 1;; esac
+          case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="$SNAPSHOT_DATE"; SERVICE="${SERVICE:-worker-core}"
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          worker="$(find_svc "$SERVICE")"; pg="$(find_svc postgres)"
+          [ -n "$worker" ] || { echo "::error::no worker container"; exit 1; }
+
+          echo "=== PARTIAL PROGRESS before kill (importing chunk) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT chunk_key||' status='||status||' opinions_written='||opinions_written
+                 ||' updated='||to_char(updated_at,'HH24:MI:SS')
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo "(query failed)"
+
+          echo "=== importer processes BEFORE kill ==="
+          sudo -n docker exec "$worker" sh -lc '
+            n=0; for p in /proc/[0-9]*; do
+              if grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+                echo "pid=${p#/proc/}"; n=$((n+1)); fi; done; echo "count=$n"'
+
+          echo "=== KILL (scan /proc, SIGTERM then SIGKILL) ==="
+          sudo -n docker exec "$worker" sh -lc '
+            for p in /proc/[0-9]*; do
+              if grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+                pid=${p#/proc/}; echo "killing $pid"; kill "$pid" 2>/dev/null || true; fi; done
+            sleep 3
+            for p in /proc/[0-9]*; do
+              if grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+                pid=${p#/proc/}; echo "SIGKILL $pid"; kill -9 "$pid" 2>/dev/null || true; fi; done
+            sleep 1'
+
+          echo "=== importer processes AFTER kill (expect count=0) ==="
+          sudo -n docker exec "$worker" sh -lc '
+            n=0; for p in /proc/[0-9]*; do
+              grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null && n=$((n+1)); done; echo "count=$n"'
+
+          echo "=== ledger AFTER kill (chunk remains importing with partial written until reclaim) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT chunk_key||' status='||status||' opinions_written='||opinions_written
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo "(query failed)"
+          echo "=== DONE ==="
+          REMOTE
