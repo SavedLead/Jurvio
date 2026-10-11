@@ -89,4 +89,52 @@ describe("openBulkCsvFromUrl resumable streaming", () => {
     expect(ids[0]).toBe("1000");
     expect(ids[ids.length - 1]).toBe(String(1000 + rowCount - 1));
   }, 30000);
+
+  it("tears down cleanly when the consumer stops early mid-stream (no unhandled EPIPE)", async () => {
+    // Regression test for the crash that sank the first throughput run: stopping the
+    // consumer early kills bzip2 while the HTTP body is still arriving, so a write
+    // lands on bzip2's (Socket) stdin after it's gone -> EPIPE. Without a stdin
+    // 'error' handler Node treats that as fatal and crashes the whole process (which
+    // would abort this test worker). With the handler it's swallowed during teardown.
+    const rowCount = 8000;
+    let csv = "id,docket_id,case_name,date_filed\n";
+    for (let i = 0; i < rowCount; i += 1) {
+      csv += `${2000 + i},${7000 + i},Case ${i},2021-01-01\n`;
+    }
+    const full = await bzip2Compress(Buffer.from(csv, "utf8"));
+
+    // Trickle the body in small chunks so bzip2 is still being fed when we stop.
+    server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-length": String(full.length), "accept-ranges": "bytes" });
+      let off = 0;
+      const step = () => {
+        if (res.writableEnded || res.destroyed) return;
+        if (off >= full.length) {
+          res.end();
+          return;
+        }
+        res.write(full.subarray(off, off + 512));
+        off += 512;
+        setTimeout(step, 2);
+      };
+      step();
+    });
+    const port: number = await new Promise((resolve) => {
+      server!.listen(0, "127.0.0.1", () => {
+        const addr = server!.address();
+        resolve(typeof addr === "object" && addr ? addr.port : 0);
+      });
+    });
+
+    const url = `http://127.0.0.1:${port}/trickle.csv.bz2`;
+    const iterator = readBulkOpinionClusters(openBulkCsvFromUrl(url))[Symbol.asyncIterator]();
+    const first = await iterator.next(); // read one row while the body is still trickling
+    // Returning the generator runs its `finally` -> source.close(), killing bzip2
+    // mid-stream so a still-in-flight HTTP chunk writes to its dead stdin (EPIPE).
+    await iterator.return?.(undefined);
+    // Let any post-close async stdin write fire its EPIPE so the handler is exercised.
+    await new Promise((r) => setTimeout(r, 75));
+    expect(first.done).toBe(false);
+    expect(first.value?.id).toBe("2000");
+  }, 30000);
 });

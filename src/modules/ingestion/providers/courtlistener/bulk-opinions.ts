@@ -230,6 +230,20 @@ export function openBulkCsvFromUrl(url: string): BulkCsvSource {
     }
   };
 
+  // bzip2's stdin is a Socket, and a write that races the decoder going away -- the
+  // teardown after close()/limit, a decode error, or the OS killing bzip2 under
+  // memory pressure -- completes asynchronously with EPIPE. Node treats an
+  // unhandled stream 'error' as fatal and crashes the whole process (this is what
+  // sank the first throughput run), so we MUST listen. During teardown the write
+  // races are expected and harmless (ignore); otherwise the decoder is gone and
+  // this feed cannot continue, so record it as a transport failure rather than
+  // crash. We never resume on a stdin error: a dead bzip2 can't be revived by
+  // reconnecting the HTTP source.
+  decompressor.stdin.on("error", (error: NodeJS.ErrnoException) => {
+    if (closedByConsumer || stdinSettled) return;
+    fail(`bzip2 stdin ${error.code ?? "stream"} error for ${url}: ${error.message}`);
+  });
+
   const scheduleResume = (reason: string): void => {
     if (closedByConsumer || stdinSettled) return;
     if (total === null || reconnectsLeft <= 0) {
