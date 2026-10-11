@@ -77,12 +77,22 @@ jobs:
                  ||' total='||count(*)
              FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';"
           echo "--- by storage location + extraction time (explains chunk count) ---"
-          q "SELECT (CASE WHEN file_path LIKE '%/artifacts/%' THEN 'persistent-volume' ELSE 'container-overlay' END)
-                 ||': n='||count(*)
-                 ||' idx['||min(chunk_index)||'..'||max(chunk_index)||']'
-                 ||' extracted['||to_char(min(extracted_at),'HH24:MI:SS')||'..'||to_char(max(extracted_at),'HH24:MI:SS')||']'
-             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}'
-             GROUP BY 1 ORDER BY 1;"
+          q "SELECT loc||': n='||n||' idx['||mn||'..'||mx||'] extracted['||e1||'..'||e2||']'
+             FROM (
+               SELECT (CASE WHEN file_path LIKE '%/artifacts/%' THEN 'persistent-volume' ELSE 'container-overlay' END) AS loc,
+                      count(*) AS n, min(chunk_index) AS mn, max(chunk_index) AS mx,
+                      to_char(min(extracted_at),'MM-DD HH24:MI:SS') AS e1,
+                      to_char(max(extracted_at),'MM-DD HH24:MI:SS') AS e2
+               FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}'
+               GROUP BY 1
+             ) t ORDER BY loc;"
+          echo "--- by status x location ---"
+          q "SELECT status||'/'||(CASE WHEN file_path LIKE '%/artifacts/%' THEN 'artifacts' ELSE 'overlay' END)||'='||n
+             FROM (
+               SELECT status, file_path, count(*) OVER (PARTITION BY status, (file_path LIKE '%/artifacts/%')) AS n,
+                      row_number() OVER (PARTITION BY status, (file_path LIKE '%/artifacts/%')) AS rn
+               FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}'
+             ) t WHERE rn=1 ORDER BY status;"
 
           echo "=== (2) RECORD COMPLETENESS for chunk ${CHUNK_KEY} ==="
           row="$(q "SELECT file_path||'|'||status||'|'||coalesce(import_started_at::text,'') FROM federal_import_chunk WHERE chunk_key='${CHUNK_KEY}';")"
