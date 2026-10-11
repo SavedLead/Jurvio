@@ -1,0 +1,155 @@
+name: Extract federal opinion chunks (once)
+
+# PHASE 2 of the chunked federal opinion pipeline (Phase 1 = the cases/clusters
+# passes run by the existing bulk-federal backfill; Phase 3 = import-federal-opinion-chunks).
+#
+# Streams the multi-GB opinions bulk file from the FREE CourtListener S3 export ONCE
+# on the box, keeps only opinions whose cluster was already ingested in Phase 1, and
+# writes fixed-size JSONL.gz chunks to disk, recording each in the federal_import_chunk
+# ledger as 'ready' (chunk_key, sha256, record_count). Nothing is written to the DB
+# except ledger rows; opinion text is NOT imported here (that is Phase 3), so this step
+# is cheap on the DB and its only growth is the chunk files on disk.
+#
+# Resumable + idempotent: a chunk file is written to a .tmp then renamed, and the ledger
+# upserts on chunk_key, so an interrupted extract re-run overwrites partial chunks and
+# never leaves a half chunk the importer trusts. Memory stays flat (the ingested-cluster
+# id set is the only large structure, streamed via a server-side cursor; one chunk is
+# buffered at a time).
+#
+# Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC with
+# `sudo -n docker exec`, the same route the other *-once controls use.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)"
+        required: false
+        default: ""
+        type: string
+      chunk_size:
+        description: "Opinions per chunk (smaller = more resumable + more visible progress)"
+        required: false
+        default: "25000"
+        type: string
+      out_dir:
+        description: "Directory on the box for chunk files (must be writable inside the worker container)"
+        required: false
+        default: "/var/lib/jurvio/federal-chunks"
+        type: string
+      service:
+        description: "Worker container to run in"
+        required: false
+        default: worker-core
+        type: choice
+        options: [worker-core, worker-coa, app]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Share the bulk-federal group so an extract never races the Phase 1 backfill or an import.
+  group: jurvio-courtlistener-bulk-federal-backfill
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 2880
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      CHUNK_SIZE: ${{ inputs.chunk_size }}
+      OUT_DIR: ${{ inputs.out_dir }}
+      SERVICE: ${{ inputs.service }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Extract chunks over private VPC
+        run: |
+          set -euo pipefail
+          case "$CHUNK_SIZE" in ''|*[!0-9]*) echo "::error::chunk_size must be numeric"; exit 1;; esac
+          if [ -n "$SNAPSHOT_DATE" ]; then
+            case "$SNAPSHOT_DATE" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+              *) echo "::error::snapshot_date must be YYYY-MM-DD or empty"; exit 1;;
+            esac
+          fi
+          case "$OUT_DIR" in /*) ;; *) echo "::error::out_dir must be an absolute path"; exit 1;; esac
+          case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" \
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' CHUNK_SIZE='$CHUNK_SIZE' OUT_DIR='$OUT_DIR' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="${SNAPSHOT_DATE:-}"; CHUNK_SIZE="${CHUNK_SIZE:-25000}"
+          OUT_DIR="${OUT_DIR:-/var/lib/jurvio/federal-chunks}"; SERVICE="${SERVICE:-worker-core}"
+          BUCKET="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          find_svc() { sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" \
+            --format '{{.ID}}' | head -n1; }
+
+          worker="$(find_svc "$SERVICE")"
+          [ -n "$worker" ] || worker="$(find_svc worker-core)"
+          [ -n "$worker" ] || worker="$(find_svc app)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker/app container"; exit 1; }
+          echo "running in container: $worker (requested $SERVICE)"
+
+          echo "=== Confirm the splitter job is present in the image ==="
+          sudo -n docker exec "$worker" sh -lc 'test -f jobs/split-federal-opinions.mjs' \
+            || { echo "::error::jobs/split-federal-opinions.mjs missing -- image predates the chunked pipeline; redeploy first"; exit 2; }
+
+          if [ -z "$SNAPSHOT" ]; then
+            echo "=== Discover newest opinions snapshot from S3 ListBucket ==="
+            SNAPSHOT="$(curl -fsS "${BUCKET}/?list-type=2&prefix=bulk-data/opinions-" \
+              | grep -oE 'opinions-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' \
+              | sed -E 's/^opinions-//; s/\.csv\.bz2$//' \
+              | sort -r | head -n1)"
+            [ -n "$SNAPSHOT" ] || { echo "::error::could not discover a bulk opinions snapshot"; exit 4; }
+            echo "discovered snapshot: ${SNAPSHOT}"
+          fi
+
+          echo "=== Disk before (chunk files grow here; opinion text is NOT imported in this phase) ==="
+          df -h / | tail -1
+          sudo -n docker exec "$worker" sh -lc "mkdir -p '$OUT_DIR' && df -h '$OUT_DIR' | tail -1"
+
+          echo "=== Ledger state before ==="
+          pg="$(find_svc postgres)"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'chunks=' || count(*) || ' ready=' || count(*) FILTER (WHERE status='ready')
+                 || ' completed=' || count(*) FILTER (WHERE status='completed')
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';" 2>/dev/null || echo "(ledger query failed)"
+
+          echo "=== Extract chunks (snapshot ${SNAPSHOT}, chunk-size ${CHUNK_SIZE}, out ${OUT_DIR}) ==="
+          # 8 GiB heap cap: the only large structure is the ingested-cluster id Set; this
+          # leaves comfortable headroom alongside postgres + resident workers on the 16 GB box.
+          sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
+            node jobs/split-federal-opinions.mjs \
+              --snapshot-date="$SNAPSHOT" --chunk-size="$CHUNK_SIZE" --out-dir="$OUT_DIR"
+
+          echo "=== Disk after ==="
+          df -h / | tail -1
+          sudo -n docker exec "$worker" sh -lc "df -h '$OUT_DIR' | tail -1"
+
+          echo "=== Ledger state after ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'chunks=' || count(*) || ' ready=' || count(*) FILTER (WHERE status='ready')
+                 || ' total_records=' || coalesce(sum(record_count),0)
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';" 2>/dev/null || echo "(ledger query failed)"
+          echo "=== DONE ==="
+          REMOTE
