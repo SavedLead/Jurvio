@@ -1,0 +1,99 @@
+name: Publish cited federal opinions (once)
+
+# Deliberately drains the cited-federal publish backlog: repeatedly runs
+# run-case-citations.mjs (sync citation graph -> publishCitedFederalOpinions) in
+# batches until no further cases publish. It publishes ONLY federal opinions that
+# are cited by an already-published opinion AND pass the existing safety gate
+# (>=100 words, valid CourtListener provenance/hashes, verified source URL, not
+# blocked/sealed, no SSN/DOB sensitive-text match). Everything else stays held.
+#
+# --discover=0 skips the CourtListener API discovery step (no external rate limit).
+# run-case-citations takes a session advisory lock, so if the background scheduler
+# lane is mid-run a batch may report {"skipped":...} and publish nothing; we stop
+# after several consecutive no-progress batches. Runs on the self-hosted builder
+# over the private VPC; the single runner serializes it behind any running job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_batches:
+        description: "Max batches to run (each up to batch_limit)"
+        required: false
+        default: "40"
+        type: string
+      batch_limit:
+        description: "Cases per batch (<=5000, run-case-citations cap)"
+        required: false
+        default: "5000"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-publish-cited-federal
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 180
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      MAX_BATCHES: ${{ inputs.max_batches }}
+      BATCH_LIMIT: ${{ inputs.batch_limit }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Drain cited-federal publish backlog over private VPC
+        run: |
+          set -euo pipefail
+          case "$MAX_BATCHES" in ''|*[!0-9]*) echo "::error::max_batches must be numeric"; exit 1;; esac
+          case "$BATCH_LIMIT" in ''|*[!0-9]*) echo "::error::batch_limit must be numeric"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "MAX_BATCHES='$MAX_BATCHES' BATCH_LIMIT='$BATCH_LIMIT' bash -se" <<'REMOTE'
+          set -euo pipefail
+          MAX_BATCHES="${MAX_BATCHES:-40}"; BATCH_LIMIT="${BATCH_LIMIT:-5000}"
+          find_svc() { sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          worker="$(find_svc worker-core)"; pg="$(find_svc postgres)"
+          [ -n "$worker" ] && [ -n "$pg" ] || { echo "::error::worker-core or postgres container missing"; exit 1; }
+          pub() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT count(*) FROM legal_case WHERE publication='published';" 2>/dev/null; }
+
+          before="$(pub)"
+          echo "=== published BEFORE: ${before} ==="
+          prev="$before"; idle=0
+          for i in $(seq 1 "$MAX_BATCHES"); do
+            echo "--- batch ${i}/${MAX_BATCHES} (limit ${BATCH_LIMIT}) ---"
+            sudo -n docker exec "$worker" node jobs/run-case-citations.mjs --limit="$BATCH_LIMIT" --discover=0 2>&1 | tail -n 3 || true
+            cur="$(pub)"
+            echo "published total now: ${cur} (+$((cur - before)) since start)"
+            if [ "$cur" = "$prev" ]; then idle=$((idle + 1)); else idle=0; fi
+            prev="$cur"
+            if [ "$idle" -ge 3 ]; then echo "no new publishes in 3 consecutive batches -- backlog drained or lock-held; stopping"; break; fi
+            sleep 3
+          done
+
+          after="$(pub)"
+          draft="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SELECT count(*) FROM legal_case WHERE publication='draft';" 2>/dev/null)"
+          echo "=== published AFTER: ${after} (published this run: $((after - before))) ==="
+          echo "=== remaining draft: ${draft} ==="
+          echo "=== DONE ==="
+          REMOTE
