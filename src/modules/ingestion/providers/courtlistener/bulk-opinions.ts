@@ -86,6 +86,39 @@ export const courtListenerBulkOpinionSchema = z
 
 export type CourtListenerBulkOpinion = z.infer<typeof courtListenerBulkOpinionSchema>;
 
+// The chunked pipeline serializes an ALREADY-PARSED opinion (the output of
+// courtListenerBulkOpinionSchema) to JSONL, so by the time a chunk is read back the
+// CSV transforms have already run: `per_curiam`/`extracted_by_ocr` are booleans and
+// `author_id`/`ordering_key`/`page_count` are string|null -- NOT the raw all-string CSV
+// shape. Re-validating a chunk line with the CSV schema above therefore fails on every
+// record (expected string, received boolean/null). This schema validates that parsed
+// shape instead, so the importer can structurally verify a chunk (catching corruption)
+// without the type mismatch. Its inferred type is assignable to CourtListenerBulkOpinion.
+export const courtListenerBulkOpinionChunkSchema = z
+  .object({
+    id: z.string().regex(/^\d+$/),
+    cluster_id: z.string().regex(/^\d+$/),
+    type: z.string().optional().default(""),
+    author_id: z.string().nullable().optional(),
+    author_str: z.string().optional().default(""),
+    joined_by_str: z.string().optional().default(""),
+    per_curiam: z.boolean().optional(),
+    ordering_key: z.string().nullable().optional(),
+    download_url: z.string().optional().default(""),
+    local_path: z.string().optional().default(""),
+    sha1: z.string().optional().default(""),
+    page_count: z.string().nullable().optional(),
+    extracted_by_ocr: z.boolean().optional(),
+    html_with_citations: z.string().optional().default(""),
+    html_columbia: z.string().optional().default(""),
+    html_lawbox: z.string().optional().default(""),
+    html: z.string().optional().default(""),
+    xml_harvard: z.string().optional().default(""),
+    plain_text: z.string().optional().default(""),
+    date_modified: z.string().optional().default(""),
+  })
+  .passthrough();
+
 // search_citation -- the official reporter citations, one row per (cluster, cite).
 export const courtListenerBulkCitationSchema = z
   .object({

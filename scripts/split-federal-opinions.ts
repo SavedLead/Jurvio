@@ -52,9 +52,30 @@ try {
   const dir = join(outRoot, snapshotDate);
   await mkdir(dir, { recursive: true });
 
+  // Chunk indices already imported (or mid-import). A re-run of extraction must NOT
+  // overwrite these files or reset their ledger status -- it reuses them as-is. (The
+  // ledger upsert below is also guarded, so even a race cannot reset a completed chunk.)
+  const protectedChunks = new Set<number>();
+  for (const row of await sql<{ chunk_index: number }[]>`
+    SELECT chunk_index FROM federal_import_chunk
+    WHERE snapshot_date = ${snapshotDate} AND status IN ('completed', 'importing')
+  `) {
+    protectedChunks.add(row.chunk_index);
+  }
+  if (protectedChunks.size > 0) {
+    console.log(JSON.stringify({ phase: "reuse", preservedChunks: protectedChunks.size }));
+  }
+
   const source = openBulkCsvFromUrl(`${baseUrl.replace(/\/+$/, "")}/opinions-${snapshotDate}.csv.bz2`);
 
   const sink = async (chunkIndex: number, records: readonly CourtListenerBulkOpinion[]): Promise<void> => {
+    // Preserve an already-imported chunk: skip the file write AND the ledger entirely so
+    // its 'completed' status and counts are never reset. The source is still rescanned
+    // to reach later chunks (extraction has no byte offset), but completed work is kept.
+    if (protectedChunks.has(chunkIndex)) {
+      console.log(JSON.stringify({ chunk: chunkIndex, reused: true }));
+      return;
+    }
     const idx = String(chunkIndex).padStart(6, "0");
     const filePath = join(dir, `opinions-${snapshotDate}-${idx}.jsonl.gz`);
     const tmp = `${filePath}.tmp`;
@@ -69,6 +90,8 @@ try {
     );
     const sha256 = createHash("sha256").update(await readFile(tmp)).digest("hex");
     await rename(tmp, filePath);
+    // Only refresh a 'ready'/'failed' row; the WHERE guard means a concurrent 'completed'
+    // or 'importing' row is left untouched (never reset to 'ready').
     await sql`
       INSERT INTO federal_import_chunk (chunk_key, snapshot_date, chunk_index, file_path, record_count, file_sha256, status)
       VALUES (${`${snapshotDate}/${idx}`}, ${snapshotDate}, ${chunkIndex}, ${filePath}, ${records.length}, ${sha256}, 'ready')
@@ -76,6 +99,7 @@ try {
         file_path = EXCLUDED.file_path, record_count = EXCLUDED.record_count,
         file_sha256 = EXCLUDED.file_sha256, status = 'ready', opinions_written = 0,
         opinions_skipped = 0, last_error = NULL, extracted_at = now(), updated_at = now()
+      WHERE federal_import_chunk.status NOT IN ('completed', 'importing')
     `;
     console.log(JSON.stringify({ chunk: chunkIndex, records: records.length }));
   };

@@ -31,6 +31,11 @@ on:
         required: false
         default: "15"
         type: string
+      detached:
+        description: "Run the importer detached on the box (frees the builder immediately; inspect via diagnose-federal-chunk-progress-once)"
+        required: false
+        default: false
+        type: boolean
       service:
         description: "Worker container to run in"
         required: false
@@ -57,6 +62,7 @@ jobs:
       SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
       MAX_CHUNKS: ${{ inputs.max_chunks }}
       STALE_MINUTES: ${{ inputs.stale_minutes }}
+      DETACHED: ${{ inputs.detached }}
       SERVICE: ${{ inputs.service }}
     steps:
       - name: Configure SSH
@@ -85,12 +91,13 @@ jobs:
             case "$MAX_CHUNKS" in ''|*[!0-9]*) echo "::error::max_chunks must be numeric or empty"; exit 1;; esac
           fi
           case "$STALE_MINUTES" in ''|*[!0-9]*) echo "::error::stale_minutes must be numeric"; exit 1;; esac
+          case "$DETACHED" in true|false) ;; *) echo "::error::detached must be true/false"; exit 1;; esac
           case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
           ssh "$INGESTION_USER@$DB_HOST" \
-            "SNAPSHOT_DATE='$SNAPSHOT_DATE' MAX_CHUNKS='$MAX_CHUNKS' STALE_MINUTES='$STALE_MINUTES' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' MAX_CHUNKS='$MAX_CHUNKS' STALE_MINUTES='$STALE_MINUTES' DETACHED='$DETACHED' SERVICE='$SERVICE' bash -se" <<'REMOTE'
           set -euo pipefail
           SNAPSHOT="$SNAPSHOT_DATE"; MAX_CHUNKS="${MAX_CHUNKS:-}"; STALE_MINUTES="${STALE_MINUTES:-15}"
-          SERVICE="${SERVICE:-worker-core}"
+          DETACHED="${DETACHED:-false}"; SERVICE="${SERVICE:-worker-core}"
           find_svc() { sudo -n docker ps \
             --filter 'label=com.docker.compose.project=jurvio' \
             --filter "label=com.docker.compose.service=$1" \
@@ -120,9 +127,24 @@ jobs:
           echo "=== Disk before ==="
           df -h / | tail -1
 
-          echo "=== Import chunks (snapshot ${SNAPSHOT}, max ${MAX_CHUNKS:-all}, stale ${STALE_MINUTES}m) ==="
+          echo "=== Import chunks (snapshot ${SNAPSHOT}, max ${MAX_CHUNKS:-all}, stale ${STALE_MINUTES}m, detached ${DETACHED}) ==="
           set -- --snapshot-date="$SNAPSHOT" --stale-minutes="$STALE_MINUTES"
           [ -n "$MAX_CHUNKS" ] && set -- "$@" --max-chunks="$MAX_CHUNKS"
+
+          if [ "$DETACHED" = "true" ]; then
+            # Launch detached inside the container so this SSH step (and the builder)
+            # returns immediately; the docker daemon keeps the process alive. Progress is
+            # read via diagnose-federal-chunk-progress-once (ledger + this logfile).
+            LOG="/var/lib/jurvio/artifacts/federal-chunks/import-${SNAPSHOT}.log"
+            sudo -n docker exec "$worker" sh -lc "mkdir -p /var/lib/jurvio/artifacts/federal-chunks"
+            sudo -n docker exec -d -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
+              sh -lc "node jobs/import-federal-opinion-chunks.mjs $* >> '$LOG' 2>&1"
+            echo "detached importer launched; logfile in container: $LOG"
+            echo "inspect progress with: diagnose-federal-chunk-progress-once (snapshot ${SNAPSHOT})"
+            echo "=== DONE (detached) ==="
+            exit 0
+          fi
+
           sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
             node jobs/import-federal-opinion-chunks.mjs "$@"
 
