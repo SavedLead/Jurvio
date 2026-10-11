@@ -1,0 +1,142 @@
+name: Import federal opinion chunks (once)
+
+# PHASE 3 of the chunked federal opinion pipeline. Ledger-driven: claims the next
+# 'ready'/'failed' chunk from federal_import_chunk (FOR UPDATE SKIP LOCKED, in
+# chunk_index order), verifies the chunk file against its recorded sha256, imports the
+# opinions idempotently (per-opinion cluster lookup -> the SAME writeOpinion upsert path
+# Phase C uses, so dedup is unchanged and a re-import creates no duplicates), then marks
+# the chunk 'completed' with counts. A failed chunk is recorded and skipped so one bad
+# chunk never stops the run; it retries next invocation. A chunk left 'importing' by a
+# killed importer is reclaimed to 'failed' after the stale window, which is how
+# interrupt-and-resume recovers.
+#
+# Set max_chunks=1 for the FIRST run to measure single-chunk throughput (opinions/sec is
+# printed per chunk). Leave it blank to drain all pending chunks. DO NOT run the full
+# drain without David's approval.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD (must match the extracted chunks)"
+        required: true
+        type: string
+      max_chunks:
+        description: "Max chunks to import this run (blank = all pending; set 1 for the throughput measurement)"
+        required: false
+        default: "1"
+        type: string
+      stale_minutes:
+        description: "Minutes after which an 'importing' chunk is reclaimed to 'failed' (interrupt recovery)"
+        required: false
+        default: "15"
+        type: string
+      service:
+        description: "Worker container to run in"
+        required: false
+        default: worker-core
+        type: choice
+        options: [worker-core, worker-coa, app]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-courtlistener-bulk-federal-backfill
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 2880
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      MAX_CHUNKS: ${{ inputs.max_chunks }}
+      STALE_MINUTES: ${{ inputs.stale_minutes }}
+      SERVICE: ${{ inputs.service }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Import chunks over private VPC
+        run: |
+          set -euo pipefail
+          case "$SNAPSHOT_DATE" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be YYYY-MM-DD"; exit 1;;
+          esac
+          if [ -n "$MAX_CHUNKS" ]; then
+            case "$MAX_CHUNKS" in ''|*[!0-9]*) echo "::error::max_chunks must be numeric or empty"; exit 1;; esac
+          fi
+          case "$STALE_MINUTES" in ''|*[!0-9]*) echo "::error::stale_minutes must be numeric"; exit 1;; esac
+          case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" \
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' MAX_CHUNKS='$MAX_CHUNKS' STALE_MINUTES='$STALE_MINUTES' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="$SNAPSHOT_DATE"; MAX_CHUNKS="${MAX_CHUNKS:-}"; STALE_MINUTES="${STALE_MINUTES:-15}"
+          SERVICE="${SERVICE:-worker-core}"
+          find_svc() { sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" \
+            --format '{{.ID}}' | head -n1; }
+
+          worker="$(find_svc "$SERVICE")"
+          [ -n "$worker" ] || worker="$(find_svc worker-core)"
+          [ -n "$worker" ] || worker="$(find_svc app)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker/app container"; exit 1; }
+          echo "running in container: $worker (requested $SERVICE)"
+
+          echo "=== Confirm the importer job is present in the image ==="
+          sudo -n docker exec "$worker" sh -lc 'test -f jobs/import-federal-opinion-chunks.mjs' \
+            || { echo "::error::jobs/import-federal-opinion-chunks.mjs missing -- image predates the chunked pipeline; redeploy first"; exit 2; }
+
+          pg="$(find_svc postgres)"
+          echo "=== Ledger + corpus BEFORE ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'ready=' || count(*) FILTER (WHERE status='ready')
+                 || ' importing=' || count(*) FILTER (WHERE status='importing')
+                 || ' completed=' || count(*) FILTER (WHERE status='completed')
+                 || ' failed=' || count(*) FILTER (WHERE status='failed')
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';" 2>/dev/null || echo "(ledger query failed)"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'judicial_opinion=' || count(*) FROM judicial_opinion;" 2>/dev/null || echo "(corpus query failed)"
+
+          echo "=== Disk before ==="
+          df -h / | tail -1
+
+          echo "=== Import chunks (snapshot ${SNAPSHOT}, max ${MAX_CHUNKS:-all}, stale ${STALE_MINUTES}m) ==="
+          set -- --snapshot-date="$SNAPSHOT" --stale-minutes="$STALE_MINUTES"
+          [ -n "$MAX_CHUNKS" ] && set -- "$@" --max-chunks="$MAX_CHUNKS"
+          sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
+            node jobs/import-federal-opinion-chunks.mjs "$@"
+
+          echo "=== Disk after (opinion text imported into postgres) ==="
+          df -h / | tail -1
+
+          echo "=== Ledger + corpus AFTER ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'ready=' || count(*) FILTER (WHERE status='ready')
+                 || ' completed=' || count(*) FILTER (WHERE status='completed')
+                 || ' failed=' || count(*) FILTER (WHERE status='failed')
+                 || ' opinions_written=' || coalesce(sum(opinions_written),0)
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';" 2>/dev/null || echo "(ledger query failed)"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'judicial_opinion=' || count(*) FROM judicial_opinion;" 2>/dev/null || echo "(corpus query failed)"
+          echo "=== DONE ==="
+          REMOTE
