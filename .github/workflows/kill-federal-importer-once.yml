@@ -15,6 +15,11 @@ on:
         required: false
         default: "2026-09-30"
         type: string
+      pre_kill_sleep:
+        description: "Seconds to wait on the box before the kill (so a just-launched import reaches partial progress first)"
+        required: false
+        default: "0"
+        type: string
       service:
         description: "Worker container the importer runs in"
         required: false
@@ -39,6 +44,7 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
       SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      PRE_KILL_SLEEP: ${{ inputs.pre_kill_sleep }}
       SERVICE: ${{ inputs.service }}
     steps:
       - name: Configure SSH
@@ -60,10 +66,15 @@ jobs:
         run: |
           set -euo pipefail
           case "$SNAPSHOT_DATE" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::bad snapshot_date"; exit 1;; esac
+          case "${PRE_KILL_SLEEP:-0}" in ''|*[!0-9]*) echo "::error::pre_kill_sleep must be numeric"; exit 1;; esac
           case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
-          ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+          ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' PRE_KILL_SLEEP='${PRE_KILL_SLEEP:-0}' SERVICE='$SERVICE' bash -se" <<'REMOTE'
           set -euo pipefail
-          SNAPSHOT="$SNAPSHOT_DATE"; SERVICE="${SERVICE:-worker-core}"
+          SNAPSHOT="$SNAPSHOT_DATE"; SERVICE="${SERVICE:-worker-core}"; PRE_KILL_SLEEP="${PRE_KILL_SLEEP:-0}"
+          if [ "$PRE_KILL_SLEEP" -gt 0 ]; then
+            echo "waiting ${PRE_KILL_SLEEP}s for the importer to reach partial progress before killing..."
+            sleep "$PRE_KILL_SLEEP"
+          fi
           find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
             --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
           worker="$(find_svc "$SERVICE")"; pg="$(find_svc postgres)"
