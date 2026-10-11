@@ -86,10 +86,15 @@ jobs:
                  ||' updated='||to_char(updated_at,'HH24:MI:SS')
              FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo "(query failed)"
 
+          # Match ONLY node processes whose cmdline runs the importer. Guarding on
+          # comm=node excludes this scan's own shell/grep (whose cmdline contains the
+          # pattern string) and the resident worker node (different script) -- without it
+          # the scan killed itself (exit 143) before confirming the result.
           echo "=== importer processes BEFORE kill ==="
           PROCS="$(sudo -n docker exec "$worker" sh -lc '
             n=0; for p in /proc/[0-9]*; do
-              if grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              if grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
                 echo "pid=${p#/proc/}" 1>&2; n=$((n+1)); fi; done; echo "$n"')"
           echo "running importer processes: ${PROCS}"
 
@@ -106,21 +111,24 @@ jobs:
             exit 0
           fi
 
-          echo "=== KILL (scan /proc, SIGTERM then SIGKILL) ==="
+          echo "=== KILL (scan /proc for node importer, SIGTERM then SIGKILL) ==="
           sudo -n docker exec "$worker" sh -lc '
             for p in /proc/[0-9]*; do
-              if grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              if grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
                 pid=${p#/proc/}; echo "killing $pid"; kill "$pid" 2>/dev/null || true; fi; done
             sleep 3
             for p in /proc/[0-9]*; do
-              if grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              if grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
                 pid=${p#/proc/}; echo "SIGKILL $pid"; kill -9 "$pid" 2>/dev/null || true; fi; done
             sleep 1'
 
           echo "=== importer processes AFTER kill (expect count=0) ==="
           sudo -n docker exec "$worker" sh -lc '
             n=0; for p in /proc/[0-9]*; do
-              grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null && n=$((n+1)); done; echo "count=$n"'
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null && n=$((n+1)); done; echo "count=$n"'
 
           echo "=== ledger AFTER kill (chunk remains importing with partial written until reclaim) ==="
           sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
