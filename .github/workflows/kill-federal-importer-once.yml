@@ -76,10 +76,24 @@ jobs:
              FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo "(query failed)"
 
           echo "=== importer processes BEFORE kill ==="
-          sudo -n docker exec "$worker" sh -lc '
+          PROCS="$(sudo -n docker exec "$worker" sh -lc '
             n=0; for p in /proc/[0-9]*; do
               if grep -qa "import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
-                echo "pid=${p#/proc/}"; n=$((n+1)); fi; done; echo "count=$n"'
+                echo "pid=${p#/proc/}" 1>&2; n=$((n+1)); fi; done; echo "$n"')"
+          echo "running importer processes: ${PROCS}"
+
+          # Safeguard: only kill once the pilot importer is actually running AND has made
+          # partial progress on an 'importing' chunk (0<written). Killing before progress
+          # proves nothing; killing nothing is a no-op. Abort otherwise.
+          WRITTEN="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT coalesce(max(opinions_written),0) FROM federal_import_chunk
+             WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo 0)"
+          echo "max partial opinions_written on an importing chunk: ${WRITTEN}"
+          if [ "${PROCS:-0}" -lt 1 ] || [ "${WRITTEN:-0}" -lt 1 ]; then
+            echo "::warning::ABORT kill -- not safely mid-chunk (processes=${PROCS}, partial_written=${WRITTEN}). No process killed."
+            echo "=== DONE (no-op) ==="
+            exit 0
+          fi
 
           echo "=== KILL (scan /proc, SIGTERM then SIGKILL) ==="
           sudo -n docker exec "$worker" sh -lc '
