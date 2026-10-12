@@ -64,7 +64,7 @@ jobs:
             --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
           pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
           [ -n "$pg" ] && [ -n "$worker" ] || { echo "::error::missing pg/worker"; exit 1; }
-          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET statement_timeout='120s';" -c "$1" 2>/dev/null; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null; }
           REASONS="('deterministic_federal_source_validation','deterministic_federal_opinion_document','verified_cited_federal_opinion')"
           CASE_REASONS="('deterministic_federal_source_validation','verified_cited_federal_opinion')"
           DOC_REASONS="('deterministic_federal_opinion_document','verified_cited_federal_opinion')"
