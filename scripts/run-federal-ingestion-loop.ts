@@ -23,6 +23,7 @@ import {
   decodeStreamCursor,
   encodeStreamCursor,
   evaluateFederalPublicationCandidate,
+  FEDERAL_PUBLICATION_RULE_VERSION,
   isNonBankruptcyFederalJurisdiction,
   isRestrictedDocketText,
   LEGACY_CURSOR_BATCH_SIZE,
@@ -683,11 +684,16 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
       LIMIT 1
     ) canonical ON true
     WHERE legal_case.publication = 'draft'
-      -- Skip cases already evaluated and held for review so the publisher keeps
-      -- reaching newer, unevaluated, publishable drafts instead of re-scanning
-      -- the same held head-of-queue on every run. Eligibility itself is
-      -- unchanged; held cases still surface in the review queue.
-      AND legal_case.verification <> 'needs_review'
+      -- Skip a case only while it is held under the CURRENT rule version. A case held by
+      -- an older rule (or by the pre-table gate, which left no hold row) is re-evaluated
+      -- once under the new rule -- so a gate improvement (e.g. the court registry fix)
+      -- lets previously held-but-now-eligible cases publish instead of being suppressed
+      -- forever. Restricted cases have publication<>'draft' and are already excluded above.
+      AND NOT EXISTS (
+        SELECT 1 FROM federal_publication_hold hold
+        WHERE hold.case_id = legal_case.id
+          AND hold.rule_version = ${FEDERAL_PUBLICATION_RULE_VERSION}
+      )
       AND (
         -- Select the federal jurisdiction classes (including 'fs' specialized and 'fbp'
         -- bankruptcy appellate panels) OR any registry-verified court. The gate still
@@ -752,13 +758,23 @@ async function runPublicationAndQuarantine() {
         for (const reason of decision.reasons) {
           holdReasons[reason] = (holdReasons[reason] ?? 0) + 1;
         }
-        await sql`
-          UPDATE legal_case SET verification = 'needs_review',
-            publication = CASE WHEN ${decision.restricted}
-              THEN 'restricted'::publication_state ELSE publication END,
-            updated_at = now()
-          WHERE id = ${candidate.id}
-        `;
+        await sql.begin(async (tx) => {
+          await tx`
+            UPDATE legal_case SET verification = 'needs_review',
+              publication = CASE WHEN ${decision.restricted}
+                THEN 'restricted'::publication_state ELSE publication END,
+              updated_at = now()
+            WHERE id = ${candidate.id}
+          `;
+          // Record the hold with the CURRENT rule version so this case is skipped until the
+          // rule changes again, then re-evaluated once. Mirrors citation_publication_hold.
+          await tx`
+            INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
+            VALUES (${candidate.id}, ${decision.reasons}, ${FEDERAL_PUBLICATION_RULE_VERSION})
+            ON CONFLICT (case_id) DO UPDATE SET
+              reasons = EXCLUDED.reasons, rule_version = EXCLUDED.rule_version, held_at = now()
+          `;
+        });
         await finishIngestionRunItem(sql, {
           runId,
           sourceRecordId: candidate.id,
@@ -772,13 +788,16 @@ async function runPublicationAndQuarantine() {
             updated_at = now()
           WHERE id = ${candidate.id}
         `;
+        // A published case is no longer held; drop any stale hold row so a future rule
+        // change starts it fresh rather than seeing a current-rule hold.
+        await tx`DELETE FROM federal_publication_hold WHERE case_id = ${candidate.id}`;
         await tx`
           INSERT INTO publication_decision (
             object_type, object_id, displayable, indexable, machine_accessible,
             downloadable, summary_eligible, reason_code, rule_version
           )
           SELECT 'legal_case', ${candidate.id}, true, true, true, false, false,
-            'deterministic_federal_source_validation', 'federal-publication-v2'
+            'deterministic_federal_source_validation', ${FEDERAL_PUBLICATION_RULE_VERSION}
           WHERE NOT COALESCE((
             SELECT displayable FROM publication_decision
             WHERE object_type = 'legal_case' AND object_id = ${candidate.id}

@@ -49,6 +49,16 @@ even an unblocked case exposed no opinion text.
    double publication; failing documents are held in the shared `citation_publication_hold`
    table and the case still publishes, preserving prior behavior.
 
+4. **Rule-versioned re-evaluation of stale holds.** The deterministic publisher previously
+   marked a held case `needs_review` and then skipped every `needs_review` case forever, so
+   cases held only because their court was unverified stayed held after the court fix
+   (~35,000 of them). `federal_publication_hold` (migration 0121) now records each hold's
+   reasons and `FEDERAL_PUBLICATION_RULE_VERSION`; the candidate query skips a case only
+   while its hold matches the current rule, so a gate change re-evaluates older/un-recorded
+   holds exactly once. This is the deterministic-path analogue of the cited path's
+   `citation_publication_hold.rule_version` (migration 0119 / #497). Re-evaluation is
+   self-correcting: a case that still fails is simply re-held under the new rule.
+
 ## Alternatives considered
 
 - *Blanket-verify all CourtListener federal-code courts.* Rejected: it would verify

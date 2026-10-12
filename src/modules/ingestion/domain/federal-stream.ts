@@ -26,6 +26,17 @@ export interface StreamCursor {
  */
 export const LEGACY_CURSOR_BATCH_SIZE = 100;
 
+/**
+ * Version of the deterministic federal publication rule. Bump it whenever the gate logic
+ * changes (this release adds registry court verification, the docket-less alternative
+ * identity, and FS/FBP jurisdiction). A case held by the deterministic publisher records
+ * this version in `federal_publication_hold`; the candidate query skips a held case only
+ * when its hold was written by the CURRENT version, so a gate improvement re-evaluates
+ * cases held under an older rule (or never recorded, i.e. held by the pre-table gate)
+ * exactly once instead of suppressing them forever. Mirrors CITED_OPINION_RULE_VERSION.
+ */
+export const FEDERAL_PUBLICATION_RULE_VERSION = "federal-publication-v3";
+
 export interface FederalPublicationCandidate {
   caption: string;
   docketNumber: string;
