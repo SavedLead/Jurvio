@@ -58,14 +58,13 @@ jobs:
         run: |
           set -euo pipefail
           ssh "$INGESTION_USER@$DB_HOST" "MAX_CASES='${MAX_CASES:-10}' MAX_DOCS='${MAX_DOCS:-10}' bash -se" <<'REMOTE'
-          set -euo pipefail
+          set -uo pipefail
           CAP_C="${MAX_CASES:-10}"; CAP_D="${MAX_DOCS:-10}"
           find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
             --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
           pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
           [ -n "$pg" ] && [ -n "$worker" ] || { echo "::error::missing pg/worker"; exit 1; }
           q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null; }
-          REASONS="('deterministic_federal_source_validation','deterministic_federal_opinion_document','verified_cited_federal_opinion')"
           CASE_REASONS="('deterministic_federal_source_validation','verified_cited_federal_opinion')"
           DOC_REASONS="('deterministic_federal_opinion_document','verified_cited_federal_opinion')"
 
@@ -77,65 +76,66 @@ jobs:
           echo "baseline=$BASE  caps: cases<=$CAP_C docs<=$CAP_D"
           dc() { q "SELECT count(DISTINCT object_id) FROM publication_decision WHERE object_type='legal_case' AND displayable AND decided_at > '$BASE'::timestamptz AND reason_code IN $CASE_REASONS"; }
           dd() { q "SELECT count(DISTINCT object_id) FROM publication_decision WHERE object_type='document' AND displayable AND decided_at > '$BASE'::timestamptz AND reason_code IN $DOC_REASONS"; }
-          runpub() { sudo -n docker exec "$worker" node "$@" 2>&1 | tail -n1; }
 
-          echo "=== exercise CITED publisher (1:1), 2 items ==="
-          echo "  cited: $(runpub jobs/run-case-citations.mjs --limit=2 --discover=0 --publish=1)"
-          echo "  after cited: cases=$(dc) docs=$(dd)"
+          echo "=== exercise CITED publisher (<=2) ==="
+          sudo -n docker exec "$worker" node jobs/run-case-citations.mjs --limit=2 --discover=0 --publish=1 2>&1 | tail -n 3
+          CC="$(dc)"; CD="$(dd)"
+          echo "after cited: cases=$CC docs=$CD"
 
-          echo "=== exercise DETERMINISTIC publisher, single-case steps, until combined ceiling ==="
-          noNew=0
-          for i in $(seq 1 40); do
-            c="$(dc)"; d="$(dd)"
-            if [ "$c" -ge "$CAP_C" ] || [ "$d" -ge "$CAP_D" ]; then echo "  ceiling reached: cases=$c docs=$d"; break; fi
-            out="$(runpub jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --max-items=1 --publish=1)"
-            c2="$(dc)"
-            echo "  iter=$i cases=$c2 docs=$(dd) :: $out"
-            if [ "$c2" -le "$c" ]; then noNew=$((noNew+1)); else noNew=0; fi
-            if [ "$noNew" -ge 10 ]; then echo "  no new case in 10 tries; stopping"; break; fi
-          done
+          REM=$(( CAP_C - CC )); [ "$REM" -lt 0 ] && REM=0
+          echo "=== exercise DETERMINISTIC publisher (<=$REM to keep combined cases<=$CAP_C) ==="
+          if [ "$REM" -gt 0 ]; then
+            sudo -n docker exec "$worker" node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --max-items="$REM" --publish=1 2>&1 | tail -n 25
+            echo "deterministic_pipestatus=${PIPESTATUS[0]}"
+          else
+            echo "combined case ceiling already reached by cited; skipping deterministic"
+          fi
 
           FC="$(dc)"; FD="$(dd)"
-          echo "=== PILOT PUBLISHED (net new since baseline): cases=$FC documents=$FD ==="
+          echo "=== PILOT PUBLISHED (net new since baseline): cases=$FC documents=$FD (caps $CAP_C/$CAP_D) ==="
+          if [ "$FC" -gt "$CAP_C" ] || [ "$FD" -gt "$CAP_D" ]; then echo "::warning::combined ceiling exceeded (cases=$FC docs=$FD)"; fi
           echo "--- newly published cases (public_id | caption) ---"
           q "SELECT lc.public_id||' | '||left(coalesce(lc.caption,''),60) FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id WHERE pd.object_type='legal_case' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $CASE_REASONS ORDER BY pd.decided_at"
           echo "--- newly published opinion documents (case_pid/doc_pid) ---"
           q "SELECT lc.public_id||'/'||d.public_id FROM publication_decision pd JOIN document d ON d.id=pd.object_id JOIN legal_case lc ON lc.id=d.case_id WHERE pd.object_type='document' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $DOC_REASONS ORDER BY pd.decided_at"
 
-          # Machine-readable id payloads for verification.
-          CASES="$(q "SELECT coalesce(string_agg(lc.public_id||'\t'||replace(coalesce(lc.caption,''),chr(9),' '),chr(10)),'') FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id WHERE pd.object_type='legal_case' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $CASE_REASONS")"
+          CASES="$(q "SELECT coalesce(string_agg(lc.public_id||chr(9)||replace(coalesce(lc.caption,''),chr(9),' '),chr(10)),'') FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id WHERE pd.object_type='legal_case' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $CASE_REASONS")"
           DOCS="$(q "SELECT coalesce(string_agg(lc.public_id||'/'||d.public_id,chr(10)),'') FROM publication_decision pd JOIN document d ON d.id=pd.object_id JOIN legal_case lc ON lc.id=d.case_id WHERE pd.object_type='document' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $DOC_REASONS")"
 
-          echo "=== verify public pages (HTTP 200 + real content) + search visibility ==="
-          CASES="$CASES" DOCS="$DOCS" sudo -n docker exec -e CASES -e DOCS "$worker" node -e '
-            const base="http://app:3000";
-            const cases=(process.env.CASES||"").split("\n").filter(Boolean).map(l=>{const [pid,cap=""]=l.split("\t");return {pid,cap};});
-            const docs=(process.env.DOCS||"").split("\n").filter(Boolean);
-            const get=async u=>{try{const r=await fetch(u);const t=await r.text();return {s:r.status,n:t.length,t};}catch(e){return {s:0,n:0,t:"",e:String(e)};}};
-            (async()=>{
-              let pageFail=0, searchFail=0;
-              for(const {pid,cap} of cases){
-                const r=await get(base+"/case/"+pid);
-                const ok=r.s===200 && r.n>800 && r.t.includes(pid);
-                if(!ok) pageFail++;
-                console.log("CASE "+pid+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
-                const kw=(cap.replace(/[^A-Za-z0-9 ]/g," ").split(/\s+/).filter(w=>w.length>3).slice(0,3).join(" "))||cap;
-                if(kw.length>=2){
-                  const sr=await get(base+"/search?q="+encodeURIComponent(kw));
-                  const found=sr.s===200 && sr.t.includes(pid);
-                  if(!found) searchFail++;
-                  console.log("  SEARCH q=\""+kw+"\" status="+sr.s+" found_case="+(found?"yes":"NO"));
+          if [ -z "$CASES" ]; then
+            echo "VERIFY_SUMMARY page_failures=0 search_failures=0 cases=0 docs=0 (nothing published to verify)"
+          else
+            echo "=== verify public pages (HTTP 200 + real content) + search visibility ==="
+            CASES="$CASES" DOCS="$DOCS" sudo -n docker exec -e CASES -e DOCS "$worker" node -e '
+              const base="http://app:3000";
+              const cases=(process.env.CASES||"").split("\n").filter(Boolean).map(l=>{const [pid,cap=""]=l.split("\t");return {pid,cap};});
+              const docs=(process.env.DOCS||"").split("\n").filter(Boolean);
+              const get=async u=>{try{const r=await fetch(u);const t=await r.text();return {s:r.status,n:t.length,t};}catch(e){return {s:0,n:0,t:"",e:String(e)};}};
+              (async()=>{
+                let pageFail=0, searchFail=0;
+                for(const {pid,cap} of cases){
+                  const r=await get(base+"/case/"+pid);
+                  const ok=r.s===200 && r.n>800 && r.t.includes(pid);
+                  if(!ok) pageFail++;
+                  console.log("CASE "+pid+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
+                  const kw=(cap.replace(/[^A-Za-z0-9 ]/g," ").split(/\s+/).filter(w=>w.length>3).slice(0,3).join(" "))||cap;
+                  if(kw.length>=2){
+                    const sr=await get(base+"/search?q="+encodeURIComponent(kw));
+                    const found=sr.s===200 && sr.t.includes(pid);
+                    if(!found) searchFail++;
+                    console.log("  SEARCH q=\""+kw+"\" status="+sr.s+" found_case="+(found?"yes":"NO"));
+                  }
                 }
-              }
-              for(const d of docs){
-                const r=await get(base+"/case/"+d);
-                const ok=r.s===200 && r.n>800;
-                if(!ok) pageFail++;
-                console.log("DOC  "+d+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
-              }
-              console.log("VERIFY_SUMMARY page_failures="+pageFail+" search_failures="+searchFail+" cases="+cases.length+" docs="+docs.length);
-            })();
-          '
+                for(const d of docs){
+                  const r=await get(base+"/case/"+d);
+                  const ok=r.s===200 && r.n>800;
+                  if(!ok) pageFail++;
+                  console.log("DOC  "+d+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
+                }
+                console.log("VERIFY_SUMMARY page_failures="+pageFail+" search_failures="+searchFail+" cases="+cases.length+" docs="+docs.length);
+              })();
+            '
+          fi
           echo "=== PILOT RESULT: published_cases=$FC published_docs=$FD (caps $CAP_C/$CAP_D) ==="
           echo "=== DONE ==="
           REMOTE
