@@ -21,6 +21,7 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       await sql.unsafe(await readFile('db/migrations/0114_case_citation_graph.sql','utf8'));
       await sql.unsafe(await readFile('db/migrations/0115_citation_reporter_refresh.sql','utf8'));
       await sql.unsafe(await readFile('db/migrations/0119_citation_publication_hold_rule_version.sql','utf8'));
+      await sql.unsafe(await readFile('db/migrations/0120_missing_citation_bulk_resolution.sql','utf8'));
       const [provider]=await sql<{id:string}[]>`SELECT id FROM provider WHERE code='courtlistener'`;
       const [artifact]=await sql<{id:string}[]>`INSERT INTO raw_artifact(provider_id,source_uri,content_hash,object_key,media_type,retrieved_at) VALUES(${provider!.id},'https://www.courtlistener.com/api/rest/v4/opinions/2/',${'a'.repeat(64)},'fixture','application/json',now()) RETURNING id`;
       const [court]=await sql<{id:string}[]>`INSERT INTO court(public_id,name,verification) VALUES('jc-test1234','Test Court','verified') RETURNING id`;
@@ -107,7 +108,7 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       // the missing-citation table contains unrelated private-only records.
       await sql`INSERT INTO missing_case_citation(citation_key,citation_label)
         SELECT 'private-'||n,'private citation '||n FROM generate_series(1,1000) n`;
-      expect(await discoveryCandidates(sql,1)).toEqual([{citation_key:'123f3d456',citation_label:'123 F.3d 456'}]);
+      expect(await discoveryCandidates(sql,1)).toEqual([{citation_key:'123f3d456',citation_label:'123 F.3d 456',resolved_cluster_id:null}]);
       await sql`UPDATE document SET publication='suppressed' WHERE id=${document!.id}`;
       expect(await discoveryCandidates(sql,10)).toEqual([]);
       await sql`UPDATE document SET publication='published' WHERE id=${document!.id}`;

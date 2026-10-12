@@ -31,6 +31,7 @@ try {
       (SELECT count(*) FROM case_citation_work) AS identities_remaining,
       (SELECT count(*) FROM document_citation_work) AS documents_remaining,
       (SELECT count(*) FROM missing_case_citation WHERE state='pending') AS discovery_remaining,
+      (SELECT count(*) FROM missing_case_citation WHERE state='resolved') AS resolved_awaiting_ingest,
       (SELECT count(*) FROM missing_case_citation WHERE state IN ('held','ambiguous','not_found')) AS needs_attention`;
     console.log(JSON.stringify({synced,found,publication,backlog}));
   }

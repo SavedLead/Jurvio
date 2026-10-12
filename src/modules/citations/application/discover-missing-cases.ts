@@ -8,7 +8,7 @@ type Sql = ReturnType<typeof postgres>;
 export async function discoveryCandidates(sql: Sql, limit: number) {
   // Materialize public sources once. Checking publication decisions separately
   // for every private-only missing citation made production selection unbounded.
-  return sql<{citation_key:string; citation_label:string}[]>`
+  return sql<{citation_key:string; citation_label:string; resolved_cluster_id:string|null}[]>`
     WITH visible_sources AS MATERIALIZED (
       SELECT d.id,content.content_hash FROM document d
       JOIN legal_case c ON c.id=d.case_id
@@ -20,11 +20,15 @@ export async function discoveryCandidates(sql: Sql, limit: number) {
       SELECT DISTINCT ref.citation_key FROM visible_sources source
       JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash
     )
-    SELECT missing.citation_key, missing.citation_label FROM missing_case_citation missing
+    SELECT missing.citation_key, missing.citation_label,
+      CASE WHEN missing.state='resolved' THEN missing.resolved_cluster_id::text END AS resolved_cluster_id
+    FROM missing_case_citation missing
     JOIN public_citations cited ON cited.citation_key=missing.citation_key
-    WHERE missing.state IN ('pending','not_found','ambiguous') AND missing.next_attempt_at<=now()
+    WHERE missing.state IN ('pending','not_found','ambiguous','resolved') AND missing.next_attempt_at<=now()
       AND NOT EXISTS(SELECT 1 FROM case_citation_identity i WHERE i.citation_key=missing.citation_key)
-    ORDER BY missing.next_attempt_at, missing.citation_key LIMIT ${limit}
+    -- Citations already resolved offline to an exact cluster go first: they need
+    -- no rate-limited lookup call, only the cluster fetch.
+    ORDER BY (missing.state='resolved') DESC, missing.next_attempt_at, missing.citation_key LIMIT ${limit}
   `;
 }
 export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit: number) {
@@ -32,7 +36,8 @@ export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit
   let discovered=0, held=0, matchedLocal=0, volumeFetched=false;
   for (const cite of citations) {
     try {
-      const clusterId=cite.citation_key.startsWith('cl-cluster:') ? Number(cite.citation_key.slice('cl-cluster:'.length)) : null;
+      const clusterId=cite.citation_key.startsWith('cl-cluster:') ? Number(cite.citation_key.slice('cl-cluster:'.length))
+        : cite.resolved_cluster_id ? Number(cite.resolved_cluster_id) : null;
       const lookup=clusterId ? await fetchOpinionCluster(clusterId).then(retrieved=>({...retrieved,record:[{status:200,clusters:[retrieved.record]}]})) : await fetchCitationLookup(cite.citation_label);
       const [provider]=await sql<{id:string}[]>`SELECT id FROM provider WHERE code='courtlistener'`;
       if (!provider) throw new Error('CourtListener provider seed is missing');
