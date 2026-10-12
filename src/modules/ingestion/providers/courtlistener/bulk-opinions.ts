@@ -201,6 +201,23 @@ export function bulkOpinionSourceUri(snapshotDate: string, opinionId: string): s
   return `https://www.courtlistener.com/help/api/bulk-data/#opinion-${snapshotDate}-${opinionId}`;
 }
 
+// Inverse of bulkOpinionSourceUri, kept next to the producer so the two cannot drift.
+// Matches ONLY the official bulk-opinion provenance URI and captures the snapshot date
+// and opinion id so a verifier can cross-check them against the stored record. The
+// opinion-cluster URI (`#opinion-cluster-...`) does not match: a digit must follow
+// `#opinion-` here, while the cluster form has `cluster-` there.
+const BULK_OPINION_SOURCE_URI_RE =
+  /^https:\/\/www\.courtlistener\.com\/help\/api\/bulk-data\/#opinion-(\d{4}-\d{2}-\d{2})-(\d+)$/;
+
+export function parseBulkOpinionSourceUri(
+  uri: string | null | undefined,
+): { snapshotDate: string; opinionId: string } | null {
+  if (!uri) return null;
+  const match = BULK_OPINION_SOURCE_URI_RE.exec(uri);
+  if (!match) return null;
+  return { snapshotDate: match[1]!, opinionId: match[2]! };
+}
+
 export function bulkContentHash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
