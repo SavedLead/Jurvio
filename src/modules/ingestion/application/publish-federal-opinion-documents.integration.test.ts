@@ -26,18 +26,22 @@ describe.skipIf(!databaseUrl)("deterministic federal opinion document publicatio
       const [court] = await sql<{ id: string }[]>`INSERT INTO court(public_id,provider_id,provider_court_id,name,jurisdiction,verification) VALUES('jc-ca2test01',${provider!.id},'ca2','Second Circuit','f','verified') RETURNING id`;
 
       async function seedCaseWithOpinion(opts: { suffix: string; words: number; sourceUri: string; recordId: string }) {
+        // Per-seed, pure-hex, 64-char hashes (raw_artifact has a unique (provider_id,
+        // content_hash); the document provenance check requires 64-hex hashes).
+        const artHash = opts.recordId.padStart(64, "a");
+        const docHash = opts.recordId.padStart(64, "0");
         const [artifact] = await sql<{ id: string }[]>`INSERT INTO raw_artifact(provider_id,source_uri,content_hash,object_key,media_type,retrieved_at,source_record_id)
-          VALUES(${provider!.id},${opts.sourceUri},${"c".repeat(64)},${"k" + opts.suffix},'application/json',now(),${opts.recordId}) RETURNING id`;
+          VALUES(${provider!.id},${opts.sourceUri},${artHash},${"k" + opts.suffix},'application/json',now(),${opts.recordId}) RETURNING id`;
         const [kase] = await sql<{ id: string }[]>`INSERT INTO legal_case(public_id,court_id,docket_number,caption,publication,verification,source_artifact_id)
           VALUES(${"jv-" + opts.suffix},${court!.id},${"d-" + opts.suffix},'United States v. Example','published','verified',${artifact!.id}) RETURNING id`;
         const [cluster] = await sql<{ id: string }[]>`INSERT INTO opinion_cluster(public_id,case_id,provider_id,provider_cluster_id,case_name,source_artifact_id)
           VALUES(${"jo-" + opts.suffix},${kase!.id},${provider!.id},${"cl-" + opts.suffix},'United States v. Example',${artifact!.id}) RETURNING id`;
         const [doc] = await sql<{ id: string }[]>`INSERT INTO document(public_id,case_id,document_type,title,publication,content_hash)
-          VALUES(${"jd-" + opts.suffix},${kase!.id},'judicial_opinion','Opinion','draft',${"d".repeat(64)}) RETURNING id`;
+          VALUES(${"jd-" + opts.suffix},${kase!.id},'judicial_opinion','Opinion','draft',${docHash}) RETURNING id`;
         await sql`INSERT INTO judicial_opinion(cluster_id,document_id,provider_id,provider_opinion_id,opinion_type,source_artifact_id)
           VALUES(${cluster!.id},${doc!.id},${provider!.id},${opts.recordId},'majority',${artifact!.id})`;
         await sql`INSERT INTO document_content(document_id,content_html,content_text,content_hash,extraction_method,word_count,source_artifact_id)
-          VALUES(${doc!.id},'<p>opinion</p>',${"word ".repeat(opts.words)},${"d".repeat(64)},'fixture',${opts.words},${artifact!.id})`;
+          VALUES(${doc!.id},'<p>opinion</p>',${"word ".repeat(opts.words)},${docHash},'fixture',${opts.words},${artifact!.id})`;
         return { caseId: kase!.id, documentId: doc!.id };
       }
 

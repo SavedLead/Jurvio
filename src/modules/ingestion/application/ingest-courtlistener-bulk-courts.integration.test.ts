@@ -26,6 +26,8 @@ describe.skipIf(!databaseUrl)("courtlistener bulk court loader verification", ()
       await sql.unsafe(`CREATE SCHEMA ${schema}; SET search_path TO ${schema},public`);
       const foundation = await readFile("db/migrations/0001_foundation.sql", "utf8");
       await sql.unsafe(foundation.replace("CREATE EXTENSION IF NOT EXISTS pgcrypto;", ""));
+      // Migration 0009 adds court.source_url and the ingestion_checkpoint table the loader writes.
+      await sql.unsafe(await readFile("db/migrations/0009_bulk_ingestion.sql", "utf8"));
 
       // Simulate a court another authoritative pipeline already verified but which is NOT
       // on our registry -- the loader must never downgrade it.
