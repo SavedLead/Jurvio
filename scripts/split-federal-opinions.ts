@@ -29,9 +29,39 @@ if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 500_000) {
   throw new Error("--chunk-size must be an integer from 1 to 500000");
 }
 
+// Mutual exclusion for the extractor. A process check alone is racy (two launches
+// can both observe "no extractor running" and then both start), so we take a Postgres
+// session-level advisory lock -- the acquisition is atomic on the server: at most one
+// holder succeeds. The lock is held on a RESERVED connection kept out of the pool for
+// the whole run (the pool's idle_timeout would otherwise close the acquiring connection
+// mid-scan and silently drop the lock). If the process dies for any reason the reserved
+// connection drops and Postgres releases the lock automatically -- no stale lockfile.
+const EXTRACT_LOCK_KEY = "jurvio:federal-opinion-extract";
+
 const sql = db();
+let lock: Awaited<ReturnType<typeof sql.reserve>> | undefined;
 try {
   env();
+
+  lock = await sql.reserve();
+  const [acquiredRow] = await lock<{ acquired: boolean }[]>`
+    SELECT pg_try_advisory_lock(hashtext(${EXTRACT_LOCK_KEY})) AS acquired
+  `;
+  if (!acquiredRow?.acquired) {
+    console.log(
+      JSON.stringify({
+        phase: "extract-lock-busy",
+        message:
+          "another federal opinion extractor already holds the advisory lock; exiting without starting a second scan",
+      }),
+    );
+    await lock.release();
+    lock = undefined;
+    await closeDb();
+    process.exit(0);
+  }
+  console.log(JSON.stringify({ phase: "extract-lock-acquired", key: EXTRACT_LOCK_KEY }));
+
   const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'courtlistener'`;
   if (!provider) throw new Error("CourtListener provider seed is missing");
 
@@ -119,5 +149,13 @@ try {
   process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exitCode = 1;
 } finally {
+  if (lock) {
+    try {
+      await lock`SELECT pg_advisory_unlock(hashtext(${EXTRACT_LOCK_KEY}))`;
+    } catch {
+      // best-effort; the lock also releases when the reserved connection closes below
+    }
+    await lock.release();
+  }
   await closeDb();
 }
