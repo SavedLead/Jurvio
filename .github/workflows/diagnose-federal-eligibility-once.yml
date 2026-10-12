@@ -1,15 +1,10 @@
 name: Diagnose federal publication eligibility after fixes (once, read-only)
 
 # Strictly read-only. Projects, against production, how many federal CASES and OPINION
-# DOCUMENTS become publishable after applying ALL of the prepared fixes together:
-#   (1) court verification from the authoritative registry (the embedded id allowlist),
-#   (2) the validated docket-less alternative identity, and
-#   (3) the FS/FBP jurisdiction recognition,
-# combined with EVERY other gate check (source artifact/url/checksum/retrieval, readable
-# content, duplicate-identity collision (docketed only), unresolved rejection, restricted/
-# sensitive text, case conflict, and -- for documents -- thin text, document provenance,
-# verified opinion source, sensitive text, existing publication/review restriction).
-# It reports eligibility AFTER ALL CHECKS, not court or identity in isolation. No writes.
+# DOCUMENTS become publishable after applying ALL prepared fixes together (court-registry
+# verification, validated docket-less alternative identity, FS/FBP jurisdiction) combined
+# with EVERY other gate check. Reports eligibility AFTER ALL CHECKS. No writes.
+# Collisions and unresolved rejections are pre-aggregated into CTEs to stay fast.
 
 on:
   workflow_dispatch: {}
@@ -54,7 +49,7 @@ jobs:
           pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
             --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
           [ -n "$pg" ] || { echo "::error::no postgres container"; exit 1; }
-          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "SET statement_timeout='240s';" -c "$1" 2>&1; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "SET statement_timeout='300s';" -c "$1" 2>&1; }
 
           echo "=== federal draft OPINION DOCUMENTS: eligibility after ALL fixes+checks ==="
           q "WITH reg(provider_court_id) AS (VALUES
@@ -89,6 +84,12 @@ jobs:
             ('uscirct'),('usdistct'),('usprovctla'),('utb'),('utd'),('vad'),('vaeb'),('vaed'),('vawb'),('vawd'),('vib'),('vid'),
             ('vtb'),('vtd'),('waeb'),('waed'),('washd'),('wawb'),('wawd'),('wieb'),('wied'),('wisd'),('wiwb'),('wiwd'),
             ('wvad'),('wvnb'),('wvnd'),('wvsb'),('wvsd'),('wyb'),('wyd')
+          ), dup AS (
+            SELECT court_id, lower(trim(docket_number)) AS dk
+            FROM legal_case WHERE nullif(trim(docket_number),'') IS NOT NULL
+            GROUP BY 1,2 HAVING count(*)>1
+          ), rej AS (
+            SELECT DISTINCT source_record_id FROM ingestion_rejection WHERE resolved_at IS NULL
           ), g AS (
             SELECT d.id AS doc_id, c.id AS case_id,
               (ct.provider_court_id IN (SELECT provider_court_id FROM reg)) AS court_ok,
@@ -108,11 +109,8 @@ jobs:
               (c.source_artifact_id IS NOT NULL AND ca.source_uri ~ '^https?://'
                 AND ca.content_hash ~ '^[a-f0-9]{64}\$' AND ca.retrieved_at IS NOT NULL) AS source_ok,
               (length(btrim(dc.content_text))>0) AS readable,
-              (coalesce(c.docket_number,'')<>'' AND (SELECT count(*) FROM legal_case col
-                 WHERE col.court_id=c.court_id AND nullif(trim(col.docket_number),'') IS NOT NULL
-                   AND lower(trim(col.docket_number))=lower(trim(c.docket_number)))>1) AS collision,
-              EXISTS(SELECT 1 FROM ingestion_rejection rj WHERE rj.resolved_at IS NULL
-                 AND rj.source_record_id=ca.source_record_id) AS rejected,
+              (coalesce(c.docket_number,'')<>'' AND dup.court_id IS NOT NULL) AS collision,
+              (rej.source_record_id IS NOT NULL) AS rejected,
               (concat_ws(' ',c.caption,c.docket_number,d.title,dc.content_text) ~* '\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M') AS restricted,
               (c.verification IN ('conflict','needs_review')) AS case_conflict,
               (dc.word_count<100) AS thin,
@@ -131,6 +129,8 @@ jobs:
             JOIN document_content dc ON dc.document_id=d.id
             JOIN raw_artifact da ON da.id=dc.source_artifact_id JOIN provider dp ON dp.id=da.provider_id
             LEFT JOIN raw_artifact ca ON ca.id=c.source_artifact_id
+            LEFT JOIN dup ON dup.court_id=c.court_id AND dup.dk=lower(trim(c.docket_number))
+            LEFT JOIN rej ON rej.source_record_id=ca.source_record_id
             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
           ), e AS (
             SELECT *,
@@ -144,14 +144,14 @@ jobs:
              ||' | distinct_cases='||count(DISTINCT case_id)
              ||' | CASE_eligible_docs='||count(*) FILTER (WHERE case_eligible)
              ||' | CASE_eligible_distinct_cases='||count(DISTINCT case_id) FILTER (WHERE case_eligible)
-             ||' | DOC_eligible(all checks)='||count(*) FILTER (WHERE case_eligible AND NOT thin AND NOT no_provenance AND NOT bad_opinion_source AND NOT sensitive AND NOT doc_blocked)
+             ||' | DOC_eligible_all_checks='||count(*) FILTER (WHERE case_eligible AND NOT thin AND NOT no_provenance AND NOT bad_opinion_source AND NOT sensitive AND NOT doc_blocked)
              ||' | blocked_court='||count(*) FILTER (WHERE NOT court_ok)
              ||' | blocked_identity='||count(*) FILTER (WHERE NOT (caption_present AND (docket_present OR (resolves AND linkage))))
              ||' | blocked_source='||count(*) FILTER (WHERE NOT source_ok)
-             ||' | among_case_eligible_still_thin='||count(*) FILTER (WHERE case_eligible AND thin)
-             ||' | among_case_eligible_bad_opinion_source='||count(*) FILTER (WHERE case_eligible AND bad_opinion_source)
-             ||' | among_case_eligible_sensitive='||count(*) FILTER (WHERE case_eligible AND sensitive)
-             ||' | among_case_eligible_no_provenance='||count(*) FILTER (WHERE case_eligible AND no_provenance)
+             ||' | ce_thin='||count(*) FILTER (WHERE case_eligible AND thin)
+             ||' | ce_bad_opinion_source='||count(*) FILTER (WHERE case_eligible AND bad_opinion_source)
+             ||' | ce_sensitive='||count(*) FILTER (WHERE case_eligible AND sensitive)
+             ||' | ce_no_provenance='||count(*) FILTER (WHERE case_eligible AND no_provenance)
           FROM e;"
           echo "=== DONE ==="
           REMOTE
