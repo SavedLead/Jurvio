@@ -1,6 +1,7 @@
 import { closeDb, db } from "@/db/client";
 import { env } from "@/lib/config/env";
 import {
+  fetchNewestBulkSnapshot,
   markIngestedResolvedCitations,
   resolveMissingCitationsFromBulk,
   resolvedClusterIds,
@@ -16,7 +17,8 @@ import { openBulkCsvFromUrl } from "@/modules/ingestion/providers/courtlistener/
 // Resolve cited-but-missing cases from CourtListener's free bulk data, with no
 // API calls and no rate limit.
 //
-//   --snapshot-date=YYYY-MM-DD  bulk snapshot (required)
+//   --snapshot-date=YYYY-MM-DD  bulk snapshot (required; "latest" = newest
+//                               non-empty citations file in the bucket)
 //   --import                    also ingest resolved cases from the bulk opinion
 //                               files in one pass (hours: streams the full files)
 //   --import-limit=N            cap clusters per import run (default 50000)
@@ -32,12 +34,13 @@ function argument(name: string): string | undefined {
 }
 const flag = (name: string) => process.argv.includes(`--${name}`) || ["1", "true"].includes(argument(name) ?? "");
 
-const snapshotDate = (argument("snapshot-date") ?? "").trim();
 const baseUrl = (argument("base-url") ?? DEFAULT_BULK_BASE_URL).replace(/\/+$/, "");
+const requestedSnapshot = (argument("snapshot-date") ?? "").trim();
+const snapshotDate = requestedSnapshot === "latest" ? await fetchNewestBulkSnapshot(baseUrl, "citations") : requestedSnapshot;
 const doImport = flag("import");
 const anyCourt = flag("any-court");
 const importLimit = Number(argument("import-limit") ?? 50000);
-if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) throw new Error("--snapshot-date=YYYY-MM-DD is required");
+if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) throw new Error("--snapshot-date=YYYY-MM-DD or --snapshot-date=latest is required");
 if (!Number.isInteger(importLimit) || importLimit < 1 || importLimit > 500000) throw new Error("--import-limit must be 1-500000");
 
 const sql = db();

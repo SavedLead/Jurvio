@@ -204,3 +204,30 @@ export async function markIngestedResolvedCitations(sql: Sql): Promise<number> {
   `;
   return updated.count;
 }
+
+/**
+ * Newest usable snapshot date from an S3 ListObjectsV2 response for a bulk-data
+ * prefix (e.g. "citations-"). Files under `minBytes` are ignored: the bucket
+ * holds at least one empty placeholder (citations-2024-03-01 is 14 bytes).
+ */
+export function newestBulkSnapshot(listingXml: string, file: string, minBytes = 1_000_000): string | null {
+  const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const dates: string[] = [];
+  for (const entry of listingXml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+    const key = new RegExp(`<Key>bulk-data/${escaped}-(\\d{4}-\\d{2}-\\d{2})\\.csv\\.bz2</Key>`).exec(entry[1]!);
+    const size = /<Size>(\d+)<\/Size>/.exec(entry[1]!);
+    if (key && size && Number(size[1]) >= minBytes) dates.push(key[1]!);
+  }
+  return dates.sort().at(-1) ?? null;
+}
+
+/** Lists the bulk bucket for `file` and returns the newest usable snapshot date. */
+export async function fetchNewestBulkSnapshot(baseUrl: string, file: string): Promise<string> {
+  const base = baseUrl.replace(/\/+$/, "");
+  const bucket = base.replace(/\/bulk-data$/, "");
+  const response = await fetch(`${bucket}/?list-type=2&prefix=${encodeURIComponent(`bulk-data/${file}-`)}`);
+  if (!response.ok) throw new Error(`Bulk listing for ${file} failed with HTTP ${response.status}`);
+  const snapshot = newestBulkSnapshot(await response.text(), file);
+  if (!snapshot) throw new Error(`No usable ${file} bulk snapshot found`);
+  return snapshot;
+}
