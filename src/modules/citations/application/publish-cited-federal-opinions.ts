@@ -1,16 +1,51 @@
 import type postgres from 'postgres';
 import { evaluateFederalPublicationCandidate, type FederalPublicationCandidate } from '@/modules/ingestion/domain/federal-stream';
+import { parseBulkOpinionSourceUri } from '@/modules/ingestion/providers/courtlistener/bulk-opinions';
 type Sql=ReturnType<typeof postgres>;
 interface Candidate extends FederalPublicationCandidate {
   caseId:string; documentId:string; publication:string; documentPublication:string;
   wordCount:number; contentText:string; documentHash:string; artifactHash:string;
   documentSourceUri:string; documentProvider:string; blocked:boolean;
+  // Provenance evidence for the opinion-source check: the document content artifact's
+  // recorded source lane, its source_record_id, the stored judicial_opinion id, and
+  // whether the opinion resolves to an ingested cluster. Used to verify official bulk
+  // records end-to-end rather than rejecting them on URL shape.
+  documentArtifactSource:string|null; documentSourceRecordId:string|null;
+  opinionProviderId:string|null; clusterLinked:boolean;
 }
+
+const COURTLISTENER_REST_OPINION_URI=/^https:\/\/www\.courtlistener\.com\/api\/rest\/v[34]\/opinions\/\d+\/$/;
+
+/**
+ * Accept a CourtListener opinion whose document content came from EITHER the live REST
+ * API (the historical path) OR the official bulk export. A bulk record is not
+ * "unverified" -- it is the same official provider over a different transport -- so we
+ * verify its provenance rigorously instead of rejecting it on URL shape:
+ *  - the content artifact must be the CourtListener provider and marked `courtlistener_bulk`,
+ *  - its source_uri must be the canonical bulk-opinion URI (snapshot date + opinion id),
+ *  - the opinion id encoded in that URI must agree with BOTH the artifact's
+ *    source_record_id AND the stored judicial_opinion.provider_opinion_id, and
+ *  - the opinion must be linked to an ingested opinion_cluster.
+ * This authenticates the record end-to-end; it never trusts a bare URL, rewrites a URL to
+ * look verified, or blanket-approves the provider.
+ */
+export function isVerifiedCourtListenerOpinionSource(candidate: Candidate): boolean {
+  if(candidate.documentProvider!=='courtlistener') return false;
+  if(COURTLISTENER_REST_OPINION_URI.test(candidate.documentSourceUri)) return true;
+  if(candidate.documentArtifactSource!=='courtlistener_bulk') return false;
+  const parsed=parseBulkOpinionSourceUri(candidate.documentSourceUri);
+  if(!parsed) return false;
+  if(!candidate.documentSourceRecordId||parsed.opinionId!==candidate.documentSourceRecordId) return false;
+  if(!candidate.opinionProviderId||parsed.opinionId!==candidate.opinionProviderId) return false;
+  if(!candidate.clusterLinked) return false;
+  return true;
+}
+
 export function citedOpinionPublicationReasons(candidate: Candidate): string[] {
   const reasons=evaluateFederalPublicationCandidate(candidate).reasons;
   if(candidate.wordCount<100) reasons.push('thin_opinion');
   if(!/^[a-f0-9]{64}$/.test(candidate.documentHash)||!candidate.artifactHash) reasons.push('missing_document_provenance');
-  if(candidate.documentProvider!=='courtlistener'||!/^https:\/\/www\.courtlistener\.com\/api\/rest\/v[34]\/opinions\/\d+\/$/.test(candidate.documentSourceUri)) reasons.push('unverified_opinion_source');
+  if(!isVerifiedCourtListenerOpinionSource(candidate)) reasons.push('unverified_opinion_source');
   if(candidate.blocked) reasons.push('existing_publication_or_review_restriction');
   if(/\b\d{3}-\d{2}-\d{4}\b|\b(?:date of birth|social security number)\b/i.test(candidate.contentText)) reasons.push('sensitive_opinion_text');
   return reasons;
@@ -42,6 +77,9 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
       concat_ws(' ',c.caption,d.title,content.content_text) AS "restrictedText",
       content.word_count AS "wordCount", content.content_text AS "contentText", content.content_hash AS "documentHash",
       da.content_hash AS "artifactHash", da.source_uri AS "documentSourceUri", dp.code AS "documentProvider",
+      da.response_metadata->>'source' AS "documentArtifactSource", da.source_record_id AS "documentSourceRecordId",
+      judicial.provider_opinion_id AS "opinionProviderId",
+      (judicial.cluster_id IS NOT NULL AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=judicial.cluster_id)) AS "clusterLinked",
       (c.verification IN ('conflict','needs_review')
         OR EXISTS(SELECT 1 FROM publication_decision pd WHERE pd.object_id IN(c.id,d.id) AND NOT pd.displayable)
         OR EXISTS(SELECT 1 FROM publication_review pr WHERE pr.object_id IN(c.id,d.id) AND (pr.status IN('rejected','needs_changes') OR (pr.reviewer_id IS NOT NULL AND pr.status<>'approved')))
