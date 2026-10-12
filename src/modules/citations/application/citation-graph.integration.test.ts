@@ -21,7 +21,7 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       await sql.unsafe(await readFile('db/migrations/0114_case_citation_graph.sql','utf8'));
       await sql.unsafe(await readFile('db/migrations/0115_citation_reporter_refresh.sql','utf8'));
       await sql.unsafe(await readFile('db/migrations/0119_citation_publication_hold_rule_version.sql','utf8'));
-      await sql.unsafe(await readFile('db/migrations/0120_missing_citation_bulk_resolution.sql','utf8'));
+      await sql.unsafe(await readFile('db/migrations/0122_missing_citation_bulk_resolution.sql','utf8'));
       const [provider]=await sql<{id:string}[]>`SELECT id FROM provider WHERE code='courtlistener'`;
       const [artifact]=await sql<{id:string}[]>`INSERT INTO raw_artifact(provider_id,source_uri,content_hash,object_key,media_type,retrieved_at) VALUES(${provider!.id},'https://www.courtlistener.com/api/rest/v4/opinions/2/',${'a'.repeat(64)},'fixture','application/json',now()) RETURNING id`;
       const [court]=await sql<{id:string}[]>`INSERT INTO court(public_id,name,verification) VALUES('jc-test1234','Test Court','verified') RETURNING id`;

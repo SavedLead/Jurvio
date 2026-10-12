@@ -36,7 +36,7 @@ describe.skipIf(!databaseUrl)("bulk citation resolution database integration", (
         await sql.unsafe(source.replace("CREATE EXTENSION IF NOT EXISTS pgcrypto;", ""));
       }
       await sql`ALTER TABLE legal_case ADD COLUMN official_citation text, ADD COLUMN decided_on date`;
-      for (const name of ["0114_case_citation_graph.sql", "0115_citation_reporter_refresh.sql", "0120_missing_citation_bulk_resolution.sql"]) {
+      for (const name of ["0114_case_citation_graph.sql", "0115_citation_reporter_refresh.sql", "0122_missing_citation_bulk_resolution.sql"]) {
         await sql.unsafe(await readFile(`db/migrations/${name}`, "utf8"));
       }
       const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code='courtlistener'`;
