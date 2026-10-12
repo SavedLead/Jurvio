@@ -37,26 +37,58 @@ export const CITED_OPINION_RULE_VERSION='cited-opinion-publication-v2';
  * This authenticates the record end-to-end; it never trusts a bare URL, rewrites a URL to
  * look verified, or blanket-approves the provider.
  */
-export function isVerifiedCourtListenerOpinionSource(candidate: Candidate): boolean {
-  if(candidate.documentProvider!=='courtlistener') return false;
-  if(COURTLISTENER_REST_OPINION_URI.test(candidate.documentSourceUri)) return true;
-  if(candidate.documentArtifactSource!=='courtlistener_bulk') return false;
-  const parsed=parseBulkOpinionSourceUri(candidate.documentSourceUri);
+/**
+ * The document-level inputs an opinion document must carry to be published, independent of
+ * which publisher (cited-graph or deterministic-federal) is publishing it. Shared so both
+ * paths apply exactly the same opinion-document checks.
+ */
+export interface FederalOpinionDocumentChecks {
+  wordCount: number;
+  contentText: string;
+  documentHash: string;
+  artifactHash: string;
+  documentSourceUri: string;
+  documentProvider: string;
+  blocked: boolean;
+  documentArtifactSource: string | null;
+  documentSourceRecordId: string | null;
+  opinionProviderId: string | null;
+  clusterLinked: boolean;
+}
+
+export function isVerifiedCourtListenerOpinionSource(doc: FederalOpinionDocumentChecks): boolean {
+  if(doc.documentProvider!=='courtlistener') return false;
+  if(COURTLISTENER_REST_OPINION_URI.test(doc.documentSourceUri)) return true;
+  if(doc.documentArtifactSource!=='courtlistener_bulk') return false;
+  const parsed=parseBulkOpinionSourceUri(doc.documentSourceUri);
   if(!parsed) return false;
-  if(!candidate.documentSourceRecordId||parsed.opinionId!==candidate.documentSourceRecordId) return false;
-  if(!candidate.opinionProviderId||parsed.opinionId!==candidate.opinionProviderId) return false;
-  if(!candidate.clusterLinked) return false;
+  if(!doc.documentSourceRecordId||parsed.opinionId!==doc.documentSourceRecordId) return false;
+  if(!doc.opinionProviderId||parsed.opinionId!==doc.opinionProviderId) return false;
+  if(!doc.clusterLinked) return false;
   return true;
 }
 
-export function citedOpinionPublicationReasons(candidate: Candidate): string[] {
-  const reasons=evaluateFederalPublicationCandidate(candidate).reasons;
-  if(candidate.wordCount<100) reasons.push('thin_opinion');
-  if(!/^[a-f0-9]{64}$/.test(candidate.documentHash)||!candidate.artifactHash) reasons.push('missing_document_provenance');
-  if(!isVerifiedCourtListenerOpinionSource(candidate)) reasons.push('unverified_opinion_source');
-  if(candidate.blocked) reasons.push('existing_publication_or_review_restriction');
-  if(/\b\d{3}-\d{2}-\d{4}\b|\b(?:date of birth|social security number)\b/i.test(candidate.contentText)) reasons.push('sensitive_opinion_text');
+/**
+ * Opinion-document publication checks (thin text, document provenance, verified opinion
+ * source, existing publication/review restriction, sensitive text). Shared by the cited
+ * publisher and the deterministic federal publisher so a document faces the same bar
+ * whichever path reaches it.
+ */
+export function federalOpinionDocumentReasons(doc: FederalOpinionDocumentChecks): string[] {
+  const reasons: string[]=[];
+  if(doc.wordCount<100) reasons.push('thin_opinion');
+  if(!/^[a-f0-9]{64}$/.test(doc.documentHash)||!doc.artifactHash) reasons.push('missing_document_provenance');
+  if(!isVerifiedCourtListenerOpinionSource(doc)) reasons.push('unverified_opinion_source');
+  if(doc.blocked) reasons.push('existing_publication_or_review_restriction');
+  if(/\b\d{3}-\d{2}-\d{4}\b|\b(?:date of birth|social security number)\b/i.test(doc.contentText)) reasons.push('sensitive_opinion_text');
   return reasons;
+}
+
+export function citedOpinionPublicationReasons(candidate: Candidate): string[] {
+  return [
+    ...evaluateFederalPublicationCandidate(candidate).reasons,
+    ...federalOpinionDocumentReasons(candidate),
+  ];
 }
 export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
   const candidates=await sql<Candidate[]>`
@@ -80,7 +112,7 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
       a.id AS "sourceArtifactId", p.code AS "sourceProviderCode", a.source_record_id AS "sourceRecordId",
       a.source_uri AS "sourceUri", a.content_hash AS "sourceContentHash", a.retrieved_at::text AS "sourceRetrievedAt",
       true AS "hasReadableContent", null AS "canonicalIdentifier", 1 AS "canonicalIdentifierCount",
-      (SELECT count(*)::int FROM legal_case collision WHERE collision.court_id=c.court_id AND lower(trim(collision.docket_number))=lower(trim(c.docket_number))) AS "identityCollisionCount",
+      (SELECT count(*)::int FROM legal_case collision WHERE collision.court_id=c.court_id AND nullif(trim(collision.docket_number),'') IS NOT NULL AND lower(trim(collision.docket_number))=lower(trim(c.docket_number))) AS "identityCollisionCount",
       (SELECT count(*)::int FROM ingestion_rejection rejection WHERE rejection.resolved_at IS NULL AND rejection.source_record_id=a.source_record_id) AS "unresolvedRejections",
       concat_ws(' ',c.caption,d.title,content.content_text) AS "restrictedText",
       content.word_count AS "wordCount", content.content_text AS "contentText", content.content_hash AS "documentHash",
@@ -88,6 +120,10 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
       da.response_metadata->>'source' AS "documentArtifactSource", da.source_record_id AS "documentSourceRecordId",
       judicial.provider_opinion_id AS "opinionProviderId",
       (judicial.cluster_id IS NOT NULL AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=judicial.cluster_id)) AS "clusterLinked",
+      judicial.provider_opinion_id AS "providerScopedIdentifier",
+      (da.source_record_id IS NOT NULL AND da.source_record_id = judicial.provider_opinion_id) AS "sourceRecordResolvesIdentity",
+      (judicial.cluster_id IS NOT NULL AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=judicial.cluster_id)
+        AND court.provider_court_id IS NOT NULL) AS "courtCaseLinkageVerified",
       (c.verification IN ('conflict','needs_review')
         OR EXISTS(SELECT 1 FROM publication_decision pd WHERE pd.object_id IN(c.id,d.id) AND NOT pd.displayable)
         OR EXISTS(SELECT 1 FROM publication_review pr WHERE pr.object_id IN(c.id,d.id) AND (pr.status IN('rejected','needs_changes') OR (pr.reviewer_id IS NOT NULL AND pr.status<>'approved')))

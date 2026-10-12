@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { citedOpinionPublicationReasons } from './publish-cited-federal-opinions';
+import {
+  citedOpinionPublicationReasons,
+  federalOpinionDocumentReasons,
+  type FederalOpinionDocumentChecks,
+} from './publish-cited-federal-opinions';
 const candidate: Parameters<typeof citedOpinionPublicationReasons>[0]={
   caseId:'case',documentId:'document',publication:'draft',documentPublication:'draft',
   caption:'Example v. Agency',docketNumber:'23-101',courtJurisdiction:'f',courtProviderId:'ca2',courtVerification:'verified',
@@ -9,6 +13,7 @@ const candidate: Parameters<typeof citedOpinionPublicationReasons>[0]={
   wordCount:200,contentText:'Public court text',documentHash:'b'.repeat(64),artifactHash:'c'.repeat(64),
   documentSourceUri:'https://www.courtlistener.com/api/rest/v4/opinions/2/',documentProvider:'courtlistener',blocked:false,
   documentArtifactSource:null,documentSourceRecordId:'2',opinionProviderId:'2',clusterLinked:true,
+  providerScopedIdentifier:'2',sourceRecordResolvesIdentity:true,courtCaseLinkageVerified:true,
 };
 // A genuine official BULK opinion: bulk transport, canonical bulk URI, and the opinion id
 // encoded in the URI agrees with the artifact's source_record_id and the stored opinion id.
@@ -39,5 +44,27 @@ describe('cited federal opinion publication',()=>{
     expect(citedOpinionPublicationReasons({...bulkCandidate,documentProvider:'scraper'})).toContain('unverified_opinion_source');
     // a non-canonical bulk-ish URL is not accepted
     expect(citedOpinionPublicationReasons({...bulkCandidate,documentSourceUri:'https://www.courtlistener.com/help/api/bulk-data/#opinion-baddate-2'})).toContain('unverified_opinion_source');
+  });
+});
+
+// The shared opinion-document checks, used by BOTH the cited publisher and the
+// deterministic federal publisher so a document faces the same bar on either path.
+describe('shared federal opinion document checks', () => {
+  const doc: FederalOpinionDocumentChecks = {
+    wordCount: 200, contentText: 'Public court text', documentHash: 'b'.repeat(64), artifactHash: 'c'.repeat(64),
+    documentSourceUri: 'https://www.courtlistener.com/api/rest/v4/opinions/2/', documentProvider: 'courtlistener',
+    blocked: false, documentArtifactSource: null, documentSourceRecordId: '2', opinionProviderId: '2', clusterLinked: true,
+  };
+  it('passes a complete, verified-source opinion document', () => {
+    expect(federalOpinionDocumentReasons(doc)).toEqual([]);
+  });
+  it.each([
+    ['thin', { wordCount: 42 }, 'thin_opinion'],
+    ['missing document provenance', { documentHash: '' }, 'missing_document_provenance'],
+    ['unverified opinion source', { documentSourceUri: 'https://example.com/x', documentArtifactSource: null }, 'unverified_opinion_source'],
+    ['existing restriction', { blocked: true }, 'existing_publication_or_review_restriction'],
+    ['sensitive text', { contentText: 'contains SSN 123-45-6789' }, 'sensitive_opinion_text'],
+  ])('holds a %s document', (_label, change, reason) => {
+    expect(federalOpinionDocumentReasons({ ...doc, ...change })).toContain(reason);
   });
 });

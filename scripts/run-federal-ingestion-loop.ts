@@ -23,6 +23,7 @@ import {
   decodeStreamCursor,
   encodeStreamCursor,
   evaluateFederalPublicationCandidate,
+  FEDERAL_PUBLICATION_RULE_VERSION,
   isNonBankruptcyFederalJurisdiction,
   isRestrictedDocketText,
   LEGACY_CURSOR_BATCH_SIZE,
@@ -35,6 +36,7 @@ import {
   fetchDocketPage,
   fetchOpinionClusterIds,
 } from "@/modules/ingestion/providers/courtlistener/client";
+import { publishCaseOpinionDocuments } from "@/modules/ingestion/application/publish-federal-opinion-documents";
 
 function option(name: string, fallback: string): string {
   const equals = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -77,6 +79,23 @@ const PUBLICATION_CHUNK_SIZE = 250;
 
 const loop = option("loop", "new-case-discovery") as FederalLoop;
 const lookbackDays = Number(option("lookback-days", "2"));
+
+// Pause control for the resident deterministic publication-quarantine lane, mirroring
+// run-case-citations' JURVIO_PAUSE_CITATION_PUBLISH. The scheduler still spawns the lane,
+// but the job no-ops when paused -- so a deploy can land a corrected gate WITHOUT the
+// resident lane mass-publishing before a bounded manual pilot has validated it. An explicit
+// --publish=1 overrides the pause for a single manual invocation (the capped pilot);
+// --publish=0 forces skip. Only the publication-quarantine loop consults this.
+const federalPublishArg = option("publish", "");
+if (federalPublishArg !== "" && federalPublishArg !== "0" && federalPublishArg !== "1") {
+  throw new Error("--publish must be 0 or 1");
+}
+const federalPublicationPaused =
+  federalPublishArg === "1"
+    ? false
+    : federalPublishArg === "0"
+      ? true
+      : process.env.JURVIO_PAUSE_FEDERAL_PUBLICATION === "1";
 
 const maxConcurrency = Math.max(
   1,
@@ -605,6 +624,9 @@ type PublicationCandidate = {
   has_readable_content: boolean;
   document_count: number;
   restricted_text: string;
+  provider_scoped_identifier: string | null;
+  source_record_resolves_identity: boolean;
+  court_case_linkage_verified: boolean;
 };
 
 async function selectPublicationCandidates(limit: number): Promise<PublicationCandidate[]> {
@@ -627,6 +649,7 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
       ) AS canonical_identifier_count,
       (SELECT count(*)::int FROM legal_case collision
        WHERE collision.court_id = legal_case.court_id
+         AND nullif(trim(collision.docket_number), '') IS NOT NULL
          AND lower(trim(collision.docket_number)) = lower(trim(legal_case.docket_number))
       ) AS identity_collision_count,
       (SELECT count(*)::int FROM ingestion_rejection rejection
@@ -651,7 +674,19 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
          FROM docket_entry entry WHERE entry.case_id = legal_case.id),
         (SELECT string_agg(coalesce(document.title, ''), ' ')
          FROM document WHERE document.case_id = legal_case.id)
-      ) AS restricted_text
+      ) AS restricted_text,
+      -- Validated alternative identity (for docket-less records): the provider-scoped CL
+      -- docket id, whether it resolves to the retrieved source record, and whether the
+      -- court/case linkage is verified via a provider-scoped case identifier.
+      canonical.identifier_value AS provider_scoped_identifier,
+      (source_artifact.source_record_id IS NOT NULL
+        AND source_artifact.source_record_id = canonical.identifier_value) AS source_record_resolves_identity,
+      (court.provider_court_id IS NOT NULL AND EXISTS(
+        SELECT 1 FROM case_identifier link
+        WHERE link.case_id = legal_case.id
+          AND link.provider_id = source_provider.id
+          AND link.identifier_type = 'courtlistener_docket_id'
+      )) AS court_case_linkage_verified
     FROM legal_case
     JOIN court ON court.id = legal_case.court_id
     LEFT JOIN raw_artifact source_artifact ON source_artifact.id = legal_case.source_artifact_id
@@ -666,16 +701,27 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
       LIMIT 1
     ) canonical ON true
     WHERE legal_case.publication = 'draft'
-      -- Skip cases already evaluated and held for review so the publisher keeps
-      -- reaching newer, unevaluated, publishable drafts instead of re-scanning
-      -- the same held head-of-queue on every run. Eligibility itself is
-      -- unchanged; held cases still surface in the review queue.
-      AND legal_case.verification <> 'needs_review'
+      -- Skip a case only while it is held under the CURRENT rule version. A case held by
+      -- an older rule (or by the pre-table gate, which left no hold row) is re-evaluated
+      -- once under the new rule -- so a gate improvement (e.g. the court registry fix)
+      -- lets previously held-but-now-eligible cases publish instead of being suppressed
+      -- forever. Restricted cases have publication<>'draft' and are already excluded above.
+      AND NOT EXISTS (
+        SELECT 1 FROM federal_publication_hold hold
+        WHERE hold.case_id = legal_case.id
+          AND hold.rule_version = ${FEDERAL_PUBLICATION_RULE_VERSION}
+      )
       AND (
-        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'federal')
+        -- Select the federal jurisdiction classes (including 'fs' specialized and 'fbp'
+        -- bankruptcy appellate panels) OR any registry-verified court. The gate still
+        -- applies every check, so non-court 'fs' tribunals selected here are held, not
+        -- published; verified-court selection ensures specialized/historical courts
+        -- (Tax Court, Board of Tax Appeals, Customs Court, ...) are reached.
+        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'fbp', 'fs', 'federal')
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%bankruptcy%'
+        OR court.verification = 'verified'
       )
     ORDER BY legal_case.created_at
     LIMIT ${limit}
@@ -693,7 +739,10 @@ async function runPublicationAndQuarantine() {
   let published = 0;
   let held = 0;
   let failed = 0;
+  let publishedDocuments = 0;
+  let heldDocuments = 0;
   const holdReasons: Record<string, number> = {};
+  const documentHoldReasons: Record<string, number> = {};
   let controllerState = initialConcurrencyState(adaptiveConfig);
 
   async function handle(candidate: PublicationCandidate): Promise<OutcomeSignal> {
@@ -717,19 +766,32 @@ async function runPublicationAndQuarantine() {
         identityCollisionCount: candidate.identity_collision_count,
         unresolvedRejections: candidate.unresolved_rejections,
         restrictedText: candidate.restricted_text,
+        providerScopedIdentifier: candidate.provider_scoped_identifier,
+        sourceRecordResolvesIdentity: candidate.source_record_resolves_identity,
+        courtCaseLinkageVerified: candidate.court_case_linkage_verified,
       });
       if (!decision.eligible) {
         held += 1;
         for (const reason of decision.reasons) {
           holdReasons[reason] = (holdReasons[reason] ?? 0) + 1;
         }
-        await sql`
-          UPDATE legal_case SET verification = 'needs_review',
-            publication = CASE WHEN ${decision.restricted}
-              THEN 'restricted'::publication_state ELSE publication END,
-            updated_at = now()
-          WHERE id = ${candidate.id}
-        `;
+        await sql.begin(async (tx) => {
+          await tx`
+            UPDATE legal_case SET verification = 'needs_review',
+              publication = CASE WHEN ${decision.restricted}
+                THEN 'restricted'::publication_state ELSE publication END,
+              updated_at = now()
+            WHERE id = ${candidate.id}
+          `;
+          // Record the hold with the CURRENT rule version so this case is skipped until the
+          // rule changes again, then re-evaluated once. Mirrors citation_publication_hold.
+          await tx`
+            INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
+            VALUES (${candidate.id}, ${decision.reasons}, ${FEDERAL_PUBLICATION_RULE_VERSION})
+            ON CONFLICT (case_id) DO UPDATE SET
+              reasons = EXCLUDED.reasons, rule_version = EXCLUDED.rule_version, held_at = now()
+          `;
+        });
         await finishIngestionRunItem(sql, {
           runId,
           sourceRecordId: candidate.id,
@@ -743,13 +805,16 @@ async function runPublicationAndQuarantine() {
             updated_at = now()
           WHERE id = ${candidate.id}
         `;
+        // A published case is no longer held; drop any stale hold row so a future rule
+        // change starts it fresh rather than seeing a current-rule hold.
+        await tx`DELETE FROM federal_publication_hold WHERE case_id = ${candidate.id}`;
         await tx`
           INSERT INTO publication_decision (
             object_type, object_id, displayable, indexable, machine_accessible,
             downloadable, summary_eligible, reason_code, rule_version
           )
           SELECT 'legal_case', ${candidate.id}, true, true, true, false, false,
-            'deterministic_federal_source_validation', 'federal-publication-v2'
+            'deterministic_federal_source_validation', ${FEDERAL_PUBLICATION_RULE_VERSION}
           WHERE NOT COALESCE((
             SELECT displayable FROM publication_decision
             WHERE object_type = 'legal_case' AND object_id = ${candidate.id}
@@ -765,6 +830,16 @@ async function runPublicationAndQuarantine() {
             ${tx.json({ source: "courtlistener", policy: "federal-publication-v2" })}
           )
         `;
+        // Extend the deterministic path from case-only to case + opinion document, reusing
+        // the shared opinion-document checks. Publishing the case is unchanged above; the
+        // document step is additive, idempotent, and holds (never publishes) documents that
+        // fail a document-level check. See publishCaseOpinionDocuments for the contract.
+        const docResult = await publishCaseOpinionDocuments(tx, candidate.id);
+        publishedDocuments += docResult.published;
+        heldDocuments += docResult.held;
+        for (const [reason, count] of Object.entries(docResult.holdReasons)) {
+          documentHoldReasons[reason] = (documentHoldReasons[reason] ?? 0) + count;
+        }
       });
       published += 1;
       await finishIngestionRunItem(sql, {
@@ -801,6 +876,9 @@ async function runPublicationAndQuarantine() {
       published,
       held,
       holdReasons,
+      publishedDocuments,
+      heldDocuments,
+      documentHoldReasons,
       failed,
       finalConcurrency: controllerState.concurrency,
       costs: 0,
@@ -820,7 +898,9 @@ try {
       ? await runActiveUpdates()
       : loop === "material-decisions"
         ? await runMaterialDecisions()
-        : await runPublicationAndQuarantine();
+        : federalPublicationPaused
+          ? { loop, paused: true, discovered: 0, published: 0, held: 0, publishedDocuments: 0, heldDocuments: 0 }
+          : await runPublicationAndQuarantine();
   process.stdout.write(`${JSON.stringify({
     ...result,
     executionTimeMs: Date.now() - startedAt,
