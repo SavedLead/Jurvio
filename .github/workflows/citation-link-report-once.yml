@@ -1,0 +1,126 @@
+name: Citation link report (read-only)
+
+# Read-only snapshot of how far case-citation linking has progressed on the live
+# database. Every number is emitted as a GitHub ::notice:: annotation so it is
+# visible on the run summary page (and readable through the checks API) without
+# downloading logs. The transaction is read-only with a statement timeout; nothing
+# is written. Runs on the self-hosted builder over the private VPC like the other
+# *-once controls.
+#
+# Definitions (all restricted to published, displayable source opinions at their
+# current content version, matching what readers can see):
+#   citation mentions     reporter citations found in opinion text
+#   distinct cited        distinct cited cases (by citation)
+#   cited and linked      distinct cited cases that resolve to one published Jurvio case
+#   cases linked to       distinct Jurvio cases that at least one other case links to
+#   cases with links      distinct Jurvio cases whose opinions link out at least once
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-citation-link-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 45
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Report citation links over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::postgres container missing"; exit 1; }
+          q() { sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1; }
+
+          links="$(q <<'SQL'
+          BEGIN READ ONLY;
+          SET LOCAL statement_timeout='20min';
+          WITH visible AS MATERIALIZED (
+            SELECT d.id, d.case_id, content.content_hash FROM document d
+            JOIN legal_case c ON c.id=d.case_id
+            JOIN document_content content ON content.document_id=d.id
+            WHERE d.publication='published' AND c.publication='published'
+              AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+              AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+          ), refs AS MATERIALIZED (
+            SELECT ref.document_id, v.case_id AS source_case, ref.citation_key, ref.location_kind FROM visible v
+            JOIN document_case_citation ref ON ref.document_id=v.id AND ref.source_content_hash=v.content_hash
+          ), targets AS MATERIALIZED (
+            SELECT u.citation_key, u.case_id FROM unique_case_citation u
+            JOIN legal_case t ON t.id=u.case_id AND t.publication='published'
+            WHERE COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=t.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+          ), linked AS MATERIALIZED (
+            SELECT r.document_id, r.source_case, r.citation_key, t.case_id AS target_case FROM refs r
+            JOIN targets t ON t.citation_key=r.citation_key WHERE t.case_id<>r.source_case
+          )
+          SELECT json_build_object(
+            'published_opinions', (SELECT count(*) FROM visible),
+            'opinions_with_citations', (SELECT count(DISTINCT document_id) FROM refs),
+            'citation_mentions', (SELECT count(*) FROM refs WHERE location_kind='text'),
+            'distinct_cited', (SELECT count(DISTINCT citation_key) FROM refs WHERE location_kind='text'),
+            'distinct_cited_and_linked', (SELECT count(DISTINCT citation_key) FROM linked),
+            'linked_mentions', (SELECT count(*) FROM linked),
+            'cases_linked_to', (SELECT count(DISTINCT target_case) FROM linked),
+            'cases_with_outgoing_links', (SELECT count(DISTINCT source_case) FROM linked)
+          );
+          COMMIT;
+          SQL
+          )"
+          links="$(printf '%s\n' "$links" | grep '^{' | tail -n1)"
+          echo "::notice title=Citation links::${links}"
+
+          missing="$(q <<'SQL'
+          BEGIN READ ONLY;
+          SET LOCAL statement_timeout='5min';
+          SELECT COALESCE(json_object_agg(state, n), '{}'::json) FROM (
+            SELECT state, count(*) AS n FROM missing_case_citation GROUP BY state) s;
+          COMMIT;
+          SQL
+          )"
+          missing="$(printf '%s\n' "$missing" | grep '^{' | tail -n1)"
+          echo "::notice title=Missing citations by state::${missing}"
+
+          backlog="$(q <<'SQL'
+          BEGIN READ ONLY;
+          SELECT json_build_object(
+            'identity_backlog', (SELECT count(*) FROM case_citation_work),
+            'document_backlog', (SELECT count(*) FROM document_citation_work),
+            'case_identities', (SELECT count(*) FROM case_citation_identity));
+          COMMIT;
+          SQL
+          )"
+          backlog="$(printf '%s\n' "$backlog" | grep '^{' | tail -n1)"
+          echo "::notice title=Citation worker backlog::${backlog}"
+          REMOTE
+
+      - name: Remove ephemeral SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
