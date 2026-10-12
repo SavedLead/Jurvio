@@ -1,0 +1,150 @@
+name: Pilot publish cited federal opinions (once)
+
+# Small, NON-DISRUPTIVE publication pilot for the bulk-provenance gate fix.
+#
+# It must NOT recreate the running worker-core (a detached federal census is scanning
+# inside it). So instead of deploying, it builds the current main image and runs the
+# publisher ONCE in a throwaway `docker compose run --no-deps` container on the new image
+# -- a separate ephemeral container that leaves every running service, and the census,
+# untouched. The job asserts the worker-core container id is unchanged across the run.
+#
+# Publishes at most `limit` cited-target candidates (run-case-citations' own cap), records
+# published-case / cited-federal-decision counts before and after, lists the newly
+# published cases, and checks each one's public page + search visibility on the box's app
+# (127.0.0.1:3000). It does a single bounded batch -- it never drains the backlog.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max cited-target candidates to scan/publish this pilot (small!)"
+        required: false
+        default: "25"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: jurvio-publish-cited-federal
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    outputs:
+      image: ${{ steps.image.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image
+        run: echo "value=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}-pilot" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  pilot:
+    needs: build
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PILOT_IMAGE: ${{ needs.build.outputs.image }}
+      LIMIT: ${{ inputs.limit }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Pilot publish over private VPC
+        run: |
+          set -euo pipefail
+          case "$LIMIT" in ''|*[!0-9]*) echo "::error::limit must be numeric"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "GH_TOKEN='$GH_TOKEN' GH_ACTOR='${{ github.actor }}' PILOT_IMAGE='$PILOT_IMAGE' LIMIT='$LIMIT' bash -se" <<'REMOTE'
+          set -euo pipefail
+          DEPLOY_DIR=/opt/jurvio
+          COMPOSE="$DEPLOY_DIR/docker-compose.production.yml"
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
+          [ -n "$pg" ] && [ -n "$worker" ] || { echo "::error::postgres or worker-core missing"; exit 1; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null; }
+
+          echo "=== guard: census splitter + worker-core identity BEFORE ==="
+          WORKER_BEFORE="$worker"
+          CENSUS_BEFORE="$(sudo -n docker exec "$worker" sh -lc 'n=0; for p in /proc/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue; grep -qa "jobs/split-federal-opinions.mjs" "$p/cmdline" 2>/dev/null && n=$((n+1)); done; echo "$n"' || echo 0)"
+          echo "worker-core=${WORKER_BEFORE} census_splitter_procs=${CENSUS_BEFORE}"
+
+          echo "=== login ghcr + pull pilot image (does not touch running containers) ==="
+          printf '%s' "$GH_TOKEN" | sudo -n docker login ghcr.io -u "$GH_ACTOR" --password-stdin >/dev/null
+          sudo -n docker pull "$PILOT_IMAGE" >/dev/null && echo "pulled $PILOT_IMAGE"
+
+          BEFORE_TS="$(q "SELECT now()::text;")"
+          pubcases() { q "SELECT count(*) FROM legal_case WHERE publication='published';"; }
+          citedcases() { q "SELECT count(*) FROM publication_decision WHERE reason_code='verified_cited_federal_opinion' AND object_type='legal_case';"; }
+          echo "=== BEFORE: published_cases=$(pubcases) cited_federal_case_decisions=$(citedcases) ts=${BEFORE_TS} ==="
+
+          echo "=== run publisher ONCE on the new image (compose run --no-deps, throwaway container) ==="
+          # --no-deps: do not start/recreate postgres or any other service. `run` creates a
+          # fresh one-off container and never recreates the already-running worker-core.
+          cd "$DEPLOY_DIR"
+          sudo -n env JURVIO_IMAGE="$PILOT_IMAGE" docker compose -f "$COMPOSE" run --rm --no-deps -T worker-core \
+            node jobs/run-case-citations.mjs --limit="$LIMIT" --discover=0 2>&1 | tail -n 8 || true
+
+          echo "=== guard: worker-core identity + census splitter AFTER (must be unchanged) ==="
+          WORKER_AFTER="$(find_svc worker-core)"
+          CENSUS_AFTER="$(sudo -n docker exec "$WORKER_AFTER" sh -lc 'n=0; for p in /proc/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue; grep -qa "jobs/split-federal-opinions.mjs" "$p/cmdline" 2>/dev/null && n=$((n+1)); done; echo "$n"' || echo 0)"
+          echo "worker-core=${WORKER_AFTER} census_splitter_procs=${CENSUS_AFTER}"
+          if [ "$WORKER_AFTER" != "$WORKER_BEFORE" ]; then echo "::error::worker-core container was recreated (${WORKER_BEFORE} -> ${WORKER_AFTER}) -- census disturbed"; fi
+          if [ "${CENSUS_AFTER:-0}" -lt "${CENSUS_BEFORE:-0}" ]; then echo "::warning::census splitter process count dropped (${CENSUS_BEFORE} -> ${CENSUS_AFTER})"; fi
+
+          echo "=== AFTER: published_cases=$(pubcases) cited_federal_case_decisions=$(citedcases) ==="
+
+          echo "=== newly published cited-federal cases this pilot (public_id, caption) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -F '|' -c \
+            "SELECT lc.public_id, left(lc.caption,70), lc.publication
+             FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id
+             WHERE pd.reason_code='verified_cited_federal_opinion' AND pd.object_type='legal_case'
+               AND pd.decided_at > '${BEFORE_TS}'
+             ORDER BY pd.decided_at LIMIT 20;" 2>/dev/null || echo "(query failed)"
+
+          echo "=== public page + search visibility for up to 3 newly published cases ==="
+          IDS="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT lc.public_id FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id
+             WHERE pd.reason_code='verified_cited_federal_opinion' AND pd.object_type='legal_case'
+               AND pd.decided_at > '${BEFORE_TS}' ORDER BY pd.decided_at LIMIT 3;" 2>/dev/null || true)"
+          if [ -z "$IDS" ]; then echo "(no cases published this pilot -- nothing to check)"; fi
+          for pid in $IDS; do
+            code="$(sudo -n docker exec "$worker" sh -lc "wget -qO- -S 'http://app:3000/case/${pid}' 2>&1 | grep -m1 'HTTP/' || true" || true)"
+            has_caption="$(sudo -n docker exec "$worker" sh -lc "wget -qO- 'http://app:3000/case/${pid}' 2>/dev/null | grep -c -m1 'case-header\|<h1' || true" || true)"
+            srch="$(sudo -n docker exec "$worker" sh -lc "wget -qO- 'http://app:3000/search?q=${pid}' 2>/dev/null | grep -c -m1 \"${pid}\" || true" || true)"
+            echo "case ${pid}: page_status='${code}' page_has_heading=${has_caption} search_hit=${srch}"
+          done
+          echo "=== DONE ==="
+          REMOTE
