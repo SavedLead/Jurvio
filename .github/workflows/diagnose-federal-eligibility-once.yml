@@ -111,7 +111,7 @@ jobs:
               (length(btrim(dc.content_text))>0) AS readable,
               (coalesce(c.docket_number,'')<>'' AND dup.court_id IS NOT NULL) AS collision,
               (rej.source_record_id IS NOT NULL) AS rejected,
-              (concat_ws(' ',c.caption,c.docket_number,d.title,dc.content_text) ~* '\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M') AS restricted,
+              (concat_ws(' ',c.caption,c.docket_number,d.title) ~* '\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M') AS restricted,
               (c.verification IN ('conflict','needs_review')) AS case_conflict,
               (dc.word_count<100) AS thin,
               NOT (dc.content_hash ~ '^[a-f0-9]{64}\$' AND da.content_hash IS NOT NULL) AS no_provenance,
@@ -121,7 +121,7 @@ jobs:
                        AND da.source_uri ~ '^https://www\.courtlistener\.com/help/api/bulk-data/#opinion-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+\$'
                        AND da.source_record_id = jo.provider_opinion_id AND jo.cluster_id IS NOT NULL
                        AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=jo.cluster_id)))) AS bad_opinion_source,
-              (dc.content_text ~* '[0-9]{3}-[0-9]{2}-[0-9]{4}|date of birth|social security number') AS sensitive,
+              (left(dc.content_text,100000) ~* '[0-9]{3}-[0-9]{2}-[0-9]{4}|date of birth|social security number') AS sensitive,
               (EXISTS(SELECT 1 FROM publication_decision pd WHERE pd.object_id=d.id AND NOT pd.displayable)) AS doc_blocked
             FROM legal_case c JOIN court ct ON ct.id=c.court_id
             JOIN document d ON d.case_id=c.id AND d.publication='draft'
