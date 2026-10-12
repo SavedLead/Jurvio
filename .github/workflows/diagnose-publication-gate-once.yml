@@ -64,16 +64,16 @@ jobs:
           q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "SET statement_timeout='180s';" -c "$1" 2>&1; }
 
           echo "=== (X1) court.verification distribution for federal (non-scotus) DRAFT opinions ==="
-          q "SELECT coalesce(ct.verification,'(null)') AS court_verification, count(DISTINCT ct.id) AS courts, count(*) AS federal_draft_opinions
+          q "SELECT coalesce(ct.verification::text,'(null)') AS court_verification, count(DISTINCT ct.id) AS courts, count(*) AS federal_draft_opinions
              FROM legal_case c JOIN court ct ON ct.id=c.court_id
              JOIN document d ON d.case_id=c.id AND d.publication='draft'
              JOIN judicial_opinion jo ON jo.document_id=d.id
              WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
              GROUP BY 1 ORDER BY 3 DESC;"
           echo "=== (X2) overall court.verification distribution (are any courts verified at all?) ==="
-          q "SELECT coalesce(verification,'(null)') AS verification, count(*) AS courts FROM court GROUP BY 1 ORDER BY 2 DESC;"
+          q "SELECT coalesce(verification::text,'(null)') AS verification, count(*) AS courts FROM court GROUP BY 1 ORDER BY 2 DESC;"
           echo "=== (X3) sample unverified courts carrying federal draft opinions (are these real federal courts?) ==="
-          q "SELECT ct.provider_court_id, left(ct.name,48) AS court_name, coalesce(ct.verification,'(null)') AS verification, count(*) AS draft_opinions
+          q "SELECT ct.provider_court_id, left(ct.name,48) AS court_name, coalesce(ct.verification::text,'(null)') AS verification, count(*) AS draft_opinions
              FROM court ct JOIN legal_case c ON c.court_id=ct.id
              JOIN document d ON d.case_id=c.id AND d.publication='draft'
              JOIN judicial_opinion jo ON jo.document_id=d.id
