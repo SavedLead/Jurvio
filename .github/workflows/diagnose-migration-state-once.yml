@@ -1,0 +1,57 @@
+name: Diagnose migration state (once, read-only)
+
+# Strictly read-only. Confirms whether migrations 0120 (court verification backfill) and
+# 0121 (federal_publication_hold) actually applied to production, plus the resulting
+# verified federal court count. No writes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-migration-state
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 8
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Check migration state over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>&1; }
+          echo "=== schema_migration entries for 0119/0120/0121 ==="
+          q "SELECT name FROM schema_migration WHERE name LIKE '0119%' OR name LIKE '0120%' OR name LIKE '0121%' ORDER BY name;"
+          echo "=== federal_publication_hold table exists? ==="
+          q "SELECT to_regclass('public.federal_publication_hold') IS NOT NULL;"
+          echo "=== verified CL court count (0120 effect) ==="
+          q "SELECT 'verified_cl_courts=' || count(*) FROM court ct JOIN provider p ON p.id=ct.provider_id WHERE p.code='courtlistener' AND ct.verification::text='verified';"
+          echo "=== spot check specific registry courts ==="
+          q "SELECT provider_court_id, verification::text FROM court ct JOIN provider p ON p.id=ct.provider_id WHERE p.code='courtlistener' AND provider_court_id IN ('nysd','bta','cusc','tax','mspb','ca9') ORDER BY provider_court_id;"
+          echo "=== DONE ==="
+          REMOTE
