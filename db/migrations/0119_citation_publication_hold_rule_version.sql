@@ -1,0 +1,15 @@
+-- Stale-hold invalidation for the cited-federal publication gate.
+--
+-- citation_publication_hold records a draft opinion the publisher evaluated and chose
+-- NOT to publish, so the publisher's candidate query can skip it next time instead of
+-- re-evaluating it every run. That skip was unconditional, which meant a hold written by
+-- an OLD gate rule suppressed the document forever -- so when the gate rule improves
+-- (e.g. it now recognizes official bulk provenance), the newly-eligible documents never
+-- re-enter the candidate pool and nothing new publishes.
+--
+-- Record which gate rule_version produced each hold. The publisher now skips a held
+-- document only when its hold was written by the CURRENT rule_version; a hold from an
+-- older rule is treated as stale and re-evaluated once (then re-held under the current
+-- rule if it still fails, which is self-limiting). Existing rows get NULL, so every hold
+-- written before this change is re-evaluated exactly once under the new rule.
+ALTER TABLE citation_publication_hold ADD COLUMN IF NOT EXISTS rule_version text;
