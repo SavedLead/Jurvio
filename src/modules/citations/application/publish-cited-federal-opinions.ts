@@ -16,6 +16,14 @@ interface Candidate extends FederalPublicationCandidate {
 
 const COURTLISTENER_REST_OPINION_URI=/^https:\/\/www\.courtlistener\.com\/api\/rest\/v[34]\/opinions\/\d+\/$/;
 
+// The publication gate's rule version. Bump it whenever the gate logic changes (this
+// release recognizes official bulk provenance). A citation_publication_hold is skipped by
+// the candidate query only when it was written by THIS rule version; holds from an older
+// rule (or NULL, i.e. written before holds were versioned) are treated as stale and
+// re-evaluated once under the new rule -- so a gate improvement actually lets previously
+// held-but-now-eligible opinions publish, instead of being suppressed forever.
+export const CITED_OPINION_RULE_VERSION='cited-opinion-publication-v2';
+
 /**
  * Accept a CourtListener opinion whose document content came from EITHER the live REST
  * API (the historical path) OR the official bulk export. A bulk record is not
@@ -90,7 +98,7 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
     JOIN judicial_opinion judicial ON judicial.document_id=d.id
     JOIN raw_artifact a ON a.id=c.source_artifact_id JOIN provider p ON p.id=a.provider_id
     JOIN raw_artifact da ON da.id=content.source_artifact_id JOIN provider dp ON dp.id=da.provider_id
-    WHERE NOT EXISTS(SELECT 1 FROM citation_publication_hold h WHERE h.document_id=d.id AND h.content_hash=content.content_hash)
+    WHERE NOT EXISTS(SELECT 1 FROM citation_publication_hold h WHERE h.document_id=d.id AND h.content_hash=content.content_hash AND h.rule_version=${CITED_OPINION_RULE_VERSION})
       AND d.publication='draft' AND c.publication IN('draft','published')
       AND court.provider_court_id<>'scotus'
     ORDER BY d.created_at,d.id LIMIT ${limit}
@@ -100,7 +108,7 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
     const reasons=citedOpinionPublicationReasons(candidate);
     if(reasons.length){
       held++;
-      await sql`INSERT INTO citation_publication_hold(document_id,content_hash,reasons) VALUES(${candidate.documentId},${candidate.documentHash},${reasons}) ON CONFLICT(document_id) DO UPDATE SET content_hash=EXCLUDED.content_hash,reasons=EXCLUDED.reasons,held_at=now()`;
+      await sql`INSERT INTO citation_publication_hold(document_id,content_hash,reasons,rule_version) VALUES(${candidate.documentId},${candidate.documentHash},${reasons},${CITED_OPINION_RULE_VERSION}) ON CONFLICT(document_id) DO UPDATE SET content_hash=EXCLUDED.content_hash,reasons=EXCLUDED.reasons,rule_version=EXCLUDED.rule_version,held_at=now()`;
       await sql`UPDATE missing_case_citation SET state='held',detail=${reasons.join(',')},updated_at=now()
         WHERE state='ingested' AND citation_key IN(SELECT citation_key FROM case_citation_identity WHERE case_id=${candidate.caseId})`;
       continue;
@@ -121,9 +129,9 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
       await tx`UPDATE document SET publication='published',updated_at=now() WHERE id=${candidate.documentId}`;
       for(const [type,id] of [['legal_case',candidate.caseId],['document',candidate.documentId]]){
         await tx`INSERT INTO publication_decision(object_type,object_id,displayable,indexable,machine_accessible,downloadable,summary_eligible,reason_code,rule_version)
-          VALUES(${type!},${id!},true,true,true,false,false,'verified_cited_federal_opinion','cited-opinion-publication-v1')`;
+          VALUES(${type!},${id!},true,true,true,false,false,'verified_cited_federal_opinion',${CITED_OPINION_RULE_VERSION})`;
         await tx`INSERT INTO outbox_event(topic,aggregate_type,aggregate_id,aggregate_version,payload)
-          VALUES('publication.changed',${type!},${id!},(extract(epoch from clock_timestamp())*1000000)::bigint,${tx.json({policy:'cited-opinion-publication-v1'})})`;
+          VALUES('publication.changed',${type!},${id!},(extract(epoch from clock_timestamp())*1000000)::bigint,${tx.json({policy:CITED_OPINION_RULE_VERSION})})`;
       }
       return true;
     });
