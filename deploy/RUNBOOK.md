@@ -8,7 +8,7 @@ GitHub Actions builder over the private VPC — no direct console access require
 
 | Host | Role | Reached by |
 |---|---|---|
-| `jurvio-web-01` (VPC `10.116.0.2`) | Ingestion + PostgreSQL + raw artifacts. Runs `postgres`, `app`, `worker-core`, `worker-coa`, `worker-supervisor` via `docker-compose.production.yml` in `/opt/jurvio`. | self-hosted builder → `DO_USER@10.116.0.2` (private VPC), `sudo -n docker` |
+| `jurvio-web-01` (VPC `10.116.0.2`) | Ingestion + PostgreSQL + raw artifacts. Runs `postgres`, `app`, `worker-core`, `worker-coa`, `worker-citations`, `worker-supervisor` via `docker-compose.production.yml` in `/opt/jurvio`. | self-hosted builder → `DO_USER@10.116.0.2` (private VPC), `sudo -n docker` |
 | `jurvio-public-01` | Isolated public Next.js (`docker-compose.public.yml`); artifacts read-only over NFS; DB over VPC. Sitewide `noindex`; `JURVIO_PUBLIC_LAUNCH` disabled. | `deploy-public-web.yml` |
 | `jurvio-builder-01` | Self-hosted Actions runner + SSH bastion for the VPC. | GitHub Actions (`[self-hosted, jurvio, builder, trusted]`) |
 

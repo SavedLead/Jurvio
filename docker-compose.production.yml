@@ -116,6 +116,38 @@ services:
       - jurvio_artifacts:/var/lib/jurvio/artifacts
     networks: [private]
 
+  # Citation linking (citation-graph sync, missing-case discovery, cited-opinion
+  # publication, daily bulk resolution) in its own scheduler so it never competes
+  # with ingestion for scheduler slots or start-up. Its jobs hold one database
+  # connection each (run-case-citations uses max:1 under a session advisory lock),
+  # so the extra container adds only a few connections. See ADR 0076.
+  worker-citations:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    command: ["node", "jobs/run-production-scheduler.mjs"]
+    env_file: .env.production
+    environment:
+      TZ: America/New_York
+      NODE_ENV: production
+      JURVIO_SCHEDULER_LANE: citations
+      JURVIO_DB_POOL_MAX: "4"
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    # See worker-core: health is the scheduler heartbeat, not an HTTP endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "hb=$$(cat /var/lib/jurvio/artifacts/scheduler/citations.alive 2>/dev/null || echo 0); [ $$(( $$(date +%s) - hb )) -lt 180 ]"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
   worker-supervisor:
     image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
     restart: unless-stopped
