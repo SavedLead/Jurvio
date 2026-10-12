@@ -123,5 +123,26 @@ jobs:
           else
             echo "(no extract logfile yet)"
           fi
+
+          echo "=== census process + source + disk measurements ==="
+          echo "--- extract start line (for elapsed) ---"
+          [ -n "$elogf" ] && sudo -n docker exec "$worker" sh -lc "grep -m1 'extract start' '$elogf'" || echo "(none)"
+          echo "--- splitter process io (bytes the splitter has read) ---"
+          sudo -n docker exec "$worker" sh -lc '
+            for p in /proc/[0-9]*; do
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              if grep -qa "jobs/split-federal-opinions.mjs" "$p/cmdline" 2>/dev/null; then
+                pid=${p#/proc/}; echo "splitter_pid=$pid alive=yes"
+                sed -n "s/^rchar:/rchar_bytes:/p;s/^read_bytes:/disk_read_bytes:/p;s/^wchar:/wchar_bytes:/p" "$p/io" 2>/dev/null
+              fi; done; echo "(scan done)"'
+          echo "--- container network rx (bytes downloaded, container-wide since worker start) ---"
+          sudo -n docker exec "$worker" sh -lc 'for n in /sys/class/net/eth0/statistics/rx_bytes /sys/class/net/*/statistics/rx_bytes; do [ -r "$n" ] && { awk "{printf \"rx_bytes=%d (%.2f GB)\n\",\$1,\$1/1073741824}" "$n"; break; }; done' || echo "(no rx)"
+          echo "--- source compressed size (S3 HEAD, Content-Length) ---"
+          sudo -n docker exec "$worker" sh -lc 'wget -S --spider "https://com-courtlistener-storage.s3-us-west-2.amazonaws.com/bulk-data/opinions-${SNAPSHOT}.csv.bz2" 2>&1 | awk "/[Cc]ontent-[Ll]ength/{print; exit}"' SNAPSHOT="$SNAPSHOT" 2>/dev/null || echo "(head failed)"
+          echo "--- disk: root + artifacts volume ---"
+          df -h / | tail -1
+          sudo -n docker exec "$worker" sh -lc 'df -h /var/lib/jurvio/artifacts | tail -1'
+          echo "--- extract log error lines (if any) ---"
+          [ -n "$elogf" ] && sudo -n docker exec "$worker" sh -lc "grep -iaE 'error|econnreset|etimedout|throw|exception|socket hang' '$elogf' | tail -5 || echo '(none)'" || echo "(none)"
           echo "=== DONE ==="
           REMOTE
