@@ -80,6 +80,23 @@ const PUBLICATION_CHUNK_SIZE = 250;
 const loop = option("loop", "new-case-discovery") as FederalLoop;
 const lookbackDays = Number(option("lookback-days", "2"));
 
+// Pause control for the resident deterministic publication-quarantine lane, mirroring
+// run-case-citations' JURVIO_PAUSE_CITATION_PUBLISH. The scheduler still spawns the lane,
+// but the job no-ops when paused -- so a deploy can land a corrected gate WITHOUT the
+// resident lane mass-publishing before a bounded manual pilot has validated it. An explicit
+// --publish=1 overrides the pause for a single manual invocation (the capped pilot);
+// --publish=0 forces skip. Only the publication-quarantine loop consults this.
+const federalPublishArg = option("publish", "");
+if (federalPublishArg !== "" && federalPublishArg !== "0" && federalPublishArg !== "1") {
+  throw new Error("--publish must be 0 or 1");
+}
+const federalPublicationPaused =
+  federalPublishArg === "1"
+    ? false
+    : federalPublishArg === "0"
+      ? true
+      : process.env.JURVIO_PAUSE_FEDERAL_PUBLICATION === "1";
+
 const maxConcurrency = Math.max(
   1,
   Math.min(
@@ -881,7 +898,9 @@ try {
       ? await runActiveUpdates()
       : loop === "material-decisions"
         ? await runMaterialDecisions()
-        : await runPublicationAndQuarantine();
+        : federalPublicationPaused
+          ? { loop, paused: true, discovered: 0, published: 0, held: 0, publishedDocuments: 0, heldDocuments: 0 }
+          : await runPublicationAndQuarantine();
   process.stdout.write(`${JSON.stringify({
     ...result,
     executionTimeMs: Date.now() - startedAt,
