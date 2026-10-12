@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { syncCitationGraph } from './sync-citation-graph';
 import { publishCitedFederalOpinions } from './publish-cited-federal-opinions';
-import { publicCitationTargets, relatedCitationCases } from './public-citations';
+import { caseCitationCounts, publicCitationTargets, relatedCitationCases } from './public-citations';
 import { discoveryCandidates } from './discover-missing-cases';
 const databaseUrl=process.env.DATABASE_URL;
 describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
@@ -38,6 +38,9 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       expect((await publicCitationTargets(sql,'See 347 U.S. 483'))[0]?.casePublicId).toBe('jv-target12');
       expect((await relatedCitationCases(sql,'jv-source12','cited'))[0]?.casePublicId).toBe('jv-target12');
       expect((await relatedCitationCases(sql,'jv-target12','citing'))[0]?.casePublicId).toBe('jv-source12');
+      expect(await caseCitationCounts(sql,'jv-source12')).toEqual({cited:1,citedOnJurvio:1,citedBy:0});
+      expect(await caseCitationCounts(sql,'jv-target12')).toEqual({cited:0,citedOnJurvio:0,citedBy:1});
+      expect(await caseCitationCounts(sql,'jv-missing1')).toEqual({cited:0,citedOnJurvio:0,citedBy:0});
       // Verified parallel citations are source-backed, durable and rebuildable.
       await sql`INSERT INTO case_citation_verified_alias(case_id,citation_key,citation_label,source_artifact_id)
         VALUES(${targetId},'100ny2d1','100 N.Y.2d 1',${artifact!.id})`;
@@ -48,6 +51,7 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       expect(await publicCitationTargets(sql,'100 N.Y.2d 1')).toEqual([]);
       await sql`UPDATE document SET publication='suppressed' WHERE id=${document!.id}`;
       expect(await relatedCitationCases(sql,'jv-target12','citing')).toEqual([]);
+      expect((await caseCitationCounts(sql,'jv-target12')).citedBy).toBe(0);
       await sql`UPDATE document SET publication='published' WHERE id=${document!.id}`;
       await sql`UPDATE legal_case SET publication='restricted' WHERE id=${targetId}`;
       expect(await publicCitationTargets(sql,'347 U.S. 483')).toEqual([]);
@@ -97,6 +101,8 @@ describe.skipIf(!databaseUrl)('citation graph database integration',()=>{
       await sql`UPDATE document_content SET content_text='See 123 F.3d 456',content_hash='third' WHERE document_id=${document!.id}`;
       await syncCitationGraph(sql,100);
       expect(await sql`SELECT citation_key FROM missing_case_citation WHERE citation_key='123f3d456'`).toEqual([expect.objectContaining({citation_key:'123f3d456'})]);
+      // Citations Jurvio does not hold yet still count, but never as linked.
+      expect(await caseCitationCounts(sql,'jv-source12')).toEqual({cited:1,citedOnJurvio:0,citedBy:0});
       // Discovery starts with current, displayable public sources, even when
       // the missing-citation table contains unrelated private-only records.
       await sql`INSERT INTO missing_case_citation(citation_key,citation_label)

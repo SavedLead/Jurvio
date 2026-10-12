@@ -1,12 +1,28 @@
 import Link from "next/link";
 import type { RelatedCitationCase } from "../application/public-citations";
-export function CitationCaseList({title, cases}: {title: string; cases: readonly RelatedCitationCase[]}) {
-  if (!cases.length) return null;
-  return <section className="contentSection caseFeatureSection"><h2>{title}</h2>
-    <ul>{cases.map(record=><li key={record.casePublicId}>
+
+/**
+ * A linked-case list with an honest total. `total` is the full count of distinct
+ * cases (including ones not yet on Jurvio for "Cases cited"); `summary` is the
+ * plain-language count line shown under the heading.
+ */
+export function CitationCaseList({title, cases, total, summary}: {
+  title: string;
+  cases: readonly RelatedCitationCase[];
+  total?: number;
+  summary?: string;
+}) {
+  const count = total ?? cases.length;
+  if (!cases.length && !count) return null;
+  return <section className="contentSection caseFeatureSection citationCaseList">
+    <div className="featureHeading">
+      <h2>{title} <span className="citationCount">{count.toLocaleString("en-US")}</span></h2>
+    </div>
+    {summary ? <p className="citationSummary">{summary}</p> : null}
+    {cases.length ? <ul>{cases.map(record=><li key={record.casePublicId}>
       <Link href={`/case/${record.casePublicId}`}>{record.caption}</Link>
       <small> · {record.courtName} · {record.citationLabel}</small>
-    </li>)}</ul>
-    {cases.length===50 ? <p>Showing up to 50 linked cases from Jurvio’s published opinions.</p> : null}
+    </li>)}</ul> : null}
+    {cases.length===50 ? <p>Showing 50 linked cases from Jurvio’s published opinions.</p> : null}
   </section>;
 }
