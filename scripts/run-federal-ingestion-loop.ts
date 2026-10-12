@@ -35,6 +35,7 @@ import {
   fetchDocketPage,
   fetchOpinionClusterIds,
 } from "@/modules/ingestion/providers/courtlistener/client";
+import { publishCaseOpinionDocuments } from "@/modules/ingestion/application/publish-federal-opinion-documents";
 
 function option(name: string, fallback: string): string {
   const equals = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -605,6 +606,9 @@ type PublicationCandidate = {
   has_readable_content: boolean;
   document_count: number;
   restricted_text: string;
+  provider_scoped_identifier: string | null;
+  source_record_resolves_identity: boolean;
+  court_case_linkage_verified: boolean;
 };
 
 async function selectPublicationCandidates(limit: number): Promise<PublicationCandidate[]> {
@@ -627,6 +631,7 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
       ) AS canonical_identifier_count,
       (SELECT count(*)::int FROM legal_case collision
        WHERE collision.court_id = legal_case.court_id
+         AND nullif(trim(collision.docket_number), '') IS NOT NULL
          AND lower(trim(collision.docket_number)) = lower(trim(legal_case.docket_number))
       ) AS identity_collision_count,
       (SELECT count(*)::int FROM ingestion_rejection rejection
@@ -651,7 +656,19 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
          FROM docket_entry entry WHERE entry.case_id = legal_case.id),
         (SELECT string_agg(coalesce(document.title, ''), ' ')
          FROM document WHERE document.case_id = legal_case.id)
-      ) AS restricted_text
+      ) AS restricted_text,
+      -- Validated alternative identity (for docket-less records): the provider-scoped CL
+      -- docket id, whether it resolves to the retrieved source record, and whether the
+      -- court/case linkage is verified via a provider-scoped case identifier.
+      canonical.identifier_value AS provider_scoped_identifier,
+      (source_artifact.source_record_id IS NOT NULL
+        AND source_artifact.source_record_id = canonical.identifier_value) AS source_record_resolves_identity,
+      (court.provider_court_id IS NOT NULL AND EXISTS(
+        SELECT 1 FROM case_identifier link
+        WHERE link.case_id = legal_case.id
+          AND link.provider_id = source_provider.id
+          AND link.identifier_type = 'courtlistener_docket_id'
+      )) AS court_case_linkage_verified
     FROM legal_case
     JOIN court ON court.id = legal_case.court_id
     LEFT JOIN raw_artifact source_artifact ON source_artifact.id = legal_case.source_artifact_id
@@ -672,10 +689,16 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
       -- unchanged; held cases still surface in the review queue.
       AND legal_case.verification <> 'needs_review'
       AND (
-        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'federal')
+        -- Select the federal jurisdiction classes (including 'fs' specialized and 'fbp'
+        -- bankruptcy appellate panels) OR any registry-verified court. The gate still
+        -- applies every check, so non-court 'fs' tribunals selected here are held, not
+        -- published; verified-court selection ensures specialized/historical courts
+        -- (Tax Court, Board of Tax Appeals, Customs Court, ...) are reached.
+        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'fbp', 'fs', 'federal')
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%bankruptcy%'
+        OR court.verification = 'verified'
       )
     ORDER BY legal_case.created_at
     LIMIT ${limit}
@@ -693,7 +716,10 @@ async function runPublicationAndQuarantine() {
   let published = 0;
   let held = 0;
   let failed = 0;
+  let publishedDocuments = 0;
+  let heldDocuments = 0;
   const holdReasons: Record<string, number> = {};
+  const documentHoldReasons: Record<string, number> = {};
   let controllerState = initialConcurrencyState(adaptiveConfig);
 
   async function handle(candidate: PublicationCandidate): Promise<OutcomeSignal> {
@@ -717,6 +743,9 @@ async function runPublicationAndQuarantine() {
         identityCollisionCount: candidate.identity_collision_count,
         unresolvedRejections: candidate.unresolved_rejections,
         restrictedText: candidate.restricted_text,
+        providerScopedIdentifier: candidate.provider_scoped_identifier,
+        sourceRecordResolvesIdentity: candidate.source_record_resolves_identity,
+        courtCaseLinkageVerified: candidate.court_case_linkage_verified,
       });
       if (!decision.eligible) {
         held += 1;
@@ -765,6 +794,16 @@ async function runPublicationAndQuarantine() {
             ${tx.json({ source: "courtlistener", policy: "federal-publication-v2" })}
           )
         `;
+        // Extend the deterministic path from case-only to case + opinion document, reusing
+        // the shared opinion-document checks. Publishing the case is unchanged above; the
+        // document step is additive, idempotent, and holds (never publishes) documents that
+        // fail a document-level check. See publishCaseOpinionDocuments for the contract.
+        const docResult = await publishCaseOpinionDocuments(tx, candidate.id);
+        publishedDocuments += docResult.published;
+        heldDocuments += docResult.held;
+        for (const [reason, count] of Object.entries(docResult.holdReasons)) {
+          documentHoldReasons[reason] = (documentHoldReasons[reason] ?? 0) + count;
+        }
       });
       published += 1;
       await finishIngestionRunItem(sql, {
@@ -801,6 +840,9 @@ async function runPublicationAndQuarantine() {
       published,
       held,
       holdReasons,
+      publishedDocuments,
+      heldDocuments,
+      documentHoldReasons,
       failed,
       finalConcurrency: controllerState.concurrency,
       costs: 0,

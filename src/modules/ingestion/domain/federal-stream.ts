@@ -44,6 +44,17 @@ export interface FederalPublicationCandidate {
   identityCollisionCount: number;
   unresolvedRejections: number;
   restrictedText: string;
+  // --- Validated alternative identity (for records with no docket number) ---------------
+  // Many legitimate federal opinions -- especially historical and docket-less records --
+  // carry no docket string but are still stably identifiable by a provider-scoped
+  // opinion/cluster id that resolves to the retrieved source record and whose court/case
+  // linkage checks out. A caption alone is NOT enough; all three must hold.
+  /** Provider-scoped opinion/cluster id serving as the alternative identity key. */
+  providerScopedIdentifier: string | null;
+  /** The provider id resolves to the correct retrieved source record (record-id match). */
+  sourceRecordResolvesIdentity: boolean;
+  /** The record's court/case linkage is verified (court present + linked case/cluster). */
+  courtCaseLinkageVerified: boolean;
 }
 
 export interface FederalPublicationDecision {
@@ -98,7 +109,20 @@ export function isNonBankruptcyFederalJurisdiction(value: string | null): boolea
 export function isFederalJurisdiction(value: string | null): boolean {
   if (isNonBankruptcyFederalJurisdiction(value)) return true;
   const normalized = value?.trim().toLowerCase() ?? "";
-  return normalized === "fb" || normalized.includes("bankruptcy");
+  // Bankruptcy trial courts and appellate panels, plus "federal special" specialized
+  // courts (Tax Court, Court of Federal Claims, Court of International Trade, and the
+  // historical specialized predecessors). This only recognizes the jurisdiction class as
+  // federal; a court still publishes only when it is registry-verified, so non-court
+  // "federal special" tribunals (MSPB, BIA, boards of contract appeals, ...) stay blocked
+  // on the separate court-verification check.
+  return (
+    normalized === "fb" ||
+    normalized === "fbp" ||
+    normalized === "fs" ||
+    normalized.includes("bankruptcy") ||
+    normalized.includes("federal special") ||
+    normalized.includes("appellate panel")
+  );
 }
 
 export function isRestrictedDocketText(value: string): boolean {
@@ -168,7 +192,20 @@ export function evaluateFederalPublicationCandidate(
 ): FederalPublicationDecision {
   const reasons: string[] = [];
   const restricted = isRestrictedDocketText(candidate.restrictedText);
-  if (!candidate.caption.trim() || !candidate.docketNumber.trim()) {
+  // Stable identity is satisfied by EITHER a caption + docket number (the historical rule)
+  // OR a validated alternative identity for docket-less records: a caption PLUS a
+  // provider-scoped opinion/cluster id that resolves to the retrieved source record AND a
+  // verified court/case linkage. A caption on its own is never sufficient, and we never
+  // invent a docket number. Ambiguity, collision, sealed/restricted and sensitive-data
+  // checks below are unaffected by this relaxation.
+  const hasCaption = candidate.caption.trim().length > 0;
+  const hasDocket = candidate.docketNumber.trim().length > 0;
+  const hasValidatedAlternativeIdentity =
+    hasCaption &&
+    (candidate.providerScopedIdentifier?.trim().length ?? 0) > 0 &&
+    candidate.sourceRecordResolvesIdentity &&
+    candidate.courtCaseLinkageVerified;
+  if (!((hasCaption && hasDocket) || hasValidatedAlternativeIdentity)) {
     reasons.push("missing_stable_identity");
   }
   if (!isFederalJurisdiction(candidate.courtJurisdiction)) {
