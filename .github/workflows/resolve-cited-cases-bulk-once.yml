@@ -1,0 +1,153 @@
+name: Resolve cited cases from CourtListener bulk data (once)
+
+# Resolves citations to cases Jurvio does not hold yet, using CourtListener's FREE
+# public bulk citation map (citations-<snapshot>.csv.bz2). No account, no API key,
+# no rate limit -- this replaces most of the rate-limited citation-lookup calls the
+# resident discovery step makes (about ten every two minutes).
+#
+#   resolve only (default, ~minutes to an hour): every missing citation is matched
+#     to its exact source cluster. Cited cases already held locally are linked on
+#     the next citation-graph cycle; the rest are marked 'resolved' and resident
+#     discovery fetches them first, skipping the lookup call.
+#   import=true (hours): additionally streams the bulk opinion files once and
+#     ingests ALL resolved federal cases in a single pass. SCOTUS is always
+#     excluded (it comes from official Supreme Court sources).
+#
+# Publication is unchanged: imported cases stay drafts until the existing
+# cited-opinion publication gate approves them. Runs on the self-hosted builder and
+# reaches jurvio-web-01 over the private VPC, like the other *-once controls.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD (empty = newest snapshot with a citations file)"
+        required: false
+        default: ""
+        type: string
+      import:
+        description: "Also ingest resolved cases from the bulk opinion files (hours)"
+        required: false
+        default: false
+        type: boolean
+      import_limit:
+        description: "Max resolved cases to ingest in this run"
+        required: false
+        default: "50000"
+        type: string
+      any_court:
+        description: "Import cited cases from state courts too (default: federal only)"
+        required: false
+        default: false
+        type: boolean
+      service:
+        description: "Worker container to run in"
+        required: false
+        default: worker-core
+        type: choice
+        options: [worker-core, worker-coa, app]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-resolve-cited-cases-bulk
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 2880
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      DO_IMPORT: ${{ inputs.import }}
+      IMPORT_LIMIT: ${{ inputs.import_limit }}
+      ANY_COURT: ${{ inputs.any_court }}
+      SERVICE: ${{ inputs.service }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Resolve cited cases over private VPC
+        run: |
+          set -euo pipefail
+          if [ -n "$SNAPSHOT_DATE" ]; then
+            case "$SNAPSHOT_DATE" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+              *) echo "::error::snapshot_date must be YYYY-MM-DD or empty"; exit 1;;
+            esac
+          fi
+          case "$IMPORT_LIMIT" in ''|*[!0-9]*) echo "::error::import_limit must be numeric"; exit 1;; esac
+          case "$DO_IMPORT" in true|false) ;; *) echo "::error::import must be true/false"; exit 1;; esac
+          case "$ANY_COURT" in true|false) ;; *) echo "::error::any_court must be true/false"; exit 1;; esac
+          case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" \
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' DO_IMPORT='$DO_IMPORT' IMPORT_LIMIT='$IMPORT_LIMIT' ANY_COURT='$ANY_COURT' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="${SNAPSHOT_DATE:-}"; DO_IMPORT="${DO_IMPORT:-false}"; IMPORT_LIMIT="${IMPORT_LIMIT:-50000}"
+          ANY_COURT="${ANY_COURT:-false}"; SERVICE="${SERVICE:-worker-core}"
+          BUCKET="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          find_svc() { sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" \
+            --format '{{.ID}}' | head -n1; }
+
+          worker="$(find_svc "$SERVICE")"
+          [ -n "$worker" ] || worker="$(find_svc worker-core)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker container"; exit 1; }
+          pg="$(find_svc postgres)"
+          echo "running in container: $worker (requested $SERVICE)"
+
+          sudo -n docker exec "$worker" sh -lc 'test -f jobs/resolve-cited-cases-bulk.mjs' \
+            || { echo "::error::jobs/resolve-cited-cases-bulk.mjs missing -- image predates the resolver; redeploy first"; exit 2; }
+
+          if [ -z "$SNAPSHOT" ]; then
+            echo "=== Discover newest snapshot with a citations file ==="
+            SNAPSHOT="$(curl -fsS "${BUCKET}/?list-type=2&prefix=bulk-data/citations-" \
+              | grep -oE 'citations-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' \
+              | sed -E 's/^citations-//; s/\.csv\.bz2$//' \
+              | sort -r | head -n1)"
+            [ -n "$SNAPSHOT" ] || { echo "::error::could not discover a bulk citations snapshot"; exit 4; }
+            echo "discovered snapshot: ${SNAPSHOT}"
+          fi
+          curl -fsI "${BUCKET}/bulk-data/citations-${SNAPSHOT}.csv.bz2" >/dev/null \
+            || { echo "::error::citations-${SNAPSHOT}.csv.bz2 not found"; exit 5; }
+          if [ "$DO_IMPORT" = "true" ]; then
+            for file in courts dockets opinion-clusters opinions; do
+              curl -fsI "${BUCKET}/bulk-data/${file}-${SNAPSHOT}.csv.bz2" >/dev/null \
+                || { echo "::error::${file}-${SNAPSHOT}.csv.bz2 not found; import needs the full snapshot"; exit 5; }
+            done
+          fi
+
+          counts() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT state || '=' || count(*) FROM missing_case_citation GROUP BY state ORDER BY state;" 2>/dev/null || echo "(count query failed)"; }
+          echo "=== Missing citations BEFORE ==="; counts
+
+          set -- --snapshot-date="$SNAPSHOT"
+          if [ "$DO_IMPORT" = "true" ]; then set -- "$@" --import --import-limit="$IMPORT_LIMIT"; fi
+          if [ "$ANY_COURT" = "true" ]; then set -- "$@" --any-court; fi
+          echo "=== Disk before ==="; df -h / | tail -1
+          # Same heap cap as the bulk backfill: fail this job cleanly rather than
+          # pressure postgres on the shared box.
+          sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
+            node jobs/resolve-cited-cases-bulk.mjs "$@"
+          echo "=== Disk after ==="; df -h / | tail -1
+
+          echo "=== Missing citations AFTER ==="; counts
+          REMOTE

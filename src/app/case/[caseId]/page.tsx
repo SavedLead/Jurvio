@@ -16,7 +16,8 @@ import { CaseNav } from "@/modules/cases/ui/case-nav";
 import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import "./case-intelligence.css";
-import { publicCitationTargets, relatedCitationCases } from "@/modules/citations/application/public-citations";
+import { caseCitationCounts, publicCitationTargets, relatedCitationCases } from "@/modules/citations/application/public-citations";
+import { citationCountLine } from "@/modules/citations/domain/citation-summary";
 import { CitedCaseText } from "@/modules/citations/ui/cited-case-text";
 import { CitationCaseList } from "@/modules/citations/ui/citation-case-list";
 
@@ -78,12 +79,13 @@ export default async function CasePage({ params }: CasePageProps) {
   if (!loaded) notFound();
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents, citedCases, citingCases] = await Promise.all([
+  const [docketEntries, parties, documents, citedCases, citingCases, citationCounts] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
     relatedCitationCases(sql, caseId, "cited"),
     relatedCitationCases(sql, caseId, "citing"),
+    caseCitationCounts(sql, caseId),
   ]);
   const verified = legalCase.verification === "verified";
   const statusDetails = verified ? visibleCaseStatusDetails(legalCase) : [];
@@ -331,8 +333,18 @@ export default async function CasePage({ params }: CasePageProps) {
             </section>
           ) : null}
 
-          <CitationCaseList title="Cases cited" cases={citedCases} />
-          <CitationCaseList title="Cited by" cases={citingCases} />
+          <CitationCaseList
+            title="Cases cited"
+            cases={citedCases}
+            total={citationCounts.cited}
+            summary={citationCounts.cited ? citationCountLine(citationCounts.cited, citationCounts.citedOnJurvio) : undefined}
+          />
+          <CitationCaseList
+            title="Cited by"
+            cases={citingCases}
+            total={citationCounts.citedBy}
+            summary={citationCounts.citedBy ? `${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio cite this case` : undefined}
+          />
 
           {timelineEvents.length > 0 ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">

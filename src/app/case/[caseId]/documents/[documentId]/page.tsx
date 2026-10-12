@@ -13,6 +13,8 @@ import { robotsFor } from "@/lib/seo/indexing";
 
 import { publicCitationTargets } from "@/modules/citations/application/public-citations";
 import { linkCaseCitations } from "@/modules/citations/domain/link-citations";
+import { citationKey } from "@/modules/citations/domain/citations";
+import { citationCountLine, summarizeCitations } from "@/modules/citations/domain/citation-summary";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +68,18 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     targetPublicId: opinion.documentPublicId,
   });
   const citationTargets = await publicCitationTargets(db(), opinion.contentText, opinion.contentHtml);
-  const linkedHtml = linkCaseCitations(opinion.contentHtml, citationTargets);
+  // The opinion header usually repeats the case's own citation; never count,
+  // link or mark it as a citation to another case.
+  const ownTargets = new Set(citationTargets.filter(target => target.casePublicId === opinion.casePublicId).map(target => target.citationKey));
+  const ownKeys = new Set([...ownTargets, ...(officialCitation ? [citationKey(officialCitation)] : [])]);
+  const outgoingTargets = citationTargets.filter(target => !ownTargets.has(target.citationKey));
+  const citationSummary = summarizeCitations(
+    opinion.contentText,
+    opinion.contentHtml,
+    new Set(outgoingTargets.map(target => target.citationKey)),
+    officialCitation ? [officialCitation] : [],
+  );
+  const linkedHtml = linkCaseCitations(opinion.contentHtml, outgoingTargets, { markUnresolved: true, exclude: ownKeys });
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "DigitalDocument",
@@ -80,7 +93,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
       officialCitation ? { "@type": "PropertyValue", name: "Official citation", value: officialCitation } : null,
     ].filter(Boolean),
     isPartOf: { "@type": "LegalCase", name: caption, url: `https://jurvio.com/case/${opinion.casePublicId}` },
-    citation: citationTargets.filter(target => target.machineAccessible).map(target => `https://jurvio.com/case/${target.casePublicId}`),
+    citation: outgoingTargets.filter(target => target.machineAccessible).map(target => `https://jurvio.com/case/${target.casePublicId}`),
     provider: { "@type": "Organization", name: "Jurvio" },
     url: permanentUrl,
   };
@@ -137,7 +150,19 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
                 <div><dt>Permanent ID</dt><dd>{opinion.documentPublicId}</dd></div>
               </dl>
             </section>
-            {citationTargets.length ? <section><h2>Cases cited</h2><ul>{[...new Map(citationTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{target.caption}</Link></li>)}</ul></section> : null}
+            {citationSummary.cases ? (
+              <section className="citationRail">
+                <h2>Cases cited <span className="citationCount">{citationSummary.cases.toLocaleString("en-US")}</span></h2>
+                <p>{citationCountLine(citationSummary.cases, citationSummary.onJurvio)}</p>
+                {outgoingTargets.length ? <ul>{[...new Map(outgoingTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{target.caption}</Link></li>)}</ul> : null}
+                {citationSummary.notYetOnJurvio.length ? (
+                  <details className="citationPendingList">
+                    <summary>Not yet on Jurvio ({citationSummary.notYetOnJurvio.length})</summary>
+                    <ul>{citationSummary.notYetOnJurvio.slice(0, 100).map(cite => <li key={cite.key}>{cite.label}</li>)}</ul>
+                  </details>
+                ) : null}
+              </section>
+            ) : null}
             {opinion.sourceDownloadUrl ? <section><p className="sectionKicker">Provenance</p><p>Published by {opinion.courtName}.</p><a href={opinion.sourceDownloadUrl} rel="nofollow noopener">Official court document</a></section> : null}
           </aside>
         </div>

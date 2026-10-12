@@ -49,6 +49,13 @@ export interface BulkAppellateOpinionOptions {
 export interface BulkOpinionOptions extends BulkAppellateOpinionOptions {
   courtCodes: ReadonlySet<string>;
   lane: string;
+  /**
+   * Restrict the run to these exact opinion-cluster ids (cited-but-missing cases
+   * resolved from the bulk citation map). When set, `courtFilter` replaces the
+   * court-code set so cited cases from any eligible court are kept.
+   */
+  clusterIds?: ReadonlySet<string>;
+  courtFilter?: (courtCode: string) => boolean;
 }
 
 export interface BulkAppellateOpinionResult {
@@ -192,6 +199,9 @@ export async function ingestCourtListenerBulkOpinions(
   const limit = options.limit;
   const lane = options.lane;
   const courtCodes = options.courtCodes;
+  const clusterIds = options.clusterIds;
+  const keepCourt = clusterIds && options.courtFilter ? options.courtFilter : (code: string) => courtCodes.has(code);
+  const keepCluster = (id: string) => !clusterIds || clusterIds.has(id);
   const urls = bulkFileUrls(options.baseUrl ?? DEFAULT_BULK_BASE_URL, snapshotDate);
 
   const [provider] = await sql<{ id: string }[]>`
@@ -420,6 +430,7 @@ export async function ingestCourtListenerBulkOpinions(
   // this is a no-op win there; output is identical either way.)
   const referencedDocketIds = new Set<string>();
   for await (const row of readBulkOpinionClusters(openBulkCsvFromUrl(urls.clusters))) {
+    if (!keepCluster(row.id)) continue;
     if (!bulkClusterWithinYearRange(safeDate(row.date_filed), minYear, maxYear)) continue;
     referencedDocketIds.add(row.docket_id);
   }
@@ -431,7 +442,7 @@ export async function ingestCourtListenerBulkOpinions(
     const source = openBulkCsvFromUrl(urls.dockets);
     try {
       for await (const row of parseBulkCsv(source.stream, courtListenerBulkDocketSchema)) {
-        if (!courtCodes.has(row.court_id)) continue;
+        if (!keepCourt(row.court_id)) continue;
         if (!referencedDocketIds.has(row.id)) continue;
         dockets.set(row.id, {
           courtCode: row.court_id,
@@ -453,6 +464,7 @@ export async function ingestCourtListenerBulkOpinions(
   // time and is then discarded -- nothing large is held across the pass.
   const clusters = new Map<string, ClusterJoin>();
   for await (const row of readBulkOpinionClusters(openBulkCsvFromUrl(urls.clusters))) {
+    if (!keepCluster(row.id)) continue;
     const docket = dockets.get(row.docket_id);
     if (!docket) continue;
     if (!bulkClusterWithinYearRange(safeDate(row.date_filed), minYear, maxYear)) continue;

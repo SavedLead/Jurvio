@@ -34,3 +34,47 @@ export async function relatedCitationCases(sql: Sql, casePublicId: string, direc
     ORDER BY related.id, d.filed_on DESC NULLS LAST, d.id, ref.start_offset LIMIT ${limit}
   `;
 }
+export interface CaseCitationCounts { cited: number; citedOnJurvio: number; citedBy: number }
+/**
+ * Totals behind the case page's citation counter. Uses the same visibility rules
+ * as relatedCitationCases (published + displayable on both ends, current content
+ * hash, unique identity only) so the counts never exceed what the lists can show
+ * once uncapped. Counts reporter citations in the court's text; the case's own
+ * citations (opinion headers repeat them) are excluded.
+ */
+export async function caseCitationCounts(sql: Sql, casePublicId: string): Promise<CaseCitationCounts> {
+  const [row] = await sql<CaseCitationCounts[]>`
+    WITH current_case AS MATERIALIZED (
+      SELECT c.id FROM legal_case c
+      WHERE c.public_id=${casePublicId} AND c.publication='published'
+        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+    ), visible_documents AS MATERIALIZED (
+      SELECT d.id, content.content_hash FROM current_case cc
+      JOIN document d ON d.case_id=cc.id AND d.publication='published'
+      JOIN document_content content ON content.document_id=d.id
+      WHERE COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+    ), cited_keys AS MATERIALIZED (
+      SELECT DISTINCT ref.citation_key FROM visible_documents vd
+      JOIN document_case_citation ref ON ref.document_id=vd.id AND ref.source_content_hash=vd.content_hash AND ref.location_kind='text'
+      WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity own JOIN current_case cc ON cc.id=own.case_id WHERE own.citation_key=ref.citation_key)
+    ), cited_on_jurvio AS (
+      SELECT DISTINCT k.citation_key FROM cited_keys k
+      JOIN unique_case_citation u ON u.citation_key=k.citation_key
+      JOIN legal_case target ON target.id=u.case_id AND target.publication='published'
+      WHERE COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=target.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+    ), citing_cases AS (
+      SELECT DISTINCT d.case_id FROM current_case cc
+      JOIN unique_case_citation u ON u.case_id=cc.id
+      JOIN document_case_citation ref ON ref.citation_key=u.citation_key
+      JOIN document d ON d.id=ref.document_id AND d.publication='published' AND d.case_id<>cc.id
+      JOIN document_content content ON content.document_id=d.id AND content.content_hash=ref.source_content_hash
+      JOIN legal_case citing ON citing.id=d.case_id AND citing.publication='published'
+      WHERE COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=citing.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+    )
+    SELECT (SELECT count(*) FROM cited_keys)::int AS cited,
+      (SELECT count(*) FROM cited_on_jurvio)::int AS "citedOnJurvio",
+      (SELECT count(*) FROM citing_cases)::int AS "citedBy"
+  `;
+  return row ?? { cited: 0, citedOnJurvio: 0, citedBy: 0 };
+}
