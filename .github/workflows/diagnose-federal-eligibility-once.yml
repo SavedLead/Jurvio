@@ -1,10 +1,10 @@
 name: Diagnose federal publication eligibility after fixes (once, read-only)
 
-# Strictly read-only. Projects, against production, how many federal CASES and OPINION
-# DOCUMENTS become publishable after applying ALL prepared fixes together (court-registry
-# verification, validated docket-less alternative identity, FS/FBP jurisdiction) combined
-# with EVERY other gate check. Reports eligibility AFTER ALL CHECKS. No writes.
-# Collisions and unresolved rejections are pre-aggregated into CTEs to stay fast.
+# Strictly read-only. Two fast, pure-CTE passes (no correlated subqueries):
+#  (A) CASE eligibility after court-registry + docket-less identity + FS/FBP + all case-level
+#      checks (no opinion-body scan).
+#  (B) DOC eligibility among case-eligible docs after the opinion-document checks.
+# Reports eligibility AFTER ALL CHECKS. No writes.
 
 on:
   workflow_dispatch: {}
@@ -20,7 +20,7 @@ jobs:
   diagnose:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
@@ -49,9 +49,9 @@ jobs:
           pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
             --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
           [ -n "$pg" ] || { echo "::error::no postgres container"; exit 1; }
-          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "SET statement_timeout='300s';" -c "$1" 2>&1; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "SET statement_timeout='600s';" -c "$1" 2>&1; }
 
-          echo "=== federal draft OPINION DOCUMENTS: eligibility after ALL fixes+checks ==="
+          echo "=== (A) CASE eligibility after ALL case-level checks ==="
           q "WITH reg(provider_court_id) AS (VALUES
             ('akb'),('akd'),('ald'),('almb'),('almd'),('alnb'),('alnd'),('alsb'),('alsd'),('arb'),('ard'),('areb'),
             ('ared'),('arwb'),('arwd'),('azd'),('bap1'),('bap10'),('bap2'),('bap6'),('bap8'),('bap9'),('bapma'),('bapme'),
@@ -84,14 +84,18 @@ jobs:
             ('uscirct'),('usdistct'),('usprovctla'),('utb'),('utd'),('vad'),('vaeb'),('vaed'),('vawb'),('vawd'),('vib'),('vid'),
             ('vtb'),('vtd'),('waeb'),('waed'),('washd'),('wawb'),('wawd'),('wieb'),('wied'),('wisd'),('wiwb'),('wiwd'),
             ('wvad'),('wvnb'),('wvnd'),('wvsb'),('wvsd'),('wyb'),('wyd')
+          ), cidk AS (
+            SELECT case_id, array_agg(identifier_value) AS vals
+            FROM case_identifier WHERE identifier_type='courtlistener_docket_id' GROUP BY case_id
           ), dup AS (
-            SELECT court_id, lower(trim(docket_number)) AS dk
-            FROM legal_case WHERE nullif(trim(docket_number),'') IS NOT NULL
-            GROUP BY 1,2 HAVING count(*)>1
+            SELECT court_id, lower(trim(docket_number)) AS dk FROM legal_case
+            WHERE nullif(trim(docket_number),'') IS NOT NULL GROUP BY 1,2 HAVING count(*)>1
           ), rej AS (
             SELECT DISTINCT source_record_id FROM ingestion_rejection WHERE resolved_at IS NULL
-          ), g AS (
-            SELECT d.id AS doc_id, c.id AS case_id,
+          ), blk AS (
+            SELECT DISTINCT object_id FROM publication_decision WHERE NOT displayable
+          ), base AS (
+            SELECT c.id AS case_id, d.id AS doc_id, dc.word_count, dc.content_hash AS doc_content_hash,
               (ct.provider_court_id IN (SELECT provider_court_id FROM reg)) AS court_ok,
               (lower(coalesce(ct.jurisdiction,'')) IN ('f','fd','fb','fbp','fs','federal')
                 OR lower(coalesce(ct.jurisdiction,'')) LIKE '%federal district%'
@@ -101,57 +105,142 @@ jobs:
                 OR lower(coalesce(ct.jurisdiction,'')) LIKE '%appellate panel%') AS jur_ok,
               (coalesce(c.caption,'')<>'') AS caption_present,
               (coalesce(c.docket_number,'')<>'') AS docket_present,
-              (ca.source_record_id IS NOT NULL AND EXISTS(SELECT 1 FROM case_identifier ci
-                 WHERE ci.case_id=c.id AND ci.identifier_type='courtlistener_docket_id'
-                   AND ci.identifier_value=ca.source_record_id)) AS resolves,
-              (ct.provider_court_id IS NOT NULL AND EXISTS(SELECT 1 FROM case_identifier ci
-                 WHERE ci.case_id=c.id AND ci.identifier_type='courtlistener_docket_id')) AS linkage,
+              (ca.source_record_id IS NOT NULL AND cidk.vals IS NOT NULL AND ca.source_record_id = ANY(cidk.vals)) AS resolves,
+              (ct.provider_court_id IS NOT NULL AND cidk.case_id IS NOT NULL) AS linkage,
               (c.source_artifact_id IS NOT NULL AND ca.source_uri ~ '^https?://'
                 AND ca.content_hash ~ '^[a-f0-9]{64}\$' AND ca.retrieved_at IS NOT NULL) AS source_ok,
-              (length(btrim(dc.content_text))>0) AS readable,
+              (dc.word_count IS NOT NULL AND dc.word_count>0) AS readable,
               (coalesce(c.docket_number,'')<>'' AND dup.court_id IS NOT NULL) AS collision,
               (rej.source_record_id IS NOT NULL) AS rejected,
               (concat_ws(' ',c.caption,c.docket_number,d.title) ~* '\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M') AS restricted,
-              (c.verification IN ('conflict','needs_review')) AS case_conflict,
-              (dc.word_count<100) AS thin,
-              NOT (dc.content_hash ~ '^[a-f0-9]{64}\$' AND da.content_hash IS NOT NULL) AS no_provenance,
-              NOT (dp.code='courtlistener' AND (
-                   da.source_uri ~ '^https://www\.courtlistener\.com/api/rest/v[34]/opinions/[0-9]+/\$'
-                   OR (da.response_metadata->>'source'='courtlistener_bulk'
-                       AND da.source_uri ~ '^https://www\.courtlistener\.com/help/api/bulk-data/#opinion-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+\$'
-                       AND da.source_record_id = jo.provider_opinion_id AND jo.cluster_id IS NOT NULL
-                       AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=jo.cluster_id)))) AS bad_opinion_source,
-              (left(dc.content_text,100000) ~* '[0-9]{3}-[0-9]{2}-[0-9]{4}|date of birth|social security number') AS sensitive,
-              (EXISTS(SELECT 1 FROM publication_decision pd WHERE pd.object_id=d.id AND NOT pd.displayable)) AS doc_blocked
+              (c.verification IN ('conflict','needs_review')) AS case_conflict
             FROM legal_case c JOIN court ct ON ct.id=c.court_id
             JOIN document d ON d.case_id=c.id AND d.publication='draft'
             JOIN judicial_opinion jo ON jo.document_id=d.id
             JOIN document_content dc ON dc.document_id=d.id
-            JOIN raw_artifact da ON da.id=dc.source_artifact_id JOIN provider dp ON dp.id=da.provider_id
             LEFT JOIN raw_artifact ca ON ca.id=c.source_artifact_id
+            LEFT JOIN cidk ON cidk.case_id=c.id
             LEFT JOIN dup ON dup.court_id=c.court_id AND dup.dk=lower(trim(c.docket_number))
             LEFT JOIN rej ON rej.source_record_id=ca.source_record_id
             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
-          ), e AS (
-            SELECT *,
-              (court_ok AND jur_ok
-                AND caption_present AND (docket_present OR (resolves AND linkage))
-                AND source_ok AND readable AND NOT collision AND NOT rejected
-                AND NOT restricted AND NOT case_conflict) AS case_eligible
-            FROM g
+          ), ce AS (
+            SELECT *, (court_ok AND jur_ok AND caption_present AND (docket_present OR (resolves AND linkage))
+              AND source_ok AND readable AND NOT collision AND NOT rejected AND NOT restricted AND NOT case_conflict) AS case_eligible
+            FROM base
           )
           SELECT 'federal_draft_opinion_docs='||count(*)
              ||' | distinct_cases='||count(DISTINCT case_id)
              ||' | CASE_eligible_docs='||count(*) FILTER (WHERE case_eligible)
              ||' | CASE_eligible_distinct_cases='||count(DISTINCT case_id) FILTER (WHERE case_eligible)
-             ||' | DOC_eligible_all_checks='||count(*) FILTER (WHERE case_eligible AND NOT thin AND NOT no_provenance AND NOT bad_opinion_source AND NOT sensitive AND NOT doc_blocked)
              ||' | blocked_court='||count(*) FILTER (WHERE NOT court_ok)
              ||' | blocked_identity='||count(*) FILTER (WHERE NOT (caption_present AND (docket_present OR (resolves AND linkage))))
              ||' | blocked_source='||count(*) FILTER (WHERE NOT source_ok)
-             ||' | ce_thin='||count(*) FILTER (WHERE case_eligible AND thin)
-             ||' | ce_bad_opinion_source='||count(*) FILTER (WHERE case_eligible AND bad_opinion_source)
-             ||' | ce_sensitive='||count(*) FILTER (WHERE case_eligible AND sensitive)
-             ||' | ce_no_provenance='||count(*) FILTER (WHERE case_eligible AND no_provenance)
-          FROM e;"
+             ||' | blocked_collision='||count(*) FILTER (WHERE collision)
+             ||' | blocked_restricted='||count(*) FILTER (WHERE restricted)
+             ||' | blocked_case_conflict='||count(*) FILTER (WHERE case_conflict)
+          FROM ce;"
+          echo "=== (B) OPINION DOCUMENT eligibility among case-eligible ==="
+          q "WITH reg(provider_court_id) AS (VALUES
+            ('akb'),('akd'),('ald'),('almb'),('almd'),('alnb'),('alnd'),('alsb'),('alsd'),('arb'),('ard'),('areb'),
+            ('ared'),('arwb'),('arwd'),('azd'),('bap1'),('bap10'),('bap2'),('bap6'),('bap8'),('bap9'),('bapma'),('bapme'),
+            ('bta'),('ca1'),('ca10'),('ca11'),('ca2'),('ca3'),('ca4'),('ca5'),('ca6'),('ca7'),('ca8'),('ca9'),
+            ('cacb'),('cacd'),('cadc'),('caeb'),('caed'),('cafc'),('californiad'),('canalzoned'),('canb'),('cand'),('casb'),('casd'),
+            ('cavc'),('cc'),('ccpa'),('circtcapefearnc'),('circtdal'),('circtdalb'),('circtdalbanyny'),('circtdar'),('circtdca'),('circtdco'),('circtdct'),('circtddc'),
+            ('circtdedenton'),('circtdel'),('circtdga'),('circtdia'),('circtdid'),('circtdil'),('circtdin'),('circtdks'),('circtdky'),('circtdla'),('circtdma'),('circtdmd'),
+            ('circtdme'),('circtdmi'),('circtdmn'),('circtdmo'),('circtdms'),('circtdmt'),('circtdnd'),('circtdne'),('circtdnewbern'),('circtdnh'),('circtdnj'),('circtdnv'),
+            ('circtdoh'),('circtdor'),('circtdpa'),('circtdpamptico'),('circtdri'),('circtdsc'),('circtdsd'),('circtdterrar'),('circtdtx'),('circtdut'),('circtdva'),('circtdvt'),
+            ('circtdwa'),('circtdwi'),('circtdwilm'),('circtdwv'),('circtdwy'),('circtedar'),('circtedil'),('circtedky'),('circtedla'),('circtedmi'),('circtedmo'),('circtednc'),
+            ('circtedny'),('circtedok'),('circtedpa'),('circtedsc'),('circtedtn'),('circtedtx'),('circtedva'),('circtedwa'),('circtedwi'),('circtmdal'),('circtmdpa'),('circtmdtn'),
+            ('circtmissterr'),('circtnc'),('circtndal'),('circtndca'),('circtndfl'),('circtndga'),('circtndil'),('circtndms'),('circtndny'),('circtndoh'),('circtndtx'),('circtndwv'),
+            ('circtnia'),('circtny'),('circtsdal'),('circtsdca'),('circtsdfl'),('circtsdga'),('circtsdia'),('circtsdil'),('circtsdms'),('circtsdny'),('circtsdoh'),('circtsdtex'),
+            ('circtsdwv'),('circttenn'),('circtwdar'),('circtwdky'),('circtwdla'),('circtwdmi'),('circtwdmo'),('circtwdnc'),('circtwdny'),('circtwdok'),('circtwdpa'),('circtwdtex'),
+            ('circtwdtn'),('circtwdva'),('circtwdwa'),('circtwdwi'),('cit'),('cob'),('cod'),('com'),('ctb'),('ctd'),('cusc'),('dcb'),
+            ('dcd'),('deb'),('ded'),('eca'),('fisc'),('fiscr'),('fld'),('flmb'),('flmd'),('flnb'),('flnd'),('flsb'),
+            ('flsd'),('gad'),('gamb'),('gamd'),('ganb'),('gand'),('gasb'),('gasd'),('gub'),('gud'),('hib'),('hid'),
+            ('iad'),('ianb'),('iand'),('iasb'),('iasd'),('idb'),('idd'),('ilcb'),('ilcd'),('illinoisd'),('illinoised'),('ilnb'),
+            ('ilnd'),('ilsb'),('ilsd'),('indianad'),('innb'),('innd'),('insb'),('insd'),('jpml'),('ksb'),('ksd'),('kyd'),
+            ('kyeb'),('kyed'),('kywb'),('kywd'),('lad'),('laeb'),('laed'),('lamb'),('lamd'),('lawb'),('lawd'),('mab'),
+            ('mad'),('mdb'),('mdd'),('meb'),('med'),('michd'),('mieb'),('mied'),('missd'),('miwb'),('miwd'),('mnb'),
+            ('mnd'),('mod'),('moeb'),('moed'),('mowb'),('mowd'),('msnb'),('msnd'),('mssb'),('mssd'),('mtb'),('mtd'),
+            ('ncd'),('nceb'),('nced'),('ncmb'),('ncmd'),('ncwb'),('ncwd'),('ndb'),('ndd'),('nebraskab'),('ned'),('nhb'),
+            ('nhd'),('njb'),('njd'),('nmb'),('nmd'),('nmib'),('nmid'),('nvb'),('nvd'),('nyd'),('nyeb'),('nyed'),
+            ('nynb'),('nynd'),('nysb'),('nysd'),('nywb'),('nywd'),('ohiod'),('ohnb'),('ohnd'),('ohsb'),('ohsd'),('okd'),
+            ('okeb'),('oked'),('oknb'),('oknd'),('okwb'),('okwd'),('orb'),('ord'),('orld'),('paeb'),('paed'),('pamb'),
+            ('pamd'),('pawb'),('pawd'),('pennsylvaniad'),('prb'),('prd'),('reglrailreorgct'),('rib'),('rid'),('scb'),('scd'),('sdb'),
+            ('sdd'),('southcarolinaed'),('southcarolinawd'),('tax'),('tecoa'),('tennessed'),('tennesseeb'),('texd'),('tneb'),('tned'),('tnmb'),('tnmd'),
+            ('tnwb'),('tnwd'),('txeb'),('txed'),('txnb'),('txnd'),('txsb'),('txsd'),('txwb'),('txwd'),('usberlinct'),('uscfc'),
+            ('uscirct'),('usdistct'),('usprovctla'),('utb'),('utd'),('vad'),('vaeb'),('vaed'),('vawb'),('vawd'),('vib'),('vid'),
+            ('vtb'),('vtd'),('waeb'),('waed'),('washd'),('wawb'),('wawd'),('wieb'),('wied'),('wisd'),('wiwb'),('wiwd'),
+            ('wvad'),('wvnb'),('wvnd'),('wvsb'),('wvsd'),('wyb'),('wyd')
+          ), cidk AS (
+            SELECT case_id, array_agg(identifier_value) AS vals
+            FROM case_identifier WHERE identifier_type='courtlistener_docket_id' GROUP BY case_id
+          ), dup AS (
+            SELECT court_id, lower(trim(docket_number)) AS dk FROM legal_case
+            WHERE nullif(trim(docket_number),'') IS NOT NULL GROUP BY 1,2 HAVING count(*)>1
+          ), rej AS (
+            SELECT DISTINCT source_record_id FROM ingestion_rejection WHERE resolved_at IS NULL
+          ), blk AS (
+            SELECT DISTINCT object_id FROM publication_decision WHERE NOT displayable
+          ), base AS (
+            SELECT c.id AS case_id, d.id AS doc_id, dc.word_count, dc.content_hash AS doc_content_hash,
+              (ct.provider_court_id IN (SELECT provider_court_id FROM reg)) AS court_ok,
+              (lower(coalesce(ct.jurisdiction,'')) IN ('f','fd','fb','fbp','fs','federal')
+                OR lower(coalesce(ct.jurisdiction,'')) LIKE '%federal district%'
+                OR lower(coalesce(ct.jurisdiction,'')) LIKE '%federal appellate%'
+                OR lower(coalesce(ct.jurisdiction,'')) LIKE '%bankruptcy%'
+                OR lower(coalesce(ct.jurisdiction,'')) LIKE '%federal special%'
+                OR lower(coalesce(ct.jurisdiction,'')) LIKE '%appellate panel%') AS jur_ok,
+              (coalesce(c.caption,'')<>'') AS caption_present,
+              (coalesce(c.docket_number,'')<>'') AS docket_present,
+              (ca.source_record_id IS NOT NULL AND cidk.vals IS NOT NULL AND ca.source_record_id = ANY(cidk.vals)) AS resolves,
+              (ct.provider_court_id IS NOT NULL AND cidk.case_id IS NOT NULL) AS linkage,
+              (c.source_artifact_id IS NOT NULL AND ca.source_uri ~ '^https?://'
+                AND ca.content_hash ~ '^[a-f0-9]{64}\$' AND ca.retrieved_at IS NOT NULL) AS source_ok,
+              (dc.word_count IS NOT NULL AND dc.word_count>0) AS readable,
+              (coalesce(c.docket_number,'')<>'' AND dup.court_id IS NOT NULL) AS collision,
+              (rej.source_record_id IS NOT NULL) AS rejected,
+              (concat_ws(' ',c.caption,c.docket_number,d.title) ~* '\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M') AS restricted,
+              (c.verification IN ('conflict','needs_review')) AS case_conflict
+            FROM legal_case c JOIN court ct ON ct.id=c.court_id
+            JOIN document d ON d.case_id=c.id AND d.publication='draft'
+            JOIN judicial_opinion jo ON jo.document_id=d.id
+            JOIN document_content dc ON dc.document_id=d.id
+            LEFT JOIN raw_artifact ca ON ca.id=c.source_artifact_id
+            LEFT JOIN cidk ON cidk.case_id=c.id
+            LEFT JOIN dup ON dup.court_id=c.court_id AND dup.dk=lower(trim(c.docket_number))
+            LEFT JOIN rej ON rej.source_record_id=ca.source_record_id
+            WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+          ), ce AS (
+            SELECT *, (court_ok AND jur_ok AND caption_present AND (docket_present OR (resolves AND linkage))
+              AND source_ok AND readable AND NOT collision AND NOT rejected AND NOT restricted AND NOT case_conflict) AS case_eligible
+            FROM base
+          ), de AS (
+            SELECT ce.doc_id,
+              (ce.word_count<100) AS thin,
+              NOT (ce.doc_content_hash ~ '^[a-f0-9]{64}\$' AND da.content_hash IS NOT NULL) AS no_provenance,
+              NOT (dp.code='courtlistener' AND (
+                   da.source_uri ~ '^https://www\.courtlistener\.com/api/rest/v[34]/opinions/[0-9]+/\$'
+                   OR (da.response_metadata->>'source'='courtlistener_bulk'
+                       AND da.source_uri ~ '^https://www\.courtlistener\.com/help/api/bulk-data/#opinion-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+\$'
+                       AND da.source_record_id = jo.provider_opinion_id AND oc.id IS NOT NULL))) AS bad_opinion_source,
+              (left(dc.content_text,100000) ~* '[0-9]{3}-[0-9]{2}-[0-9]{4}|date of birth|social security number') AS sensitive,
+              (blk.object_id IS NOT NULL) AS doc_blocked
+            FROM ce
+            JOIN document_content dc ON dc.document_id=ce.doc_id
+            JOIN judicial_opinion jo ON jo.document_id=ce.doc_id
+            JOIN raw_artifact da ON da.id=dc.source_artifact_id JOIN provider dp ON dp.id=da.provider_id
+            LEFT JOIN opinion_cluster oc ON oc.id=jo.cluster_id
+            LEFT JOIN blk ON blk.object_id=ce.doc_id
+            WHERE ce.case_eligible
+          )
+          SELECT 'case_eligible_docs='||count(*)
+             ||' | DOC_eligible_all_checks='||count(*) FILTER (WHERE NOT thin AND NOT no_provenance AND NOT bad_opinion_source AND NOT sensitive AND NOT doc_blocked)
+             ||' | still_thin='||count(*) FILTER (WHERE thin)
+             ||' | still_bad_opinion_source='||count(*) FILTER (WHERE bad_opinion_source)
+             ||' | still_sensitive='||count(*) FILTER (WHERE sensitive)
+             ||' | still_no_provenance='||count(*) FILTER (WHERE no_provenance)
+             ||' | still_doc_blocked='||count(*) FILTER (WHERE doc_blocked)
+          FROM de;"
           echo "=== DONE ==="
           REMOTE
