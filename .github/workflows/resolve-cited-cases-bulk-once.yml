@@ -136,8 +136,9 @@ jobs:
           fi
 
           counts() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
-            "SELECT state || '=' || count(*) FROM missing_case_citation GROUP BY state ORDER BY state;" 2>/dev/null || echo "(count query failed)"; }
-          echo "=== Missing citations BEFORE ==="; counts
+            "SELECT COALESCE(json_object_agg(state, n), '{}'::json) FROM (SELECT state, count(*) AS n FROM missing_case_citation GROUP BY state) s;" 2>/dev/null || echo "(count query failed)"; }
+          before="$(counts)"
+          echo "::notice title=Missing citations BEFORE (${SNAPSHOT})::${before}"
 
           set -- --snapshot-date="$SNAPSHOT"
           if [ "$DO_IMPORT" = "true" ]; then set -- "$@" --import --import-limit="$IMPORT_LIMIT"; fi
@@ -145,9 +146,14 @@ jobs:
           echo "=== Disk before ==="; df -h / | tail -1
           # Same heap cap as the bulk backfill: fail this job cleanly rather than
           # pressure postgres on the shared box.
+          out="$(mktemp)"
           sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
-            node jobs/resolve-cited-cases-bulk.mjs "$@"
+            node jobs/resolve-cited-cases-bulk.mjs "$@" 2>&1 | tee "$out"
+          # Surface the job's own summary lines (not progress) as run annotations.
+          grep -E '^\{"lane":"cited-case-(resolution|import)"' "$out" | grep -v '"progress":true' \
+            | while IFS= read -r line; do echo "::notice title=Resolver result::${line}"; done || true
           echo "=== Disk after ==="; df -h / | tail -1
 
-          echo "=== Missing citations AFTER ==="; counts
+          after="$(counts)"
+          echo "::notice title=Missing citations AFTER (${SNAPSHOT})::${after}"
           REMOTE
