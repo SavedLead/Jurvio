@@ -83,6 +83,36 @@ describe.skipIf(!databaseUrl)("deterministic federal opinion document publicatio
       expect(badResult.held).toBe(1);
       expect(badResult.holdReasons.unverified_opinion_source).toBe(1);
       expect((await sql`SELECT publication FROM document WHERE id=${badSource.documentId}`)[0]?.publication).toBe("draft");
+
+      // Budget cap (bounded pilot): a case with two eligible opinion documents, called with
+      // maxPublish:1, publishes exactly one and leaves the other draft so a combined ceiling
+      // is honored exactly. A follow-up call with remaining budget publishes the rest.
+      const twoDoc = await seedCaseWithOpinion({
+        suffix: "budget01", words: 200,
+        sourceUri: "https://www.courtlistener.com/api/rest/v4/opinions/5/", recordId: "5",
+      });
+      const art2Hash = "6".padStart(64, "a");
+      const doc2Hash = "6".padStart(64, "0");
+      const [art2] = await sql<{ id: string }[]>`INSERT INTO raw_artifact(provider_id,source_uri,content_hash,object_key,media_type,retrieved_at,source_record_id)
+        VALUES(${provider!.id},'https://www.courtlistener.com/api/rest/v4/opinions/6/',${art2Hash},'kbudget02','application/json',now(),'6') RETURNING id`;
+      const [cluster2] = await sql<{ id: string }[]>`INSERT INTO opinion_cluster(public_id,case_id,provider_id,provider_cluster_id,case_name,source_artifact_id)
+        VALUES('jo-budget02',${twoDoc.caseId},${provider!.id},'cl-budget02','United States v. Example',${art2!.id}) RETURNING id`;
+      const [doc2] = await sql<{ id: string }[]>`INSERT INTO document(public_id,case_id,document_type,title,publication,content_hash)
+        VALUES('jd-budget02',${twoDoc.caseId},'judicial_opinion','Concurrence','draft',${doc2Hash}) RETURNING id`;
+      await sql`INSERT INTO judicial_opinion(cluster_id,document_id,provider_id,provider_opinion_id,opinion_type,source_artifact_id)
+        VALUES(${cluster2!.id},${doc2!.id},${provider!.id},'6','concurrence',${art2!.id})`;
+      await sql`INSERT INTO document_content(document_id,content_html,content_text,content_hash,extraction_method,word_count,source_artifact_id)
+        VALUES(${doc2!.id},'<p>opinion</p>',${"word ".repeat(200)},${doc2Hash},'fixture',200,${art2!.id})`;
+
+      const capped = await publishCaseOpinionDocuments(sql, twoDoc.caseId, { maxPublish: 1 });
+      expect(capped).toMatchObject({ published: 1, held: 0 });
+      const states = (await sql<{ publication: string }[]>`SELECT publication FROM document WHERE case_id=${twoDoc.caseId} AND document_type='judicial_opinion'`).map((r) => r.publication);
+      expect(states.filter((p) => p === "published")).toHaveLength(1);
+      expect(states.filter((p) => p === "draft")).toHaveLength(1);
+
+      const rest = await publishCaseOpinionDocuments(sql, twoDoc.caseId, { maxPublish: 5 });
+      expect(rest.published).toBe(1);
+      expect((await sql<{ c: number }[]>`SELECT count(*)::int c FROM document WHERE case_id=${twoDoc.caseId} AND document_type='judicial_opinion' AND publication='draft'`)[0]?.c).toBe(0);
     } finally {
       await sql.unsafe(`SET search_path TO public; DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined);
       await sql.end();

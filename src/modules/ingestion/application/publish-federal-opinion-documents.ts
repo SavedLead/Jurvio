@@ -43,11 +43,17 @@ export interface OpinionDocumentPublicationResult {
  *  - A passing document is published with a `document` publication_decision
  *    (`deterministic_federal_opinion_document`) and a single `publication.changed` outbox
  *    event, the decision insert guarded so it is not duplicated.
+ *  - `options.maxPublish` caps how many documents this call may PUBLISH (holds do not count).
+ *    It defaults to unbounded; a bounded pilot passes its remaining document budget so the
+ *    combined ceiling is honored exactly. Once the budget is spent, remaining passing
+ *    documents are left draft (neither published nor held) for a later run.
  */
 export async function publishCaseOpinionDocuments(
   sql: Sql,
   caseId: string,
+  options: { maxPublish?: number } = {},
 ): Promise<OpinionDocumentPublicationResult> {
+  const maxPublish = options.maxPublish ?? Number.POSITIVE_INFINITY;
   const holdReasons: Record<string, number> = {};
   let published = 0;
   let held = 0;
@@ -101,6 +107,10 @@ export async function publishCaseOpinionDocuments(
       held += 1;
       continue;
     }
+    // Budget cap (bounded pilot): this document passes every check but the caller's publish
+    // budget is spent, so leave it draft for a later run. Failing documents above are still
+    // held; only publishes are capped.
+    if (published >= maxPublish) continue;
     await sql`
       UPDATE document SET publication = 'published', updated_at = now()
       WHERE id = ${doc.document_id} AND publication = 'draft'

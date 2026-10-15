@@ -83,12 +83,18 @@ jobs:
           echo "after cited: cases=$CC docs=$CD"
 
           REM=$(( CAP_C - CC )); [ "$REM" -lt 0 ] && REM=0
-          echo "=== exercise DETERMINISTIC publisher (<=$REM to keep combined cases<=$CAP_C) ==="
-          if [ "$REM" -gt 0 ]; then
-            sudo -n docker exec "$worker" node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --max-items="$REM" --publish=1 2>&1 | tail -n 25
+          REM_D=$(( CAP_D - CD )); [ "$REM_D" -lt 0 ] && REM_D=0
+          echo "=== exercise DETERMINISTIC publisher (<=$REM cases, <=$REM_D docs; prefer doc-bearing) ==="
+          # --prefer-documents biases selection to cases that carry a draft opinion document so
+          # the document publish path is actually exercised; --max-documents caps cumulative
+          # publishes so the COMBINED (cited + deterministic) ceiling of $CAP_D docs is exact.
+          if [ "$REM" -gt 0 ] && [ "$REM_D" -gt 0 ]; then
+            sudo -n docker exec "$worker" node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --max-items="$REM" --max-documents="$REM_D" --prefer-documents --publish=1 2>&1 | tail -n 25
             echo "deterministic_pipestatus=${PIPESTATUS[0]}"
-          else
+          elif [ "$REM" -le 0 ]; then
             echo "combined case ceiling already reached by cited; skipping deterministic"
+          else
+            echo "combined document ceiling already reached by cited; skipping deterministic (doc path already exercised)"
           fi
 
           FC="$(dc)"; FD="$(dd)"
