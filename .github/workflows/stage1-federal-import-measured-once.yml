@@ -85,16 +85,31 @@ jobs:
 
           echo "=== extract this stage's opinion ids from the chunk files ==="
           FILES_SP="$(printf '%s' "$FILES" | tr '\n' ' ')"
-          IDS="$(sudo -n docker exec "$worker" sh -lc "zcat ${FILES_SP} | node -e 'const rl=require(\"readline\").createInterface({input:process.stdin});const a=[];rl.on(\"line\",l=>{if(l.trim())a.push(JSON.parse(l).id)});rl.on(\"close\",()=>process.stdout.write(a.join(\",\")))'")"
-          NIDS="$(printf '%s' "$IDS" | awk -F, '{print NF}')"
+          # Write newline-separated ids to a file ON THE BOX. Passing ~25k ids as one inline
+          # SQL argument (ARRAY[...] to psql -c) exceeds Linux MAX_ARG_STRLEN (128KB) and fails
+          # execve with exit 126 (Stage 1's ~10k stayed under it), so stream them via STDIN.
+          IDS_FILE="$(mktemp)"
+          sudo -n docker exec "$worker" sh -lc "zcat ${FILES_SP} | node -e 'const rl=require(\"readline\").createInterface({input:process.stdin});rl.on(\"line\",l=>{if(l.trim())process.stdout.write(JSON.parse(l).id+String.fromCharCode(10))});'" > "$IDS_FILE"
+          NIDS="$(grep -c . "$IDS_FILE" || true)"
           echo "opinion_ids_extracted=${NIDS}"
           [ "${NIDS:-0}" -ge 1 ] || { echo "::error::no ids extracted"; exit 1; }
 
-          MEMBER="WITH p AS (SELECT id FROM provider WHERE code='courtlistener'), ids AS (SELECT DISTINCT unnest(ARRAY[${IDS}]::text[]) AS oid) SELECT count(*) FROM ids JOIN judicial_opinion jo ON jo.provider_opinion_id=ids.oid AND jo.provider_id=(SELECT id FROM p);"
-          DISTINCT_IDS="$(pq "SELECT count(*) FROM (SELECT DISTINCT unnest(ARRAY[${IDS}]::text[]) oid) t;")"
+          # Membership measured by loading the ids into a TEMP TABLE over STDIN (no argv-length
+          # limit) and joining against judicial_opinion. Prints "distinct=<n>" and "present=<n>"
+          # so new = present_after - present_before and updates = present_before.
+          measure_ids() {
+            { printf '%s\n' "CREATE TEMP TABLE _ids(oid text);" "COPY _ids FROM STDIN;";
+              cat "$IDS_FILE";
+              printf '%s\n' '\.' \
+                "SELECT 'distinct='||count(DISTINCT oid) FROM _ids;" \
+                "SELECT 'present='||count(*) FROM (SELECT DISTINCT oid FROM _ids) d JOIN judicial_opinion jo ON jo.provider_opinion_id=d.oid AND jo.provider_id=(SELECT id FROM provider WHERE code='courtlistener');";
+            } | sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -At 2>/dev/null
+          }
 
           echo "=== BEFORE snapshot ==="
-          BEFORE_PRESENT="$(pq "$MEMBER")"
+          BEFORE_M="$(measure_ids)"
+          DISTINCT_IDS="$(printf '%s\n' "$BEFORE_M" | sed -n 's/^distinct=//p')"
+          BEFORE_PRESENT="$(printf '%s\n' "$BEFORE_M" | sed -n 's/^present=//p')"
           BEFORE_DBSIZE="$(pq "SELECT pg_database_size('jurvio');")"
           BEFORE_DISK="$(df -B1 --output=used / | tail -1 | tr -d ' ')"
           BEFORE_APP1="$(appms)"; BEFORE_APP2="$(appms)"
@@ -108,7 +123,7 @@ jobs:
           echo "import_elapsed_s=$((T1 - T0))"
 
           echo "=== AFTER snapshot ==="
-          AFTER_PRESENT="$(pq "$MEMBER")"
+          AFTER_PRESENT="$(printf '%s\n' "$(measure_ids)" | sed -n 's/^present=//p')"
           AFTER_DBSIZE="$(pq "SELECT pg_database_size('jurvio');")"
           AFTER_DISK="$(df -B1 --output=used / | tail -1 | tr -d ' ')"
           AFTER_APP1="$(appms)"; AFTER_APP2="$(appms)"
