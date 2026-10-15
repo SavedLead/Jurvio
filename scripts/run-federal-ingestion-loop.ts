@@ -97,20 +97,44 @@ const federalPublicationPaused =
       ? true
       : process.env.JURVIO_PAUSE_FEDERAL_PUBLICATION === "1";
 
-const maxConcurrency = Math.max(
-  1,
-  Math.min(
-    FEDERAL_HARD_MAX_CONCURRENCY,
-    intSetting("max-concurrency", "FEDERAL_MAX_CONCURRENCY", FEDERAL_DEFAULT_MAX_CONCURRENCY),
-  ),
-);
-const startConcurrency = Math.max(
-  1,
-  Math.min(
-    maxConcurrency,
-    intSetting("start-concurrency", "FEDERAL_START_CONCURRENCY", FEDERAL_DEFAULT_START_CONCURRENCY),
-  ),
-);
+// Pilot-only opinion-document ceiling for the publication-quarantine loop. Default is
+// unbounded (production drains every eligible document). When set to a finite N -- the
+// bounded opinion-document pilot -- the loop publishes AT MOST N opinion documents this run
+// and then stops, leaving the rest draft. The cap is cumulative and exact: a finite cap also
+// forces single-threaded processing (concurrency clamp below) so the running count can never
+// be raced past N. Only the publication-quarantine loop consults this.
+const publicationMaxDocumentsRaw = option("max-documents", process.env.FEDERAL_PUBLICATION_MAX_DOCUMENTS ?? "");
+if (publicationMaxDocumentsRaw !== "" && !/^\d+$/.test(publicationMaxDocumentsRaw)) {
+  throw new Error("--max-documents must be a non-negative integer");
+}
+const publicationMaxDocuments =
+  publicationMaxDocumentsRaw === "" ? Number.POSITIVE_INFINITY : Number(publicationMaxDocumentsRaw);
+const publicationDocumentCapActive = Number.isFinite(publicationMaxDocuments);
+// Pilot-only ordering bias: prefer draft cases that actually carry a draft opinion document,
+// so a bounded pilot exercises the document publish path instead of publishing document-less
+// cases first. Default false (production keeps the deterministic created_at ordering).
+const preferDocumentCandidates =
+  process.argv.includes("--prefer-documents") || process.env.FEDERAL_PUBLICATION_PREFER_DOCUMENTS === "1";
+
+// A finite document cap forces single-threaded publication so the cumulative count is exact.
+const maxConcurrency = publicationDocumentCapActive
+  ? 1
+  : Math.max(
+      1,
+      Math.min(
+        FEDERAL_HARD_MAX_CONCURRENCY,
+        intSetting("max-concurrency", "FEDERAL_MAX_CONCURRENCY", FEDERAL_DEFAULT_MAX_CONCURRENCY),
+      ),
+    );
+const startConcurrency = publicationDocumentCapActive
+  ? 1
+  : Math.max(
+      1,
+      Math.min(
+        maxConcurrency,
+        intSetting("start-concurrency", "FEDERAL_START_CONCURRENCY", FEDERAL_DEFAULT_START_CONCURRENCY),
+      ),
+    );
 const runawayItemLimit = Math.max(
   1,
   Math.min(
@@ -723,7 +747,15 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%bankruptcy%'
         OR court.verification = 'verified'
       )
-    ORDER BY legal_case.created_at
+    -- Pilot bias (preferDocumentCandidates): sort cases that carry a draft opinion document
+    -- first so a bounded run reaches the document publish path. When the flag is false the
+    -- first key is constant-false for every row, so ordering falls back to created_at --
+    -- production behavior is unchanged.
+    ORDER BY (${preferDocumentCandidates} AND EXISTS(
+        SELECT 1 FROM document doc2
+        JOIN judicial_opinion opinion2 ON opinion2.document_id = doc2.id
+        WHERE doc2.case_id = legal_case.id AND doc2.publication = 'draft'
+      )) DESC, legal_case.created_at
     LIMIT ${limit}
   `;
 }
@@ -744,9 +776,17 @@ async function runPublicationAndQuarantine() {
   const holdReasons: Record<string, number> = {};
   const documentHoldReasons: Record<string, number> = {};
   let controllerState = initialConcurrencyState(adaptiveConfig);
+  // Pilot opinion-document ceiling. Once publishedDocuments reaches publicationMaxDocuments
+  // (finite only under --max-documents) we stop publishing further candidates this run.
+  let documentCapReached = false;
 
   async function handle(candidate: PublicationCandidate): Promise<OutcomeSignal> {
     try {
+      if (documentCapReached) {
+        // The bounded document ceiling was reached earlier this run; leave this and any
+        // remaining candidate draft rather than exceed the cap. Not a hold, not a failure.
+        return { ok: true };
+      }
       await startIngestionRunItem(sql, runId, candidate.id);
       const decision = evaluateFederalPublicationCandidate({
         caption: candidate.caption,
@@ -834,7 +874,11 @@ async function runPublicationAndQuarantine() {
         // the shared opinion-document checks. Publishing the case is unchanged above; the
         // document step is additive, idempotent, and holds (never publishes) documents that
         // fail a document-level check. See publishCaseOpinionDocuments for the contract.
-        const docResult = await publishCaseOpinionDocuments(tx, candidate.id);
+        // Honor the pilot ceiling exactly: publish at most the documents still remaining in
+        // the budget for this case (unbounded in production, where the remainder is Infinity).
+        const docResult = await publishCaseOpinionDocuments(tx, candidate.id, {
+          maxPublish: publicationMaxDocuments - publishedDocuments,
+        });
         publishedDocuments += docResult.published;
         heldDocuments += docResult.held;
         for (const [reason, count] of Object.entries(docResult.holdReasons)) {
@@ -842,6 +886,9 @@ async function runPublicationAndQuarantine() {
         }
       });
       published += 1;
+      if (publishedDocuments >= publicationMaxDocuments) {
+        documentCapReached = true;
+      }
       await finishIngestionRunItem(sql, {
         runId,
         sourceRecordId: candidate.id,
@@ -867,6 +914,8 @@ async function runPublicationAndQuarantine() {
       if (candidates.length === 0) break;
       discovered += candidates.length;
       controllerState = await processArrayWithPool(candidates, handle, controllerState);
+      // Stop drawing further chunks once the bounded document ceiling is reached.
+      if (documentCapReached) break;
     }
     await finishIngestionRun(sql, runId);
     return {
