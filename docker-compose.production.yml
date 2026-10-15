@@ -14,6 +14,11 @@ services:
       - "max_connections=200"
       - "-c"
       - "shared_buffers=512MB"
+    # Parallel queries allocate dynamic shared-memory segments in /dev/shm. Docker's
+    # 64MB default is too small for the heavier federal publication candidate query and
+    # fails it with "could not resize shared memory segment ... No space left on device"
+    # (SQLSTATE 53100). 1g gives ample headroom without touching shared_buffers.
+    shm_size: "1g"
     env_file: .env.production
     environment:
       # Render timestamps in Eastern time (EST/EDT). Postgres stores timestamptz
