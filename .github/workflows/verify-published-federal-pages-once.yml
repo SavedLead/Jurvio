@@ -85,7 +85,9 @@ jobs:
                 }
               }
               for(const d of docs){
-                const r=await get(base+"/case/"+d);
+                // d is "<casePublicId>/<documentPublicId>"; the document route is
+                // /case/<caseId>/documents/<documentId>, so insert the /documents/ segment.
+                const r=await get(base+"/case/"+d.replace("/","/documents/"));
                 const ok=r.s===200 && r.n>800;
                 if(!ok) pageFail++;
                 console.log("DOC  "+d+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
