@@ -1,0 +1,116 @@
+name: Reconcile federal pilot publication (once, read-only)
+
+# Read-only. Establishes the EXACT cumulative pilot publication across ALL runs so the
+# combined ceiling (<=10 newly published cases AND <=10 opinion documents TOTAL) can be
+# checked before any further publishing. Lists the exact published case ids and opinion
+# document ids by their pilot publication_decision reason codes (the resident lanes are
+# paused, so these codes are only ever written by the manual bounded pilots), with reason
+# code and decided_at for audit, then verifies -- SEPARATELY -- each case page, each opinion
+# document page (real route /case/<id>/documents/<doc>), and actual search results for each
+# case. Publishes nothing, resumes no lane.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-reconcile-federal-pilot
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Reconcile + verify over private VPC
+        run: |
+          set -uo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" "bash -se" <<'REMOTE'
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null; }
+          CASE_REASONS="('deterministic_federal_source_validation','verified_cited_federal_opinion')"
+          DOC_REASONS="('deterministic_federal_opinion_document','verified_cited_federal_opinion')"
+
+          echo "=== pause flags (both must be set; this job never resumes a lane) ==="
+          grep -E '^JURVIO_PAUSE_(CITATION_PUBLISH|FEDERAL_PUBLICATION)=' /opt/jurvio/.env.production || echo "(none present)"
+
+          echo "=== CUMULATIVE pilot publication (distinct, displayable, by pilot reason codes) ==="
+          CUM_CASES="$(q "SELECT count(DISTINCT object_id) FROM publication_decision WHERE object_type='legal_case' AND displayable AND reason_code IN $CASE_REASONS")"
+          CUM_DOCS="$(q "SELECT count(DISTINCT object_id) FROM publication_decision WHERE object_type='document' AND displayable AND reason_code IN $DOC_REASONS")"
+          echo "cumulative_published_cases=${CUM_CASES}  cumulative_published_documents=${CUM_DOCS}  (ceiling: 10 cases / 10 docs TOTAL)"
+
+          echo "--- exact published CASES (public_id | reason | decided_at | caption) ---"
+          q "SELECT lc.public_id||' | '||pd.reason_code||' | '||pd.decided_at::text||' | '||left(coalesce(lc.caption,''),50)
+             FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id
+             WHERE pd.object_type='legal_case' AND pd.displayable AND pd.reason_code IN $CASE_REASONS
+             ORDER BY pd.decided_at"
+          echo "--- exact published OPINION DOCUMENTS (case_pid/doc_pid | reason | decided_at) ---"
+          q "SELECT lc.public_id||'/'||d.public_id||' | '||pd.reason_code||' | '||pd.decided_at::text
+             FROM publication_decision pd JOIN document d ON d.id=pd.object_id JOIN legal_case lc ON lc.id=d.case_id
+             WHERE pd.object_type='document' AND pd.displayable AND pd.reason_code IN $DOC_REASONS
+             ORDER BY pd.decided_at"
+
+          # Payloads for the verifier: exact reconciled ids (not "recent").
+          CASES="$(q "SELECT coalesce(string_agg(x.public_id||chr(9)||x.cap,chr(10)),'') FROM (SELECT DISTINCT lc.public_id, replace(left(coalesce(lc.caption,''),60),chr(9),' ') AS cap FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id WHERE pd.object_type='legal_case' AND pd.displayable AND pd.reason_code IN $CASE_REASONS) x")"
+          DOCS="$(q "SELECT coalesce(string_agg(DISTINCT lc.public_id||'/'||d.public_id,chr(10)),'') FROM publication_decision pd JOIN document d ON d.id=pd.object_id JOIN legal_case lc ON lc.id=d.case_id WHERE pd.object_type='document' AND pd.displayable AND pd.reason_code IN $DOC_REASONS")"
+
+          echo "=== verify (SEPARATELY): case pages | document content | search results ==="
+          sudo -n docker exec -e CASES="$CASES" -e DOCS="$DOCS" "$worker" node -e '
+            const base="http://app:3000";
+            const cases=(process.env.CASES||"").split("\n").filter(Boolean).map(l=>{const [pid,cap=""]=l.split("\t");return {pid,cap};});
+            const docs=(process.env.DOCS||"").split("\n").filter(Boolean);
+            const get=async u=>{try{const r=await fetch(u);const t=await r.text();return {s:r.status,n:t.length,t};}catch(e){return {s:0,n:0,t:"",e:String(e)};}};
+            (async()=>{
+              let casePageFail=0, docPageFail=0, searchFail=0;
+              console.log("-- CASE PAGES --");
+              for(const {pid} of cases){
+                const r=await get(base+"/case/"+pid);
+                const ok=r.s===200 && r.n>800 && r.t.includes(pid);
+                if(!ok) casePageFail++;
+                console.log("CASE "+pid+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
+              }
+              console.log("-- DOCUMENT PAGES (content) --");
+              for(const d of docs){
+                const r=await get(base+"/case/"+d.replace("/","/documents/"));
+                const ok=r.s===200 && r.n>800;
+                if(!ok) docPageFail++;
+                console.log("DOC  "+d+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
+              }
+              console.log("-- SEARCH RESULTS --");
+              for(const {pid,cap} of cases){
+                const kw=(cap.replace(/[^A-Za-z0-9 ]/g," ").split(/\s+/).filter(w=>w.length>3).slice(0,3).join(" "))||cap;
+                if(kw.length>=2){
+                  const sr=await get(base+"/search?q="+encodeURIComponent(kw));
+                  const found=sr.s===200 && sr.t.includes(pid);
+                  if(!found) searchFail++;
+                  console.log("SEARCH "+pid+" q=\""+kw+"\" status="+sr.s+" found="+(found?"yes":"NO"));
+                }
+              }
+              console.log("RECONCILE_SUMMARY cases="+cases.length+" docs="+docs.length+" case_page_failures="+casePageFail+" doc_page_failures="+docPageFail+" search_failures="+searchFail);
+            })();
+          '
+          echo "=== DONE ==="
+          REMOTE
