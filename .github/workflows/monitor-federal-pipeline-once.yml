@@ -1,0 +1,125 @@
+name: Monitor federal pipeline (read-only snapshot)
+
+# Read-only full-visibility snapshot of the federal ingestion + publishing pipeline, so a
+# stuck/stalled job is caught in minutes, not days. Prints a single HEALTH verdict plus
+# ingestion progress, publishing progress, and the live health signals (worker heartbeats,
+# longest-running job with a RED flag past a time limit, disk free, DB size, site latency).
+# Publishes nothing, imports nothing, resumes no lane. Safe to run on demand or on a schedule.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD"
+        required: false
+        default: "2026-09-30"
+        type: string
+      stuck_minutes:
+        description: "Flag any ingestion/publisher job running longer than this (minutes)"
+        required: false
+        default: "60"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-monitor-federal-pipeline
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 8
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      STUCK_MINUTES: ${{ inputs.stuck_minutes }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Snapshot over private VPC
+        run: |
+          set -uo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" "SNAP='${SNAPSHOT_DATE:-2026-09-30}' STUCK='${STUCK_MINUTES:-60}' bash -se" <<'REMOTE'
+          set -uo pipefail
+          SNAP="${SNAP:-2026-09-30}"; STUCK="${STUCK:-60}"; STUCK_S=$(( STUCK * 60 ))
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null; }
+          now="$(date -u +%s)"
+          FED="(court.verification='verified' OR lower(coalesce(court.jurisdiction,'')) IN ('f','fd','fb','fbp','fs','federal'))"
+          flags=""
+
+          echo "=============================================================="
+          echo " JURVIO FEDERAL PIPELINE MONITOR  @ $(date -u +'%Y-%m-%dT%H:%M:%SZ')  snapshot=${SNAP}"
+          echo "=============================================================="
+
+          echo "--- HEALTH: worker heartbeats (healthy < 180s old) ---"
+          for lane in core coa citations supervisor; do
+            hb="$(sudo -n docker exec "$worker" sh -lc "cat /var/lib/jurvio/artifacts/scheduler/${lane}.alive 2>/dev/null" 2>/dev/null)"
+            if [ -n "$hb" ] && [ "$hb" -eq "$hb" ] 2>/dev/null; then
+              age=$(( now - hb ))
+              state="ok"; [ "$age" -ge 180 ] && { state="STALE"; flags="${flags} heartbeat:${lane}(${age}s)"; }
+              echo "lane ${lane}: age=${age}s ${state}"
+            else
+              echo "lane ${lane}: age=NA (no heartbeat file)"; flags="${flags} heartbeat:${lane}(missing)"
+            fi
+          done
+
+          echo "--- HEALTH: longest-running ingestion/publisher job (RED past ${STUCK}m) ---"
+          longest=0; longest_line="(none running)"
+          for c in $(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --format '{{.Names}}'); do
+            while IFS= read -r line; do
+              line="$(printf '%s' "$line" | sed 's/^ *//')"
+              [ -z "$line" ] && continue
+              secs="${line%% *}"; rest="${line#* }"
+              if [ "$secs" -eq "$secs" ] 2>/dev/null && [ "$secs" -gt "$longest" ]; then longest="$secs"; longest_line="${c}: ${rest} (${secs}s)"; fi
+            done < <(sudo -n docker exec "$c" sh -lc "ps -eo etimes,args 2>/dev/null | grep -E 'run-federal-ingestion-loop|import-federal-opinion|run-case-citations' | grep -v grep" 2>/dev/null)
+          done
+          echo "longest_job=${longest_line}"
+          [ "$longest" -ge "$STUCK_S" ] && flags="${flags} STUCK_JOB(${longest}s>=${STUCK}m)"
+
+          echo "--- HEALTH: capacity (disk / db / latency) ---"
+          disk_avail="$(df -B1 --output=avail / | tail -1 | tr -d ' ')"
+          disk_avail_gb=$(( disk_avail / 1073741824 ))
+          echo "root_disk_avail_gb=${disk_avail_gb}"
+          [ "$disk_avail_gb" -lt 10 ] && flags="${flags} LOW_DISK(${disk_avail_gb}GB)"
+          echo "db_size_bytes=$(q "SELECT pg_database_size('jurvio')")"
+          appms="$(sudo -n docker exec "$worker" node -e 'const t=process.hrtime.bigint();fetch("http://app:3000/api/ready").then(r=>r.arrayBuffer()).then(()=>{process.stdout.write(String(Math.round(Number(process.hrtime.bigint()-t)/1e6)));}).catch(()=>process.stdout.write("NA"));' 2>/dev/null || echo NA)"
+          echo "app_ready_ms=${appms}"
+          if [ "$appms" != "NA" ] && [ "$appms" -eq "$appms" ] 2>/dev/null; then [ "$appms" -ge 2000 ] && flags="${flags} SLOW_SITE(${appms}ms)"; else flags="${flags} SITE_UNREACHABLE"; fi
+
+          echo "--- INGESTION: chunk ledger for snapshot ${SNAP} ---"
+          q "SELECT 'chunks | '||status||' = '||count(*)||' (records '||coalesce(sum(record_count),0)||', written '||coalesce(sum(opinions_written),0)||')' FROM federal_import_chunk WHERE snapshot_date='${SNAP}' GROUP BY status ORDER BY status"
+          q "SELECT 'chunks_total='||count(*)||' completed='||count(*) FILTER (WHERE status='completed')||' remaining='||count(*) FILTER (WHERE status IN ('ready','pending','failed')) FROM federal_import_chunk WHERE snapshot_date='${SNAP}'"
+          q "SELECT 'opinions_written_total='||coalesce(sum(opinions_written),0) FROM federal_import_chunk WHERE snapshot_date='${SNAP}'"
+          echo "recent_import_activity (chunks completed in last 60m): $(q "SELECT count(*) FROM federal_import_chunk WHERE snapshot_date='${SNAP}' AND status='completed' AND updated_at > now() - interval '60 minutes'")"
+
+          echo "--- PUBLISHING: federal footprint + recent rate ---"
+          echo "federal_cases_published=$(q "SELECT count(*) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE legal_case.publication='published' AND ${FED}")"
+          echo "federal_cases_draft=$(q "SELECT count(*) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE legal_case.publication='draft' AND ${FED}")"
+          echo "federal_documents_published=$(q "SELECT count(*) FROM document JOIN legal_case ON legal_case.id=document.case_id JOIN court ON court.id=legal_case.court_id WHERE document.publication='published' AND ${FED}")"
+          echo "federal_publication_hold_rows=$(q "SELECT count(*) FROM federal_publication_hold" 2>/dev/null || echo NA)"
+          echo "cases_published_last_60m=$(q "SELECT count(DISTINCT object_id) FROM publication_decision WHERE object_type='legal_case' AND displayable AND decided_at > now() - interval '60 minutes'")"
+          echo "pause_flags: $(grep -E '^JURVIO_PAUSE_(CITATION_PUBLISH|FEDERAL_PUBLICATION)=' /opt/jurvio/.env.production | tr '\n' ' ' || echo '(none)')"
+
+          echo "=============================================================="
+          if [ -z "$flags" ]; then echo "HEALTH=OK  (no stuck jobs, heartbeats fresh, capacity fine)"; else echo "HEALTH=ATTENTION ::${flags}"; fi
+          echo "=============================================================="
+          REMOTE
