@@ -11,8 +11,14 @@ on:
       - main
     paths:
       - ".github/workflows/scotus-freshness-guard.yml"
+  # Every 4 hours (jittered off the top of the hour). This is a REDUNDANT backstop --
+  # the on-box core scheduler already ingests SCOTUS every five minutes -- so it does not
+  # need to run every 15 minutes. At */15 on the single shared self-hosted builder, with a
+  # 60-minute timeout, each run could hold the builder for the better part of an hour and
+  # starve deploys/ingestion/publishing (observed repeatedly). Every 4 hours keeps the safety
+  # net while freeing the builder for the bulk ingestion/publishing work.
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '23 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -26,7 +32,11 @@ jobs:
   repair-and-verify:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 60
+    # Cut from 60 to 20 minutes: the repair cycle normally finishes in a few minutes, and a
+    # run that is going to hang should release the single shared builder quickly instead of
+    # squatting on it for an hour. The cycle is idempotent and resumable (--resume=true), so a
+    # 20-minute cap that stops a wedged run loses no durable progress.
+    timeout-minutes: 20
     env:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
