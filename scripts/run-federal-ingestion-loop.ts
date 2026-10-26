@@ -671,10 +671,18 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
          AND identifier.provider_id = source_provider.id
          AND identifier.identifier_type = 'courtlistener_docket_id'
       ) AS canonical_identifier_count,
+      -- Identity-collision count: other cases in the same court sharing this docket.
+      -- Normalize with the SAME expression as legal_case_normalized_docket_idx
+      -- (lower(regexp_replace(docket_number,'[^a-zA-Z0-9]','','g'))) so this correlated
+      -- subquery uses that index instead of a full sequential scan of legal_case per
+      -- candidate (the ~1.5s/row scan that made each publication chunk take minutes). This
+      -- also matches the canonical dedup normalization, so collision detection is consistent
+      -- with how ingestion decides two dockets are the same case.
       (SELECT count(*)::int FROM legal_case collision
        WHERE collision.court_id = legal_case.court_id
-         AND nullif(trim(collision.docket_number), '') IS NOT NULL
-         AND lower(trim(collision.docket_number)) = lower(trim(legal_case.docket_number))
+         AND nullif(lower(regexp_replace(collision.docket_number, '[^a-zA-Z0-9]', '', 'g')), '') IS NOT NULL
+         AND lower(regexp_replace(collision.docket_number, '[^a-zA-Z0-9]', '', 'g'))
+             = lower(regexp_replace(legal_case.docket_number, '[^a-zA-Z0-9]', '', 'g'))
       ) AS identity_collision_count,
       (SELECT count(*)::int FROM ingestion_rejection rejection
        WHERE rejection.resolved_at IS NULL
