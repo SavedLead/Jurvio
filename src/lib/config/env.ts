@@ -9,6 +9,14 @@ const schema = z.object({
   SITE_URL: z.string().url().default("https://jurvio.com"),
   CF_ACCESS_TEAM_DOMAIN: z.string().url().optional(),
   CF_ACCESS_AUDIENCE: z.string().min(16).optional(),
+  // Public customer authentication (M4 / ADR 0077), via WorkOS AuthKit (OIDC). Separate from the
+  // staff Cloudflare Access command center above. All optional: when unset, public accounts are
+  // simply unavailable and the public read-only site is unaffected. Read only at runtime; never
+  // logged. WORKOS_COOKIE_PASSWORD is the sealed-session secret (>= 32 chars).
+  WORKOS_API_KEY: z.string().optional(),
+  WORKOS_CLIENT_ID: z.string().optional(),
+  WORKOS_REDIRECT_URI: z.string().url().optional(),
+  WORKOS_COOKIE_PASSWORD: z.string().min(32).optional(),
   // Pre-launch indexing lockdown switch. Only the literal "true" opens the
   // public site to search-engine indexing; anything else (including unset)
   // keeps the site fully noindex/nofollow. See src/lib/seo/indexing.ts.

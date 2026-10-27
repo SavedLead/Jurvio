@@ -1,6 +1,6 @@
 # ADR 0077: Accounts, Monitoring and Alerts (Milestone M4) — Implementation Architecture
 
-**Status:** Proposed — awaiting owner approval (David Rosenberg)
+**Status:** Accepted — approved by David Rosenberg on 2026-10-27 (phases A–E)
 **Date:** 2026-10-27
 **Milestone:** M4 "accounts and monitoring" (docs/29 §2)
 **Depends on:** Gate 7.5 Monetization (docs/18), Gate 7B API/Auth/Subscriptions/Security (docs/16),
@@ -218,5 +218,8 @@ All mutations: authorization + validation + idempotency + audit (docs/16 §1 int
 > (billing and premium/AI/teams) proceed after the free monitoring loop is reliable and I have
 > authorized the Stripe connector."*
 
-Partial approval is fine (e.g. approve A–C now, hold D–E). Material changes to this plan will be
-recorded as an amendment to this ADR.
+**Approval recorded:** David Rosenberg approved phases A–E on 2026-10-27. Implementation is
+authorized in phase order **A→B→C→D→E**. Two conditions from this ADR still hold: billing (Phase D)
+cannot be wired until the **Stripe connector is authorized** in claude.ai settings, and **paid Plus
+launch remains gated on demonstrated change-alert timeliness** (§1.3, §7) — building proceeds now,
+charging follows proof. Material changes to this plan will be recorded as an amendment to this ADR.
