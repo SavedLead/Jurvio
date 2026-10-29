@@ -43,9 +43,14 @@ export interface OpinionSearchResponse {
   timedOut?: boolean;
   /** Rows were returned, but the exact total did not finish in time. */
   countTimedOut?: boolean;
+  /** The match set was capped so a common term does not rank the whole corpus. */
+  totalCapped?: boolean;
 }
 
 export const OPINION_SEARCH_PAGE_SIZE = 20;
+/** Stop the GIN scan after this many hits. Ranking every match of a common
+ * word such as "securities" exceeds the statement budget on the live corpus. */
+export const OPINION_SEARCH_CANDIDATE_CAP = 2_000;
 /** Per statement, well under the ~60s edge timeout, above a cold-cache spike. */
 export const OPINION_SEARCH_STATEMENT_TIMEOUT_MS = 8_000;
 
@@ -161,6 +166,7 @@ export function normalizeOpinionSearchFilters(input: Record<string, string | und
 interface SearchHit {
   documentId: string;
   total?: number;
+  matchedCount?: number;
 }
 
 interface SearchDetail extends OpinionSearchResult {
@@ -298,7 +304,7 @@ export async function searchPublicOpinions(
       // common, which is the production timeout. Prefer the index for keyword search.
       if (hasQuery) await tx`SELECT set_config('enable_seqscan', 'off', true)`;
 
-      const hits: { rows: SearchHit[]; total: number; countTimedOut?: boolean } = hasQuery
+      const hits: { rows: SearchHit[]; total: number; countTimedOut?: boolean; totalCapped?: boolean } = hasQuery
         ? await keywordHits(tx, filters, courtId, pageSize, offset)
         : await filterHits(tx, filters, courtId, pageSize, offset);
       const results = await hydrateHits(tx, hits.rows, hasQuery ? excerptAnchor(filters.query) : "");
@@ -308,6 +314,7 @@ export async function searchPublicOpinions(
         page: filters.page,
         pageSize,
         countTimedOut: hits.countTimedOut,
+        totalCapped: hits.totalCapped,
       };
     });
   } catch (error) {
@@ -323,7 +330,7 @@ async function keywordHits(
   courtId: string | null,
   pageSize: number,
   offset: number,
-): Promise<{ rows: SearchHit[]; total: number; countTimedOut?: boolean }> {
+): Promise<{ rows: SearchHit[]; total: number; countTimedOut?: boolean; totalCapped?: boolean }> {
   // Rank only the short caption and title. ts_rank_cd on the stored body vector
   // has to detoast every hit, which is what blows the time budget for a common term.
   // The GIN index still decides which rows match, including body-only matches.
@@ -345,6 +352,7 @@ async function keywordHits(
       FROM opinion_search_projection projection
       WHERE projection.search_vector @@ websearch_to_tsquery('english', ${filters.query})
         AND ${filtersOnProjection}
+      LIMIT ${OPINION_SEARCH_CANDIDATE_CAP}
     ),
     visible AS MATERIALIZED (
       SELECT
@@ -352,18 +360,25 @@ async function keywordHits(
         matched.citation_count,
         matched.date_filed,
         matched.caption_rank,
-        (count(*) OVER ())::int AS total
+        (count(*) OVER ())::int AS total,
+        (SELECT count(*)::int FROM matched) AS "matchedCount"
       FROM matched
       JOIN opinion_search_meta meta
         ON meta.document_id = matched.document_id
        AND meta.visible
     )
-    SELECT visible.document_id AS "documentId", visible.total
+    SELECT visible.document_id AS "documentId", visible.total, visible."matchedCount"
     FROM visible
     ORDER BY ${keywordOrdering(sql, filters.sort)}
     LIMIT ${pageSize} OFFSET ${offset}
   `;
-  if (hits.length > 0) return { rows: hits, total: hits[0]?.total ?? hits.length };
+  if (hits.length > 0) {
+    return {
+      rows: hits,
+      total: hits[0]?.total ?? hits.length,
+      totalCapped: (hits[0]?.matchedCount ?? 0) >= OPINION_SEARCH_CANDIDATE_CAP,
+    };
+  }
   if (offset === 0) return { rows: [], total: 0 };
 
   const [count] = await sql<{ value: number }[]>`
@@ -372,6 +387,7 @@ async function keywordHits(
       FROM opinion_search_projection projection
       WHERE projection.search_vector @@ websearch_to_tsquery('english', ${filters.query})
         AND ${projectionFilters(sql, filters, courtId)}
+      LIMIT ${OPINION_SEARCH_CANDIDATE_CAP}
     )
     SELECT count(*)::int AS value
     FROM matched
