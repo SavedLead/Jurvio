@@ -1,19 +1,23 @@
 name: Diagnose DB load (once, read-only)
 
-# Read-only snapshot of what is keeping public keyword search on the 8s guard.
-# No writes, no ANALYZE, no restarts, no publication changes.
+# Read-only snapshot of what is keeping public keyword search on the 8s guard
+# and the case pages busy. No writes, no restarts, no CREATE EXTENSION, no
+# publication changes.
 #
-# Prints non-idle sessions (duration and wait event), blocked lock pairs,
-# pg_stat_statements if the extension is installed, container CPU/memory,
-# whether migration 0124/0125 are recorded, whether the GIN index is valid,
-# the triggers on opinion_search_projection, and EXPLAIN (not EXPLAIN ANALYZE)
-# of the keyword search shape for a chosen term and for "securities".
+# On jurvio-web-01 (10.116.0.2): cache-hit and transaction rates over ~30s,
+# sequential-scan deltas, ~20 samples of short active queries, lock waits,
+# worker-core log tail, whether pg_stat_statements can be loaded, and
+# EXPLAIN (ANALYZE, BUFFERS) of the live search and case-citation SQL inside
+# a READ ONLY transaction (statement_timeout 30s).
+#
+# On jurvio-public-01 (10.116.0.5): last 10 minutes of nginx (and app) access
+# logs — requests per minute, paths, user agents, status codes.
 
 on:
   workflow_dispatch:
     inputs:
       explain_query:
-        description: "Term for the search EXPLAIN (letters, numbers, spaces; default Callais)"
+        description: "Extra search term for EXPLAIN ANALYZE (letters, numbers, spaces). Callais and securities always run."
         required: false
         default: "Callais"
         type: string
@@ -29,11 +33,12 @@ jobs:
   diagnose:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
+      PUBLIC_HOST: 10.116.0.5
       EXPLAIN_QUERY: ${{ inputs.explain_query }}
     steps:
       - name: Configure SSH
@@ -64,6 +69,10 @@ jobs:
           ssh "$INGESTION_USER@$DB_HOST" "EXPLAIN_QUERY=$(printf '%q' "$QUERY") bash -s" <<'REMOTE'
           set -uo pipefail
           EXPLAIN_QUERY="${EXPLAIN_QUERY:-Callais}"
+          echo "=== clock ==="
+          date -u +%Y-%m-%dT%H:%M:%SZ
+          date +%Y-%m-%dT%H:%M:%S%z
+
           find_svc() {
             sudo -n docker ps -a \
               --filter 'label=com.docker.compose.project=jurvio' \
@@ -76,30 +85,26 @@ jobs:
             sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
               psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "$1" || echo "(query failed)"
           }
+          qat() {
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
+              psql -U jurvio -d jurvio -AtF '|' -c "$1"
+          }
 
           echo "=== containers ==="
           sudo -n docker ps -a \
             --filter 'label=com.docker.compose.project=jurvio' \
             --format 'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}' || echo "(docker ps failed)"
 
-          echo "=== docker stats (one snapshot) ==="
+          echo "=== docker stats (before sample) ==="
           sudo -n docker stats --no-stream \
             --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' || echo "(docker stats failed)"
-
-          importer="$(find_svc worker-federal-import)"
-          echo "=== worker-federal-import log tail ==="
-          if [ -n "$importer" ]; then
-            sudo -n docker logs --tail 40 "$importer" 2>&1 || echo "(importer logs failed)"
-          else
-            echo "(worker-federal-import container not present)"
-          fi
 
           echo "=== load / memory ==="
           cat /proc/loadavg
           free -m
 
-          echo "=== migrations 0124 and 0125 ==="
-          q "SELECT name, applied_at FROM schema_migration WHERE name LIKE '0124%' OR name LIKE '0125%' ORDER BY name;"
+          echo "=== migrations 0124 0125 0126 ==="
+          q "SELECT name, applied_at FROM schema_migration WHERE name LIKE '0124%' OR name LIKE '0125%' OR name LIKE '0126%' ORDER BY name;"
 
           echo "=== search index validity ==="
           q "SELECT index_class.relname, index_row.indisvalid, index_row.indisready
@@ -114,14 +119,80 @@ jobs:
           echo "=== estimated row counts ==="
           q "SELECT relname, reltuples::bigint AS estimate
              FROM pg_class
-             WHERE relname IN ('opinion_search_projection','opinion_search_meta','publication_current')
+             WHERE relname IN ('opinion_search_projection','opinion_search_meta','publication_current','publication_decision','legal_case','document_case_citation')
              ORDER BY relname;"
 
-          echo "=== triggers on opinion_search_projection ==="
-          q "SELECT tgname, pg_get_triggerdef(oid)
-             FROM pg_trigger
-             WHERE tgrelid = 'opinion_search_projection'::regclass AND NOT tgisinternal
-             ORDER BY tgname;"
+          echo "=== session counts by application and state ==="
+          q "SELECT application_name, state, coalesce(client_addr::text, 'local') AS client_addr, count(*)
+             FROM pg_stat_activity
+             WHERE datname = current_database()
+             GROUP BY 1, 2, 3
+             ORDER BY count(*) DESC, application_name;"
+
+          DB_SQL="SELECT blks_hit, blks_read, xact_commit, xact_rollback, tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted, temp_files, temp_bytes FROM pg_stat_database WHERE datname = current_database()"
+          TBL_SQL="SELECT relname, seq_scan, seq_tup_read, idx_scan, COALESCE(idx_tup_fetch, 0) FROM pg_stat_user_tables ORDER BY relname"
+
+          echo "=== sampling pg_stat for 30s and active queries 20 times ==="
+          snap1="$(qat "$DB_SQL")" || snap1=""
+          tables1="$(qat "$TBL_SQL")" || tables1=""
+          sample_start=$(date +%s)
+          activity_file="$(mktemp)"
+          i=0
+          while [ "$i" -lt 20 ]; do
+            qat "SELECT coalesce(application_name, ''), coalesce(client_addr::text, 'local'), left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 160) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND state = 'active'" >> "$activity_file" || true
+            i=$((i + 1))
+            sleep 1
+          done
+          elapsed=$(( $(date +%s) - sample_start ))
+          if [ "$elapsed" -lt 30 ]; then
+            sleep $((30 - elapsed))
+          fi
+          sample_end=$(date +%s)
+          window=$(( sample_end - sample_start ))
+          [ "$window" -lt 1 ] && window=1
+          snap2="$(qat "$DB_SQL")" || snap2=""
+          tables2="$(qat "$TBL_SQL")" || tables2=""
+
+          echo "=== pg_stat_database window (${window}s) ==="
+          echo "before: $snap1"
+          echo "after:  $snap2"
+          printf '%s\n%s\n' "$snap1" "$snap2" | awk -F'|' -v window="$window" '
+            NF == 0 { next }
+            seen == 0 { for (i = 1; i <= NF; i++) a[i] = $i; seen = 1; next }
+            {
+              names[1] = "blks_hit"; names[2] = "blks_read"; names[3] = "xact_commit"; names[4] = "xact_rollback"
+              names[5] = "tup_returned"; names[6] = "tup_fetched"; names[7] = "tup_inserted"; names[8] = "tup_updated"
+              names[9] = "tup_deleted"; names[10] = "temp_files"; names[11] = "temp_bytes"
+              hit = $1 - a[1]; read = $2 - a[2]
+              denom = hit + read
+              if (denom > 0) printf "cache_hit_ratio_window_pct %.2f\n", 100.0 * hit / denom
+              else print "cache_hit_ratio_window_pct n/a"
+              lifetime = $1 + $2
+              if (lifetime > 0) printf "cache_hit_ratio_since_reset_pct %.2f\n", 100.0 * $1 / lifetime
+              for (i = 1; i <= NF; i++) printf "%s_per_s %.2f\n", names[i], ($i - a[i]) / window
+            }
+          '
+
+          echo "=== pg_stat_user_tables deltas (seq_tup_read, then idx_tup_fetch) ==="
+          echo "seq_tup_read_delta seq_scan_delta idx_tup_fetch_delta idx_scan_delta relname"
+          awk -F'|' -v window="$window" '
+            NR == FNR { seq[$1] = $2; tup[$1] = $3; idx[$1] = $4; idxt[$1] = $5; next }
+            {
+              dseq = $2 - seq[$1]; dtup = $3 - tup[$1]; didx = $4 - idx[$1]; didxt = $5 - idxt[$1]
+              if (dtup != 0 || dseq != 0 || didxt != 0 || didx != 0)
+                printf "%d %d %d %d %s\n", dtup, dseq, didxt, didx, $1
+            }
+          ' <(printf '%s\n' "$tables1") <(printf '%s\n' "$tables2") | sort -nr | head -n 25
+          echo "(window ${window}s; a full scan shows up as seq_tup_read_delta. Index-only case lookups show up as idx_tup_fetch_delta.)"
+
+          echo "=== active query samples (20 x ~1s), grouped ==="
+          echo "samples application_name client_addr query_prefix"
+          sed '/^$/d' "$activity_file" | sort | uniq -c | sort -nr | head -n 40
+          rm -f "$activity_file"
+
+          echo "=== docker stats (after sample) ==="
+          sudo -n docker stats --no-stream \
+            --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' || echo "(docker stats failed)"
 
           echo "=== non-idle sessions ==="
           q "SELECT pid,
@@ -168,11 +239,24 @@ jobs:
              WHERE blocked.datname = current_database()
              LIMIT 20;"
 
-          echo "=== pg_stat_statements ==="
+          echo "=== pg_stat_statements availability (not enabled by this workflow) ==="
+          q "SELECT name, setting FROM pg_settings WHERE name IN ('shared_preload_libraries', 'server_version') ORDER BY name;"
+          q "SELECT name, default_version, installed_version, comment FROM pg_available_extensions WHERE name = 'pg_stat_statements';"
+          sudo -n docker exec "$pg" sh -c 'ls /usr/local/lib/postgresql/pg_stat_statements.so 2>/dev/null || echo "pg_stat_statements.so not at /usr/local/lib/postgresql"' || echo "(library check failed)"
           has_statements="$(sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
             psql -U jurvio -d jurvio -Atc "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements');" \
             || echo f)"
-          echo "extension_present=${has_statements}"
+          echo "extension_installed=${has_statements}"
+          preload="$(sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
+            psql -U jurvio -d jurvio -Atc "SELECT setting FROM pg_settings WHERE name = 'shared_preload_libraries';" \
+            || echo unknown)"
+          echo "shared_preload_libraries=${preload}"
+          case "$preload" in
+            *pg_stat_statements*) echo "preload_has_pg_stat_statements=yes" ;;
+            *) echo "preload_has_pg_stat_statements=no" ;;
+          esac
+          echo "enable_cost: the .so ships in postgres:16. shared memory is a few tens of MB at the default pg_stat_statements.max=5000, and per-query CPU overhead is small."
+          echo "enable_blocker: shared_preload_libraries is read at server start. Loading it recreates the postgres container (docker compose up -d postgres on the next production release) and drops shared_buffers. This workflow does not restart Postgres and does not CREATE EXTENSION."
           if [ "$has_statements" = "t" ]; then
             q "SELECT calls,
                       round(total_exec_time::numeric, 1) AS total_ms,
@@ -182,39 +266,256 @@ jobs:
                FROM pg_stat_statements
                ORDER BY total_exec_time DESC
                LIMIT 15;"
+          fi
+
+          core="$(find_svc worker-core)"
+          echo "=== worker-core processes ==="
+          if [ -n "$core" ]; then
+            sudo -n docker top "$core" || echo "(docker top failed)"
+            echo "=== worker-core log tail (last 10 minutes, capped) ==="
+            sudo -n docker logs --since 10m --tail 80 "$core" 2>&1 || echo "(worker-core logs failed)"
           else
-            echo "(pg_stat_statements is not installed)"
+            echo "(worker-core container not present)"
+          fi
+
+          importer="$(find_svc worker-federal-import)"
+          echo "=== worker-federal-import log tail ==="
+          if [ -n "$importer" ]; then
+            sudo -n docker logs --tail 30 "$importer" 2>&1 || echo "(importer logs failed)"
+          else
+            echo "(worker-federal-import container not present)"
           fi
 
           explain_term() {
             term="$1"
-            echo "=== EXPLAIN keyword search for: ${term} (no ANALYZE) ==="
-            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
+            echo "=== EXPLAIN (ANALYZE, BUFFERS) keyword search for: ${term} ==="
+            echo "(READ ONLY, statement_timeout 30s, enable_seqscan off, candidate cap 2000, page 20. Same shape as keywordHits.)"
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=35s' "$pg" \
               psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "
-                BEGIN;
+                BEGIN READ ONLY;
+                SET LOCAL statement_timeout = '30s';
+                SET LOCAL lock_timeout = '5s';
                 SET LOCAL enable_seqscan = off;
-                EXPLAIN
+                EXPLAIN (ANALYZE, BUFFERS)
                 WITH matched AS MATERIALIZED (
-                  SELECT projection.document_id,
-                         projection.citation_count,
-                         projection.date_filed
+                  SELECT
+                    projection.document_id,
+                    projection.citation_count,
+                    projection.date_filed,
+                    ts_rank_cd(
+                      setweight(to_tsvector('english', coalesce(projection.case_caption, '')), 'A')
+                      || setweight(to_tsvector('english', coalesce(projection.title, '')), 'A'),
+                      websearch_to_tsquery('english', '${term}')
+                    ) AS caption_rank
                   FROM opinion_search_projection projection
                   WHERE projection.search_vector @@ websearch_to_tsquery('english', '${term}')
+                    AND (NULL::uuid IS NULL OR projection.court_id = NULL::uuid)
+                    AND (NULL::date IS NULL OR projection.date_filed >= NULL::date)
+                    AND (NULL::date IS NULL OR projection.date_filed <= NULL::date)
+                    AND (NULL::text IS NULL OR projection.precedential_status = NULL::text)
+                    AND (NULL::text IS NULL OR projection.opinion_type = NULL::text)
                   LIMIT 2000
+                ),
+                visible AS MATERIALIZED (
+                  SELECT
+                    matched.document_id,
+                    matched.citation_count,
+                    matched.date_filed,
+                    matched.caption_rank,
+                    (count(*) OVER ())::int AS total,
+                    (SELECT count(*)::int FROM matched) AS matched_count
+                  FROM matched
+                  JOIN opinion_search_meta meta
+                    ON meta.document_id = matched.document_id
+                   AND meta.visible
                 )
-                SELECT matched.document_id
-                FROM matched
-                JOIN opinion_search_meta meta
-                  ON meta.document_id = matched.document_id
-                 AND meta.visible
-                LIMIT 20;
-                ROLLBACK;" || echo "(explain failed)"
+                SELECT visible.document_id, visible.total, visible.matched_count
+                FROM visible
+                ORDER BY visible.caption_rank DESC, visible.citation_count DESC, visible.date_filed DESC NULLS LAST, visible.document_id
+                LIMIT 20 OFFSET 0;
+                ROLLBACK;" || echo "(explain search failed)"
           }
-          explain_term "$EXPLAIN_QUERY"
-          if [ "$EXPLAIN_QUERY" != "securities" ]; then
-            explain_term "securities"
-          fi
+
+          # Default dispatch explains the three queries that are timing out.
+          # A different explain_query is added in front of those three.
+          explained="|"
+          for term in "$EXPLAIN_QUERY" "Callais" "securities" "breach of contract"; do
+            case "$explained" in
+              *"|${term}|"*) continue ;;
+            esac
+            explain_term "$term"
+            explained="${explained}${term}|"
+          done
+
+          echo "=== EXPLAIN (ANALYZE, BUFFERS) case-page citation counts ==="
+          case_id="$(qat "SELECT c.public_id FROM legal_case c WHERE c.publication = 'published' AND c.public_id ~ '^jv-[a-z0-9]{8,10}\$' ORDER BY c.updated_at DESC NULLS LAST LIMIT 1;")" || case_id=""
+          case_id="$(printf '%s' "$case_id" | tr -d '[:space:]')"
+          echo "public_id=${case_id:-none}"
+          case "$case_id" in
+            jv-[a-z0-9]*)
+              sudo -n docker exec -e PGOPTIONS='-c statement_timeout=35s' "$pg" \
+                psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "
+                  BEGIN READ ONLY;
+                  SET LOCAL statement_timeout = '30s';
+                  SET LOCAL lock_timeout = '5s';
+                  EXPLAIN (ANALYZE, BUFFERS)
+                  WITH current_case AS MATERIALIZED (
+                    SELECT c.id FROM legal_case c
+                    WHERE c.public_id = '${case_id}' AND c.publication = 'published'
+                      AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type = 'legal_case' AND object_id = c.id ORDER BY decided_at DESC, id DESC LIMIT 1), false)
+                  ), visible_documents AS MATERIALIZED (
+                    SELECT d.id, content.content_hash FROM current_case cc
+                    JOIN document d ON d.case_id = cc.id AND d.publication = 'published'
+                    JOIN document_content content ON content.document_id = d.id
+                    WHERE COALESCE((SELECT displayable FROM publication_decision WHERE object_type = 'document' AND object_id = d.id ORDER BY decided_at DESC, id DESC LIMIT 1), false)
+                  ), cited_keys AS MATERIALIZED (
+                    SELECT DISTINCT ref.citation_key FROM visible_documents vd
+                    JOIN document_case_citation ref ON ref.document_id = vd.id AND ref.source_content_hash = vd.content_hash AND ref.location_kind = 'text'
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM case_citation_identity own
+                      JOIN current_case cc ON cc.id = own.case_id
+                      WHERE own.citation_key = ref.citation_key
+                    )
+                  ), cited_on_jurvio AS (
+                    SELECT DISTINCT k.citation_key FROM cited_keys k
+                    JOIN unique_case_citation u ON u.citation_key = k.citation_key
+                    JOIN legal_case target ON target.id = u.case_id AND target.publication = 'published'
+                    WHERE COALESCE((SELECT displayable FROM publication_decision WHERE object_type = 'legal_case' AND object_id = target.id ORDER BY decided_at DESC, id DESC LIMIT 1), false)
+                  ), citing_cases AS (
+                    SELECT DISTINCT d.case_id FROM current_case cc
+                    JOIN unique_case_citation u ON u.case_id = cc.id
+                    JOIN document_case_citation ref ON ref.citation_key = u.citation_key
+                    JOIN document d ON d.id = ref.document_id AND d.publication = 'published' AND d.case_id <> cc.id
+                    JOIN document_content content ON content.document_id = d.id AND content.content_hash = ref.source_content_hash
+                    JOIN legal_case citing ON citing.id = d.case_id AND citing.publication = 'published'
+                    WHERE COALESCE((SELECT displayable FROM publication_decision WHERE object_type = 'document' AND object_id = d.id ORDER BY decided_at DESC, id DESC LIMIT 1), false)
+                      AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type = 'legal_case' AND object_id = citing.id ORDER BY decided_at DESC, id DESC LIMIT 1), false)
+                  )
+                  SELECT (SELECT count(*) FROM cited_keys)::int AS cited,
+                    (SELECT count(*) FROM cited_on_jurvio)::int AS cited_on_jurvio,
+                    (SELECT count(*) FROM citing_cases)::int AS cited_by;
+                  ROLLBACK;" || echo "(explain case page failed)"
+              ;;
+            *) echo "(no published public_id matched jv-*; skipped case-page explain)" ;;
+          esac
           echo "=== DONE ==="
+          exit 0
+          REMOTE
+
+      - name: Read public web access logs
+        run: |
+          set -euo pipefail
+          target=""
+          if ssh "root@$PUBLIC_HOST" true; then
+            target="root"
+          elif ssh "$INGESTION_USER@$PUBLIC_HOST" true; then
+            target="$INGESTION_USER"
+          else
+            echo "::error::could not SSH to jurvio-public-01 at $PUBLIC_HOST"
+            exit 1
+          fi
+          echo "public_ssh_user=${target}"
+          ssh "$target@$PUBLIC_HOST" bash -s <<'REMOTE'
+          set -uo pipefail
+          echo "=== public clock ==="
+          date -u +%Y-%m-%dT%H:%M:%SZ
+          date +%Y-%m-%dT%H:%M:%S%z
+          echo "=== public containers ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' || sudo -n docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' || echo "(docker ps failed)"
+          echo "=== nginx log files ==="
+          ls -lh /var/log/nginx 2>/dev/null || sudo -n ls -lh /var/log/nginx || echo "(no /var/log/nginx)"
+
+          python3 - <<'PY' || echo "(access-log summary failed)"
+          import collections, datetime, os, re, time
+          cutoff = time.time() - 600
+          candidates = [
+              "/var/log/nginx/access.log",
+              "/var/log/nginx/jurvio.access.log",
+          ]
+          path = next((item for item in candidates if os.path.isfile(item)), None)
+          if path is None:
+              print("no nginx access log at the usual paths")
+              raise SystemExit(0)
+          size = os.path.getsize(path)
+          print(f"path={path} size_bytes={size}")
+          # Last 8 MiB is enough for 10 minutes unless the log is enormous and quiet.
+          with open(path, "rb") as handle:
+              handle.seek(max(0, size - 8_000_000))
+              if size > 8_000_000:
+                  handle.readline()
+              raw = handle.read().decode("utf-8", "replace")
+          stamp = re.compile(r"\[(\d{2})/([A-Za-z]{3})/(\d{4}):(\d{2}):(\d{2}):(\d{2}) ([+-]\d{4})\]")
+          request = re.compile(r'"([A-Z]+) ([^" ]+)')
+          status_re = re.compile(r'"\s+(\d{3})\s+')
+          months = {name: index for index, name in enumerate(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], 1)}
+          per_minute = collections.Counter()
+          statuses = collections.Counter()
+          paths = collections.Counter()
+          templates = collections.Counter()
+          agents = collections.Counter()
+          classes = collections.Counter()
+          kept = 0
+          bot_re = re.compile(r"bot|spider|crawler|google|bing|duckduck|applebot|petal|ahrefs|semrush|bytespider|gptbot|claude|facebookexternal|slurp", re.I)
+          id_re = re.compile(r"/jv-[a-z0-9]{8,10}|/jd-[a-z0-9]{8,10}", re.I)
+          for line in raw.splitlines():
+              stamped = stamp.search(line)
+              if not stamped:
+                  continue
+              day, mon, year, hour, minute, second, offset = stamped.groups()
+              month = months.get(mon)
+              if not month:
+                  continue
+              sign = 1 if offset[0] == "+" else -1
+              shift = sign * (int(offset[1:3]) * 3600 + int(offset[3:5]) * 60)
+              epoch = datetime.datetime(int(year), month, int(day), int(hour), int(minute), int(second), tzinfo=datetime.timezone.utc).timestamp() - shift
+              if epoch < cutoff:
+                  continue
+              kept += 1
+              per_minute[f"{year}-{month:02d}-{int(day):02d} {hour}:{minute}"] += 1
+              req = request.search(line)
+              path = req.group(2).split("?", 1)[0] if req else "?"
+              paths[path] += 1
+              templates[id_re.sub("/:id", path)] += 1
+              code = status_re.search(line[stamped.end():])
+              statuses[code.group(1) if code else "?"] += 1
+              tail = line.rsplit('"', 2)
+              agent = tail[-2] if len(tail) >= 2 else "?"
+              agents[agent[:140]] += 1
+              classes["crawler" if bot_re.search(agent) else "other"] += 1
+          print(f"requests_in_window={kept}")
+          print("--- requests per minute ---")
+          for key, count in sorted(per_minute.items()):
+              print(f"{count:6d} {key}")
+          print("--- status codes ---")
+          for key, count in statuses.most_common():
+              print(f"{count:6d} {key}")
+          print("--- crawler vs other ---")
+          for key, count in classes.most_common():
+              print(f"{count:6d} {key}")
+          print("--- top path templates ---")
+          for key, count in templates.most_common(20):
+              print(f"{count:6d} {key}")
+          print("--- top raw paths ---")
+          for key, count in paths.most_common(15):
+              print(f"{count:6d} {key}")
+          print("--- top user agents ---")
+          for key, count in agents.most_common(15):
+              print(f"{count:6d} {key}")
+          PY
+
+          echo "=== public app log tail ==="
+          app="$(docker ps --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n1 || true)"
+          if [ -z "$app" ]; then
+            app="$(sudo -n docker ps --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n1 || true)"
+          fi
+          if [ -n "$app" ]; then
+            docker logs --since 10m --tail 40 "$app" 2>&1 || sudo -n docker logs --since 10m --tail 40 "$app" 2>&1 || echo "(app logs failed)"
+          else
+            echo "(public app container not found by compose label)"
+            docker ps --format '{{.Names}} {{.Image}}' || true
+          fi
+          echo "=== PUBLIC DONE ==="
+          exit 0
           REMOTE
 
       - name: Remove SSH key
