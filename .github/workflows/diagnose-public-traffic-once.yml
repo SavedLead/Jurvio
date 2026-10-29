@@ -225,10 +225,22 @@ jobs:
                   handle.readline()
               raw = handle.read().decode("utf-8", "replace")
           sample = next((line for line in raw.splitlines() if line.strip()), "")
+          # jurvio_main is: "referer" "user agent" cf=... xff="..."
+          # rsplit on the last quotes returns the xff value, not the UA.
+          jurvio_ua = re.compile(r'"([^"]*)"\s+cf=')
+
+          def user_agent(line):
+              marked = jurvio_ua.search(line)
+              if marked:
+                  return marked.group(1)[:160]
+              tail = line.rsplit('"', 2)
+              return (tail[-2] if len(tail) >= 2 else "?")[:160]
+
           print("--- sample log line (format check) ---")
           print(sample[:400])
           joined = sample.lower()
           print(f"sample_mentions_cf_connecting_ip={' cf=' in sample or 'cf-connecting-ip' in joined or 'cf_connecting_ip' in joined}")
+          print(f"sample_user_agent={user_agent(sample)[:160]}")
           print(f"sample_mentions_x_forwarded_for={'x-forwarded-for' in joined or 'x_forwarded_for' in joined}")
           print("default combined format logs $remote_addr only. CF-Connecting-IP and X-Forwarded-For are present only if a custom log_format includes them. The lines above are that check.")
 
@@ -267,8 +279,7 @@ jobs:
               req = request.search(line)
               path = req.group(2).split("?", 1)[0] if req else "?"
               path_by_ip[remote][id_re.sub("/:id", path)] += 1
-              tail = line.rsplit('"', 2)
-              agent = (tail[-2] if len(tail) >= 2 else "?")[:160]
+              agent = user_agent(line)
               ua_by_ip[remote][agent] += 1
               ua_total[agent] += 1
               if "aionbot" in agent.lower():
@@ -361,17 +372,27 @@ jobs:
           echo "worker-citations=${cites:-missing}"
           if [ -n "$cites" ]; then
             sudo -n docker inspect -f 'image={{.Config.Image}} started={{.State.StartedAt}} status={{.State.Status}}' "$cites" || true
+            echo "=== worker-citations processes ==="
+            sudo -n docker top "$cites" -eo pid,etime,args | head -n 40 || true
             echo "=== refresh script in image ==="
             sudo -n docker exec "$cites" sh -c 'ls -l jobs/refresh-sitemap-snapshot.mjs jobs/refresh-case-citation-counts.mjs 2>&1 || true'
-            echo "=== scheduler log tail ==="
+            echo "=== scheduler bundle registers citation-count-snapshot ==="
+            sudo -n docker exec "$cites" sh -c 'grep -c citation-count-snapshot jobs/run-production-scheduler.mjs; grep -c refresh-case-citation-counts.mjs jobs/run-production-scheduler.mjs' || echo "(scheduler bundle check failed)"
+            echo "=== sitemap scheduler log ==="
             sudo -n docker exec "$cites" sh -c 'tail -n 40 /var/lib/jurvio/artifacts/scheduler/sitemap-snapshot.log 2>&1 || echo "(no sitemap-snapshot.log)"'
+            echo "=== citation-count scheduler log ==="
+            sudo -n docker exec "$cites" sh -c 'tail -n 60 /var/lib/jurvio/artifacts/scheduler/citation-count-snapshot.log 2>&1 || echo "(no citation-count-snapshot.log)"'
           fi
           pg="$(find_svc postgres)"
           if [ -n "$pg" ]; then
             echo "=== sitemap_document ==="
             sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT kind, count(*) AS pages, max(refreshed_at) AS refreshed FROM sitemap_document GROUP BY kind ORDER BY kind;" || echo "(sitemap_document query failed)"
             echo "=== case_citation_count ==="
-            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT count(*) AS rows, max(refreshed_at) AS refreshed FROM case_citation_count;" || echo "(case_citation_count query failed)"
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT count(*) AS rows, min(refreshed_at) AS first_refresh, max(refreshed_at) AS last_refresh, now() - max(refreshed_at) AS age FROM case_citation_count;" || echo "(case_citation_count query failed)"
+            echo "=== jurvio-citations activity ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT pid, application_name, state, wait_event_type, wait_event, now() - query_start AS query_age, left(query, 220) AS query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND (application_name = 'jurvio-citations' OR query ILIKE '%case_citation_count%') ORDER BY query_start NULLS LAST;" || echo "(activity query failed)"
+            echo "=== advisory locks ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT a.application_name, a.state, now() - a.query_start AS query_age, left(a.query, 180) AS query FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND a.datname = current_database();" || echo "(advisory lock query failed)"
           else
             echo "(postgres container missing)"
           fi
