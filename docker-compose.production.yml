@@ -6,15 +6,15 @@ services:
     restart: unless-stopped
     # Raise max_connections (default 100) so the app + workers + every spawned
     # scheduler child (each with its own pool) have aggregate connection headroom
-    # for the higher-concurrency ingestion/publication lanes. shared_buffers is
-    # sized for the resized 8 vCPU / 16 GB droplet, leaving RAM for Node.
+    # for the higher-concurrency ingestion/publication lanes. jurvio-web-01 is
+    # s-8vcpu-16gb-amd (16 GB) and also runs the Node workers, so Postgres does
+    # not get the usual 25% (4 GB) shared_buffers. 2 GB cache, 4 MB work_mem
+    # (200 connections cannot each take more), planner hint 8 GB.
     command:
       - "postgres"
       - "-c"
       - "max_connections=200"
       - "-c"
-      # 8 vCPU / 16 GB droplet (post-resize-verify). 2GB is a real cache bump
-      # from 512MB without crowding the Node workers that share the box.
       - "shared_buffers=2GB"
       - "-c"
       - "effective_cache_size=8GB"
