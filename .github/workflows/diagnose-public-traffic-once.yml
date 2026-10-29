@@ -153,27 +153,54 @@ jobs:
           for chunk in (os.environ.get("RUNNER_IP", ""), os.environ.get("DROPLET_IPS", "")):
               ours.update(part.strip() for part in chunk.split(",") if part.strip() and part.strip() != "failed")
 
-          def fetch_nets():
+          EMBEDDED_CF = """
+          173.245.48.0/20
+          103.21.244.0/22
+          103.22.200.0/22
+          103.31.4.0/22
+          141.101.64.0/18
+          108.162.192.0/18
+          190.93.240.0/20
+          188.114.96.0/20
+          197.234.240.0/22
+          198.41.128.0/17
+          162.158.0.0/15
+          104.16.0.0/13
+          104.24.0.0/14
+          172.64.0.0/13
+          131.0.72.0/22
+          2400:cb00::/32
+          2606:4700::/32
+          2803:f800::/32
+          2405:b500::/32
+          2405:8100::/32
+          2a06:98c0::/29
+          2c0f:f248::/32
+          """
+
+          def parse_nets(blobs):
               nets = []
-              source = "live"
-              blobs = []
-              try:
-                  for url in ("https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6"):
-                      with urllib.request.urlopen(url, timeout=15) as response:
-                          blobs.append(response.read().decode())
-              except Exception as error:
-                  source = f"unavailable ({error})"
-                  blobs = []
               for blob in blobs:
                   for line in blob.splitlines():
                       line = line.strip()
-                      if not line:
+                      if not line or line.startswith("#"):
                           continue
                       try:
                           nets.append(ipaddress.ip_network(line))
                       except ValueError:
                           pass
-              return nets, source
+              return nets
+
+          def fetch_nets():
+              blobs = []
+              try:
+                  for url in ("https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6"):
+                      request = urllib.request.Request(url, headers={"User-Agent": "Jurvio-Diagnostic/1.0 (contact@jurvio.com)"})
+                      with urllib.request.urlopen(request, timeout=15) as response:
+                          blobs.append(response.read().decode())
+                  return parse_nets(blobs), "live"
+              except Exception as error:
+                  return parse_nets([EMBEDDED_CF]), f"embedded after live fetch failed ({error})"
 
           cf_nets, cf_source = fetch_nets()
           print(f"cloudflare_ranges={cf_source} count={len(cf_nets)}")
@@ -185,7 +212,7 @@ jobs:
                   return False
               return any(addr in net for net in cf_nets)
 
-          candidates = ["/var/log/nginx/access.log", "/var/log/nginx/jurvio.access.log"]
+          candidates = ["/var/log/nginx/jurvio.access.log", "/var/log/nginx/access.log"]
           path = next((item for item in candidates if os.path.isfile(item)), None)
           if path is None:
               print("no nginx access log at the usual paths")
@@ -201,7 +228,7 @@ jobs:
           print("--- sample log line (format check) ---")
           print(sample[:400])
           joined = sample.lower()
-          print(f"sample_mentions_cf_connecting_ip={'cf-connecting-ip' in joined or 'cf_connecting_ip' in joined}")
+          print(f"sample_mentions_cf_connecting_ip={' cf=' in sample or 'cf-connecting-ip' in joined or 'cf_connecting_ip' in joined}")
           print(f"sample_mentions_x_forwarded_for={'x-forwarded-for' in joined or 'x_forwarded_for' in joined}")
           print("default combined format logs $remote_addr only. CF-Connecting-IP and X-Forwarded-For are present only if a custom log_format includes them. The lines above are that check.")
 
@@ -218,6 +245,7 @@ jobs:
           via = collections.Counter()
           extra_addrs = collections.Counter()
           aion_ips = collections.Counter()
+          upstream_times = []
           kept = 0
           for line in raw.splitlines():
               stamped = stamp.search(line)
@@ -245,12 +273,23 @@ jobs:
               ua_total[agent] += 1
               if "aionbot" in agent.lower():
                   aion_ips[remote] += 1
+              timing = re.search(r"urt=([0-9.]+)", line)
+              if timing:
+                  upstream_times.append(float(timing.group(1)))
               minute_key = f"{year}-{month:02d}-{int(day):02d} {hour}:{minute}"
               ua_minute[minute_key][agent] += 1
               for found in ip_re.findall(line)[1:4]:
                   if found != remote:
                       extra_addrs[found] += 1
           print(f"requests_in_45m={kept}")
+          print("--- upstream_response_time from log lines ---")
+          if not upstream_times:
+              print("no urt= values in the lines read. The combined log does not store upstream_response_time; jurvio.access.log does after the nginx conf install.")
+          else:
+              ordered = sorted(upstream_times)
+              def pct(p):
+                  return ordered[min(len(ordered) - 1, int(p * (len(ordered) - 1)))]
+              print(f"samples={len(ordered)} p50={pct(0.50):.3f}s p95={pct(0.95):.3f}s max={ordered[-1]:.3f}s")
           print("--- how the TCP peer reached nginx ---")
           for key, count in via.most_common():
               print(f"{count:7d} {key}")
@@ -306,6 +345,37 @@ jobs:
       - name: Check web-01 and this builder for outbound fetches
         run: |
           set -euo pipefail
+          echo "=== sitemap snapshot on web-01 ==="
+          ssh "$INGESTION_USER@$WEB_HOST" bash -s <<'REMOTE' || echo "(sitemap check ssh failed)"
+          set -uo pipefail
+          find_svc() {
+            sudo -n docker ps -a --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+          core="$(find_svc worker-core)"
+          echo "worker-core=${core:-missing}"
+          if [ -n "$core" ]; then
+            echo "=== worker-core processes ==="
+            sudo -n docker top "$core" -eo pid,pcpu,pmem,args | head -n 40 || true
+          fi
+          cites="$(find_svc worker-citations)"
+          echo "worker-citations=${cites:-missing}"
+          if [ -n "$cites" ]; then
+            sudo -n docker inspect -f 'image={{.Config.Image}} started={{.State.StartedAt}} status={{.State.Status}}' "$cites" || true
+            echo "=== refresh script in image ==="
+            sudo -n docker exec "$cites" sh -c 'ls -l jobs/refresh-sitemap-snapshot.mjs jobs/refresh-case-citation-counts.mjs 2>&1 || true'
+            echo "=== scheduler log tail ==="
+            sudo -n docker exec "$cites" sh -c 'tail -n 40 /var/lib/jurvio/artifacts/scheduler/sitemap-snapshot.log 2>&1 || echo "(no sitemap-snapshot.log)"'
+          fi
+          pg="$(find_svc postgres)"
+          if [ -n "$pg" ]; then
+            echo "=== sitemap_document ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT kind, count(*) AS pages, max(refreshed_at) AS refreshed FROM sitemap_document GROUP BY kind ORDER BY kind;" || echo "(sitemap_document query failed)"
+            echo "=== case_citation_count ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT count(*) AS rows, max(refreshed_at) AS refreshed FROM case_citation_count;" || echo "(case_citation_count query failed)"
+          else
+            echo "(postgres container missing)"
+          fi
+          REMOTE
           echo "=== web-01 ${WEB_HOST} ==="
           ssh "$INGESTION_USER@$WEB_HOST" bash -s <<'REMOTE' || echo "(web-01 ssh failed)"
           set -uo pipefail

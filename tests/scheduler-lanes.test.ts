@@ -8,7 +8,7 @@ describe("scheduler lanes", () => {
     const citationJobs = SCHEDULED_JOBS.filter(job => job.command.some(part => /case-citations|cited-cases/.test(part)));
     expect(citationJobs.map(job => job.name).sort()).toEqual(["case-citation-graph", "cited-case-bulk-resolution"]);
     expect(citationJobs.every(job => job.lane === "citations")).toBe(true);
-    expect(jobsForLane("citations").map(job => job.name).sort()).toEqual(["case-citation-graph", "cited-case-bulk-resolution", "sitemap-snapshot"]);
+    expect(jobsForLane("citations").map(job => job.name).sort()).toEqual(["case-citation-graph", "citation-count-snapshot", "cited-case-bulk-resolution", "sitemap-snapshot"]);
     expect(jobsForLane("core").some(job => job.name === "case-citation-graph")).toBe(false);
   });
 

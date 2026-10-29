@@ -9,5 +9,7 @@ describe("case citation counts", () => {
     expect(counts).toContain("own_unique_keys");
     expect(counts).toContain("case_citation_identity own ON own.case_id=cc.id");
     expect(counts).toContain("SELECT DISTINCT ref.document_id, ref.source_content_hash");
+    expect(counts).toContain("case_citation_count");
+    expect(counts).toContain('code !== "42P01"');
   });
 });

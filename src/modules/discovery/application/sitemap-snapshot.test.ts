@@ -36,5 +36,8 @@ describe("stored sitemaps", () => {
     expect(reader.toLowerCase()).not.toContain("count(*)");
     expect(source.toLowerCase()).not.toContain("row_number");
     expect(source).toContain("public_id >");
+    const writer = source.slice(source.indexOf("async function writeKind"), source.indexOf("export async function refreshSitemapDocuments"));
+    expect(writer).toContain("publishSitemapIndex");
+    expect(writer).toContain("upsertPage");
   });
 });

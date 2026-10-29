@@ -105,8 +105,14 @@ jobs:
       - name: Install nginx site and Cloudflare real_ip snippet
         run: |
           set -euo pipefail
-          v4="$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4)"
-          v6="$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6)"
+          ua='Jurvio-Diagnostic/1.0 (contact@jurvio.com)'
+          v4="$(curl -fsS -A "$ua" --max-time 20 https://www.cloudflare.com/ips-v4 || true)"
+          v6="$(curl -fsS -A "$ua" --max-time 20 https://www.cloudflare.com/ips-v6 || true)"
+          if [ -z "$v4" ] || [ -z "$v6" ]; then
+            echo "live Cloudflare range fetch failed; using ops/cloudflare-ip-ranges.txt"
+            v4="$(awk '/^[0-9]/ {print}' ops/cloudflare-ip-ranges.txt)"
+            v6="$(awk '/:/ {print}' ops/cloudflare-ip-ranges.txt)"
+          fi
           python3 -c 'import ipaddress,sys
           for line in sys.stdin:
               line=line.strip()
