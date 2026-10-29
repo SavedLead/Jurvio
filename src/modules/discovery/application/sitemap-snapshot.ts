@@ -3,9 +3,6 @@ import { siteOrigin } from "@/lib/config/site-url";
 import { xmlEscape } from "@/modules/discovery/http/xml";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import {
-  listCaseSitemapRecords,
-  listDirectorySitemapRecords,
-  listOpinionSitemapRecords,
   SITEMAP_CASE_PAGE_SIZE,
   SITEMAP_PAGE_SIZE,
   type DirectorySitemapKind,
@@ -181,31 +178,111 @@ async function directoryIds(sql: Sql, kind: DirectorySitemapKind, after: string 
   return rows.map((row) => row.public_id);
 }
 
+async function publishSitemapIndex(sql: Sql): Promise<void> {
+  const stored = await sql<{ kind: string; count: number }[]>`
+    SELECT kind, count(*)::int AS count
+    FROM sitemap_document
+    WHERE kind <> 'index' AND page_number > 0
+    GROUP BY kind
+    ORDER BY kind
+  `;
+  await upsertPage(sql, "index", 0, sitemapIndexXml(siteOrigin(), stored));
+}
+
+async function caseRecords(sql: Sql, ids: string[]): Promise<SitemapRecord[]> {
+  const rows = await sql<{ public_id: string; updated_at: string; has_docket: boolean; has_documents: boolean; has_parties: boolean }[]>`
+    SELECT c.public_id, c.updated_at::text AS updated_at,
+      EXISTS (SELECT 1 FROM docket_entry entry WHERE entry.case_id = c.id) AS has_docket,
+      EXISTS (SELECT 1 FROM document d WHERE d.case_id = c.id AND d.publication = 'published') AS has_documents,
+      EXISTS (SELECT 1 FROM party_appearance appearance WHERE appearance.case_id = c.id) AS has_parties
+    FROM legal_case c
+    WHERE c.public_id = ANY(${ids}::text[])
+    ORDER BY c.public_id
+  `;
+  const records: SitemapRecord[] = [];
+  for (const row of rows) {
+    records.push({ path: `/case/${row.public_id}`, updatedAt: row.updated_at });
+    if (row.has_docket) {
+      records.push({ path: `/case/${row.public_id}/docket`, updatedAt: row.updated_at });
+      records.push({ path: `/case/${row.public_id}/timeline`, updatedAt: row.updated_at });
+    }
+    if (row.has_documents) records.push({ path: `/case/${row.public_id}/documents`, updatedAt: row.updated_at });
+    if (row.has_parties) records.push({ path: `/case/${row.public_id}/parties`, updatedAt: row.updated_at });
+  }
+  return records;
+}
+
+async function opinionRecords(sql: Sql, ids: string[]): Promise<SitemapRecord[]> {
+  return sql<SitemapRecord[]>`
+    SELECT '/case/' || legal_case.public_id || '/documents/' || document.public_id AS path,
+      GREATEST(legal_case.updated_at, document.updated_at)::text AS "updatedAt"
+    FROM document
+    JOIN legal_case ON legal_case.id = document.case_id
+    WHERE document.public_id = ANY(${ids}::text[])
+    ORDER BY document.public_id
+  `;
+}
+
+async function directoryRecords(sql: Sql, kind: DirectorySitemapKind, ids: string[]): Promise<SitemapRecord[]> {
+  if (kind === "parties" || kind === "law-firms") {
+    const prefix = kind === "parties" ? "/parties/" : "/law-firms/";
+    return sql<SitemapRecord[]>`
+      SELECT ${prefix} || entity.public_id AS path, entity.updated_at::text AS "updatedAt"
+      FROM entity
+      WHERE entity.public_id = ANY(${ids}::text[])
+      ORDER BY entity.public_id
+    `;
+  }
+  if (kind === "courts") {
+    return sql<SitemapRecord[]>`
+      SELECT '/courts/' || court.public_id AS path, court.updated_at::text AS "updatedAt"
+      FROM court WHERE court.public_id = ANY(${ids}::text[])
+      ORDER BY court.public_id
+    `;
+  }
+  if (kind === "judges") {
+    return sql<SitemapRecord[]>`
+      SELECT '/judges/' || judge.public_id AS path, judge.updated_at::text AS "updatedAt"
+      FROM judge WHERE judge.public_id = ANY(${ids}::text[])
+      ORDER BY judge.public_id
+    `;
+  }
+  return sql<SitemapRecord[]>`
+    SELECT '/government-litigation/' || lead.public_id AS path,
+      COALESCE(lead.published_at, lead.reviewed_at)::text AS "updatedAt"
+    FROM government_litigation_lead lead
+    WHERE lead.public_id = ANY(${ids}::text[])
+    ORDER BY lead.public_id
+  `;
+}
+
 async function writeKind(
   sql: Sql,
   kind: string,
   pageSize: number,
   nextIds: (after: string | null) => Promise<string[]>,
-  recordsFor: (start: string, end: string | null) => Promise<SitemapRecord[]>,
+  recordsForIds: (ids: string[]) => Promise<SitemapRecord[]>,
 ): Promise<number> {
   const origin = siteOrigin();
-  const starts: string[] = [];
   let after: string | null = null;
+  let page = 0;
   for (;;) {
     const ids = await nextIds(after);
     if (!ids.length) break;
-    starts.push(ids[0]!);
+    page += 1;
+    const records = await recordsForIds(ids);
+    await upsertPage(sql, kind, page, sitemapUrlsetXml(origin, records));
+    // Publish the index after every page. The previous job wrote it only after
+    // every kind finished, so a multi-hour case walk left /sitemap.xml on the
+    // static.xml fallback.
+    await publishSitemapIndex(sql);
+    console.log(JSON.stringify({ sitemap: kind, page, ids: ids.length, urls: records.length }));
     if (ids.length < pageSize) break;
-    after = ids[ids.length - 1]!;
+    after = ids[ids.length - 1] ?? null;
   }
-  for (let index = 0; index < starts.length; index += 1) {
-    const start = starts[index]!;
-    const end = starts[index + 1] ?? null;
-    const records = await recordsFor(start, end);
-    await upsertPage(sql, kind, index + 1, sitemapUrlsetXml(origin, records));
-  }
-  await deleteExtraPages(sql, kind, starts.length);
-  return starts.length;
+  await deleteExtraPages(sql, kind, page);
+  await publishSitemapIndex(sql);
+  return page;
 }
 
 /**
@@ -216,14 +293,14 @@ async function writeKind(
 export async function refreshSitemapDocuments(sql: Sql): Promise<Record<string, number | string>> {
   const counts: Record<string, number | string> = {};
   const steps: Array<[string, () => Promise<number>]> = [
-    ["cases", () => writeKind(sql, "cases", SITEMAP_CASE_PAGE_SIZE, (after) => caseIds(sql, after), (start, end) => listCaseSitemapRecords(sql, start, end))],
-    ["opinions", () => writeKind(sql, "opinions", SITEMAP_PAGE_SIZE, (after) => opinionIds(sql, after), (start, end) => listOpinionSitemapRecords(sql, start, end))],
+    ["cases", () => writeKind(sql, "cases", SITEMAP_CASE_PAGE_SIZE, (after) => caseIds(sql, after), (ids) => caseRecords(sql, ids))],
+    ["opinions", () => writeKind(sql, "opinions", SITEMAP_PAGE_SIZE, (after) => opinionIds(sql, after), (ids) => opinionRecords(sql, ids))],
     ...DIRECTORY_KINDS.map((kind) => [kind, () => writeKind(
       sql,
       kind,
       SITEMAP_PAGE_SIZE,
       (after) => directoryIds(sql, kind, after),
-      (start, end) => listDirectorySitemapRecords(sql, kind, start, end),
+      (ids) => directoryRecords(sql, kind, ids),
     )] as [string, () => Promise<number>]),
   ];
   for (const [kind, run] of steps) {
@@ -233,16 +310,10 @@ export async function refreshSitemapDocuments(sql: Sql): Promise<Record<string, 
       counts[kind] = error instanceof Error ? error.message : "failed";
     }
   }
-  // Count stored pages, not the live corpus. A kind that failed this pass keeps
-  // its previous pages and stays in the index.
-  const stored = await sql<{ kind: string; count: number }[]>`
-    SELECT kind, count(*)::int AS count
-    FROM sitemap_document
-    WHERE kind <> 'index'
-    GROUP BY kind
-    ORDER BY kind
+  await publishSitemapIndex(sql);
+  const [indexRow] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM sitemap_document WHERE kind <> 'index' AND page_number > 0
   `;
-  await upsertPage(sql, "index", 0, sitemapIndexXml(siteOrigin(), stored));
-  counts.index = stored.length;
+  counts.indexPages = indexRow?.n ?? 0;
   return counts;
 }

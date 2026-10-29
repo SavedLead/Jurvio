@@ -46,11 +46,22 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-sitemap-snapshot.mjs"],
   },
   {
+    // Fills case_citation_count so a case page does not scan every posting
+    // for a popular reporter key. Separate from the citation-graph lock.
+    // The corpus pass is one heavy statement, so it runs every 2 hours
+    // instead of sitting on Postgres for half of each hour.
+    lane: "citations",
+    name: "citation-count-snapshot",
+    initialDelayMs: 4 * minute,
+    intervalMs: 2 * 60 * minute,
+    command: ["jobs/refresh-case-citation-counts.mjs"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
     intervalMs: 15 * minute,
-    command: ["jobs/match-judges.mjs", "--limit=5000"],
+    command: ["jobs/match-judges.mjs", "--limit=1000"],
   },
   {
     lane: "core",
@@ -63,8 +74,8 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     lane: "core",
     name: "usao-case-attribution",
     initialDelayMs: 6 * minute,
-    intervalMs: 30 * minute,
-    command: ["jobs/backfill-usao-case-attribution.mjs", "--limit=10000"],
+    intervalMs: 60 * minute,
+    command: ["jobs/backfill-usao-case-attribution.mjs", "--limit=2000"],
   },
   {
     lane: "core",
@@ -81,7 +92,9 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     lane: "core",
     name: "scotus-pre500-backfill",
     initialDelayMs: 30_000,
-    intervalMs: 5 * minute,
+    // Was every 5 minutes and overlapped the other core parsers. worker-core
+    // hit 417% CPU while Postgres was nearly idle.
+    intervalMs: 20 * minute,
     command: ["jobs/run-scotus-pre500-backfill.mjs"],
   },
   {
@@ -90,8 +103,8 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // SCOTUS publish path; closes the last coverage gap toward the full corpus.
     lane: "core",
     name: "loc-us-reports-backfill",
-    initialDelayMs: 45_000,
-    intervalMs: 5 * minute,
+    initialDelayMs: 8 * minute,
+    intervalMs: 20 * minute,
     command: ["jobs/run-loc-us-reports-backfill.mjs"],
   },
   {
@@ -150,8 +163,8 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   {
     lane: "core",
     name: "scotus-enriched",
-    initialDelayMs: 4 * minute,
-    intervalMs: 5 * minute,
+    initialDelayMs: 14 * minute,
+    intervalMs: 20 * minute,
     command: [
       "jobs/ingest-enriched-official-scotus.mjs",
       "--term=__CURRENT_SCOTUS_TERM__",
@@ -160,7 +173,9 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
       // pure-DB publish/extract drain stages use the full amount. A large budget
       // therefore drains the SCOTUS publish/extract backlog fast without exceeding
       // any network stage's cap (the over-large value is what used to crash-loop it).
-      "--limit=5000",
+      // 1000 every 20 minutes instead of 5000 every 5: the Node parse work was a
+      // large share of worker-core's 417% CPU spike.
+      "--limit=1000",
       "--resume=true",
       "--attempts=10",
     ],
@@ -169,7 +184,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     lane: "core",
     name: "scotus-publish",
     initialDelayMs: 90_000,
-    intervalMs: 3 * minute,
+    intervalMs: 10 * minute,
     // Publishes verified/approved official SCOTUS opinions ON THE BOX. This lane
     // was previously MISSING entirely: the only thing that ever published SCOTUS
     // was the DO_HOST `publish-official-scotus-opinions` workflow, retired in the
@@ -177,16 +192,14 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // unpublished for days. Publication is pure DB work (one transaction per
     // opinion), so a large per-cycle limit is safe; it self-limits as the backlog
     // drains and then just keeps pace with newly approved opinions.
-    command: ["jobs/publish-official-scotus-opinions.mjs", "--limit=2000"],
+    command: ["jobs/publish-official-scotus-opinions.mjs", "--limit=500"],
   },
-  // Federal loops carry no artificial throughput throttle. They self-throttle via a
-  // bounded adaptive worker pool: --start-concurrency climbs only after clean windows
-  // and halves on distress (source 429s or DB pressure), capped by --max-concurrency,
-  // with a finite --max-items runaway guard rather than an hourly ceiling. The box was
-  // resized, so these now run at full headroom: --max-concurrency=14 matches the
-  // per-process DB pool (JURVIO_DB_POOL_MAX, Postgres max_connections=200) so a loop
-  // can saturate its pool without exhausting it, and the adaptive controller remains
-  // the safety valve — it, not a hand-tuned cap, is what protects the box under load.
+  // Federal loops self-throttle via a bounded adaptive worker pool:
+  // --start-concurrency climbs only after clean windows and halves on distress
+  // (source 429s or DB pressure), capped by --max-concurrency, with a finite
+  // --max-items runaway guard. Concurrency 14 stacked Node parse work until
+  // worker-core hit 417% CPU while Postgres was nearly idle. Cap each loop at 4
+  // so ingestion continues without that pile-up.
   {
     lane: "core",
     name: "federal-new-cases",
@@ -195,8 +208,8 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=new-case-discovery",
-      "--start-concurrency=8",
-      "--max-concurrency=14",
+      "--start-concurrency=2",
+      "--max-concurrency=4",
       "--max-items=25000",
     ],
   },
@@ -208,8 +221,8 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=material-decisions",
-      "--start-concurrency=8",
-      "--max-concurrency=14",
+      "--start-concurrency=2",
+      "--max-concurrency=4",
       "--max-items=25000",
     ],
   },
@@ -237,8 +250,8 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=active-case-updates",
-      "--start-concurrency=8",
-      "--max-concurrency=14",
+      "--start-concurrency=2",
+      "--max-concurrency=4",
       "--max-items=15000",
     ],
   },
@@ -250,8 +263,8 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=historical-backfill",
-      "--start-concurrency=8",
-      "--max-concurrency=14",
+      "--start-concurrency=2",
+      "--max-concurrency=4",
       "--max-items=20000",
     ],
   },

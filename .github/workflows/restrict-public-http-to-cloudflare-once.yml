@@ -1,0 +1,102 @@
+name: Restrict public HTTP to Cloudflare (once)
+
+# Prepared, not run. Replaces inbound TCP 80 and 443 on the
+# jurvio-public-web-bootstrap firewall with the current Cloudflare ranges.
+# Every other inbound rule, including SSH, is left as it is.
+# Dispatch only with confirm=RESTRICT, and only after reading the firewall
+# report from install-public-nginx-conf-once.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RESTRICT to replace public-01 inbound 80/443 with Cloudflare ranges"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-public-firewall
+  cancel-in-progress: false
+
+jobs:
+  restrict:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+    steps:
+      - name: Require confirm=RESTRICT
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "RESTRICT" ]; then
+            echo "::error::Refusing to change the firewall. Re-run with confirm=RESTRICT."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Replace inbound 80/443 with Cloudflare ranges
+        run: |
+          set -euo pipefail
+          test -n "${DO_TOKEN:-}" || { echo "::error::DIGITALOCEAN_ACCESS_TOKEN is unset"; exit 1; }
+          ua='Jurvio-Diagnostic/1.0 (contact@jurvio.com)'
+          ranges="$(curl -fsS -A "$ua" --max-time 20 https://www.cloudflare.com/ips-v4 || true)"
+          ranges="${ranges}"$'\n'"$(curl -fsS -A "$ua" --max-time 20 https://www.cloudflare.com/ips-v6 || true)"
+          if ! grep -q '/' <<<"$ranges"; then
+            echo "live Cloudflare range fetch failed; using ops/cloudflare-ip-ranges.txt"
+            ranges="$(awk '!/^#/ && NF {print}' ops/cloudflare-ip-ranges.txt)"
+          fi
+          python3 -c 'import ipaddress,sys
+          for line in sys.stdin:
+              line=line.strip()
+              if line and not line.startswith("#"):
+                  ipaddress.ip_network(line)
+          ' <<<"$ranges"
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
+          droplets="$(curl -fsS --max-time 20 -H "Authorization: Bearer $DO_TOKEN" "$api/droplets?per_page=200")"
+          public_id="$(jq -r '.droplets[] | select(.name=="jurvio-public-01") | .id' <<<"$droplets" | head -1)"
+          test -n "$public_id"
+          firewalls="$(curl -fsS --max-time 20 -H "Authorization: Bearer $DO_TOKEN" "$api/firewalls?per_page=200")"
+          fw_id="$(jq -r --argjson id "$public_id" '([.firewalls[] | select(.name=="jurvio-public-web-bootstrap")][0].id // empty)' <<<"$firewalls")"
+          test -n "$fw_id" || { echo "::error::firewall jurvio-public-web-bootstrap not found"; exit 1; }
+          current="$(curl -fsS --max-time 20 -H "Authorization: Bearer $DO_TOKEN" "$api/firewalls/$fw_id")"
+          echo "=== inbound before ==="
+          jq -r '.firewall.inbound_rules[] | "\(.protocol) \(.ports) \(.sources | tostring)"' <<<"$current"
+          printf '%s\n' "$current" > /tmp/jurvio-firewall-current.json
+          printf '%s\n' "$ranges" > /tmp/jurvio-cloudflare-ranges.txt
+          python3 - <<'PY'
+          import json
+          current = json.load(open("/tmp/jurvio-firewall-current.json"))
+          fw = current["firewall"]
+          ranges = [line.strip() for line in open("/tmp/jurvio-cloudflare-ranges.txt") if line.strip() and not line.startswith("#") and "/" in line]
+          def is_http(rule):
+              return rule.get("protocol") == "tcp" and rule.get("ports") in {"80", "443", "80-443"}
+          kept = [rule for rule in fw.get("inbound_rules") or [] if not is_http(rule)]
+          http = [
+              {"protocol": "tcp", "ports": "80", "sources": {"addresses": ranges}},
+              {"protocol": "tcp", "ports": "443", "sources": {"addresses": ranges}},
+          ]
+          payload = {
+              "name": fw["name"],
+              "inbound_rules": kept + http,
+              "outbound_rules": fw.get("outbound_rules") or [],
+              "droplet_ids": fw.get("droplet_ids") or [],
+              "tags": fw.get("tags") or [],
+          }
+          json.dump(payload, open("/tmp/jurvio-firewall-put.json", "w"))
+          ssh = [f"{rule.get('protocol')} {rule.get('ports')}" for rule in kept]
+          print("kept_non_http_rules=" + ", ".join(ssh))
+          print(f"cloudflare_ranges={len(ranges)}")
+          PY
+          curl -fsS --max-time 30 -X PUT "${auth[@]}" "$api/firewalls/$fw_id" --data-binary @/tmp/jurvio-firewall-put.json >/dev/null
+          echo "=== inbound after ==="
+          curl -fsS --max-time 20 -H "Authorization: Bearer $DO_TOKEN" "$api/firewalls/$fw_id" \
+            | jq -r '.firewall.inbound_rules[] | "\(.protocol) \(.ports) sources=\((.sources.addresses // []) | length) addresses"'
+          echo "SSH rules were kept. Inbound 80 and 443 now list only the Cloudflare ranges."

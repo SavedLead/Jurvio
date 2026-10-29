@@ -52,6 +52,23 @@ export interface CaseCitationCounts { cited: number; citedOnJurvio: number; cite
  * 521,169 groups, twice, and EXPLAIN ANALYZE for jv-h762f92ca8 took 8,909 ms.
  */
 export async function caseCitationCounts(sql: Sql, casePublicId: string): Promise<CaseCitationCounts> {
+  // The live graph below is several seconds for a widely cited key. The
+  // citations lane stores the same totals in case_citation_count; a page read
+  // is one index lookup. Missing table or missing row falls through.
+  try {
+    const [stored] = await sql<CaseCitationCounts[]>`
+      SELECT stat.cited::int AS cited,
+        stat.cited_on_jurvio::int AS "citedOnJurvio",
+        stat.cited_by::int AS "citedBy"
+      FROM legal_case c
+      JOIN case_citation_count stat ON stat.case_id = c.id
+      WHERE c.public_id = ${casePublicId}
+    `;
+    if (stored) return stored;
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== "42P01") throw error;
+  }
   const [row] = await sql<CaseCitationCounts[]>`
     WITH current_case AS MATERIALIZED (
       SELECT c.id FROM legal_case c
