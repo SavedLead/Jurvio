@@ -173,7 +173,19 @@ interface SearchDetail extends OpinionSearchResult {
   documentId: string;
 }
 
+export function assertStatementTimeoutMs(timeoutMs: number): number {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+    throw new Error("statement timeout must be an integer from 1 to 30000 milliseconds");
+  }
+  return timeoutMs;
+}
+
+function statementTimeoutError(): Error {
+  return Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" });
+}
+
 export async function withStatementTimeout<T>(sql: Sql, timeoutMs: number, run: (tx: Sql) => Promise<T>): Promise<T> {
+  const ms = assertStatementTimeoutMs(timeoutMs);
   // Root clients expose begin(). A client that is already inside a transaction
   // (integration tests, and any caller holding a rollback) exposes savepoint() instead.
   const open = (sql.begin
@@ -181,12 +193,39 @@ export async function withStatementTimeout<T>(sql: Sql, timeoutMs: number, run: 
     : (sql as { savepoint?: typeof sql.begin }).savepoint?.bind(sql)) as
     ((callback: (tx: Sql) => Promise<T>) => Promise<T>) | undefined;
   if (!open) throw new Error("SQL client cannot open a transaction");
-  return open(async (tx) => {
+
+  // Production keyword search kept running until Cloudflare's 60s 504 even with
+  // set_config('statement_timeout', ..., true). Set the GUCs with a literal, and
+  // if the HTTP budget expires first, cancel the backend so the page can return
+  // the degraded response instead of waiting out the gateway.
+  let backendPid: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      if (backendPid !== undefined) {
+        void sql`SELECT pg_cancel_backend(${backendPid})`.catch(() => undefined);
+      }
+      reject(statementTimeoutError());
+    }, ms + 750);
+  });
+
+  const work = open(async (tx) => {
     const query = tx as unknown as Sql;
-    // Local to this transaction, so the pooled connection is not left with a short timeout.
-    await query`SELECT set_config('statement_timeout', ${String(timeoutMs)}, true)`;
+    const [row] = await query<{ pid: number }[]>`SELECT pg_backend_pid()::int AS pid`;
+    backendPid = row?.pid;
+    await query.unsafe(`SET LOCAL statement_timeout = '${ms}ms'`);
+    await query.unsafe(`SET LOCAL lock_timeout = '${ms}ms'`);
     return run(query);
   });
+  // If the deadline wins, the query can still reject later. Attach a handler so
+  // that second rejection is not an unhandled promise rejection.
+  work.catch(() => undefined);
+
+  try {
+    return await Promise.race([work, cancelled]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function emptyResponse(filters: OpinionSearchFilters): OpinionSearchResponse {
