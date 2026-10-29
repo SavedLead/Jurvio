@@ -10,16 +10,26 @@ export async function discoveryCandidates(sql: Sql, limit: number) {
   // for every private-only missing citation made production selection unbounded.
   return sql<{citation_key:string; citation_label:string; resolved_cluster_id:string|null}[]>`
     WITH visible_sources AS MATERIALIZED (
-      -- Same publication_current gate as the cited publisher. Do not sort
-      -- publication_decision once per published document on every pass.
+      -- Same visibility rule as the cited publisher: publication_current when
+      -- the mirror row exists, otherwise the latest publication_decision.
       SELECT d.id,content.content_hash FROM document d
       JOIN legal_case c ON c.id=d.case_id
       JOIN document_content content ON content.document_id=d.id
-      JOIN publication_current case_pub
-        ON case_pub.object_type='legal_case' AND case_pub.object_id=c.id AND case_pub.displayable
-      JOIN publication_current doc_pub
-        ON doc_pub.object_type='document' AND doc_pub.object_id=d.id AND doc_pub.displayable
       WHERE d.publication='published' AND c.publication='published'
+        AND COALESCE(
+          (SELECT case_pub.displayable FROM publication_current case_pub
+            WHERE case_pub.object_type='legal_case' AND case_pub.object_id=c.id),
+          (SELECT decision.displayable FROM publication_decision decision
+            WHERE decision.object_type='legal_case' AND decision.object_id=c.id
+            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1),
+          false)
+        AND COALESCE(
+          (SELECT doc_pub.displayable FROM publication_current doc_pub
+            WHERE doc_pub.object_type='document' AND doc_pub.object_id=d.id),
+          (SELECT decision.displayable FROM publication_decision decision
+            WHERE decision.object_type='document' AND decision.object_id=d.id
+            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1),
+          false)
     ), public_citations AS MATERIALIZED (
       SELECT DISTINCT ref.citation_key FROM visible_sources source
       JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash
