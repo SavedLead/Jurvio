@@ -21,8 +21,10 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     lane: "citations",
     name: "case-citation-graph",
     initialDelayMs: 2 * minute,
-    intervalMs: 2 * minute,
-    command: ["jobs/run-case-citations.mjs", "--limit=1000", "--discover=10"],
+    // The candidate query reads published opinion text. Every 2 minutes it never
+    // finished before the next pass and kept the disk busy under search.
+    intervalMs: 15 * minute,
+    command: ["jobs/run-case-citations.mjs", "--limit=200", "--discover=10"],
   },
   {
     // Daily offline resolution of new missing citations against the newest
@@ -213,9 +215,9 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=publication-quarantine",
-      "--start-concurrency=6",
-      "--max-concurrency=14",
-      "--max-items=25000",
+      "--start-concurrency=2",
+      "--max-concurrency=4",
+      "--max-items=5000",
     ],
   },
   {

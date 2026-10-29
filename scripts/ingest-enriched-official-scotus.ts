@@ -35,8 +35,13 @@ if (!Number.isInteger(attempts) || attempts < 1 || attempts > 20) {
 // the full amount.
 const FETCH_BATCH_CEILING = 100;
 const DRAIN_BATCH_CEILING = 100_000;
+// Text extraction's candidate SELECT used to fan this lane's 5000 budget into one
+// parallel scan. A hundred pending PDFs per pass is enough; the next 5-minute
+// cycle continues the rest.
+const EXTRACT_BATCH_CEILING = 100;
 const fetchLimit = Math.min(requestedLimit, FETCH_BATCH_CEILING);
 const drainLimit = Math.min(requestedLimit, DRAIN_BATCH_CEILING);
+const extractLimit = Math.min(requestedLimit, EXTRACT_BATCH_CEILING);
 
 const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? process.env.RAW_ARTIFACT_DIR
@@ -61,7 +66,7 @@ try {
     docketRuns.push(docket);
     const publication = await publishVerifiedOfficialScotusOpinions(sql, { limit: drainLimit });
     publicationRuns.push(publication);
-    const extraction = await extractOfficialScotusOpinionText(sql, { limit: drainLimit, artifactRoot });
+    const extraction = await extractOfficialScotusOpinionText(sql, { limit: extractLimit, artifactRoot });
     extractionRuns.push(extraction);
     if (opinion.selected === 0 && docket.selected === 0
       && publication.selected === 0 && extraction.selected === 0) break;

@@ -93,11 +93,29 @@ export function citedOpinionPublicationReasons(candidate: Candidate): string[] {
 export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
   const candidates=await sql<Candidate[]>`
     WITH visible_sources AS MATERIALIZED (
+      -- Prefer publication_current (one primary-key lookup, maintained by 0124).
+      -- Fall back to the latest publication_decision when that mirror row is
+      -- absent, so a displayable source is not dropped before backfill or in a
+      -- schema that only writes publication_decision. COALESCE stops after the
+      -- first non-null, so a filled mirror does not sort publication_decision.
       SELECT d.id,d.case_id,content.content_hash FROM document d
-      JOIN legal_case c ON c.id=d.case_id JOIN document_content content ON content.document_id=d.id
+      JOIN legal_case c ON c.id=d.case_id
+      JOIN document_content content ON content.document_id=d.id
       WHERE d.publication='published' AND c.publication='published'
-        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
-        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+        AND COALESCE(
+          (SELECT case_pub.displayable FROM publication_current case_pub
+            WHERE case_pub.object_type='legal_case' AND case_pub.object_id=c.id),
+          (SELECT decision.displayable FROM publication_decision decision
+            WHERE decision.object_type='legal_case' AND decision.object_id=c.id
+            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1),
+          false)
+        AND COALESCE(
+          (SELECT doc_pub.displayable FROM publication_current doc_pub
+            WHERE doc_pub.object_type='document' AND doc_pub.object_id=d.id),
+          (SELECT decision.displayable FROM publication_decision decision
+            WHERE decision.object_type='document' AND decision.object_id=d.id
+            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1),
+          false)
     ), public_citations AS MATERIALIZED (
       SELECT DISTINCT ref.citation_key,source.case_id FROM visible_sources source
       JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash

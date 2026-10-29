@@ -100,28 +100,48 @@ export async function extractOfficialScotusOpinionText(
     throw new Error("Extraction limit must be between 1 and 100000");
   }
   const artifactRoot = path.resolve(options.artifactRoot);
+  // Pick the bounded pending set BEFORE the next-page lookup. The lateral
+  // comparison cannot use an index (it strips the URL fragment), so running it
+  // across every published opinion made this one SELECT a multi-minute parallel
+  // scan. The page lookup now runs only for the rows this batch will extract.
   const candidates = await sql<ExtractionCandidate[]>`
-    SELECT document.id AS document_id, document.public_id AS document_public_id,
-      legal_case.id AS case_id, legal_case.public_id AS case_public_id,
-      court.id AS court_id, cluster.id AS cluster_id, legal_case.caption AS case_caption,
-      court.name AS court_name, legal_case.docket_number, legal_case.official_citation,
-      document.title,
-      document.filed_on::text AS filed_on, cluster.precedential_status,
-      judicial.opinion_type, cluster.citation_count, artifact.content_hash,
-      artifact.object_key, artifact.id AS source_artifact_id,
-      judicial.source_download_url, candidate.source_page_start, candidate.source_page_end,
+    WITH pending AS (
+      SELECT document.id AS document_id, document.public_id AS document_public_id,
+        legal_case.id AS case_id, legal_case.public_id AS case_public_id,
+        court.id AS court_id, cluster.id AS cluster_id, legal_case.caption AS case_caption,
+        court.name AS court_name, legal_case.docket_number, legal_case.official_citation,
+        document.title,
+        document.filed_on::text AS filed_on, cluster.precedential_status,
+        judicial.opinion_type, cluster.citation_count, artifact.content_hash,
+        artifact.object_key, artifact.id AS source_artifact_id,
+        judicial.source_download_url, candidate.source_page_start, candidate.source_page_end,
+        candidate.provider_id AS candidate_provider_id
+      FROM document_identifier identifier
+      JOIN document ON document.id = identifier.document_id
+      JOIN official_opinion_candidate candidate
+        ON candidate.provider_id = identifier.provider_id
+       AND candidate.source_record_id = identifier.identifier_value
+      JOIN legal_case ON legal_case.id = document.case_id
+      JOIN court ON court.id = legal_case.court_id
+      JOIN judicial_opinion judicial ON judicial.document_id = document.id
+      JOIN opinion_cluster cluster ON cluster.id = judicial.cluster_id
+      JOIN raw_artifact artifact ON artifact.id = document.source_artifact_id
+      LEFT JOIN document_content content ON content.document_id = document.id
+      WHERE identifier.identifier_type = 'scotus_official_opinion'
+        AND document.publication = 'published'
+        AND legal_case.publication = 'published'
+        AND content.document_id IS NULL
+      ORDER BY document.filed_on, document.id
+      LIMIT ${options.limit}
+    )
+    SELECT pending.document_id, pending.document_public_id, pending.case_id, pending.case_public_id,
+      pending.court_id, pending.cluster_id, pending.case_caption, pending.court_name,
+      pending.docket_number, pending.official_citation, pending.title, pending.filed_on,
+      pending.precedential_status, pending.opinion_type, pending.citation_count,
+      pending.content_hash, pending.object_key, pending.source_artifact_id,
+      pending.source_download_url, pending.source_page_start, pending.source_page_end,
       next_candidate.source_page_start AS next_source_page_start
-    FROM document
-    JOIN document_identifier identifier ON identifier.document_id = document.id
-      AND identifier.identifier_type = 'scotus_official_opinion'
-    JOIN official_opinion_candidate candidate
-      ON candidate.provider_id = identifier.provider_id
-     AND candidate.source_record_id = identifier.identifier_value
-    JOIN legal_case ON legal_case.id = document.case_id
-    JOIN court ON court.id = legal_case.court_id
-    JOIN judicial_opinion judicial ON judicial.document_id = document.id
-    JOIN opinion_cluster cluster ON cluster.id = judicial.cluster_id
-    JOIN raw_artifact artifact ON artifact.id = document.source_artifact_id
+    FROM pending
     LEFT JOIN LATERAL (
       SELECT MIN(other_candidate.source_page_start)::integer AS source_page_start
       FROM official_opinion_candidate other_candidate
@@ -131,16 +151,11 @@ export async function extractOfficialScotusOpinionText(
        AND other_identifier.identifier_value = other_candidate.source_record_id
       JOIN document other_document ON other_document.id = other_identifier.document_id
       JOIN judicial_opinion other_judicial ON other_judicial.document_id = other_document.id
-      WHERE split_part(other_judicial.source_download_url, '#', 1)
-          = split_part(judicial.source_download_url, '#', 1)
-        AND other_candidate.source_page_start > candidate.source_page_start
+      WHERE other_candidate.provider_id = pending.candidate_provider_id
+        AND split_part(other_judicial.source_download_url, '#', 1)
+          = split_part(pending.source_download_url, '#', 1)
+        AND other_candidate.source_page_start > pending.source_page_start
     ) next_candidate ON true
-    LEFT JOIN document_content content ON content.document_id = document.id
-    WHERE document.publication = 'published'
-      AND legal_case.publication = 'published'
-      AND content.document_id IS NULL
-    ORDER BY document.filed_on, document.id
-    LIMIT ${options.limit}
   `;
 
   let extracted = 0;
