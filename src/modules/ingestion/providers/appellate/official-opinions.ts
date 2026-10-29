@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { conditionalRequestHeaders, type HttpValidators } from "../http-validators";
 import type { AppellateCourtSource } from "./registry";
 
 export interface OfficialAppellateCandidate {
@@ -43,10 +44,31 @@ export function parseOfficialAppellateListing(html:string,court:AppellateCourtSo
   return out;
 }
 
-export async function fetchOfficialAppellateListing(court:AppellateCourtSource){
-  const response=await fetch(court.opinionsUrl,{headers:{"user-agent":process.env.INGESTION_USER_AGENT??"Jurvio/0.1 appellate-ingestion"},redirect:"follow"});
-  if(!response.ok)throw new Error(`${court.code} opinions listing returned HTTP ${response.status}`);
-  const length=Number(response.headers.get("content-length")??"0"); if(length>MAX_LISTING_BYTES)throw new Error("appellate listing exceeds byte cap");
-  const body=await response.text(); if(Buffer.byteLength(body)>MAX_LISTING_BYTES)throw new Error("appellate listing exceeds byte cap");
-  return {body,retrievedAt:new Date().toISOString(),etag:response.headers.get("etag"),lastModified:response.headers.get("last-modified"),candidates:parseOfficialAppellateListing(body,court)};
+export async function fetchOfficialAppellateListing(court: AppellateCourtSource, validators?: HttpValidators | null) {
+  const response = await fetch(court.opinionsUrl, {
+    headers: {
+      "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 appellate-ingestion",
+      ...conditionalRequestHeaders(validators),
+    },
+    redirect: "follow",
+  });
+  const retrievedAt = new Date().toISOString();
+  const etag = response.headers.get("etag");
+  const lastModified = response.headers.get("last-modified");
+  if (response.status === 304) {
+    return { notModified: true as const, body: "", retrievedAt, etag, lastModified, candidates: [] };
+  }
+  if (!response.ok) throw new Error(`${court.code} opinions listing returned HTTP ${response.status}`);
+  const length = Number(response.headers.get("content-length") ?? "0");
+  if (length > MAX_LISTING_BYTES) throw new Error("appellate listing exceeds byte cap");
+  const body = await response.text();
+  if (Buffer.byteLength(body) > MAX_LISTING_BYTES) throw new Error("appellate listing exceeds byte cap");
+  return {
+    notModified: false as const,
+    body,
+    retrievedAt,
+    etag,
+    lastModified,
+    candidates: parseOfficialAppellateListing(body, court),
+  };
 }

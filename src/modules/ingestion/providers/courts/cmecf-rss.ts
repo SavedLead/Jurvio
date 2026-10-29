@@ -2,6 +2,7 @@ import {
   classifyDirectEvent, isRestrictedDirectEvent, normalizeDocketNumber,
   stableDirectEventIdentity, visitorFriendlyDescription, type DirectCourtEvent,
 } from "../../domain/direct-court";
+import { conditionalRequestHeaders, type HttpValidators } from "../http-validators";
 import type { FederalCourtSource } from "./registry";
 
 const MAX_FEED_BYTES = 5 * 1024 * 1024;
@@ -63,17 +64,35 @@ export function parseCmecfRss(xml: string, court: FederalCourtSource): DirectCou
   return events;
 }
 
-export async function fetchCmecfRss(court: FederalCourtSource): Promise<{ rawBody: string; retrievedAt: string; events: DirectCourtEvent[] }> {
+export async function fetchCmecfRss(
+  court: FederalCourtSource,
+  validators?: HttpValidators | null,
+): Promise<{
+  rawBody: string;
+  retrievedAt: string;
+  events: DirectCourtEvent[];
+  notModified: boolean;
+  etag: string | null;
+  lastModified: string | null;
+}> {
   if (!court.rssUrl) throw new Error(`${court.officialCourtCode} has no RSS URL`);
   const response = await fetch(court.rssUrl, {
-    headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 court-ingestion" },
+    headers: {
+      "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 court-ingestion",
+      ...conditionalRequestHeaders(validators),
+    },
     redirect: "error",
   });
+  const etag = response.headers.get("etag");
+  const lastModified = response.headers.get("last-modified");
+  if (response.status === 304) {
+    return { rawBody: "", retrievedAt: new Date().toISOString(), events: [], notModified: true, etag, lastModified };
+  }
   if (!response.ok) throw new Error(`${court.officialCourtCode} RSS returned HTTP ${response.status}`);
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > MAX_FEED_BYTES) throw new Error("CM/ECF RSS response exceeds byte cap");
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength > MAX_FEED_BYTES) throw new Error("CM/ECF RSS response exceeds byte cap");
   const rawBody = new TextDecoder().decode(bytes);
-  return { rawBody, retrievedAt: new Date().toISOString(), events: parseCmecfRss(rawBody, court) };
+  return { rawBody, retrievedAt: new Date().toISOString(), events: parseCmecfRss(rawBody, court), notModified: false, etag, lastModified };
 }

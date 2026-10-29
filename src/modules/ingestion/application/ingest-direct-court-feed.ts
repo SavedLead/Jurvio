@@ -13,7 +13,34 @@ export async function ingestDirectCourtFeed(
   artifactStore: ArtifactStore,
   court: FederalCourtSource,
 ) {
-  const retrieved = await fetchCmecfRss(court);
+  const [prior] = await sql<{ feed_etag: string | null; feed_last_modified: string | null }[]>`
+    SELECT feed_etag, feed_last_modified
+    FROM direct_court_registry
+    WHERE court_code = ${court.officialCourtCode}
+  `;
+  const retrieved = await fetchCmecfRss(court, { etag: prior?.feed_etag, lastModified: prior?.feed_last_modified });
+  if (retrieved.notModified) {
+    await sql`
+      UPDATE direct_court_registry SET
+        last_successful_retrieval = now(),
+        feed_etag = COALESCE(${retrieved.etag}, feed_etag),
+        feed_last_modified = COALESCE(${retrieved.lastModified}, feed_last_modified),
+        health_state = 'healthy',
+        consecutive_failures = 0,
+        updated_at = now()
+      WHERE court_code = ${court.officialCourtCode}
+    `;
+    return {
+      court: court.officialCourtCode,
+      notModified: true,
+      inserted: 0,
+      duplicated: 0,
+      matched: 0,
+      created: 0,
+      published: 0,
+      held: 0,
+    };
+  }
   const feedHash = createHash("sha256").update(retrieved.rawBody).digest("hex");
   const stored = await artifactStore.putIfAbsent({
     key: `official-courts/${court.officialCourtCode}/rss/${feedHash}.xml`,
@@ -167,6 +194,8 @@ export async function ingestDirectCourtFeed(
     await sql`
       UPDATE direct_court_registry SET checkpoint = ${feedHash},
         last_successful_retrieval = ${retrieved.retrievedAt},
+        feed_etag = COALESCE(${retrieved.etag}, feed_etag),
+        feed_last_modified = COALESCE(${retrieved.lastModified}, feed_last_modified),
         health_state = 'healthy', consecutive_failures = 0, updated_at = now()
       WHERE court_code = ${court.officialCourtCode}
     `;

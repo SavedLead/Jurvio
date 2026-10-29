@@ -8,6 +8,8 @@ export type ScheduledJob = {
   name: string;
   initialDelayMs: number;
   intervalMs: number;
+  /** Hard stop. The scheduler kills the child when this elapses so a stuck job cannot hold the lane. */
+  budgetMs: number;
   command: string[];
 };
 
@@ -24,6 +26,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // The candidate query reads published opinion text. Every 2 minutes it never
     // finished before the next pass and kept the disk busy under search.
     intervalMs: 15 * minute,
+    budgetMs: 12 * minute,
     command: ["jobs/run-case-citations.mjs", "--limit=200", "--discover=10"],
   },
   {
@@ -34,6 +37,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "cited-case-bulk-resolution",
     initialDelayMs: 20 * minute,
     intervalMs: 24 * 60 * minute,
+    budgetMs: 90 * minute,
     command: ["jobs/resolve-cited-cases-bulk.mjs", "--snapshot-date=latest"],
   },
   {
@@ -43,6 +47,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "sitemap-snapshot",
     initialDelayMs: 10 * minute,
     intervalMs: 60 * minute,
+    budgetMs: 50 * minute,
     command: ["jobs/refresh-sitemap-snapshot.mjs"],
   },
   {
@@ -55,6 +60,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "citation-count-snapshot",
     initialDelayMs: 4 * minute,
     intervalMs: 2 * 60 * minute,
+    budgetMs: 90 * minute,
     command: ["jobs/refresh-case-citation-counts.mjs"],
   },
   {
@@ -62,6 +68,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
     intervalMs: 15 * minute,
+    budgetMs: 12 * minute,
     command: ["jobs/match-judges.mjs", "--limit=1000"],
   },
   {
@@ -69,6 +76,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "fjc-judge-roster",
     initialDelayMs: 3 * minute,
     intervalMs: 24 * 60 * minute,
+    budgetMs: 40 * minute,
     command: ["jobs/import-fjc-judges.mjs", "--limit=50000"],
   },
   {
@@ -76,6 +84,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "usao-case-attribution",
     initialDelayMs: 6 * minute,
     intervalMs: 60 * minute,
+    budgetMs: 20 * minute,
     command: ["jobs/backfill-usao-case-attribution.mjs", "--limit=2000"],
   },
   {
@@ -83,6 +92,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "district-court-source-scout",
     initialDelayMs: 15 * minute,
     intervalMs: 7 * 24 * 60 * minute,
+    budgetMs: 40 * minute,
     command: [
       "jobs/scout-district-court-sources.mjs",
       "--limit=94",
@@ -96,6 +106,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // Was every 5 minutes and overlapped the other core parsers. worker-core
     // hit 417% CPU while Postgres was nearly idle.
     intervalMs: 20 * minute,
+    budgetMs: 18 * minute,
     command: ["jobs/run-scotus-pre500-backfill.mjs"],
   },
   {
@@ -106,6 +117,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "loc-us-reports-backfill",
     initialDelayMs: 8 * minute,
     intervalMs: 20 * minute,
+    budgetMs: 18 * minute,
     command: ["jobs/run-loc-us-reports-backfill.mjs"],
   },
   {
@@ -113,6 +125,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "direct-court",
     initialDelayMs: 0,
     intervalMs: 5 * minute,
+    budgetMs: 8 * minute,
     command: ["jobs/ingest-direct-court-feeds.mjs", "--court=all"],
   },
   {
@@ -120,6 +133,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "appellate-official",
     initialDelayMs: 1 * minute,
     intervalMs: 5 * minute,
+    budgetMs: 15 * minute,
     command: [
       "jobs/run-appellate-ingestion.mjs",
       "--court=all",
@@ -138,6 +152,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "appellate-govinfo-backfill",
     initialDelayMs: 2 * minute,
     intervalMs: 7 * minute,
+    budgetMs: 12 * minute,
     command: [
       "jobs/ingest-govinfo-appellate.mjs",
       "--court=next",
@@ -159,6 +174,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "appellate-backfill-report",
     initialDelayMs: 8 * minute,
     intervalMs: 15 * minute,
+    budgetMs: 8 * minute,
     command: ["jobs/report-appellate-backfill.mjs"],
   },
   {
@@ -166,6 +182,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "scotus-enriched",
     initialDelayMs: 14 * minute,
     intervalMs: 20 * minute,
+    budgetMs: 18 * minute,
     command: [
       "jobs/ingest-enriched-official-scotus.mjs",
       "--term=__CURRENT_SCOTUS_TERM__",
@@ -186,6 +203,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "scotus-publish",
     initialDelayMs: 90_000,
     intervalMs: 10 * minute,
+    budgetMs: 12 * minute,
     // Publishes verified/approved official SCOTUS opinions ON THE BOX. This lane
     // was previously MISSING entirely: the only thing that ever published SCOTUS
     // was the DO_HOST `publish-official-scotus-opinions` workflow, retired in the
@@ -206,6 +224,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "federal-new-cases",
     initialDelayMs: 2 * minute,
     intervalMs: 20 * minute,
+    budgetMs: 18 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=new-case-discovery",
@@ -219,6 +238,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "federal-material-decisions",
     initialDelayMs: 12 * minute,
     intervalMs: 20 * minute,
+    budgetMs: 18 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=material-decisions",
@@ -232,6 +252,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "federal-publication",
     initialDelayMs: 22 * minute,
     intervalMs: 12 * minute,
+    budgetMs: 10 * minute,
     // Publication is pure DB work (each publish opens a transaction). Runs often and
     // drains a large batch per cycle so the publish backlog (and the outbox that
     // depends on it) keeps pace with ingestion instead of falling behind.
@@ -248,12 +269,13 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "federal-active-cases",
     initialDelayMs: 32 * minute,
     intervalMs: 6 * 60 * minute,
+    budgetMs: 20 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=active-case-updates",
       "--start-concurrency=2",
       "--max-concurrency=4",
-      "--max-items=15000",
+      "--max-items=300",
     ],
   },
   {
@@ -261,6 +283,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "federal-history",
     initialDelayMs: 42 * minute,
     intervalMs: 24 * 60 * minute,
+    budgetMs: 18 * minute,
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=historical-backfill",

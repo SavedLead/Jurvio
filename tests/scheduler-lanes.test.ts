@@ -12,6 +12,19 @@ describe("scheduler lanes", () => {
     expect(jobsForLane("core").some(job => job.name === "case-citation-graph")).toBe(false);
   });
 
+  it("gives every child a hard time budget and caps active docket refreshes", () => {
+    for (const job of SCHEDULED_JOBS) {
+      expect(job.budgetMs, job.name).toBeGreaterThanOrEqual(5 * 60_000);
+      expect(job.budgetMs, job.name).toBeLessThanOrEqual(90 * 60_000);
+    }
+    const active = SCHEDULED_JOBS.find((job) => job.name === "federal-active-cases");
+    expect(active?.command).toContain("--max-items=300");
+    expect(active?.budgetMs).toBe(20 * 60_000);
+    const scheduler = readFileSync("scripts/run-production-scheduler.ts", "utf8");
+    expect(scheduler).toContain("JURVIO_JOB_BUDGET_MS");
+    expect(scheduler).toContain('child.kill("SIGTERM")');
+  });
+
   it("keeps every other job where it was and job names unique", () => {
     expect(jobsForLane("core").length).toBeGreaterThan(5);
     expect(jobsForLane("coa").length).toBeGreaterThan(0);

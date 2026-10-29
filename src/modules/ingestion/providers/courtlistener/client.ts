@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { env } from "@/lib/config/env";
+import { conditionalRequestHeaders, type HttpValidators } from "../http-validators";
 import {
   courtListenerDocketSchema,
   courtListenerDocketEntryPageSchema,
@@ -14,6 +15,20 @@ import {
   type CourtListenerOpinionCluster,
   type CourtListenerParty,
 } from "./schema";
+
+export class CourtListenerNotModified extends Error {
+  readonly sourceUri: string;
+  readonly etag?: string;
+  readonly lastModified?: string;
+
+  constructor(sourceUri: string, etag?: string | null, lastModified?: string | null) {
+    super("CourtListener resource not modified");
+    this.name = "CourtListenerNotModified";
+    this.sourceUri = sourceUri;
+    this.etag = etag ?? undefined;
+    this.lastModified = lastModified ?? undefined;
+  }
+}
 
 export interface RetrievedRecord<T> {
   record: T;
@@ -51,7 +66,11 @@ function headers(useConfiguredApiToken: boolean): HeadersInit {
   };
 }
 
-async function retrieve(url: URL, init: RequestInit = {}): Promise<{ response: Response; body: string }> {
+async function retrieve(
+  url: URL,
+  init: RequestInit = {},
+  validators?: HttpValidators | null,
+): Promise<{ response: Response; body: string }> {
   const maximumAttempts = 4;
   // CourtListener's bulk docket/opinion-cluster queries can be slow; a 30s abort
   // was tripping on legitimately-heavy pages and crashing the lane. Allow a longer
@@ -69,7 +88,11 @@ async function retrieve(url: URL, init: RequestInit = {}): Promise<{ response: R
     try {
       response = await fetch(url, {
         ...init,
-        headers: headers(useConfiguredApiToken),
+        headers: {
+          ...headers(useConfiguredApiToken),
+          ...conditionalRequestHeaders(validators),
+          ...(init.headers ?? {}),
+        },
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
@@ -84,6 +107,13 @@ async function retrieve(url: URL, init: RequestInit = {}): Promise<{ response: R
       }
       await new Promise((resolve) => setTimeout(resolve, courtListenerRetryDelayMs(null, attempt)));
       continue;
+    }
+    if (response.status === 304) {
+      throw new CourtListenerNotModified(
+        url.toString(),
+        response.headers.get("etag") ?? validators?.etag,
+        response.headers.get("last-modified") ?? validators?.lastModified,
+      );
     }
     if (response.ok) return { response, body: await response.text() };
     if (response.status === 401 && sentConfiguredToken) {
@@ -119,9 +149,12 @@ function wrap<T>(record: T, sourceUri: string, body: string, response: Response)
   };
 }
 
-export async function fetchDocket(id: number): Promise<RetrievedRecord<CourtListenerDocket>> {
+export async function fetchDocket(
+  id: number,
+  validators?: HttpValidators | null,
+): Promise<RetrievedRecord<CourtListenerDocket>> {
   const url = new URL(`dockets/${id}/`, `${env().COURTLISTENER_API_BASE_URL}/`);
-  const { response, body } = await retrieve(url);
+  const { response, body } = await retrieve(url, {}, validators);
   return wrap(courtListenerDocketSchema.parse(JSON.parse(body)), url.toString(), body, response);
 }
 
