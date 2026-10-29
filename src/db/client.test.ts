@@ -26,6 +26,8 @@ describe("database session settings", () => {
     expect(session.worker).toBe(false);
     expect(session.max).toBe(2);
     expect(session.connection.application_name).toBe("jurvio-search");
+    expect(session.idleTimeoutSeconds).toBe(0);
+    expect(databaseSessionSettings({}).idleTimeoutSeconds).toBe(20);
     expect(session.connection.statement_timeout).toBe(20_000);
     expect(databaseSessionSettings({ JURVIO_DB_POOL_MAX: "8" }, "search").max).toBe(2);
     expect(databaseSessionSettings({ JURVIO_DB_SEARCH_POOL_MAX: "3" }, "search").max).toBe(3);

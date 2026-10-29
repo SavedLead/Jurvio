@@ -37,6 +37,15 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/resolve-cited-cases-bulk.mjs", "--snapshot-date=latest"],
   },
   {
+    // Writes sitemap_document. Public /sitemap.xml only reads that table, so a
+    // slow rebuild cannot 500 the request. Skip if the previous pass is still running.
+    lane: "citations",
+    name: "sitemap-snapshot",
+    initialDelayMs: 10 * minute,
+    intervalMs: 60 * minute,
+    command: ["jobs/refresh-sitemap-snapshot.mjs"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,

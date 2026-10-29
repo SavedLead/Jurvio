@@ -15,118 +15,16 @@ export interface SitemapRecord {
   updatedAt: string;
 }
 
-export interface SitemapBoundaries {
-  cases: string[];
-  opinions: string[];
-  parties: string[];
-  lawFirms: string[];
-  courts: string[];
-  judges: string[];
-  governmentLitigation: string[];
-}
-
 export type DirectorySitemapKind = "parties" | "law-firms" | "courts" | "judges" | "government-litigation";
 
 const indexableCase = latestPublicationColumnSql("indexable", "legal_case", "legal_case.id");
 const indexableDocument = latestPublicationColumnSql("indexable", "document", "document.id");
-
-/** First public_id of each page. Pages then seek with `>= start AND < next` and never OFFSET. */
-export function sitemapBoundarySql(sourceSql: string, pageSize: number): string {
-  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50_000) throw new Error("invalid sitemap page size");
-  return `SELECT public_id FROM (
-    SELECT candidate.public_id, (row_number() OVER (ORDER BY candidate.public_id) - 1) AS ordinal
-    FROM (${sourceSql}) candidate
-  ) numbered
-  WHERE numbered.ordinal % ${pageSize} = 0
-  ORDER BY public_id`;
-}
 
 export function sitemapPageBounds(starts: readonly string[], page: number): { start: string; end: string | null } | null {
   if (!Number.isInteger(page) || page < 1 || page > starts.length) return null;
   const start = starts[page - 1];
   if (!start) return null;
   return { start, end: starts[page] ?? null };
-}
-
-const caseSource = `
-  SELECT legal_case.public_id
-  FROM legal_case
-  WHERE legal_case.publication = 'published' AND ${indexableCase}
-`;
-
-const opinionSource = `
-  SELECT document.public_id
-  FROM document
-  JOIN legal_case ON legal_case.id = document.case_id
-  JOIN judicial_opinion ON judicial_opinion.document_id = document.id
-  WHERE document.publication = 'published' AND ${indexableCase} AND ${indexableDocument}
-`;
-
-const partySource = `
-  SELECT entity.public_id
-  FROM entity
-  WHERE entity.entity_type IN ('unknown', 'person', 'organization', 'agency')
-    AND entity.verification = 'verified'
-    AND ${latestPublicationColumnSql("indexable", "entity", "entity.id")}
-    AND EXISTS (
-      SELECT 1 FROM party_appearance appearance
-      JOIN legal_case ON legal_case.id = appearance.case_id
-      WHERE appearance.entity_id = entity.id AND legal_case.publication = 'published' AND ${indexableCase}
-    )
-`;
-
-const lawFirmSource = `
-  SELECT entity.public_id
-  FROM entity
-  WHERE entity.entity_type = 'law_firm' AND entity.verification = 'verified'
-    AND ${latestPublicationColumnSql("indexable", "entity", "entity.id")}
-    AND EXISTS (
-      SELECT 1 FROM party_appearance appearance
-      JOIN legal_case ON legal_case.id = appearance.case_id
-      WHERE appearance.entity_id = entity.id AND legal_case.publication = 'published' AND ${indexableCase}
-    )
-`;
-
-const courtSource = `
-  SELECT court.public_id
-  FROM court
-  WHERE court.verification = 'verified'
-    AND ${latestPublicationColumnSql("indexable", "court", "court.id")}
-    AND EXISTS (
-      SELECT 1 FROM legal_case
-      WHERE legal_case.court_id = court.id AND legal_case.publication = 'published' AND ${indexableCase}
-    )
-`;
-
-const judgeSource = `
-  SELECT judge.public_id
-  FROM judge
-  WHERE judge.verification = 'verified'
-    AND ${latestPublicationColumnSql("displayable_and_indexable", "judge", "judge.id")}
-`;
-
-const governmentSource = `
-  SELECT lead.public_id
-  FROM government_litigation_lead lead
-  WHERE lead.review_status = 'published' AND lead.reviewed_at IS NOT NULL AND lead.published_at IS NOT NULL
-`;
-
-async function boundaryIds(sql: Sql, sourceSql: string, pageSize: number): Promise<string[]> {
-  const rows = await sql.unsafe<{ public_id: string }[]>(sitemapBoundarySql(sourceSql, pageSize));
-  return rows.map((row) => row.public_id);
-}
-
-export async function readSitemapBoundaries(sql: Sql): Promise<SitemapBoundaries> {
-  const [cases, opinions, parties, lawFirms, courts, judges, governmentLitigation] = await Promise.all([
-    boundaryIds(sql, caseSource, SITEMAP_CASE_PAGE_SIZE),
-    boundaryIds(sql, opinionSource, SITEMAP_PAGE_SIZE),
-    boundaryIds(sql, partySource, SITEMAP_PAGE_SIZE),
-    boundaryIds(sql, lawFirmSource, SITEMAP_PAGE_SIZE),
-    boundaryIds(sql, courtSource, SITEMAP_PAGE_SIZE),
-    boundaryIds(sql, judgeSource, SITEMAP_PAGE_SIZE),
-    boundaryIds(sql, governmentSource, SITEMAP_PAGE_SIZE),
-  ]);
-  return { cases, opinions, parties, lawFirms, courts, judges, governmentLitigation };
 }
 
 export async function listCaseSitemapRecords(sql: Sql, startId: string, endId: string | null) {

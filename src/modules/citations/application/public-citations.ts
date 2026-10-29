@@ -66,19 +66,37 @@ export async function caseCitationCounts(sql: Sql, casePublicId: string): Promis
       SELECT DISTINCT ref.citation_key FROM visible_documents vd
       JOIN document_case_citation ref ON ref.document_id=vd.id AND ref.source_content_hash=vd.content_hash AND ref.location_kind='text'
       WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity own JOIN current_case cc ON cc.id=own.case_id WHERE own.citation_key=ref.citation_key)
+    ), unique_cited AS MATERIALIZED (
+      SELECT k.citation_key, min(probe.case_id::text)::uuid AS case_id
+      FROM cited_keys k
+      JOIN LATERAL (
+        SELECT identity.case_id FROM case_citation_identity identity
+        WHERE identity.citation_key=k.citation_key
+        LIMIT 2
+      ) probe ON true
+      GROUP BY k.citation_key
+      HAVING count(*)=1
     ), cited_on_jurvio AS (
-      SELECT DISTINCT k.citation_key FROM cited_keys k
-      JOIN case_citation_identity identity ON identity.citation_key=k.citation_key
-      JOIN legal_case target ON target.id=identity.case_id AND target.publication='published'
+      SELECT u.citation_key FROM unique_cited u
+      JOIN legal_case target ON target.id=u.case_id AND target.publication='published'
       WHERE ${visible(sql, "displayable", "legal_case", "target.id")}
-        AND NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=identity.citation_key AND other.case_id<>identity.case_id)
     ), own_unique_keys AS MATERIALIZED (
       SELECT own.citation_key, cc.id AS case_id FROM current_case cc
       JOIN case_citation_identity own ON own.case_id=cc.id
-      WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=own.citation_key AND other.case_id<>own.case_id)
+      WHERE (
+        SELECT count(*) FROM (
+          SELECT 1 FROM case_citation_identity other
+          WHERE other.citation_key=own.citation_key
+          LIMIT 2
+        ) probe
+      )=1
     ), citing_cases AS (
       SELECT DISTINCT d.case_id FROM own_unique_keys own_key
-      JOIN document_case_citation ref ON ref.citation_key=own_key.citation_key
+      JOIN LATERAL (
+        SELECT ref.document_id, ref.source_content_hash
+        FROM document_case_citation ref
+        WHERE ref.citation_key=own_key.citation_key
+      ) ref ON true
       JOIN document d ON d.id=ref.document_id AND d.publication='published' AND d.case_id<>own_key.case_id
       JOIN document_content content ON content.document_id=d.id AND content.content_hash=ref.source_content_hash
       JOIN legal_case citing ON citing.id=d.case_id AND citing.publication='published'
