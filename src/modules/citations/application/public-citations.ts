@@ -91,9 +91,13 @@ export async function caseCitationCounts(sql: Sql, casePublicId: string): Promis
         ) probe
       )=1
     ), citing_cases AS (
+      -- One row per document. Opinions repeat the same reporter cite, and the
+      -- 4.8s plan was a nested loop of document, content, and publication
+      -- checks for every repetition. Distinct document ids keep the same
+      -- distinct case count.
       SELECT DISTINCT d.case_id FROM own_unique_keys own_key
       JOIN LATERAL (
-        SELECT ref.document_id, ref.source_content_hash
+        SELECT DISTINCT ref.document_id, ref.source_content_hash
         FROM document_case_citation ref
         WHERE ref.citation_key=own_key.citation_key
       ) ref ON true

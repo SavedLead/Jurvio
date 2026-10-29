@@ -8,5 +8,6 @@ describe("case citation counts", () => {
     expect(counts).not.toContain("unique_case_citation");
     expect(counts).toContain("own_unique_keys");
     expect(counts).toContain("case_citation_identity own ON own.case_id=cc.id");
+    expect(counts).toContain("SELECT DISTINCT ref.document_id, ref.source_content_hash");
   });
 });

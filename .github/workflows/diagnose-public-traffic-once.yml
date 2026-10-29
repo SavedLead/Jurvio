@@ -88,6 +88,44 @@ jobs:
           echo "=== public-01 ifconfig.me ==="
           curl -4 -fsS --max-time 15 https://ifconfig.me || echo "(ifconfig.me failed)"
           echo
+          echo "=== public-01 load / memory ==="
+          uptime || true
+          cat /proc/loadavg || true
+          free -m || true
+          nproc || true
+          echo "=== docker stats ==="
+          if command -v docker >/dev/null 2>&1; then
+            docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' || sudo -n docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' || echo "(docker stats failed)"
+          else
+            echo "(docker not installed)"
+          fi
+          echo "=== node event-loop signs ==="
+          echo "One Node process near 100% of a core, staying in R, means the event loop is busy. public-01 has 2 vCPU."
+          cid="$(docker ps -q --filter label=com.docker.compose.service=app 2>/dev/null | head -n1 || true)"
+          if [ -z "$cid" ]; then
+            cid="$(sudo -n docker ps -q --filter label=com.docker.compose.service=app 2>/dev/null | head -n1 || true)"
+          fi
+          if [ -n "$cid" ]; then
+            docker top "$cid" -eo pid,pcpu,pmem,nlwp,stat,args 2>/dev/null || sudo -n docker top "$cid" -eo pid,pcpu,pmem,nlwp,stat,args || true
+            node_pid="$(docker top "$cid" -eo pid,args 2>/dev/null | awk '/node|next/ && NR>1 {print $1; exit}')"
+            if [ -z "$node_pid" ]; then
+              node_pid="$(sudo -n docker top "$cid" -eo pid,args 2>/dev/null | awk '/node|next/ && NR>1 {print $1; exit}')"
+            fi
+            if [ -n "$node_pid" ] && [ -r "/proc/${node_pid}/stat" ]; then
+              clk="$(getconf CLK_TCK)"
+              read -r u1 s1 < <(awk '{sub(/.*\) /,""); split($0,f," "); print f[12], f[13]}' "/proc/${node_pid}/stat")
+              sleep 2
+              read -r u2 s2 < <(awk '{sub(/.*\) /,""); split($0,f," "); print f[12], f[13]}' "/proc/${node_pid}/stat")
+              awk -v u1="$u1" -v s1="$s1" -v u2="$u2" -v s2="$s2" -v clk="$clk" 'BEGIN {
+                pct = ((u2 - u1) + (s2 - s1)) / clk / 2 * 100
+                printf "node_pid=%s cpu_one_core_pct=%.1f over 2s\n", "'"$node_pid"'", pct
+              }'
+            else
+              echo "(could not sample a node pid)"
+            fi
+          else
+            echo "(app container not found)"
+          fi
           echo "=== nginx log format ==="
           if command -v nginx >/dev/null 2>&1; then
             nginx -T 2>/dev/null | awk '/log_format|access_log/ {print}' | head -n 40 || true
@@ -96,11 +134,22 @@ jobs:
           else
             echo "(nginx -T unavailable)"
           fi
+          echo "=== upstream timing in the log ==="
+          if nginx -T 2>/dev/null | grep -q upstream_response_time || sudo -n nginx -T 2>/dev/null | grep -q upstream_response_time; then
+            echo "upstream_response_time_logged=yes"
+          else
+            echo "upstream_response_time_logged=no"
+            echo "The active log_format does not include \$upstream_response_time or \$request_time. A combined log records status and bytes, not how long the Node upstream took."
+          fi
 
           python3 - <<'PY' || echo "(access-log summary failed)"
           import collections, datetime, ipaddress, os, re, time, urllib.request
           cutoff = time.time() - 45 * 60
-          ours = set()
+          ours = {
+              "104.248.239.68",   # jurvio-web-01
+              "198.211.113.171",  # jurvio-builder-01
+              "104.248.237.187",  # jurvio-public-01
+          }
           for chunk in (os.environ.get("RUNNER_IP", ""), os.environ.get("DROPLET_IPS", "")):
               ours.update(part.strip() for part in chunk.split(",") if part.strip() and part.strip() != "failed")
 
@@ -168,6 +217,7 @@ jobs:
           ua_total = collections.Counter()
           via = collections.Counter()
           extra_addrs = collections.Counter()
+          aion_ips = collections.Counter()
           kept = 0
           for line in raw.splitlines():
               stamped = stamp.search(line)
@@ -193,6 +243,8 @@ jobs:
               agent = (tail[-2] if len(tail) >= 2 else "?")[:160]
               ua_by_ip[remote][agent] += 1
               ua_total[agent] += 1
+              if "aionbot" in agent.lower():
+                  aion_ips[remote] += 1
               minute_key = f"{year}-{month:02d}-{int(day):02d} {hour}:{minute}"
               ua_minute[minute_key][agent] += 1
               for found in ip_re.findall(line)[1:4]:
@@ -208,6 +260,15 @@ jobs:
           for key, count in extra_addrs.most_common(10):
               mark = " OUR_DROPLET" if key in ours else ""
               print(f"{count:7d} {key}{mark}")
+          print("--- AionBot top IPs ---")
+          if not aion_ips:
+              print("(no user agent containing AionBot in this window)")
+          for ip, count in aion_ips.most_common(15):
+              marks = []
+              if ip in ours:
+                  marks.append("OUR_DROPLET_OR_RUNNER")
+              marks.append("cloudflare_edge" if is_cf(ip) else "direct_to_origin")
+              print(f"{count:7d} {ip} {' '.join(marks)}")
           print("--- top client IPs (remote_addr) ---")
           top_ips = per_ip.most_common(12)
           for ip, count in top_ips:
