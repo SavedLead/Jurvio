@@ -42,7 +42,10 @@ name: Lane watchdog (self-heal wedged scheduler workers)
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # Was every 15 minutes. The builder is a single 2 vCPU machine and this
+    # job only SSHes in to recreate an unhealthy worker. Half an hour still
+    # bounds a wedged worker, and it leaves more of the runner for CI.
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

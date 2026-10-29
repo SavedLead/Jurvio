@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   ingest-publish:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 60
     steps:

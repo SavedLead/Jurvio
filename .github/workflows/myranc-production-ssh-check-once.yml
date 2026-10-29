@@ -5,10 +5,14 @@ on:
     paths: [.github/workflows/myranc-production-ssh-check-once.yml]
 permissions:
   contents: read
+concurrency:
+  group: jurvio-myranc-production-ssh-check-once
+  cancel-in-progress: false
+
 jobs:
   inspect:
     environment: production
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 3
     env:
       SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

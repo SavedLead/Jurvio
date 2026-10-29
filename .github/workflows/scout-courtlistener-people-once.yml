@@ -4,8 +4,8 @@ name: Scout CourtListener people API (one-shot, read-only)
 # Article I (magistrate + bankruptcy) enrichment lane: how a judge record looks,
 # whether/where a portrait is exposed (has_photo / thumbnail), how positions
 # encode magistrate vs bankruptcy + court + termination, and how our stored cl_id
-# maps to a person. Runs on a GitHub-hosted runner using the CL API token secret
-# (no VPC needed). No writes.
+# maps to a person. Runs on the builder using the CL API token secret.
+# No writes.
 
 on:
   workflow_dispatch: {}
@@ -13,9 +13,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: jurvio-scout-courtlistener-people-once
+  cancel-in-progress: false
+
 jobs:
   scout:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 10
     env:

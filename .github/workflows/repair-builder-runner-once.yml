@@ -1,5 +1,8 @@
 name: Repair builder runner once
 
+# Stays on ubuntu-latest. It opens SSH to jurvio-builder-01 and restarts the
+# runner service. That only works from a machine that is not the dead runner.
+
 on:
   workflow_dispatch: {}
   push:
@@ -10,6 +13,10 @@ on:
 permissions:
   contents: read
   issues: write
+
+concurrency:
+  group: jurvio-repair-builder-runner-once
+  cancel-in-progress: false
 
 jobs:
   repair:

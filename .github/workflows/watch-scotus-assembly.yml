@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   watch:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 5
     steps:
       - name: Inspect and recover SCOTUS assembly

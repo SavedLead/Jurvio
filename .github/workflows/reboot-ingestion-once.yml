@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: jurvio-reboot-ingestion-once
+  cancel-in-progress: false
+
 jobs:
   reboot:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]

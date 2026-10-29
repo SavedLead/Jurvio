@@ -11,9 +11,13 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: jurvio-clear-phase-one-queue
+  cancel-in-progress: false
+
 jobs:
   clear:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

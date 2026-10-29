@@ -10,9 +10,13 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: jurvio-provision-public-web-once
+  cancel-in-progress: false
+
 jobs:
   provision:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 15
     env:

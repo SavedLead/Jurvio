@@ -1,5 +1,7 @@
 name: Audit district court public feeds
 
+# The weekly pass lives on web-01 as the district-court-source-scout scheduler
+# job. This workflow is the manual re-run. It no longer wakes the builder every Sunday.
 on:
   push:
     branches: [main]
@@ -7,9 +9,6 @@ on:
       - "scripts/audit-federal-district-court-feeds.ts"
       - ".github/workflows/district-court-source-audit.yml"
   workflow_dispatch:
-  schedule:
-    # After the PACER-recommended North American off-peak window begins.
-    - cron: "15 00 * * 0"
 
 permissions:
   contents: read
