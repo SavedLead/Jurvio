@@ -125,6 +125,9 @@ jobs:
 
           echo "=== non-idle sessions ==="
           q "SELECT pid,
+                    application_name,
+                    coalesce(client_addr::text, 'local') AS client_addr,
+                    backend_start,
                     state,
                     wait_event_type,
                     wait_event,
@@ -213,3 +216,7 @@ jobs:
           fi
           echo "=== DONE ==="
           REMOTE
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/config

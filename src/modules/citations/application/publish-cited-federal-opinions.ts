@@ -93,11 +93,17 @@ export function citedOpinionPublicationReasons(candidate: Candidate): string[] {
 export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
   const candidates=await sql<Candidate[]>`
     WITH visible_sources AS MATERIALIZED (
+      -- publication_current is the latest decision per object (migration 0124).
+      -- The old per-row ORDER BY on publication_decision re-read the corpus on
+      -- every 2-minute citation pass.
       SELECT d.id,d.case_id,content.content_hash FROM document d
-      JOIN legal_case c ON c.id=d.case_id JOIN document_content content ON content.document_id=d.id
+      JOIN legal_case c ON c.id=d.case_id
+      JOIN document_content content ON content.document_id=d.id
+      JOIN publication_current case_pub
+        ON case_pub.object_type='legal_case' AND case_pub.object_id=c.id AND case_pub.displayable
+      JOIN publication_current doc_pub
+        ON doc_pub.object_type='document' AND doc_pub.object_id=d.id AND doc_pub.displayable
       WHERE d.publication='published' AND c.publication='published'
-        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
-        AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
     ), public_citations AS MATERIALIZED (
       SELECT DISTINCT ref.citation_key,source.case_id FROM visible_sources source
       JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash
