@@ -40,11 +40,15 @@ describe("robots.txt", () => {
   it("opens crawling and advertises the sitemap once launched", () => {
     process.env.JURVIO_PUBLIC_LAUNCH = "true";
     const result = robots();
-    expect(result.rules).toEqual({
+    const rules = Array.isArray(result.rules) ? result.rules : [result.rules];
+    expect(rules).toContainEqual({ userAgent: "AionBot", disallow: "/" });
+    expect(rules).toContainEqual({ userAgent: "MJ12bot", disallow: "/" });
+    expect(rules).toContainEqual({
       userAgent: "*",
       allow: "/",
       disallow: ["/internal", "/in", "/preview", "/heartbeat"],
     });
+    expect(rules.some((rule) => /googlebot|bingbot/i.test(String(rule.userAgent)))).toBe(false);
     expect(result.sitemap).toBe("https://jurvio.com/sitemap.xml");
   });
 });

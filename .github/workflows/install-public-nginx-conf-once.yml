@@ -1,0 +1,197 @@
+name: Install public nginx conf (once)
+
+# Installs ops/nginx-jurvio.conf on jurvio-public-01 and a Cloudflare real_ip
+# snippet. confirm must be exactly INSTALL. nginx -t runs before reload.
+# A failed test restores the previous files and reloads those.
+#
+# CF-Connecting-IP is trusted only from Cloudflare source ranges
+# (set_real_ip_from). The job also prints whether the droplet firewall
+# already limits inbound 80/443 to Cloudflare.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type INSTALL to replace nginx on jurvio-public-01"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-public-nginx
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      PUBLIC_HOST: 10.116.0.5
+    steps:
+      - name: Require confirm=INSTALL
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "INSTALL" ]; then
+            echo "::error::Refusing to change nginx. Re-run with confirm=INSTALL."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Report how the origin accepts HTTP
+        run: |
+          set -euo pipefail
+          echo "=== real_ip trust ==="
+          echo "The installed snippet sets real_ip_header CF-Connecting-IP and set_real_ip_from only for Cloudflare ranges. Other peers keep their TCP address, so a direct client cannot spoof CF-Connecting-IP into the rate-limit key."
+          if [ -z "${DO_TOKEN:-}" ]; then
+            echo "DO token unset; droplet firewall was not read"
+            exit 0
+          fi
+          api=https://api.digitalocean.com/v2
+          auth=(-H "Authorization: Bearer $DO_TOKEN")
+          droplets="$(curl -fsS --max-time 20 "${auth[@]}" "$api/droplets?per_page=200")"
+          public_id="$(jq -r '.droplets[] | select(.name=="jurvio-public-01") | .id' <<<"$droplets" | head -1)"
+          test -n "$public_id" || { echo "::error::jurvio-public-01 not found"; exit 1; }
+          firewalls="$(curl -fsS --max-time 20 "${auth[@]}" "$api/firewalls?per_page=200")"
+          echo "=== jurvio-public-01 inbound 80/443 ==="
+          jq -r --argjson id "$public_id" '
+            .firewalls[]
+            | select((.droplet_ids // []) | index($id))
+            | .name as $name
+            | .inbound_rules[]?
+            | select(.protocol=="tcp" and (.ports=="80" or .ports=="443" or .ports=="80-443"))
+            | "firewall=\($name) ports=\(.ports) sources=\(.sources | tostring)"
+          ' <<<"$firewalls"
+          attached="$(jq -r --argjson id "$public_id" '[.firewalls[] | select((.droplet_ids // []) | index($id))] | length' <<<"$firewalls")"
+          world="$(jq -r --argjson id "$public_id" '
+            [.firewalls[]
+              | select((.droplet_ids // []) | index($id))
+              | .inbound_rules[]?
+              | select(.protocol=="tcp" and (.ports=="80" or .ports=="443" or .ports=="80-443"))
+              | .sources.addresses[]?
+              | select(.=="0.0.0.0/0" or .=="::/0")] | length
+          ' <<<"$firewalls")"
+          if [ "$attached" = "0" ]; then
+            echo "origin_http=no-droplet-firewall. With no DigitalOcean firewall, inbound 80/443 is open. Client-IP trust is the Cloudflare real_ip snippet, not the firewall."
+          elif [ "$world" != "0" ]; then
+            echo "origin_http=world-open. Inbound 80/443 allows 0.0.0.0/0 or ::/0. Client-IP trust is the Cloudflare real_ip snippet, not the firewall."
+          else
+            echo "origin_http=restricted. Inbound 80/443 has no 0.0.0.0/0 or ::/0 source. If those sources are only Cloudflare ranges, the origin is reachable only from Cloudflare. The real_ip snippet still trusts CF-Connecting-IP only from Cloudflare ranges."
+          fi
+
+      - name: Install nginx site and Cloudflare real_ip snippet
+        run: |
+          set -euo pipefail
+          v4="$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4)"
+          v6="$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6)"
+          python3 -c 'import ipaddress,sys
+          for line in sys.stdin:
+              line=line.strip()
+              if line:
+                  ipaddress.ip_network(line)
+          ' <<<"${v4}"$'\n'"${v6}"
+          {
+            echo "# Written by install-public-nginx-conf-once.yml. Do not trust CF-Connecting-IP from any other peer."
+            echo "real_ip_header CF-Connecting-IP;"
+            echo "real_ip_recursive on;"
+            while IFS= read -r cidr; do
+              [ -n "$cidr" ] && echo "set_real_ip_from ${cidr};"
+            done <<<"${v4}"$'\n'"${v6}"
+          } > /tmp/jurvio-cloudflare-real-ip.conf
+          target=""
+          if ssh "root@$PUBLIC_HOST" true; then
+            target="root"
+          elif ssh "$INGESTION_USER@$PUBLIC_HOST" true; then
+            target="$INGESTION_USER"
+          else
+            echo "::error::could not SSH to jurvio-public-01 at $PUBLIC_HOST"
+            exit 1
+          fi
+          echo "public_ssh_user=${target}"
+          scp ops/nginx-jurvio.conf "$target@$PUBLIC_HOST:/tmp/nginx-jurvio.conf"
+          scp /tmp/jurvio-cloudflare-real-ip.conf "$target@$PUBLIC_HOST:/tmp/jurvio-cloudflare-real-ip.conf"
+          if [ "$target" = "root" ]; then
+            remote=(ssh "$target@$PUBLIC_HOST" bash -s)
+          else
+            remote=(ssh "$target@$PUBLIC_HOST" sudo -n bash -s)
+          fi
+          "${remote[@]}" <<'REMOTE'
+          set -euo pipefail
+          site=/etc/nginx/sites-available/jurvio
+          enabled=/etc/nginx/sites-enabled/jurvio
+          snippet=/etc/nginx/conf.d/jurvio-cloudflare-real-ip.conf
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="/var/backups/jurvio-nginx-${stamp}"
+          mkdir -p "$backup"
+          if [ -f "$site" ]; then cp -a "$site" "$backup/jurvio"; else echo "no previous site file" | tee "$backup/jurvio.missing"; fi
+          if [ -f "$snippet" ]; then cp -a "$snippet" "$backup/jurvio-cloudflare-real-ip.conf"; fi
+          echo "backup=${backup}"
+          restore() {
+            echo "restoring ${backup}"
+            if [ -f "$backup/jurvio" ]; then cp -a "$backup/jurvio" "$site"; else rm -f "$site"; fi
+            if [ -f "$backup/jurvio-cloudflare-real-ip.conf" ]; then
+              cp -a "$backup/jurvio-cloudflare-real-ip.conf" "$snippet"
+            else
+              rm -f "$snippet"
+            fi
+            ln -sfn "$site" "$enabled"
+            nginx -t
+            systemctl reload nginx || nginx -s reload
+          }
+          install -m 644 /tmp/nginx-jurvio.conf "$site"
+          ln -sfn "$site" "$enabled"
+          install -m 644 /tmp/jurvio-cloudflare-real-ip.conf "$snippet"
+          if ! nginx -t; then
+            restore
+            exit 1
+          fi
+          systemctl reload nginx || nginx -s reload
+          echo "=== ufw ==="
+          ufw status verbose 2>/dev/null | head -n 40 || echo "(ufw status unavailable)"
+          home="$(curl -sk --max-time 30 --resolve jurvio.com:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://jurvio.com/ || echo curl_failed)"
+          echo "localhost_home=${home}"
+          pages="$(curl -sk --max-time 30 --resolve jurvio.com:443:127.0.0.1 https://jurvio.com/ || true)"
+          pages="${pages}"$'\n'"$(curl -sk --max-time 30 --resolve jurvio.com:443:127.0.0.1 https://jurvio.com/cases || true)"
+          pages="${pages}"$'\n'"$(curl -sk --max-time 30 --resolve jurvio.com:443:127.0.0.1 https://jurvio.com/sitemap.xml || true)"
+          case_path="$(printf '%s\n' "$pages" | grep -oE '/case/jv-[a-z0-9]{8,10}' | head -1 || true)"
+          if [ -z "$case_path" ]; then
+            echo "::error::no /case/jv- link in /, /cases, or /sitemap.xml"
+            restore
+            exit 1
+          fi
+          case_code="$(curl -sk --max-time 30 --resolve jurvio.com:443:127.0.0.1 -o /dev/null -w '%{http_code}' "https://jurvio.com${case_path}" || echo curl_failed)"
+          echo "localhost_case=${case_path} ${case_code}"
+          if [ "$home" != "200" ] || [ "$case_code" != "200" ]; then
+            echo "::error::localhost check wanted 200 for / and ${case_path}"
+            restore
+            exit 1
+          fi
+          echo "=== INSTALLED ==="
+          REMOTE
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/config /tmp/jurvio-cloudflare-real-ip.conf
