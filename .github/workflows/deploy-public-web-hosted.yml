@@ -38,7 +38,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.confirm == 'DEPLOY')
       }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 60
     environment: production
     env:

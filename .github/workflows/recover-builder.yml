@@ -1,5 +1,8 @@
 name: Recover builder runner
 
+# Stays on ubuntu-latest. It power-cycles jurvio-builder-01 when the
+# self-hosted runner is down, which a job on that runner cannot do.
+
 on:
   push:
     branches: [main]

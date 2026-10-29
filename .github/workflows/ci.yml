@@ -5,9 +5,9 @@ on:
   push:
     branches:
       - main
-    # Skip the heavy self-hosted build for pushes that only touch docs, one-off
-    # operational workflows, or read-only diagnostic scripts — none of which
-    # affect the application build. Keeps the serial builder free for real work.
+    # Docs and workflow-only pushes do not need a builder slot. Pull requests
+    # still verify. The builder is one 2 vCPU / 4 GB machine, so this keeps
+    # deploys from waiting on a docs commit.
     paths-ignore:
       - "**.md"
       - "scripts/diag/**"
@@ -23,11 +23,15 @@ concurrency:
 
 jobs:
   verify:
-    # CI is isolated from production and requires no private VPC access.
-    # Keep the DigitalOcean builder available for deploy, backup, restore, and audits.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # One job at a time on jurvio-builder-01 (2 vCPU / 4 GB). Postgres is a
+    # service container. Lint, typecheck, and tests stay under a 1 GB heap.
+    # The Next.js build is the peak and gets a separate 1.7 GB heap so it
+    # does not sit on top of a still-running lint process.
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 45
     env:
+      NODE_OPTIONS: --max-old-space-size=1024
+      NEXT_TELEMETRY_DISABLED: "1"
       DATABASE_URL: postgresql://jurvio:jurvio@localhost:5432/jurvio
       COURTLISTENER_API_BASE_URL: https://www.courtlistener.com/api/rest/v4
       JURVIO_ARTIFACT_ROOT: .data/artifacts
@@ -55,10 +59,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prefer-offline
       - run: pnpm db:migrate
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build:jobs
       - run: pnpm build
+        env:
+          NODE_OPTIONS: --max-old-space-size=1792

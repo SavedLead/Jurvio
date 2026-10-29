@@ -1,13 +1,14 @@
 name: Disk alarm (ingestion box)
 
 # Early-warning for the jurvio-web-01 disk so a fill-up is caught at 80-90%
-# instead of at 100% (which wedges postgres + workers). Hourly + on demand.
-# WARN at >=80%, FAIL the run (red -> GitHub notifies the owner) at >=90%.
-# Read-only: it never deletes anything.
+# instead of at 100% (which wedges postgres + workers). Every six hours, plus
+# on demand. WARN at >=80%, FAIL the run (red -> GitHub notifies the owner)
+# at >=90%. Read-only: it never deletes anything. It stays a workflow because
+# a red check is the notification; it does not need to occupy the builder hourly.
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       warn_pct:

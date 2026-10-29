@@ -1,6 +1,6 @@
 name: Vendor FJC roster snapshot
 
-# One-shot helper (GitHub-hosted, open internet) that downloads the authoritative
+# One-shot helper on the builder that downloads the authoritative
 # Federal Judicial Center roster CSVs and commits them under db/seed/fjc/. The
 # Dockerfile copies db/ into the image, so this vendored snapshot ships with the
 # app and the importer falls back to it when the production box cannot reach
@@ -14,9 +14,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: jurvio-vendor-fjc-roster
+  cancel-in-progress: false
+
 jobs:
   vendor:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

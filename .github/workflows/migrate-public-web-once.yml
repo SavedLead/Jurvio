@@ -10,6 +10,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: jurvio-migrate-public-web-once
+  cancel-in-progress: false
+
 jobs:
   migrate:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]

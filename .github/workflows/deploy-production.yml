@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   release-gate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     outputs:
       current: ${{ steps.resolve.outputs.current }}
       deploy: ${{ steps.resolve.outputs.deploy }}

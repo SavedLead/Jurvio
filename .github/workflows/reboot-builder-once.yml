@@ -1,6 +1,10 @@
 name: Reboot builder once
 
-# Hosted (ubuntu-latest) helper that power-cycles jurvio-builder-01 via the
+# Stays on ubuntu-latest. This job power-cycles jurvio-builder-01. A job
+# placed on that machine cannot reboot it, and cannot start when the runner
+# is already down.
+#
+# Hosted helper that power-cycles jurvio-builder-01 via the
 # DigitalOcean API. Inbound SSH to the builder is firewalled, so the only way
 # to run anything on it is a self-hosted job; but the runner exits after one
 # job and only re-registers on boot. Rebooting makes the runner come back and
