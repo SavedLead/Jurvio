@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { db } from "@/db/client";
-import { getPublicCase } from "@/modules/cases/application/get-public-case";
+import { loadRequestPublicCase } from "@/app/case/load-public-case";
 import {
   listPublicDocketEntries,
   listPublicDocuments,
@@ -22,7 +22,8 @@ import { CaseNav } from "@/modules/cases/ui/case-nav";
 import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import "./case-intelligence.css";
-import { caseCitationCounts, publicCitationTargets, relatedCitationCases } from "@/modules/citations/application/public-citations";
+import { loadCachedCaseCitations } from "@/modules/citations/application/cached-public-citations";
+import { publicCitationTargets } from "@/modules/citations/application/public-citations";
 import { citationCountLine } from "@/modules/citations/domain/citation-summary";
 import { CitedCaseText } from "@/modules/citations/ui/cited-case-text";
 import { CitationCaseList } from "@/modules/citations/ui/citation-case-list";
@@ -35,8 +36,7 @@ interface CasePageProps {
 
 async function loadCase(params: CasePageProps["params"]) {
   const { caseId } = await params;
-  if (!/^jv-[a-z0-9]{8,10}$/.test(caseId)) return null;
-  const legalCase = await getPublicCase(db(), caseId);
+  const legalCase = await loadRequestPublicCase(caseId);
   return legalCase ? { caseId, legalCase } : null;
 }
 
@@ -86,14 +86,13 @@ export default async function CasePage({ params }: CasePageProps) {
   if (!loaded) notFound();
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents, citedCases, citingCases, citationCounts] = await Promise.all([
+  const [docketEntries, parties, documents, citations] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
-    relatedCitationCases(sql, caseId, "cited"),
-    relatedCitationCases(sql, caseId, "citing"),
-    caseCitationCounts(sql, caseId),
+    loadCachedCaseCitations(caseId),
   ]);
+  const { cited: citedCases, citing: citingCases, counts: citationCounts } = citations;
   const verified = legalCase.verification === "verified";
   const statusDetails = verified ? visibleCaseStatusDetails(legalCase) : [];
   const outcome = verified ? formatVerifiedOutcome(legalCase.dispositionScope) : null;

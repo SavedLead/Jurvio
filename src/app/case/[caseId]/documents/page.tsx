@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { db } from "@/db/client";
-import { getPublicCase } from "@/modules/cases/application/get-public-case";
+import { loadRequestPublicCase } from "@/app/case/load-public-case";
 import { listPublicDocuments } from "@/modules/cases/application/list-public-case-sections";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import {
@@ -21,7 +21,7 @@ interface DocumentsPageProps { params: Promise<{ caseId: string }> }
 
 async function load(params: DocumentsPageProps["params"]) {
   const { caseId } = await params;
-  const legalCase = await getPublicCase(db(), caseId);
+  const legalCase = await loadRequestPublicCase(caseId);
   return legalCase ? { caseId, legalCase } : null;
 }
 

@@ -53,6 +53,11 @@ export const OPINION_SEARCH_PAGE_SIZE = 20;
 export const OPINION_SEARCH_CANDIDATE_CAP = 2_000;
 /** Per statement, well under the ~60s edge timeout, above a cold-cache spike. */
 export const OPINION_SEARCH_STATEMENT_TIMEOUT_MS = 8_000;
+/**
+ * Facet counts must not take the same budget as the keyword query. A warm
+ * cache returns immediately; a miss stops after this instead of another 8s.
+ */
+export const FACET_STATEMENT_TIMEOUT_MS = 1_500;
 
 const TIMEOUT_MARK = "JURVIO_QUERY_TIMED_OUT";
 const isoDate = /^\d{4}-\d{2}-\d{2}$/;
@@ -113,6 +118,32 @@ export function timeoutSearchResponse(filters: OpinionSearchFilters): OpinionSea
 
 export function emptyOpinionSearchFacets(): OpinionSearchFacets {
   return { courts: [], precedentialStatuses: [], opinionTypes: [], timedOut: true };
+}
+
+/**
+ * Keyword search keeps the 8s guard. Facets run only after that query returns
+ * a result, so a slow search does not also start an 8s facet scan. An empty
+ * search form has no keyword query, so both can run together.
+ */
+export async function settleSearchThenFacets(
+  active: boolean,
+  loadSearch: () => Promise<OpinionSearchResponse>,
+  loadFacets: () => Promise<OpinionSearchFacets>,
+): Promise<{ search: PromiseSettledResult<OpinionSearchResponse>; facets: PromiseSettledResult<OpinionSearchFacets> }> {
+  if (!active) {
+    const [search, facets] = await Promise.allSettled([loadSearch(), loadFacets()]);
+    return { search, facets };
+  }
+  const [search] = await Promise.allSettled([loadSearch()]);
+  if (!search) return { search: { status: "rejected", reason: new Error("search did not settle") }, facets: { status: "fulfilled", value: emptyOpinionSearchFacets() } };
+  const timedOut = search.status === "fulfilled"
+    ? Boolean(search.value.timedOut)
+    : readQueryTimeout(search.reason)?.scope === "search";
+  if (search.status === "rejected" || timedOut) {
+    return { search, facets: { status: "fulfilled", value: { courts: [], precedentialStatuses: [], opinionTypes: [] } } };
+  }
+  const [facets] = await Promise.allSettled([loadFacets()]);
+  return { search, facets: facets ?? { status: "fulfilled", value: emptyOpinionSearchFacets() } };
 }
 
 export function responseForSearchError(filters: OpinionSearchFilters, error: unknown): OpinionSearchResponse | null {
