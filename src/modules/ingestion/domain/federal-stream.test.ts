@@ -261,6 +261,25 @@ describe("federal ingestion stream controls", () => {
     expect(decision.reasons).toContain("missing_stable_identity");
   });
 
+  it("publishes metadata without opinion text only when that waiver is explicit", () => {
+    const shell = { ...publishable, hasReadableContent: false };
+    expect(evaluateFederalPublicationCandidate(shell).reasons).toContain("missing_readable_content");
+    expect(evaluateFederalPublicationCandidate(shell).eligible).toBe(false);
+    const waived = evaluateFederalPublicationCandidate(shell, { allowMissingReadableContent: true });
+    expect(waived.reasons).not.toContain("missing_readable_content");
+    expect(waived.eligible).toBe(true);
+  });
+
+  it("does not waive unverified courts when metadata-only publication is on", () => {
+    const decision = evaluateFederalPublicationCandidate(
+      { ...publishable, hasReadableContent: false, courtVerification: "not_verified" },
+      { allowMissingReadableContent: true },
+    );
+    expect(decision.eligible).toBe(false);
+    expect(decision.reasons).toContain("unverified_court_record");
+    expect(decision.reasons).not.toContain("missing_readable_content");
+  });
+
   it("marks restricted matters as restricted for publication downgrade", () => {
     const decision = evaluateFederalPublicationCandidate({
       ...publishable,

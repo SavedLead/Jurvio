@@ -136,6 +136,24 @@
   .opinionTextSurface[data-reader-size="large"] .opinionBody { font-size: 19px; }
   .opinionTextSurface .opinionBody { max-width: 100% !important; padding-right: 18px; padding-left: 18px; }
 }
+.opinionPendingNotice {
+  margin: 0 0 18px;
+  padding: 16px 18px;
+  border: 1px solid #e4d3b4;
+  border-left: 5px solid #8a5a12;
+  border-radius: 8px;
+  background: #fff8ee;
+}
+.opinionPendingNotice h2 {
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+}
+.opinionPendingNotice p {
+  margin: 0;
+  color: #3d3426;
+  line-height: 1.55;
+}
 @media (max-width: 380px) {
   .caseMeta { grid-template-columns: 1fr; }
   .caseMilestones li { grid-template-columns: 1fr; gap: 3px; }

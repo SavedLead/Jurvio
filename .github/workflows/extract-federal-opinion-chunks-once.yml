@@ -35,7 +35,7 @@ on:
       out_dir:
         description: "Directory on the box for chunk files (must be writable inside the worker container)"
         required: false
-        default: "/var/lib/jurvio/federal-chunks"
+        default: "/var/lib/jurvio/artifacts/federal-chunks"
         type: string
       detached:
         description: "Run the extractor detached on the box (frees the builder; output tees to a persistent logfile that survives workflow cancellation)"

@@ -216,6 +216,15 @@ export async function writeBulkOpinionGraph(
         updated_at = now()
     `;
 
+    // Opinion text now exists. A hold that existed only because the case had no
+    // readable content is stale; drop it so the publisher can re-evaluate the case.
+    // Holds with any other reason stay.
+    await tx`
+      DELETE FROM federal_publication_hold
+      WHERE case_id = ${join.caseInternalId}
+        AND reasons = ARRAY['missing_readable_content']::text[]
+    `;
+
     return resolvedDocumentId;
   });
 

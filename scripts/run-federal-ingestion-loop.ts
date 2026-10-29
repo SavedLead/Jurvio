@@ -116,6 +116,19 @@ const publicationDocumentCapActive = Number.isFinite(publicationMaxDocuments);
 const preferDocumentCandidates =
   process.argv.includes("--prefer-documents") || process.env.FEDERAL_PUBLICATION_PREFER_DOCUMENTS === "1";
 
+// Owner switch for issue #179: publish a verified case before its opinion text
+// exists. Default off. A sole `missing_readable_content` hold is re-opened only
+// while this is on; every other gate (court, provenance, sealed, collision) still
+// holds. Metadata-only rows are displayable and not indexable.
+const metadataWithoutTextRaw = option(
+  "publish-metadata-without-text",
+  process.env.JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT ?? "0",
+);
+if (metadataWithoutTextRaw !== "0" && metadataWithoutTextRaw !== "1") {
+  throw new Error("--publish-metadata-without-text must be 0 or 1");
+}
+const allowMetadataWithoutOpinionText = metadataWithoutTextRaw === "1";
+
 // A finite document cap forces single-threaded publication so the cumulative count is exact.
 const maxConcurrency = publicationDocumentCapActive
   ? 1
@@ -738,10 +751,19 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
       -- once under the new rule -- so a gate improvement (e.g. the court registry fix)
       -- lets previously held-but-now-eligible cases publish instead of being suppressed
       -- forever. Restricted cases have publication<>'draft' and are already excluded above.
+      -- SCOTUS belongs to the official pipeline (federalPublicationIncludesCourt).
+      -- Holding those rows here only records unverified_court_record.
+      AND lower(coalesce(court.provider_court_id, '')) <> 'scotus'
       AND NOT EXISTS (
         SELECT 1 FROM federal_publication_hold hold
         WHERE hold.case_id = legal_case.id
           AND hold.rule_version = ${FEDERAL_PUBLICATION_RULE_VERSION}
+          -- Mirrors federalHoldSuppressesCandidate: a sole missing-text hold is
+          -- re-opened only while metadata-only publication is explicitly enabled.
+          AND NOT (
+            ${allowMetadataWithoutOpinionText}
+            AND hold.reasons = ARRAY['missing_readable_content']::text[]
+          )
       )
       AND (
         -- Select the federal jurisdiction classes (including 'fs' specialized and 'fbp'
@@ -784,6 +806,11 @@ async function runPublicationAndQuarantine() {
   const holdReasons: Record<string, number> = {};
   const documentHoldReasons: Record<string, number> = {};
   let controllerState = initialConcurrencyState(adaptiveConfig);
+  console.log(JSON.stringify({
+    phase: "publication-quarantine",
+    publishMetadataWithoutOpinionText: allowMetadataWithoutOpinionText,
+    ruleVersion: FEDERAL_PUBLICATION_RULE_VERSION,
+  }));
   // Pilot opinion-document ceiling. Once publishedDocuments reaches publicationMaxDocuments
   // (finite only under --max-documents) we stop publishing further candidates this run.
   let documentCapReached = false;
@@ -796,6 +823,7 @@ async function runPublicationAndQuarantine() {
         return { ok: true };
       }
       await startIngestionRunItem(sql, runId, candidate.id);
+      const metadataOnly = allowMetadataWithoutOpinionText && !candidate.has_readable_content;
       const decision = evaluateFederalPublicationCandidate({
         caption: candidate.caption,
         docketNumber: candidate.docket_number,
@@ -817,7 +845,11 @@ async function runPublicationAndQuarantine() {
         providerScopedIdentifier: candidate.provider_scoped_identifier,
         sourceRecordResolvesIdentity: candidate.source_record_resolves_identity,
         courtCaseLinkageVerified: candidate.court_case_linkage_verified,
-      });
+      }, { allowMissingReadableContent: allowMetadataWithoutOpinionText });
+      const publicationReason = metadataOnly
+        ? "deterministic_federal_metadata_without_opinion_text"
+        : "deterministic_federal_source_validation";
+      const indexable = !metadataOnly;
       if (!decision.eligible) {
         held += 1;
         for (const reason of decision.reasons) {
@@ -861,8 +893,8 @@ async function runPublicationAndQuarantine() {
             object_type, object_id, displayable, indexable, machine_accessible,
             downloadable, summary_eligible, reason_code, rule_version
           )
-          SELECT 'legal_case', ${candidate.id}, true, true, true, false, false,
-            'deterministic_federal_source_validation', ${FEDERAL_PUBLICATION_RULE_VERSION}
+          SELECT 'legal_case', ${candidate.id}, true, ${indexable}, true, false, false,
+            ${publicationReason}, ${FEDERAL_PUBLICATION_RULE_VERSION}
           WHERE NOT COALESCE((
             SELECT displayable FROM publication_decision
             WHERE object_type = 'legal_case' AND object_id = ${candidate.id}

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { createGunzip } from "node:zlib";
@@ -15,6 +15,10 @@ import {
   type CourtListenerBulkOpinion,
 } from "@/modules/ingestion/providers/courtlistener/bulk-opinions";
 import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
+import {
+  federalChunkCorpusIsReadable,
+  resolveFederalChunkFile,
+} from "@/modules/ingestion/domain/federal-chunk-path";
 
 function argument(name: string, fallback: string): string {
   return process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
@@ -25,15 +29,26 @@ function optionalArgument(name: string): string | undefined {
   return value ? value.slice(name.length + 3) : undefined;
 }
 
-const snapshotDate = argument("snapshot-date", "").trim();
+const snapshotDate = argument("snapshot-date", process.env.JURVIO_FEDERAL_CHUNK_SNAPSHOT ?? "").trim();
 const maxChunksRaw = optionalArgument("max-chunks");
 const maxChunks = maxChunksRaw === undefined ? undefined : Number(maxChunksRaw);
 const staleMinutes = Number(argument("stale-minutes", "15"));
+// `all` is for the sole compose service: a start means the previous process is
+// dead, so an `importing` row is abandoned regardless of age. `stale` is the
+// manual/shared mode that will not steal a chunk from a live importer.
+const reclaimImporting = argument("reclaim-importing", process.env.JURVIO_FEDERAL_CHUNK_RECLAIM ?? "stale");
 // How often (in opinions) to flush running progress to the ledger so it is observable
 // mid-chunk from a separate read-only query without waiting for the job to finish.
 const progressInterval = Number(argument("progress-interval", "200"));
 
+if (snapshotDate === "") {
+  console.log(JSON.stringify({ phase: "disabled", reason: "JURVIO_FEDERAL_CHUNK_SNAPSHOT is unset" }));
+  process.exit(0);
+}
 if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) throw new Error("--snapshot-date=YYYY-MM-DD is required");
+if (reclaimImporting !== "stale" && reclaimImporting !== "all") {
+  throw new Error("--reclaim-importing must be stale or all");
+}
 if (maxChunks !== undefined && (!Number.isInteger(maxChunks) || maxChunks < 1)) {
   throw new Error("--max-chunks must be a positive integer");
 }
@@ -70,12 +85,34 @@ try {
         updated_at = now()
     WHERE snapshot_date = ${snapshotDate}
       AND status = 'importing'
-      AND updated_at < now() - ${`${staleMinutes} minutes`}::interval
+      AND (
+        ${reclaimImporting === "all"}
+        OR updated_at < now() - ${`${staleMinutes} minutes`}::interval
+      )
     RETURNING chunk_key
   `;
-  if (reclaimed.length > 0) console.log(JSON.stringify({ phase: "reclaim", reclaimed: reclaimed.length }));
+  if (reclaimed.length > 0) console.log(JSON.stringify({ phase: "reclaim", reclaimed: reclaimed.length, mode: reclaimImporting }));
 
-  const summary = await runFederalChunkImport(
+  // Sample the worklist before claiming. If every sampled file is gone (container
+  // recreate wiped the writable layer), leave the ledger untouched.
+  const sample = await sql<{ file_path: string }[]>`
+    SELECT file_path FROM federal_import_chunk
+    WHERE snapshot_date = ${snapshotDate}
+      AND status IN ('ready', 'failed')
+    ORDER BY chunk_index
+    LIMIT 8
+  `;
+  const corpusReadable = federalChunkCorpusIsReadable(sample.map((row) => row.file_path), existsSync);
+  if (!corpusReadable) {
+    console.error(JSON.stringify({
+      phase: "chunk-files-missing",
+      snapshotDate,
+      sample: sample.map((row) => row.file_path),
+      hint: "No chunk file from the sample is on disk. They were stored on the worker writable layer (/var/lib/jurvio/federal-chunks) and do not survive a container recreate. Re-extract onto /var/lib/jurvio/artifacts/federal-chunks. No chunks were claimed.",
+    }));
+  }
+
+  const summary = corpusReadable ? await runFederalChunkImport(
     {
       claimNext: async (excludeKeys) => {
         // Claim the next pending chunk NOT already tried this run (excludeKeys), so a
@@ -99,6 +136,18 @@ try {
         return row ?? null;
       },
       importChunk: async (chunk) => {
+        const resolvedPath = resolveFederalChunkFile(chunk.filePath, existsSync);
+        if (!resolvedPath) {
+          throw new Error(`chunk file missing: ${chunk.filePath}`);
+        }
+        if (resolvedPath !== chunk.filePath) {
+          await sql`
+            UPDATE federal_import_chunk
+            SET file_path = ${resolvedPath}, updated_at = now()
+            WHERE chunk_key = ${chunk.chunkKey}
+          `;
+          chunk.filePath = resolvedPath;
+        }
         // Verify the file against its recorded sha256 before trusting it (truncated or
         // corrupted extraction is caught here rather than importing partial data).
         const actualSha = createHash("sha256").update(await readFile(chunk.filePath)).digest("hex");
@@ -164,8 +213,17 @@ try {
         ),
     },
     { maxChunks },
-  );
+  ) : {
+    attempted: 0,
+    completed: 0,
+    failed: 0,
+    opinionsWritten: 0,
+    opinionsSkipped: 0,
+  };
 
+  if (!corpusReadable) {
+    // Already logged chunk-files-missing. Exit 0 so the service does not restart-loop.
+  } else {
   const elapsedMs = Date.now() - startedAt;
   const rate = elapsedMs > 0 ? Math.round((summary.opinionsWritten / elapsedMs) * 1000) : 0;
   console.log(
@@ -181,6 +239,7 @@ try {
       opinionsPerSecond: rate,
     }),
   );
+  }
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exitCode = 1;

@@ -198,8 +198,18 @@ export function orderFederalCourtsByPriority<T extends FederalCourtWorkload>(cou
   return [...courts].sort(compareFederalCourtPriority);
 }
 
+export interface FederalPublicationEvaluationOptions {
+  /**
+   * When true, a case that fails only because it has no opinion text or docket
+   * body may still publish. Every other check still applies. Default false.
+   * Issue #179: publish verified metadata before opinion text.
+   */
+  allowMissingReadableContent?: boolean;
+}
+
 export function evaluateFederalPublicationCandidate(
   candidate: FederalPublicationCandidate,
+  options: FederalPublicationEvaluationOptions = {},
 ): FederalPublicationDecision {
   const reasons: string[] = [];
   const restricted = isRestrictedDocketText(candidate.restrictedText);
@@ -234,7 +244,9 @@ export function evaluateFederalPublicationCandidate(
   if (!candidate.sourceRetrievedAt || Number.isNaN(Date.parse(candidate.sourceRetrievedAt))) {
     reasons.push("missing_retrieval_timestamp");
   }
-  if (!candidate.hasReadableContent) reasons.push("missing_readable_content");
+  if (!candidate.hasReadableContent && !options.allowMissingReadableContent) {
+    reasons.push("missing_readable_content");
+  }
   if (candidate.identityCollisionCount > 1) reasons.push("duplicate_identity_collision");
   if (candidate.unresolvedRejections > 0) reasons.push("unresolved_ingestion_rejection");
   if (restricted) reasons.push("restricted_or_sensitive");

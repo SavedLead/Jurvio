@@ -1,24 +1,15 @@
 name: SCOTUS freshness guard
 
-# Redundant production safety net for newly released Supreme Court opinions.
-# The on-box core scheduler already ingests SCOTUS every five minutes; this guard
-# independently runs the same idempotent ingest/enrich/publish/extract path so a
-# wedged or stale scheduler cannot leave a newly released opinion unpublished.
+# Manual repair only. The on-box core scheduler already runs the same idempotent
+# path: scotus-enriched every five minutes and scotus-publish every three minutes
+# (scripts/scheduler-jobs.ts). This workflow used to run on a 4-hour schedule with
+# a 20-minute job cap (#527). The repair step itself takes about 27-29 minutes
+# (runs 40437521053, 40419301760, 40389266736), so every scheduled run since that
+# cap was cancelled at 20 minutes and finished nothing while holding the only
+# builder. The schedule is retired. Dispatch this only when the on-box scheduler
+# is down and a current-term repair is needed.
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/scotus-freshness-guard.yml"
-  # Every 4 hours (jittered off the top of the hour). This is a REDUNDANT backstop --
-  # the on-box core scheduler already ingests SCOTUS every five minutes -- so it does not
-  # need to run every 15 minutes. At */15 on the single shared self-hosted builder, with a
-  # 60-minute timeout, each run could hold the builder for the better part of an hour and
-  # starve deploys/ingestion/publishing (observed repeatedly). Every 4 hours keeps the safety
-  # net while freeing the builder for the bulk ingestion/publishing work.
-  schedule:
-    - cron: '23 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -32,35 +23,25 @@ jobs:
   repair-and-verify:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    # Cut from 60 to 20 minutes: the repair cycle normally finishes in a few minutes, and a
-    # run that is going to hang should release the single shared builder quickly instead of
-    # squatting on it for an hour. The cycle is idempotent and resumable (--resume=true), so a
-    # 20-minute cap that stops a wedged run loses no durable progress.
-    timeout-minutes: 20
+    # Successful repairs before the 20-minute cap took 27-29 minutes. 45 covers that
+    # with headroom for a manual run. This job is no longer on a schedule.
+    timeout-minutes: 45
     env:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
-      - name: Configure SSH
-        run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          cat > ~/.ssh/config <<'CFG'
-          Host *
-            IdentityFile ~/.ssh/id_ed25519
-            BatchMode yes
-            ConnectTimeout 15
-            StrictHostKeyChecking accept-new
-          CFG
-          chmod 600 ~/.ssh/config
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
 
       - name: Run current-term SCOTUS repair cycle
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
 
@@ -95,7 +76,9 @@ jobs:
         if: github.event_name != 'schedule'
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
           pg="$(sudo -n docker ps \
             --filter 'label=com.docker.compose.project=jurvio' \
