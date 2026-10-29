@@ -49,6 +49,8 @@ export interface PublicCase {
   officialDocketUrl: string | null;
   lowerCourtName: string | null;
   lowerCourtDecidedOn: string | null;
+  /** True when a published document on this case has non-empty extracted text. */
+  hasReadableOpinion: boolean;
 }
 
 export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicCase | null> {
@@ -69,7 +71,14 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
       enrichment.exact_holding AS "exactHolding", enrichment.holding_source_url AS "holdingSourceUrl",
       enrichment.exact_disposition AS "exactDisposition", enrichment.disposition_source_url AS "dispositionSourceUrl",
       enrichment.decision_lineup AS "decisionLineup", enrichment.official_docket_url AS "officialDocketUrl",
-      enrichment.lower_court_name AS "lowerCourtName", enrichment.lower_court_decided_on::text AS "lowerCourtDecidedOn"
+      enrichment.lower_court_name AS "lowerCourtName", enrichment.lower_court_decided_on::text AS "lowerCourtDecidedOn",
+      EXISTS (
+        SELECT 1 FROM document d
+        JOIN document_content content ON content.document_id = d.id
+        WHERE d.case_id = c.id
+          AND d.publication = 'published'
+          AND length(btrim(content.content_text)) > 0
+      ) AS "hasReadableOpinion"
     FROM legal_case c
     JOIN court ON court.id = c.court_id
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = c.id AND enrichment.verification = 'verified'

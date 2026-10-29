@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { federalCourtRegistrationVerification } from "../domain/federal-court-registry";
 import { createPublicId } from "@/lib/ids/public-id";
 import {
   bulkDocketContentHash,
@@ -115,10 +116,14 @@ export async function ingestCourtListenerBulkFederalDockets(
         `;
         if (!artifact) throw new Error("Bulk docket artifact was not persisted");
 
-        await tx`
-          UPDATE court SET verification = 'verified', updated_at = now()
-          WHERE id = ${court.id} AND verification <> 'verified'
-        `;
+        // Promote only registry courts. A blanket verify here re-opened administrative
+        // tribunals and other excluded ids (ADR 0075).
+        if (federalCourtRegistrationVerification(docket.court_id) === "verified") {
+          await tx`
+            UPDATE court SET verification = 'verified', updated_at = now()
+            WHERE id = ${court.id} AND verification <> 'verified'
+          `;
+        }
 
         const [legalCase] = await tx<{ id: string; public_id: string }[]>`
           INSERT INTO legal_case (

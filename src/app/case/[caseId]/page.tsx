@@ -10,6 +10,12 @@ import {
   listPublicParties,
 } from "@/modules/cases/application/list-public-case-sections";
 import { formatPublicCaseDate, formatVerifiedOutcome, visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
+import {
+  OPINION_TEXT_PENDING_BODY,
+  OPINION_TEXT_PENDING_HEADING,
+  opinionTextIsPending,
+} from "@/modules/cases/domain/opinion-availability";
+import { robotsFor } from "@/lib/seo/indexing";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseNav } from "@/modules/cases/ui/case-nav";
@@ -55,6 +61,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
     openGraph: { title, description, type: "article" },
+    robots: robotsFor(loaded.legalCase.hasReadableOpinion),
   };
 }
 
@@ -92,6 +99,7 @@ export default async function CasePage({ params }: CasePageProps) {
   const outcome = verified ? formatVerifiedOutcome(legalCase.dispositionScope) : null;
   const supportingStatusDetails = outcome ? statusDetails.filter(([label]) => label !== "Disposition") : statusDetails;
   const readableDocuments = documents.filter((document) => document.hasReadableContent);
+  const opinionTextPending = opinionTextIsPending(legalCase.hasReadableOpinion);
   const sourceDocument = documents.find((document) => document.sourceDownloadUrl);
   const primaryOpinion = readableDocuments.find((document) => document.opinionType || document.documentType.includes("opinion")) ?? readableDocuments[0];
   const opinionPath = primaryOpinion ? `/case/${caseId}/documents/${primaryOpinion.publicId}` : null;
@@ -226,7 +234,9 @@ export default async function CasePage({ params }: CasePageProps) {
               <p className="sectionKicker">Case status</p>
               <dl className="railFacts">
                 <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
-                {readableDocuments.length > 0 ? <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div> : null}
+                {opinionTextPending
+                  ? <div><dt>Opinion text</dt><dd>Pending</dd></div>
+                  : <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div>}
                 {legalCase.decidedOn ? <div><dt>Decision date</dt><dd>{legalCase.decidedOn}</dd></div> : null}
                 {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
                 {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
@@ -245,6 +255,12 @@ export default async function CasePage({ params }: CasePageProps) {
         </aside>
 
         <div className="caseWorkspaceMain">
+          {opinionTextPending ? (
+            <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
+              <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
+              <p>{OPINION_TEXT_PENDING_BODY}</p>
+            </section>
+          ) : null}
           <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
             <p className="sectionKicker">Case intelligence</p>
             <h2 id="case-answers-title">{recentlyFiled ? "This case was recently filed" : "What the verified record tells us"}</h2>
@@ -275,7 +291,11 @@ export default async function CasePage({ params }: CasePageProps) {
             ) : (
               <p className="verifiedFactSummary">
                 The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as {legalCase.courtName} docket {legalCase.docketNumber}.
-                {readableDocuments.length > 0 ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.` : ""}
+                {opinionTextPending
+                  ? ` ${OPINION_TEXT_PENDING_BODY}`
+                  : readableDocuments.length > 0
+                    ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.`
+                    : ""}
               </p>
             )}
             {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{linkedText(legalCase.backgroundSummary)}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}

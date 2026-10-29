@@ -1,0 +1,91 @@
+name: Enable federal metadata publication (once)
+
+# Owner switch for issue #179. Does not publish a batch by itself.
+#
+# mode=enable writes JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT=1 into
+# /opt/jurvio/.env.production and recreates worker-core so the resident
+# federal-publication scheduler (every 12 minutes, up to 25,000 cases a cycle)
+# publishes cases whose only hold is missing_readable_content. Those pages say
+# the opinion text is pending and are not indexable.
+#
+# mode=disable removes the flag and recreates worker-core. Cases already
+# published stay published.
+#
+# If JURVIO_PAUSE_FEDERAL_PUBLICATION=1, the scheduler no-ops until that pause
+# is cleared (set-federal-publication-pause-once.yml, mode=resume).
+#
+#    gh workflow run enable-federal-metadata-publication-once.yml -f mode=enable
+#
+# Leave this unrun until David Rosenberg decides to publish the held cases.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "enable or disable metadata-only federal publication"
+        required: true
+        type: choice
+        options: [enable, disable]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  set-flag:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Set the metadata publication flag
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          case "$MODE" in enable|disable) ;; *) echo "::error::mode must be enable or disable"; exit 1;; esac
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "MODE='$MODE' bash -s" <<'REMOTE'
+          set -euo pipefail
+          MODE="${MODE:?}"
+          cd /opt/jurvio
+          ENVF=/opt/jurvio/.env.production
+          COMPOSE=/opt/jurvio/docker-compose.production.yml
+          FLAG=JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT
+          [ -f "$ENVF" ] || { echo "::error::$ENVF not found"; exit 1; }
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a "$ENVF" "${ENVF}.bak-${ts}"
+          echo "backed up $ENVF -> ${ENVF}.bak-${ts}"
+          sudo -n sed -i "/^${FLAG}=/d" "$ENVF"
+          if [ "$MODE" = "enable" ]; then
+            printf '%s=1\n' "$FLAG" | sudo -n tee -a "$ENVF" >/dev/null
+            echo "enabled: ${FLAG}=1"
+          else
+            echo "disabled: ${FLAG} removed"
+          fi
+          echo "--- pause flags (publication no-ops while FEDERAL pause is 1) ---"
+          grep -E '^JURVIO_PAUSE_(CITATION_PUBLISH|FEDERAL_PUBLICATION)=' "$ENVF" || echo "(no pause flags)"
+          echo "--- metadata flag ---"
+          grep -E "^${FLAG}=" "$ENVF" || echo "(metadata flag absent)"
+
+          app="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo "::error::no app container to derive JURVIO_IMAGE"; exit 1; }
+          IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$app")"
+          case "$IMG" in *jurvio*) ;; *) echo "::error::image is not jurvio (${IMG})"; exit 1;; esac
+          DB_BIND="$(grep -E '^JURVIO_DATABASE_BIND=' "$ENVF" | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+          [ -n "$DB_BIND" ] || { echo "::error::JURVIO_DATABASE_BIND missing"; exit 1; }
+          echo "recreating worker-core so the scheduler reads the flag (image ${IMG})"
+          sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$DB_BIND" \
+            docker compose -f "$COMPOSE" up -d --no-deps --force-recreate worker-core
+          echo "=== DONE ==="
+          REMOTE

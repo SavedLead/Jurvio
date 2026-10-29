@@ -42,26 +42,18 @@ jobs:
       MAX_ITEMS: ${{ inputs.max_items }}
       MAX_CC: ${{ inputs.max_concurrency }}
     steps:
-      - name: Configure SSH
-        run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          cat > ~/.ssh/config <<'CFG'
-          Host *
-            IdentityFile ~/.ssh/id_ed25519
-            BatchMode yes
-            ConnectTimeout 15
-            StrictHostKeyChecking accept-new
-          CFG
-          chmod 600 ~/.ssh/config
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
       - name: Full-speed publication drain over private VPC
         run: |
           set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
           case "${MAX_ITEMS:-100000}" in ''|*[!0-9]*) echo "::error::max_items must be numeric"; exit 1;; esac
           case "${MAX_CC:-8}" in ''|*[!0-9]*) echo "::error::max_concurrency must be numeric"; exit 1;; esac
-          ssh "$INGESTION_USER@$DB_HOST" "MAX_ITEMS='${MAX_ITEMS:-100000}' MAX_CC='${MAX_CC:-8}' bash -se" <<'REMOTE'
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "MAX_ITEMS='${MAX_ITEMS:-100000}' MAX_CC='${MAX_CC:-8}' bash -se" <<'REMOTE'
           set -uo pipefail
           MAX="${MAX_ITEMS:-100000}"; CC="${MAX_CC:-8}"
           find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }

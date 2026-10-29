@@ -153,6 +153,35 @@ services:
       - jurvio_artifacts:/var/lib/jurvio/artifacts
     networks: [private]
 
+  # Sole federal opinion-chunk importer. The ledger in federal_import_chunk is the
+  # resume cursor: a crash (restart: on-failure) reclaims an abandoned 'importing'
+  # row and continues. A clean exit (queue drained, or chunk files missing) stays
+  # stopped so this does not hot-loop. Chunk files must live on the artifacts
+  # volume; the legacy container-layer path is copied onto that volume at release.
+  # Heap is capped at 768MB — the previous detached launcher set 8GB inside
+  # worker-core and could OOM the scheduler container on this box.
+  worker-federal-import:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: on-failure:20
+    init: true
+    command: ["node", "jobs/import-federal-opinion-chunks.mjs", "--reclaim-importing=all"]
+    env_file: .env.production
+    environment:
+      TZ: America/New_York
+      NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=768"
+      JURVIO_DB_POOL_MAX: "4"
+      JURVIO_FEDERAL_CHUNK_SNAPSHOT: ${JURVIO_FEDERAL_CHUNK_SNAPSHOT:-2026-09-30}
+      JURVIO_FEDERAL_CHUNK_RECLAIM: all
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
   worker-supervisor:
     image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
     restart: unless-stopped

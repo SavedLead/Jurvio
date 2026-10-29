@@ -21,7 +21,7 @@ function argument(name: string, fallback: string): string {
 
 const snapshotDate = argument("snapshot-date", "").trim();
 const baseUrl = argument("base-url", DEFAULT_BULK_BASE_URL).trim();
-const outRoot = argument("out-dir", "/var/lib/jurvio/federal-chunks").trim();
+const outRoot = argument("out-dir", "/var/lib/jurvio/artifacts/federal-chunks").trim();
 const chunkSize = Number(argument("chunk-size", "25000"));
 
 if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) throw new Error("--snapshot-date=YYYY-MM-DD is required");
