@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import postgres from "postgres";
+import { splitMigrationChunks } from "./migration-chunks.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
@@ -18,7 +19,11 @@ try {
   for (const name of names) {
     const [applied] = await sql`SELECT 1 FROM schema_migration WHERE name = ${name}`;
     if (applied) continue;
-    await sql.unsafe(await readFile(path.join(directory, name), "utf8"));
+    // Each chunk is its own simple-protocol query, so it commits before the next
+    // chunk starts. That is what lets a later chunk run CREATE INDEX CONCURRENTLY.
+    for (const chunk of splitMigrationChunks(await readFile(path.join(directory, name), "utf8"))) {
+      await sql.unsafe(chunk);
+    }
     await sql`INSERT INTO schema_migration (name) VALUES (${name})`;
     process.stdout.write(`Applied ${name}\n`);
   }

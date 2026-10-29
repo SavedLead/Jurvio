@@ -7,7 +7,10 @@ NEW_IMAGE=${JURVIO_IMAGE:?JURVIO_IMAGE is required}
 PREVIOUS_IMAGE=""
 BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-1800}
 PULL_TIMEOUT_SECONDS=${PULL_TIMEOUT_SECONDS:-900}
-MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-300}
+# 0124 builds a concurrent index and backfills search visibility on the live
+# opinion corpus. 300s can kill that mid-build and leave an INVALID index.
+# 1800s matches the pre-migration backup budget.
+MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-1800}
 START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-180}
 
 diagnose() {
