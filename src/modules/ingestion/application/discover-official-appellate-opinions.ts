@@ -6,7 +6,29 @@ import type { AppellateCourtSource } from "../providers/appellate/registry";
 type Sql = ReturnType<typeof postgres>;
 
 export async function discoverOfficialAppellateOpinions(sql: Sql, court: AppellateCourtSource) {
-  const listing = await fetchOfficialAppellateListing(court);
+  const [prior] = await sql<{ listing_etag: string | null; listing_last_modified: string | null }[]>`
+    SELECT listing_etag, listing_last_modified
+    FROM appellate_source_registry
+    WHERE court_code = ${court.code}
+  `;
+  const listing = await fetchOfficialAppellateListing(court, {
+    etag: prior?.listing_etag,
+    lastModified: prior?.listing_last_modified,
+  });
+  if (listing.notModified) {
+    await sql`
+      UPDATE appellate_source_registry SET
+        last_successful_retrieval = ${listing.retrievedAt},
+        listing_etag = COALESCE(${listing.etag}, listing_etag),
+        listing_last_modified = COALESCE(${listing.lastModified}, listing_last_modified),
+        health_state = 'healthy',
+        consecutive_failures = 0,
+        next_poll_at = now() + interval '5 minutes',
+        updated_at = now()
+      WHERE court_code = ${court.code}
+    `;
+    return { court: court.code, notModified: true, retrieved: 0, discovered: 0, seen: 0, costCents: 0 };
+  }
   const checkpoint = createHash("sha256").update(listing.body).digest("hex");
   let discovered = 0;
   let seen = 0;
@@ -35,6 +57,8 @@ export async function discoverOfficialAppellateOpinions(sql: Sql, court: Appella
       UPDATE appellate_source_registry SET
         checkpoint = ${checkpoint},
         last_successful_retrieval = ${listing.retrievedAt},
+        listing_etag = COALESCE(${listing.etag}, listing_etag),
+        listing_last_modified = COALESCE(${listing.lastModified}, listing_last_modified),
         health_state = 'healthy',
         consecutive_failures = 0,
         next_poll_at = now() + interval '5 minutes',

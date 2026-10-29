@@ -155,6 +155,22 @@ const runawayItemLimit = Math.max(
     intSetting("max-items", "FEDERAL_RUNAWAY_ITEM_LIMIT", FEDERAL_DEFAULT_RUNAWAY_ITEM_LIMIT),
   ),
 );
+// Active cases re-fetch stored dockets. A few hundred per cycle is enough to
+// rotate the open set; 15,000 re-downloaded the oldest slice for days.
+const ACTIVE_CASE_CAP = 300;
+const activeCaseLimit = Math.min(runawayItemLimit, ACTIVE_CASE_CAP);
+
+// The scheduler kills the process at JURVIO_JOB_BUDGET_MS. Stop pulling new
+// work 30 seconds earlier so the checkpoint is written and the process exits.
+const configuredBudgetMs = Number(process.env.JURVIO_JOB_BUDGET_MS ?? "");
+const jobDeadlineMs = Date.now() + (
+  Number.isFinite(configuredBudgetMs) && configuredBudgetMs > 0
+    ? Math.max(15_000, configuredBudgetMs - 30_000)
+    : 18 * 60_000
+);
+function withinBudget(): boolean {
+  return Date.now() < jobDeadlineMs;
+}
 
 const adaptiveConfig: AdaptiveConcurrencyConfig = resolveAdaptiveConfig({
   start: startConcurrency,
@@ -235,7 +251,7 @@ async function processArrayWithPool<T>(
   const result = await runAdaptiveWorkerPool<T>({
     config: adaptiveConfig,
     initialState: state,
-    pull: async () => (cursor < items.length ? items[cursor++] : undefined),
+    pull: async () => (withinBudget() && cursor < items.length ? items[cursor++] : undefined),
     handle,
   });
   return result.finalState;
@@ -348,7 +364,7 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
     // idempotent, so at-least-once re-processing is safe). We keep going until the source
     // window is exhausted OR the runaway safety bound is reached.
     let courtlistenerUnauthorized = false;
-    while (discovered < runawayItemLimit) {
+    while (discovered < runawayItemLimit && withinBudget()) {
       let page: Awaited<ReturnType<typeof fetchDocketPage>>;
       try {
         page = await fetchDocketPage(kind === "historical-backfill"
@@ -469,20 +485,22 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
 
 async function runActiveUpdates() {
   const rows = await sql<{ docket_id: string }[]>`
-    SELECT identifier_value AS docket_id
-    FROM case_identifier
-    JOIN legal_case ON legal_case.id = case_identifier.case_id
+    SELECT identifier.identifier_value AS docket_id
+    FROM legal_case
+    JOIN case_identifier identifier ON identifier.case_id = legal_case.id
     JOIN court ON court.id = legal_case.court_id
-    WHERE case_identifier.identifier_type = 'courtlistener_docket_id'
-      AND case_identifier.provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
+    WHERE identifier.identifier_type = 'courtlistener_docket_id'
+      AND identifier.provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
+      AND legal_case.terminated_on IS NULL
+      AND legal_case.activity_state = 'active'
       AND legal_case.publication <> 'restricted'
       AND (
         lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
       )
-    ORDER BY legal_case.source_updated_at ASC NULLS FIRST
-    LIMIT ${runawayItemLimit}
+    ORDER BY legal_case.last_fetched_at NULLS FIRST, legal_case.id
+    LIMIT ${activeCaseLimit}
   `;
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
@@ -537,6 +555,33 @@ async function runActiveUpdates() {
   };
 }
 
+async function unseenClusterIds(providerId: string | undefined, ids: number[]): Promise<number[]> {
+  if (!providerId || ids.length === 0) return ids;
+  const rows = await sql<{ id: string }[]>`
+    SELECT provider_cluster_id AS id
+    FROM opinion_cluster
+    WHERE provider_id = ${providerId}
+      AND provider_cluster_id = ANY(${ids.map(String)}::text[])
+  `;
+  const seen = new Set(rows.map((row) => row.id));
+  return ids.filter((id) => !seen.has(String(id)));
+}
+
+async function rememberClusterWatermark(providerCourtId: string, newestClusterId: number): Promise<void> {
+  const value = String(newestClusterId);
+  await sql`
+    INSERT INTO federal_cluster_watermark (provider_court_id, newest_cluster_id, updated_at)
+    VALUES (${providerCourtId}, ${value}, now())
+    ON CONFLICT (provider_court_id) DO UPDATE SET
+      newest_cluster_id = CASE
+        WHEN EXCLUDED.newest_cluster_id::bigint > federal_cluster_watermark.newest_cluster_id::bigint
+          THEN EXCLUDED.newest_cluster_id
+        ELSE federal_cluster_watermark.newest_cluster_id
+      END,
+      updated_at = now()
+  `;
+}
+
 async function runMaterialDecisions() {
   // Rank courts SCOTUS -> circuits -> districts (busiest-first). SCOTUS also has its own
   // dedicated lane; ranking it first here is defensive. "Busiest" = recent docket-entry
@@ -588,8 +633,11 @@ async function runMaterialDecisions() {
   // Discover cluster ids in priority order, capped per court and by the runaway bound.
   const filedAfter = isoDaysAgo(lookbackDays).slice(0, 10);
   const clusterIds: number[] = [];
+  const [clusterProvider] = await sql<{ id: string }[]>`
+    SELECT id FROM provider WHERE code = 'courtlistener'
+  `;
   for (const court of orderedCourts) {
-    if (clusterIds.length >= runawayItemLimit) break;
+    if (!withinBudget() || clusterIds.length >= runawayItemLimit) break;
     const remaining = runawayItemLimit - clusterIds.length;
     const ids = await fetchOpinionClusterIds({
       courtCode: court.providerCourtId,
@@ -597,7 +645,16 @@ async function runMaterialDecisions() {
       limit: Math.min(MATERIAL_PER_COURT_DISCOVERY_CAP, remaining),
       order: "newest",
     });
-    for (const id of ids) clusterIds.push(id);
+    const fresh = await unseenClusterIds(clusterProvider?.id, ids);
+    const newest = ids.reduce((max, id) => Math.max(max, id), 0);
+    if (newest > 0) await rememberClusterWatermark(court.providerCourtId, newest);
+    console.log(JSON.stringify({
+      materialCourt: court.providerCourtId,
+      listed: ids.length,
+      alreadyStored: ids.length - fresh.length,
+      ingesting: fresh.length,
+    }));
+    for (const id of fresh) clusterIds.push(id);
   }
 
   let opinions = 0;
@@ -666,6 +723,29 @@ type PublicationCandidate = {
   court_case_linkage_verified: boolean;
 };
 
+async function attachRestrictedText(candidates: PublicationCandidate[]): Promise<void> {
+  if (candidates.length === 0) return;
+  const ids = candidates.map((candidate) => candidate.id);
+  const rows = await sql<{ case_id: string; body: string | null }[]>`
+    SELECT case_id, string_agg(text, ' ') AS body
+    FROM (
+      SELECT case_id, coalesce(description, '') AS text
+      FROM docket_entry
+      WHERE case_id = ANY(${ids}::uuid[])
+      UNION ALL
+      SELECT case_id, coalesce(title, '') AS text
+      FROM document
+      WHERE case_id = ANY(${ids}::uuid[])
+    ) parts
+    GROUP BY case_id
+  `;
+  const byCase = new Map(rows.map((row) => [row.case_id, row.body ?? ""]));
+  for (const candidate of candidates) {
+    const extra = byCase.get(candidate.id);
+    if (extra) candidate.restricted_text = `${candidate.restricted_text} ${extra}`;
+  }
+}
+
 async function selectPublicationCandidates(limit: number): Promise<PublicationCandidate[]> {
   return await sql<PublicationCandidate[]>`
     SELECT legal_case.id, legal_case.caption, legal_case.docket_number,
@@ -714,12 +794,7 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
         )
       ) AS has_readable_content,
       (SELECT count(*)::int FROM document WHERE case_id = legal_case.id) AS document_count,
-      concat_ws(' ', legal_case.caption, legal_case.docket_number,
-        (SELECT string_agg(coalesce(entry.description, ''), ' ')
-         FROM docket_entry entry WHERE entry.case_id = legal_case.id),
-        (SELECT string_agg(coalesce(document.title, ''), ' ')
-         FROM document WHERE document.case_id = legal_case.id)
-      ) AS restricted_text,
+      concat_ws(' ', legal_case.caption, legal_case.docket_number) AS restricted_text,
       -- Validated alternative identity (for docket-less records): the provider-scoped CL
       -- docket id, whether it resolves to the retrieved source record, and whether the
       -- court/case linkage is verified via a provider-scoped case identifier.
@@ -948,10 +1023,11 @@ async function runPublicationAndQuarantine() {
     // Drain in bounded chunks. Every processed row leaves the draft/not-needs_review
     // predicate (it becomes published or needs_review), so the same LIMITed query
     // returns the next slice each pass until the queue is empty or the runaway cap hits.
-    while (discovered < runawayItemLimit) {
+    while (discovered < runawayItemLimit && withinBudget()) {
       const chunkSize = Math.min(PUBLICATION_CHUNK_SIZE, runawayItemLimit - discovered);
       const candidates = await selectPublicationCandidates(chunkSize);
       if (candidates.length === 0) break;
+      await attachRestrictedText(candidates);
       discovered += candidates.length;
       controllerState = await processArrayWithPool(candidates, handle, controllerState);
       // Stop drawing further chunks once the bounded document ceiling is reached.

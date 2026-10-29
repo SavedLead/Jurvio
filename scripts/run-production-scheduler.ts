@@ -68,6 +68,7 @@ function run(job: ScheduledJob): void {
       ...process.env,
       RAW_ARTIFACT_DIR: artifactRoot,
       JURVIO_ARTIFACT_ROOT: artifactRoot,
+      JURVIO_JOB_BUDGET_MS: String(job.budgetMs),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -89,9 +90,19 @@ function run(job: ScheduledJob): void {
   // cleaned up in the `close` handler, so a spawn error (where `close` may never
   // fire) would leave the lane wedged as permanently "running" and skipped forever.
   let settled = false;
+  let forceTimer: NodeJS.Timeout | undefined;
+  const budgetTimer = setTimeout(() => {
+    logStatus(job.name, `budget ${job.budgetMs}ms exceeded; stopping child`);
+    child.kill("SIGTERM");
+    forceTimer = setTimeout(() => {
+      if (!settled) child.kill("SIGKILL");
+    }, 10_000);
+  }, job.budgetMs);
   const settle = (code: number | null, signal: NodeJS.Signals | null, extraTail: string | null): void => {
     if (settled) return;
     settled = true;
+    clearTimeout(budgetTimer);
+    if (forceTimer) clearTimeout(forceTimer);
     running.delete(job.name);
     output.end();
     logStatus(job.name, `finished: code=${code ?? "null"} signal=${signal ?? "none"}`);
