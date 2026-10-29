@@ -47,9 +47,10 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   },
   {
     // Fills case_citation_count so a case page does not scan every posting
-    // for a popular reporter key. Separate from the citation-graph lock.
-    // The corpus pass is one heavy statement, so it runs every 2 hours
-    // instead of sitting on Postgres for half of each hour.
+    // for a popular reporter key. Separate advisory lock from the citation
+    // graph and from the sitemap job. Batches commit as they finish; the
+    // one-statement refresh left the table empty until the whole corpus
+    // distinct committed, which had not happened 13 minutes after restart.
     lane: "citations",
     name: "citation-count-snapshot",
     initialDelayMs: 4 * minute,

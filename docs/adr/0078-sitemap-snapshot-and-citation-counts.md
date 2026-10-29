@@ -11,7 +11,7 @@ The case-page citation total was still about 4.8 seconds after the distinct-docu
 ## Decision
 
 1. The sitemap job writes each page from the ids it just read and publishes the index after that page. A later timeout leaves the pages already stored.
-2. `case_citation_count` (migration 0129) holds cited, cited-on-Jurvio, and cited-by per case. The case page reads that row. A missing table or a missing row still runs the live query, so tests and not-yet-refreshed cases keep a number. `citation-count-snapshot` on the citations lane refreshes the table every two hours, under its own advisory lock, with a 20-minute statement timeout.
+2. `case_citation_count` (migration 0129) holds cited, cited-on-Jurvio, and cited-by per case. The case page reads that row. A missing table or a missing row still runs the live query, so tests and not-yet-refreshed cases keep a number. `citation-count-snapshot` on the citations lane refreshes the table every two hours under its own advisory lock (`jurvio-case-citation-counts-v1`), which is not the citation-graph lock and not the sitemap lock. The first release wrote every row in one statement. That insert commits only at the end, so on the cd1b816 deploy the table was still empty 13 minutes after the worker restarted and case pages still took about 4.7 seconds. The job now commits about 100 cases at a time. A 45-second timeout shrinks the batch. A single case that still times out is skipped and keeps the live query.
 3. Core-lane work is staggered and capped, and ingestion jobs stay scheduled. SCOTUS pre-500 and Library of Congress backfill move from every 5 minutes to every 20 and start apart. Enriched SCOTUS drops from 5,000 every 5 minutes to 1,000 every 20. SCOTUS publish drops from 2,000 every 3 minutes to 500 every 10. Judge matching drops from 5,000 to 1,000 per pass. USAO attribution drops from 10,000 every 30 minutes to 2,000 every 60. Federal discovery, material decisions, active-case updates, and historical backfill drop from concurrency 14 to 4. The court-of-appeals lane is unchanged.
 4. Cloudflare range fetches send `User-Agent: Jurvio-Diagnostic/1.0 (contact@jurvio.com)` and fall back to `ops/cloudflare-ip-ranges.txt`. The public nginx log format records `CF-Connecting-IP`. Restricting `jurvio-public-web-bootstrap` so ports 80 and 443 accept only Cloudflare ranges is a separate workflow that keeps SSH and does not run with this change.
 
@@ -25,7 +25,7 @@ The case-page citation total was still about 4.8 seconds after the distinct-docu
 ## Costs and risks
 
 - Citation totals can lag the graph by up to two hours. The refresh uses `publication_current.displayable` only; the live fallback also accepts the latest `publication_decision` when the mirror row is missing, so a case not yet in the table can differ slightly until the job writes it.
-- The refresh is one statement. If it exceeds 20 minutes it rolls back and pages keep the live query.
+- A batch that times out is retried smaller. One skipped case stays on the live query; earlier batches stay stored. The pass can run long enough that the next two-hour tick is skipped while it is still going.
 - The first sitemap pass can still take a long time. Pages appear as each one is stored, instead of only at the end.
 - Embedded Cloudflare ranges go stale. Workflows try the live list first.
 
