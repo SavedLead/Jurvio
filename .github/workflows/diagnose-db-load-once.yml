@@ -1,0 +1,215 @@
+name: Diagnose DB load (once, read-only)
+
+# Read-only snapshot of what is keeping public keyword search on the 8s guard.
+# No writes, no ANALYZE, no restarts, no publication changes.
+#
+# Prints non-idle sessions (duration and wait event), blocked lock pairs,
+# pg_stat_statements if the extension is installed, container CPU/memory,
+# whether migration 0124/0125 are recorded, whether the GIN index is valid,
+# the triggers on opinion_search_projection, and EXPLAIN (not EXPLAIN ANALYZE)
+# of the keyword search shape for a chosen term and for "securities".
+
+on:
+  workflow_dispatch:
+    inputs:
+      explain_query:
+        description: "Term for the search EXPLAIN (letters, numbers, spaces; default Callais)"
+        required: false
+        default: "Callais"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-db-load
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      EXPLAIN_QUERY: ${{ inputs.explain_query }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Read database load over private VPC
+        run: |
+          set -euo pipefail
+          QUERY="${EXPLAIN_QUERY:-Callais}"
+          case "$QUERY" in
+            *[!A-Za-z0-9\ ]*) echo "::error::explain_query may contain only letters, numbers, and spaces"; exit 1;;
+          esac
+          if [ "${#QUERY}" -lt 2 ] || [ "${#QUERY}" -gt 80 ]; then
+            echo "::error::explain_query must be 2-80 characters"; exit 1
+          fi
+          ssh "$INGESTION_USER@$DB_HOST" "EXPLAIN_QUERY=$(printf '%q' "$QUERY") bash -s" <<'REMOTE'
+          set -uo pipefail
+          EXPLAIN_QUERY="${EXPLAIN_QUERY:-Callais}"
+          find_svc() {
+            sudo -n docker ps -a \
+              --filter 'label=com.docker.compose.project=jurvio' \
+              --filter "label=com.docker.compose.service=$1" \
+              --format '{{.ID}}' | head -n1
+          }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres container missing"; exit 1; }
+          q() {
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
+              psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "$1" || echo "(query failed)"
+          }
+
+          echo "=== containers ==="
+          sudo -n docker ps -a \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --format 'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}' || echo "(docker ps failed)"
+
+          echo "=== docker stats (one snapshot) ==="
+          sudo -n docker stats --no-stream \
+            --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' || echo "(docker stats failed)"
+
+          importer="$(find_svc worker-federal-import)"
+          echo "=== worker-federal-import log tail ==="
+          if [ -n "$importer" ]; then
+            sudo -n docker logs --tail 40 "$importer" 2>&1 || echo "(importer logs failed)"
+          else
+            echo "(worker-federal-import container not present)"
+          fi
+
+          echo "=== load / memory ==="
+          cat /proc/loadavg
+          free -m
+
+          echo "=== migrations 0124 and 0125 ==="
+          q "SELECT name, applied_at FROM schema_migration WHERE name LIKE '0124%' OR name LIKE '0125%' ORDER BY name;"
+
+          echo "=== search index validity ==="
+          q "SELECT index_class.relname, index_row.indisvalid, index_row.indisready
+             FROM pg_index index_row
+             JOIN pg_class index_class ON index_class.oid = index_row.indexrelid
+             WHERE index_class.relname IN (
+               'opinion_search_projection_vector_idx',
+               'opinion_search_projection_case_id_idx'
+             )
+             ORDER BY index_class.relname;"
+
+          echo "=== estimated row counts ==="
+          q "SELECT relname, reltuples::bigint AS estimate
+             FROM pg_class
+             WHERE relname IN ('opinion_search_projection','opinion_search_meta','publication_current')
+             ORDER BY relname;"
+
+          echo "=== triggers on opinion_search_projection ==="
+          q "SELECT tgname, pg_get_triggerdef(oid)
+             FROM pg_trigger
+             WHERE tgrelid = 'opinion_search_projection'::regclass AND NOT tgisinternal
+             ORDER BY tgname;"
+
+          echo "=== non-idle sessions ==="
+          q "SELECT pid,
+                    state,
+                    wait_event_type,
+                    wait_event,
+                    round(extract(epoch FROM now() - query_start)) AS query_age_s,
+                    round(extract(epoch FROM now() - xact_start)) AS xact_age_s,
+                    left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 240) AS query
+             FROM pg_stat_activity
+             WHERE datname = current_database()
+               AND pid <> pg_backend_pid()
+               AND state <> 'idle'
+             ORDER BY query_start NULLS LAST
+             LIMIT 40;"
+
+          echo "=== sessions waiting on a lock ==="
+          q "SELECT blocked.pid AS blocked_pid,
+                    round(extract(epoch FROM now() - blocked.query_start)) AS blocked_s,
+                    blocked.wait_event_type,
+                    blocked.wait_event,
+                    left(regexp_replace(blocked.query, '[[:space:]]+', ' ', 'g'), 160) AS blocked_query,
+                    blocking.pid AS blocking_pid,
+                    left(regexp_replace(blocking.query, '[[:space:]]+', ' ', 'g'), 160) AS blocking_query
+             FROM pg_stat_activity blocked
+             JOIN pg_locks waiter ON waiter.pid = blocked.pid AND NOT waiter.granted
+             JOIN pg_locks holder
+               ON holder.locktype = waiter.locktype
+              AND holder.database IS NOT DISTINCT FROM waiter.database
+              AND holder.relation IS NOT DISTINCT FROM waiter.relation
+              AND holder.page IS NOT DISTINCT FROM waiter.page
+              AND holder.tuple IS NOT DISTINCT FROM waiter.tuple
+              AND holder.virtualxid IS NOT DISTINCT FROM waiter.virtualxid
+              AND holder.transactionid IS NOT DISTINCT FROM waiter.transactionid
+              AND holder.classid IS NOT DISTINCT FROM waiter.classid
+              AND holder.objid IS NOT DISTINCT FROM waiter.objid
+              AND holder.objsubid IS NOT DISTINCT FROM waiter.objsubid
+              AND holder.pid <> waiter.pid
+              AND holder.granted
+             JOIN pg_stat_activity blocking ON blocking.pid = holder.pid
+             WHERE blocked.datname = current_database()
+             LIMIT 20;"
+
+          echo "=== pg_stat_statements ==="
+          has_statements="$(sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
+            psql -U jurvio -d jurvio -Atc "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements');" \
+            || echo f)"
+          echo "extension_present=${has_statements}"
+          if [ "$has_statements" = "t" ]; then
+            q "SELECT calls,
+                      round(total_exec_time::numeric, 1) AS total_ms,
+                      round(mean_exec_time::numeric, 1) AS mean_ms,
+                      rows,
+                      left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 180) AS query
+               FROM pg_stat_statements
+               ORDER BY total_exec_time DESC
+               LIMIT 15;"
+          else
+            echo "(pg_stat_statements is not installed)"
+          fi
+
+          explain_term() {
+            term="$1"
+            echo "=== EXPLAIN keyword search for: ${term} (no ANALYZE) ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=20s' "$pg" \
+              psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "
+                BEGIN;
+                SET LOCAL enable_seqscan = off;
+                EXPLAIN
+                WITH matched AS MATERIALIZED (
+                  SELECT projection.document_id,
+                         projection.citation_count,
+                         projection.date_filed
+                  FROM opinion_search_projection projection
+                  WHERE projection.search_vector @@ websearch_to_tsquery('english', '${term}')
+                  LIMIT 2000
+                )
+                SELECT matched.document_id
+                FROM matched
+                JOIN opinion_search_meta meta
+                  ON meta.document_id = matched.document_id
+                 AND meta.visible
+                LIMIT 20;
+                ROLLBACK;" || echo "(explain failed)"
+          }
+          explain_term "$EXPLAIN_QUERY"
+          if [ "$EXPLAIN_QUERY" != "securities" ]; then
+            explain_term "securities"
+          fi
+          echo "=== DONE ==="
+          REMOTE
