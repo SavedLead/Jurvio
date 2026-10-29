@@ -1,6 +1,6 @@
 # Federal ingestion, top down
 
-Planning only. This document does not change ingestion, publish anything, or spend money. It records what the repo already runs and the order David Rosenberg set on October 29, 2026: Supreme Court from supremecourt.gov, then the 13 courts of appeals from their own sites, then the 94 district courts, with CourtListener as the cheap historical fill. Federal metadata publication stays off until David turns it on.
+Planning only. This document does not change ingestion, publish anything, or spend money. The section "Why it stalls around 600k cases" is the bottleneck analysis David asked for after two months of the current flow. It records what the repo already runs and the order David Rosenberg set on October 29, 2026: Supreme Court from supremecourt.gov, then the 13 courts of appeals from their own sites, then the 94 district courts, with CourtListener as the cheap historical fill. Federal metadata publication stays off until David turns it on.
 
 Evidence is the code and docs on `main` at `0eff794`, plus cited public pages. This pass did not open a production session, so "running" means the job is on a `restart: unless-stopped` worker in `docker-compose.production.yml` and in `scripts/scheduler-jobs.ts`. Last-success times below are the ones written in ADRs and workflow comments, not a fresh log tail.
 
@@ -236,3 +236,100 @@ Each phase is a later change. None of them is authorized by this document.
 ## Reconsideration
 
 Open bankruptcy only if David asks, and only after district RSS coverage is visible per court. Buy a CourtListener feature only with a written price and a gap the quarterly bulk file cannot fill. Add a droplet only if, after the concurrency drop, Postgres CPU or public-page time is still dominated by these pollers. The pollers are designed not to be that load. The backfills are.
+
+## Why it stalls around 600k cases
+
+David's report: more than two months of the current flow produced about 600,000 cases, and the jobs keep getting stuck. He suspects a full-corpus re-scan about every 30 seconds.
+
+There is no federal timer at 30 seconds. The 30-second loop in the scheduler is the liveness heartbeat, a write of one timestamp (`scripts/run-production-scheduler.ts` lines 143–151). The CourtListener client comment at `src/modules/ingestion/providers/courtlistener/client.ts` lines 56–59 says an older 30-second HTTP abort was replaced by a 60-second timeout because heavy list pages were being killed and retried. What looks like a continuous re-scan is a child that never exits. `run()` skips the next tick while that child is still alive (`scripts/run-production-scheduler.ts` lines 51–54). One long child is the whole lane for that job.
+
+About 600,000 cases in about 60 days is about 10,000 cases a day if the inserts were steady. The documented free CourtListener cap is 5 requests per minute, 50 per hour, and 125 per day (`docs/34-courtlistener-mcp-and-live-ingestion.md`). A new docket costs at least three requests (the docket, its parties, and its entries). That cap is on the order of 40 new dockets a day, which cannot produce 600,000 cases. So most of those cases came from a faster token, from the bulk importers, or from both. The live loops can still be stuck re-processing rows that are already stored, and they are what keep the website's database busy.
+
+### The live CourtListener path re-fetches rows it already has
+
+`federal-new-cases` (`scripts/scheduler-jobs.ts` lines 204–215) runs every 20 minutes with `--max-items=25000`. `runDocketStream` pages the REST docket list and, for every row, calls `ingestCourtListenerDocket` (`scripts/run-federal-ingestion-loop.ts` lines 315–324 and 351–391). That function always performs a fresh HTTP GET of the docket, then the parties, then the entries (`src/modules/ingestion/application/ingest-courtlistener-docket.ts` lines 15–28). The list call does not send `If-None-Match` or `If-Modified-Since`. The client stores an ETag on the response (`client.ts` lines 108–118) and never sends one (`retrieve`, lines 54–106).
+
+Each docket entry is its own transaction, and each document inside an entry takes an advisory lock (`src/modules/ingestion/application/ingest-courtlistener-docket-entries.ts` lines 19–28 and 84–86). A case with 30 entries is 30 commits plus one JSON artifact file per entry (lines 21–26). At 600,000 cases, even a modest 10 entries each is millions of small files on the artifacts volume. That is a plausible reason the box feels stuck before the database fills up.
+
+The cursor itself is real (`ingestion_checkpoint`, lines 201–214 and 390–441). New-case discovery slides a two-day `date_modified` window (`lookbackDays` defaults to 2, line 81). Historical backfill walks one year at a time from 2000 (`federal-history`, every 24 hours, `--max-items=20000`, scheduler lines 259–270; window math at lines 255–261 and 430–438). A 401 or network failure exits without moving the cursor (lines 366–376 and 999–1005), so the next cycle repeats the same page. That is correct for not skipping data, and it is also how a bad token becomes a retry loop.
+
+Cost, using the documented free caps: about 40 new dockets a day, so 5 million cases is on the order of centuries. If production is actually inserting about 10,000 cases a day, 5 million is still about 500 days, and only if none of those requests are repeats.
+
+### Active updates select the same old rows again
+
+`federal-active-cases` runs every 6 hours with `--max-items=15000` (scheduler lines 246–257). The query is every federal docket id, oldest `source_updated_at` first, nulls first (`scripts/run-federal-ingestion-loop.ts` lines 471–486). There is no "fetched after" watermark. `persistCourtListenerCase` sets `source_updated_at` to the CourtListener modification time (`src/modules/ingestion/application/persist-courtlistener-case.ts` lines 81 and 121), not to "we just downloaded this." A docket last modified in 2014 stays at the front of the sort after we download it. The next cycle, and the one after that, downloads those same 15,000 dockets again, each with parties, entries, a transaction per entry, and a new artifact when the body hash changes.
+
+15,000 dockets times 3 requests is 45,000 requests. At 50 requests per hour that child runs for weeks. The scheduler then skips every later 6-hour tick. The job looks wedged because it is re-reading the oldest slice of the corpus for as long as the process lives.
+
+### Material decisions have no cursor
+
+`federal-material-decisions` runs every 20 minutes with `--max-items=25000` (scheduler lines 217–228). It counts recent docket entries for every court (lines 549–568), then for every federal court asks CourtListener for up to 250 newest cluster ids filed in the last two days (lines 588–601, cap at line 75). `fetchOpinionClusterIds` (`client.ts` lines 147–172) does not set a page size, so it uses the API default and follows `next` until it has 250 ids. It does not remember which ids were stored last time. Each id then fetches the cluster, the docket, and every opinion (`ingest-courtlistener-opinion-cluster.ts` lines 22–31).
+
+Roughly 100 federal courts times a few list pages is hundreds to a thousand requests before a single opinion is saved, every 20 minutes, for opinions filed in a two-day window that were already saved on the previous run. At the free hourly cap this child does not finish inside 20 minutes, so it becomes the permanent occupant of that schedule.
+
+### Publication re-scans drafts
+
+`federal-publication` runs every 12 minutes, up to 5,000 cases (scheduler lines 230–244), in chunks of 250 (`PUBLICATION_CHUNK_SIZE`, line 78; loop at lines 947–956). `selectPublicationCandidates` (lines 669–789) is one row per draft case with many correlated subqueries: identifier count, a collision count the comment says used to be about 1.5 seconds per row before the docket index (lines 687–699), rejection count, three existence checks, a document count, and `string_agg` of every docket-entry description and every document title (lines 717–722). That aggregation is there to spot sealed text. It reads the whole docket of each candidate on every pass.
+
+Cases that stay `draft` (the metadata flag is off, and most holds are `missing_readable_content`) come back on the next chunk. The query is the one most able to slow the public site, because it runs on the same Postgres and it is not a small keyed read.
+
+### Appellate, district RSS, and the chunk importer
+
+Appellate discovery downloads each circuit's full HTML listing every 5 minutes with no `If-None-Match` (`src/modules/ingestion/providers/appellate/official-opinions.ts` lines 46–51). It then inserts or updates one row per PDF link (`discover-official-appellate-opinions.ts` lines 14–33). The body hash is stored only after the download. Processing concurrency 52 then does per-item download, extract, and publish transactions.
+
+The twelve district RSS feeds are fetched in full every 5 minutes, also with no conditional headers (`src/modules/ingestion/providers/courts/cmecf-rss.ts` lines 66–78).
+
+The opinion chunk importer is the fast path and it is still row-at-a-time. For each opinion it looks up the cluster, writes one JSON file, and commits one transaction (`import-federal-opinion-chunk.ts` lines 66–99; `write-bulk-opinion-graph.ts` lines 93–100). ADR 0077 measured about 20–25 opinions a second once the files were readable: on the order of 70,000–90,000 opinions an hour. That is opinions whose cases already exist, not new cases, and it still multiplies files. It is not a `COPY`.
+
+### What this costs against 5 million cases
+
+| Path | Pace | Time to 5 million cases |
+|---|---|---|
+| Documented free REST cap, 3 requests per new docket, no repeats | about 40 cases a day | on the order of centuries |
+| The observed ~10,000 cases a day, if every request were a new case | about 400 an hour | about 500 days |
+| Same pace, with active-updates and material-decisions spending the token on rows already stored | lower, and the website shares the database | longer than 500 days, and the public pages slow down while it runs |
+| Throttled bulk merge below | 5,000–20,000 cases an hour in a quiet window | a few weeks of nights |
+
+The 5,000–20,000 figure is a planning target, not a benchmark. Raw `COPY` is faster than that. The cap is there so the merge stays off the public site's latency budget. Measure the first night and keep the number that does not move public-page time.
+
+## Architecture that gets to millions without touching the site
+
+Two pipes. They do not share a worker pool with request handling.
+
+**Backfill pipe.** CourtListener quarterly bulk files only. Stream the compressed CSV from S3. `COPY` into an unlogged staging table in a quiet window (after the public traffic peak, one session, `statement_timeout` set, concurrency 1). Then one set-based `INSERT … ON CONFLICT` into the canonical tables. Delete the staging rows and the transport file when the checkpoint for that file is written. Do not write a JSON artifact per row. The snapshot file plus the row's content hash is the provenance. Do not call the REST API inside this pipe.
+
+**Live pipe.** One watermark per source, advanced only after a successful fetch:
+
+- SCOTUS: last slip-index fetch time, plus the set of open current-term docket numbers. Orders, calendar, and granted list as in the earlier section.
+- Each circuit: `ETag` / `Last-Modified` on the listing or RSS. Skip the body on 304. The existing `appellate_source_registry.last_successful_retrieval` is the watermark.
+- Each verified district: the RSS item guid or the hash of the feed, and the last successful fetch. No feed, no poll.
+- CourtListener live tail, only after the bulk load: `date_modified` greater than the max `date_modified` already merged from the snapshot. One list page per cycle. No per-docket entry crawl unless that docket is on a watched case.
+
+**Dedupe keys**, in order:
+
+1. CourtListener docket id (`case_identifier` type `courtlistener_docket_id`) for bulk and REST rows.
+2. Normalized court code plus normalized docket number (the same `regexp_replace` already used by `legal_case_normalized_docket_idx`) when both sides have a docket.
+3. Official appellate PDF URL `(court_code, document_url)`.
+4. Opinion identity: CourtListener opinion id, or cluster id plus opinion id. Official slip PDFs stay on the SCOTUS provider id and are never overwritten by a bulk row.
+
+A collision holds the case. It does not merge on caption.
+
+**What triggers indexing and publishing.** The bulk merge writes `publication = 'draft'` and does not insert `opinion_search_projection`. `indexable` stays false. Search and the sitemap do not see the row. Publishing happens only in the existing gates: SCOTUS official publish, appellate official publish, and `federal-publication` for everyone else. That last gate stays off for metadata-only until David runs the enable workflow. Readable official text can publish through the gates that already exist. A bulk opinion with text still waits in `draft` so a 5 million row load cannot publish 5 million pages in one night.
+
+The public web pool is untouched. The backfill uses one connection named for the job, the same pattern as the citation snapshot, and it stops if that statement exceeds its timeout. It does not run in the same hours as a sitemap rebuild or a citation-count batch if those are still heavy.
+
+## Small PRs
+
+None of these is authorized by this document.
+
+**PR A. Stop the re-scan.** Change `federal-active-cases` so a docket is selected only when CourtListener `date_modified` is newer than a `last_fetched_at` we set at the end of a successful ingest, and cap the cycle at a few hundred dockets, not 15,000. Change `federal-material-decisions` to store the newest cluster id it finished per court and to skip ids already in `opinion_cluster`. Drop `string_agg` out of `selectPublicationCandidates`. Check sealed text inside the per-case transaction on the one row being decided. Expected effect: those three jobs finish in minutes and the public site stops sharing a multi-second draft scan. Case throughput does not go up yet. Disk stops growing by one file per re-fetched entry.
+
+**PR B. Bulk docket load.** Staging table, `COPY`, set-based merge on `courtlistener_docket_id`, federal non-bankruptcy filter, off-peak, one file per night, checkpoint row per snapshot. No REST, no per-row file. Target 5,000–20,000 cases an hour while public pages stay at their current times. From about 600,000 to 5 million is about 4.4 million rows: about 10 to 40 quiet nights at the low and high ends of that target (a 6-hour window). Stop for the night if free disk on the 320 GB volume drops under 30% or if case-page time moves. Database growth is the case, court, and identifier rows, not opinion text. A planning sketch: a few kilobytes of indexes per case, so 4.4 million cases is on the order of 10–20 GB of indexes if we do not also store entry text. Measure the first 100,000 rows and scale that number. Do not guess past the measurement.
+
+**PR C. Bulk opinion text for cases PR B already loaded.** Same `COPY` shape. Skip empty text. One artifact for the snapshot, not one JSON file per opinion (`write-bulk-opinion-graph.ts` lines 93–98 is what we stop doing on this path). ADR 0077's 20–25 opinions a second is the old row loop, about 70,000–90,000 an hour. A set-based merge should beat that. The bound is disk and the public site, not the loop. Opinion text at a 20 KB sketch is about 10 GB for 500,000 opinions before indexes. Many of the 5 million cases have no opinion. Load text only for rows with a non-empty opinion, and keep them `draft`.
+
+**PR D. Live watermarks.** The SCOTUS open-docket set, circuit `ETag`s, and district RSS gated by the scout, as already described. These add cases per day in the hundreds, not the millions. They are what keeps the corpus current after PR B. They run on the existing workers with the concurrency caps already in this plan, including appellate processing at 8 rather than 52.
+
+**PR E. Freshness.** One read-only age per court, printed by the lane watchdog. No new host.
+
+Order is A, then B, then C, then D. A is what makes the website safe to run B. D does not wait on C. E can ship with D. Bankruptcy, PACER, webhooks, and replication stay out.
