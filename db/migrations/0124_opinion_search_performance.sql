@@ -31,9 +31,10 @@
 --     tables, so ingestion and the public site keep running. Inserts use
 --     ON CONFLICT DO NOTHING so a trigger that already wrote a newer row during
 --     the backfill is not overwritten.
---   * Together this should finish inside the public-web deploy job (20 minutes).
---     release-production.sh defaults to a 300s migration budget; raise
---     MIGRATION_TIMEOUT_SECONDS if that path applies the migration on a cold disk.
+--   * Together this should finish inside the public-web deploy (60 minute job,
+--     migrate.mjs itself is not capped). release-production.sh allows 1800s for
+--     the migration step, and the production SSH wrapper allows 5400s for the
+--     whole release.
 --   * The new tables are unused by the currently deployed search query, so this
 --     migration is safe to apply before the application that reads them.
 
