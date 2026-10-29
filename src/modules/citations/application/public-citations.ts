@@ -46,6 +46,10 @@ export interface CaseCitationCounts { cited: number; citedOnJurvio: number; cite
  * hash, unique identity only) so the counts never exceed what the lists can show
  * once uncapped. Counts reporter citations in the court's text; the case's own
  * citations (opinion headers repeat them) are excluded.
+ *
+ * Uniqueness is checked only for this case's citation keys. The
+ * unique_case_citation view groups every identity row; on 2026-10-29 that was
+ * 521,169 groups, twice, and EXPLAIN ANALYZE for jv-h762f92ca8 took 8,909 ms.
  */
 export async function caseCitationCounts(sql: Sql, casePublicId: string): Promise<CaseCitationCounts> {
   const [row] = await sql<CaseCitationCounts[]>`
@@ -64,14 +68,18 @@ export async function caseCitationCounts(sql: Sql, casePublicId: string): Promis
       WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity own JOIN current_case cc ON cc.id=own.case_id WHERE own.citation_key=ref.citation_key)
     ), cited_on_jurvio AS (
       SELECT DISTINCT k.citation_key FROM cited_keys k
-      JOIN unique_case_citation u ON u.citation_key=k.citation_key
-      JOIN legal_case target ON target.id=u.case_id AND target.publication='published'
+      JOIN case_citation_identity identity ON identity.citation_key=k.citation_key
+      JOIN legal_case target ON target.id=identity.case_id AND target.publication='published'
       WHERE ${visible(sql, "displayable", "legal_case", "target.id")}
+        AND NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=identity.citation_key AND other.case_id<>identity.case_id)
+    ), own_unique_keys AS MATERIALIZED (
+      SELECT own.citation_key, cc.id AS case_id FROM current_case cc
+      JOIN case_citation_identity own ON own.case_id=cc.id
+      WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=own.citation_key AND other.case_id<>own.case_id)
     ), citing_cases AS (
-      SELECT DISTINCT d.case_id FROM current_case cc
-      JOIN unique_case_citation u ON u.case_id=cc.id
-      JOIN document_case_citation ref ON ref.citation_key=u.citation_key
-      JOIN document d ON d.id=ref.document_id AND d.publication='published' AND d.case_id<>cc.id
+      SELECT DISTINCT d.case_id FROM own_unique_keys own_key
+      JOIN document_case_citation ref ON ref.citation_key=own_key.citation_key
+      JOIN document d ON d.id=ref.document_id AND d.publication='published' AND d.case_id<>own_key.case_id
       JOIN document_content content ON content.document_id=d.id AND content.content_hash=ref.source_content_hash
       JOIN legal_case citing ON citing.id=d.case_id AND citing.publication='published'
       WHERE ${visible(sql, "displayable", "document", "d.id")}

@@ -2,7 +2,7 @@ import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { unstable_cache } from "next/cache";
-import { db } from "@/db/client";
+import { searchDb } from "@/db/client";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { FACET_STATEMENT_TIMEOUT_MS, interpretSettledSearch, listOpinionSearchFacets, normalizeOpinionSearchFilters, QueryTimedOutError, searchPublicOpinions, settleSearchThenFacets } from "@/modules/search/application/search-public-opinions";
 import styles from "./search.module.css";
@@ -20,7 +20,7 @@ function pageHref(params:Params,page:number){const next=new URLSearchParams();fo
 
 const loadCachedSearch = unstable_cache(
   async (filters: ReturnType<typeof normalizeOpinionSearchFilters>) => {
-    const response = await searchPublicOpinions(db(), filters);
+    const response = await searchPublicOpinions(searchDb(), filters);
     // Timeouts must not be cached: the next request should try again.
     if (response.timedOut) throw new QueryTimedOutError("search", response);
     return response;
@@ -30,7 +30,7 @@ const loadCachedSearch = unstable_cache(
 );
 const loadCachedFacets = unstable_cache(
   async () => {
-    const facets = await listOpinionSearchFacets(db(), { statementTimeoutMs: FACET_STATEMENT_TIMEOUT_MS });
+    const facets = await listOpinionSearchFacets(searchDb(), { statementTimeoutMs: FACET_STATEMENT_TIMEOUT_MS });
     if (facets.timedOut) throw new QueryTimedOutError("facets");
     return facets;
   },
@@ -43,7 +43,7 @@ export default async function SearchPage({ searchParams }:{searchParams:Promise<
   const active=filters.query.length>=2||Boolean(filters.court||filters.dateFrom||filters.dateTo||filters.precedentialStatus||filters.opinionType);
   const settled=await settleSearchThenFacets(active,()=>loadCachedSearch(filters),()=>loadCachedFacets());
   const {response,facets}=interpretSettledSearch(filters,settled.search,settled.facets);
-  if(active&&!response.timedOut){const requestHeaders=await headers();await recordDemandEvent(db(),{eventType:"internal_search",userAgent:requestHeaders.get("user-agent"),referrer:requestHeaders.get("referer"),path:"/search",contentKind:"search",rawSearchQuery:filters.query,resultCount:response.countTimedOut?undefined:response.total});}
+  if(active&&!response.timedOut){const requestHeaders=await headers();await recordDemandEvent(searchDb(),{eventType:"internal_search",userAgent:requestHeaders.get("user-agent"),referrer:requestHeaders.get("referer"),path:"/search",contentKind:"search",rawSearchQuery:filters.query,resultCount:response.countTimedOut?undefined:response.total});}
   const pages=Math.max(1,Math.ceil(response.total/response.pageSize));
   const resultHeading=!active?"Begin with keywords or a filter":response.timedOut?"Search did not finish":response.totalCapped?`${response.total.toLocaleString()}+ published opinions`:response.countTimedOut?`Showing ${response.results.length.toLocaleString()} matching ${response.results.length===1?"opinion":"opinions"}`:`${response.total.toLocaleString()} published ${response.total===1?"opinion":"opinions"}`;
   const showPagination=active&&!response.timedOut&&(response.countTimedOut?filters.page>1||response.results.length===response.pageSize:pages>1);

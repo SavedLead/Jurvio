@@ -21,6 +21,16 @@ describe("database session settings", () => {
     expect(session.connection.max_parallel_workers_per_gather).toBe(0);
   });
 
+  it("reserves two connections for search that case pages cannot use", () => {
+    const session = databaseSessionSettings({}, "search");
+    expect(session.worker).toBe(false);
+    expect(session.max).toBe(2);
+    expect(session.connection.application_name).toBe("jurvio-search");
+    expect(session.connection.statement_timeout).toBe(20_000);
+    expect(databaseSessionSettings({ JURVIO_DB_POOL_MAX: "8" }, "search").max).toBe(2);
+    expect(databaseSessionSettings({ JURVIO_DB_SEARCH_POOL_MAX: "3" }, "search").max).toBe(3);
+  });
+
   it("treats JURVIO_DB_WORKER as a worker even without a scheduler lane", () => {
     const session = databaseSessionSettings({ JURVIO_DB_WORKER: "1", JURVIO_DB_POOL_MAX: "3" });
     expect(session.worker).toBe(true);
