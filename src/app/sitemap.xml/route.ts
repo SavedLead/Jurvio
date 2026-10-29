@@ -1,24 +1,11 @@
-import { unstable_cache } from "next/cache";
-import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
-import {
-  countPublicSitemapRecords,
-  SITEMAP_PAGE_SIZE,
-  type DirectorySitemapKind,
-} from "@/modules/discovery/application/sitemaps";
+import { type DirectorySitemapKind, type SitemapBoundaries } from "@/modules/discovery/application/sitemaps";
 import { xmlEscape, xmlResponse } from "@/modules/discovery/http/xml";
+import { loadSitemapBoundaries } from "@/app/sitemaps/cached";
 
 export const dynamic = "force-dynamic";
 
-// The counts query scans the published corpus. Reuse a snapshot across crawler
-// requests; the sitemap can safely lag publication by up to fifteen minutes.
-const cachedCounts = unstable_cache(
-  async () => countPublicSitemapRecords(db()),
-  ["public-sitemap-counts"],
-  { revalidate: 900 },
-);
-
-const directoryCounts: Array<[DirectorySitemapKind, "parties" | "lawFirms" | "courts" | "judges" | "governmentLitigation"]> = [
+const directoryKinds: Array<[DirectorySitemapKind, keyof SitemapBoundaries]> = [
   ["parties", "parties"],
   ["law-firms", "lawFirms"],
   ["courts", "courts"],
@@ -27,18 +14,15 @@ const directoryCounts: Array<[DirectorySitemapKind, "parties" | "lawFirms" | "co
 ];
 
 export async function GET() {
-  const counts = await cachedCounts();
+  const boundaries = await loadSitemapBoundaries();
   const origin = siteOrigin();
+  const pages = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, index) => `${origin}${prefix}/${index + 1}`);
   const locations = [
     `${origin}/sitemaps/static.xml`,
-    ...Array.from({ length: Math.ceil(counts.cases / SITEMAP_PAGE_SIZE) }, (_, index) => `${origin}/sitemaps/cases/${index + 1}`),
-    ...Array.from({ length: Math.ceil(counts.opinions / SITEMAP_PAGE_SIZE) }, (_, index) => `${origin}/sitemaps/opinions/${index + 1}`),
-    ...directoryCounts.flatMap(([kind, countKey]) =>
-      Array.from(
-        { length: Math.ceil(counts[countKey] / SITEMAP_PAGE_SIZE) },
-        (_, index) => `${origin}/sitemaps/directory/${kind}/${index + 1}`,
-      ),
-    ),
+    ...pages("/sitemaps/cases", boundaries.cases.length),
+    ...pages("/sitemaps/opinions", boundaries.opinions.length),
+    ...directoryKinds.flatMap(([kind, key]) => pages(`/sitemaps/directory/${kind}`, boundaries[key].length)),
   ];
   const body = locations.map((location) => `<sitemap><loc>${xmlEscape(location)}</loc></sitemap>`).join("");
   return xmlResponse(`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${body}</sitemapindex>`);

@@ -1,6 +1,11 @@
 import type postgres from "postgres";
+import { latestPublicationColumnSql, type PublicationFlag } from "@/modules/publication/application/current-visibility";
 
 type Sql = ReturnType<typeof postgres>;
+
+function visible(sql: Sql, column: PublicationFlag, objectType: "legal_case" | "document" | "entity" | "docket_entry", objectIdExpr: string) {
+  return sql.unsafe(latestPublicationColumnSql(column, objectType, objectIdExpr));
+}
 
 export interface PublicDocketEntry {
   publicId: string;
@@ -37,16 +42,8 @@ export async function listPublicDocketEntries(sql: Sql, casePublicId: string, li
     JOIN legal_case legal_case ON legal_case.id = entry.case_id
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false)
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'docket_entry' AND decision.object_id = entry.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false)
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+      AND ${visible(sql, "displayable", "docket_entry", "entry.id")}
     ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST
     LIMIT ${limit}
   `;
@@ -61,16 +58,8 @@ export async function listPublicParties(sql: Sql, casePublicId: string) {
     JOIN entity ON entity.id = appearance.entity_id
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false)
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'entity' AND decision.object_id = entity.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false)
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+      AND ${visible(sql, "displayable", "entity", "entity.id")}
     ORDER BY appearance.role, entity.normalized_name
   `;
 }
@@ -94,16 +83,8 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
       AND document.publication = 'published'
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false)
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'document' AND decision.object_id = document.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false)
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+      AND ${visible(sql, "displayable", "document", "document.id")}
     ORDER BY document.filed_on DESC NULLS LAST, document.title
   `;
 }

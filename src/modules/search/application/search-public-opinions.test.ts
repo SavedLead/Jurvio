@@ -2,15 +2,19 @@ import { describe, expect, it } from "vitest";
 import type postgres from "postgres";
 import {
   assertStatementTimeoutMs,
+  emptyOpinionSearchFacets,
   excerptAnchor,
+  FACET_STATEMENT_TIMEOUT_MS,
   interpretSettledSearch,
   isStatementTimeout,
   listOpinionSearchFacets,
   normalizeOpinionSearchFilters,
+  OPINION_SEARCH_STATEMENT_TIMEOUT_MS,
   QueryTimedOutError,
   readQueryTimeout,
   responseForSearchError,
   searchPublicOpinions,
+  settleSearchThenFacets,
   timeoutSearchResponse,
 } from "./search-public-opinions";
 
@@ -78,6 +82,37 @@ describe("opinion search degradation", () => {
     expect(settled.response.timedOut).toBe(true);
     expect(settled.facets).toBe(facets);
     expect(readQueryTimeout(new Error("wrapped", { cause: new QueryTimedOutError("facets") }))?.scope).toBe("facets");
+  });
+
+  it("keeps the keyword guard and gives facets a shorter one", () => {
+    expect(OPINION_SEARCH_STATEMENT_TIMEOUT_MS).toBe(8_000);
+    expect(FACET_STATEMENT_TIMEOUT_MS).toBeLessThan(OPINION_SEARCH_STATEMENT_TIMEOUT_MS);
+  });
+
+  it("runs facets only after a keyword search that returned", async () => {
+    const calls: string[] = [];
+    const filters = normalizeOpinionSearchFilters({ q: "Callais" });
+    const succeeded = { ...timeoutSearchResponse(filters), timedOut: undefined, results: [], total: 0 };
+    const settled = await settleSearchThenFacets(
+      true,
+      async () => { calls.push("search"); return succeeded; },
+      async () => { calls.push("facets"); return { courts: [], precedentialStatuses: [], opinionTypes: [] }; },
+    );
+    expect(calls).toEqual(["search", "facets"]);
+    expect(settled.search.status).toBe("fulfilled");
+  });
+
+  it("does not start facets when keyword search hits the guard", async () => {
+    let facetsCalled = false;
+    const filters = normalizeOpinionSearchFilters({ q: "securities" });
+    const settled = await settleSearchThenFacets(
+      true,
+      async () => timeoutSearchResponse(filters),
+      async () => { facetsCalled = true; return emptyOpinionSearchFacets(); },
+    );
+    expect(facetsCalled).toBe(false);
+    expect(settled.facets.status).toBe("fulfilled");
+    if (settled.facets.status === "fulfilled") expect(settled.facets.value.timedOut).toBeUndefined();
   });
 
   it("does not hide an unexpected search failure", () => {

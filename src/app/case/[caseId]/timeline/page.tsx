@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
-import { getPublicCase } from "@/modules/cases/application/get-public-case";
+import { loadRequestPublicCase } from "@/app/case/load-public-case";
 import { listPublicDocketEntries } from "@/modules/cases/application/list-public-case-sections";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
@@ -14,7 +14,7 @@ interface SectionPageProps { params: Promise<{ caseId: string }> }
 
 export async function generateMetadata({ params }: SectionPageProps): Promise<Metadata> {
   const { caseId } = await params;
-  const legalCase = await getPublicCase(db(), caseId);
+  const legalCase = await loadRequestPublicCase(caseId);
   if (!legalCase) return { title: "Timeline not found" };
   const caption = cleanCaseCaption(legalCase.caption);
   return {
@@ -29,7 +29,7 @@ export default async function TimelinePage({ params }: {
 }) {
   const { caseId } = await params;
   const sql = db();
-  const legalCase = await getPublicCase(sql, caseId);
+  const legalCase = await loadRequestPublicCase(caseId);
   if (!legalCase) notFound();
   const records = await listPublicDocketEntries(sql, caseId);
   const requestHeaders = await headers();

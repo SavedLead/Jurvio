@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -84,11 +85,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = c.id AND enrichment.verification = 'verified'
     WHERE c.public_id = ${publicId}
       AND c.publication = 'published'
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false)
+      AND ${sql.unsafe(latestPublicationColumnSql("displayable", "legal_case", "c.id"))}
     LIMIT 1
   `;
   return record ?? null;
