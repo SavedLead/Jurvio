@@ -19,10 +19,13 @@ function intEnv(source: Record<string, string | undefined>, name: string, fallba
  * pool (searchDb) so case-page traffic cannot take its connections.
  */
 export function databaseSessionSettings(source: Record<string, string | undefined> = process.env, role: PoolRole = "web") {
-  if (role === "search") {
+    if (role === "search") {
     return {
       worker: false,
       max: intEnv(source, "JURVIO_DB_SEARCH_POOL_MAX", 2),
+      // Case-page connections stay busy, so a 20s idle timeout closed the search
+      // pool between queries and pg_stat_activity showed no jurvio-search sessions.
+      idleTimeoutSeconds: 0,
       connection: {
         application_name: "jurvio-search",
         statement_timeout: intEnv(source, "JURVIO_DB_STATEMENT_TIMEOUT_MS", 20_000),
@@ -36,6 +39,7 @@ export function databaseSessionSettings(source: Record<string, string | undefine
   return {
     worker,
     max: intEnv(source, "JURVIO_DB_POOL_MAX", worker ? 2 : 8),
+    idleTimeoutSeconds: 20,
     connection: {
       application_name: `jurvio-${lane}`,
       statement_timeout: intEnv(source, "JURVIO_DB_STATEMENT_TIMEOUT_MS", worker ? 30_000 : 20_000),
@@ -54,7 +58,7 @@ function openPool(role: PoolRole) {
     // restarted scheduler cannot fill max_connections ahead of the public app.
     // Search keeps two connections the case pages cannot borrow.
     max: session.max,
-    idle_timeout: 20,
+    idle_timeout: session.idleTimeoutSeconds,
     connect_timeout: 10,
     prepare: true,
     transform: { undefined: null },
