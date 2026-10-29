@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type postgres from "postgres";
 import {
+  assertStatementTimeoutMs,
   excerptAnchor,
   interpretSettledSearch,
   isStatementTimeout,
@@ -39,6 +40,13 @@ describe("opinion search degradation", () => {
     expect(excerptAnchor("Callais")).toBe("Callais");
     expect(excerptAnchor('"securities fraud"')).toBe("securities");
     expect(excerptAnchor("a an or")).toBe("");
+  });
+
+  it("rejects a statement timeout that is not a small integer", () => {
+    expect(() => assertStatementTimeoutMs(8_000)).not.toThrow();
+    expect(() => assertStatementTimeoutMs(0)).toThrow(/statement timeout/);
+    expect(() => assertStatementTimeoutMs(1.5)).toThrow(/statement timeout/);
+    expect(() => assertStatementTimeoutMs(60_000)).toThrow(/statement timeout/);
   });
 
   it("recognizes a Postgres statement timeout", () => {
