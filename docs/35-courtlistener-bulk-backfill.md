@@ -45,3 +45,27 @@ Loader semantics (since this workflow): `--row-limit` counts rows merged in this
 budget stop keeps the checkpoint at the last merged chunk, so rows read but not yet merged are read again
 next run; and a resumed run clears the previous run's `stopped` flag so the file's tail is merged and
 marked complete.
+
+## Bulk opinion text (Step C): `jobs/load-courtlistener-bulk-opinions.mjs`
+
+Modeled on the bulk docket loader. It streams `opinions-<date>.csv.bz2` (≈51 GiB compressed) straight from
+S3 through `bzip2 -dc` with `openBulkCsvFromUrl` (Range-resume on dropped connections), so nothing lands on
+disk. Opinions are read in chunks (1,000 rows or 32 MiB of text). For each chunk the loader:
+
+1. looks up the chunk's cluster ids in `opinion_cluster` (→ `legal_case` → `court`) with one `= ANY` query
+   and keeps **federal courts only** (no SCOTUS, which belongs to the official pipeline, and no bankruptcy);
+2. drops opinions already in `judicial_opinion` (existing rows, published or not, are never touched);
+3. `COPY`s the rest into the unlogged `courtlistener_opinion_stage` (migration 0132) and merges them
+   set-based in one transaction into `raw_artifact`, `document` (draft), `judicial_opinion`,
+   `document_identifier`, `document_content`, `opinion_search_projection` and `publication_review` (pending);
+4. holds the new text from both automatic publishers: a `citation_publication_hold` per document and a
+   `federal_publication_hold` per draft case, both with reason `bulk_opinion_text_pending_review` under
+   the publishers' current rule versions. (The per-row writer instead deletes missing-text holds; the bulk
+   path deliberately does not.)
+
+It uses the same safety gates as the docket loader: 1–7am ET window, CPU and public-query latency pauses,
+30% free-disk floor and a 90-minute budget. The checkpoint is `courtlistener:bulk-opinions:v1:<date>`; a stop
+keeps it at the last merged chunk. Raw opinion JSON is not copied to the artifact store
+(`raw_artifact.response_metadata.objectStored=false`, and the object key points into the bulk file); the
+text lives in `document_content`. Measure with `measure-courtlistener-bulk-opinions-once.yml`
+(`confirm=MEASURE_OPINIONS`, `row_limit` default 50,000).

@@ -297,6 +297,21 @@ describe("workflow trigger policy", () => {
     expect(script).toMatch(/"stopped":"complete"'; then\s+done_flag=true[\s\S]*rm -f "\$file"/);
   });
 
+  it("the bulk opinion measurement is dispatch-only, gated, bounded and serialized with docket loads", () => {
+    const workflow = parsed.get("measure-courtlistener-bulk-opinions-once.yml")!;
+    expect(Object.keys(triggers(workflow))).toEqual(["workflow_dispatch"]);
+    const inputs = dispatchInputs(workflow) as Record<string, Input & { default?: string }>;
+    expect(inputs.row_limit?.default).toBe("50000");
+    expect(inputs.allow_anytime?.default).toBe("false");
+    const job = workflow.jobs!.measure!;
+    expect(runnerLabels(job)).toContain('"builder"');
+    expect(job.steps?.[0]?.run).toContain('"$CONFIRM" != "MEASURE_OPINIONS"');
+    expect(JSON.stringify((workflow as { concurrency?: unknown }).concurrency)).toContain("jurvio-bulk-docket-load");
+    const script = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
+    expect(script).toContain("--budget-minutes=90");
+    expect(script).toContain("avail / total < 0.30");
+  });
+
   it("helper rejects a step that does not compare confirm", () => {
     expect(isConfirmGate({ run: "echo hi", env: { CONFIRM: "${{ inputs.confirm }}" } })).toBe(false);
     expect(
