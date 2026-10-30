@@ -1,0 +1,94 @@
+name: Run live feeds (once)
+
+# Runs one pass of the live feed job (jobs/run-live-feeds.mjs) inside the
+# running app container on jurvio-web-01, reached over the private VPC from
+# the self-hosted builder. The same job runs on the scheduler (core lane:
+# scotus-live-dockets, coa lane: coa-live-feeds); this is for a first run or a
+# check after a deploy. New cases are created as drafts only; this workflow
+# never publishes anything and never touches the federal publication switch.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). Every job fails
+  # closed unless confirm=RUN_LIVE_FEEDS.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RUN_LIVE_FEEDS to run one live feed pass against production"
+        required: true
+        type: string
+      source:
+        description: "scotus, coa or all"
+        required: false
+        default: all
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-live-feeds
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 25
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=RUN_LIVE_FEEDS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          SOURCE: ${{ inputs.source }}
+        run: |
+          if [ "$CONFIRM" != "RUN_LIVE_FEEDS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RUN_LIVE_FEEDS."
+            exit 1
+          fi
+          case "$SOURCE" in scotus|coa|all) ;; *) echo "::error::source must be scotus, coa or all"; exit 1 ;; esac
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run one live feed pass
+        env:
+          SOURCE: ${{ inputs.source }}
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" "SOURCE=$SOURCE bash -se" > live-feeds.out <<'REMOTE'
+          set -euo pipefail
+          app="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=app' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo "::error::no running jurvio app container on ingestion box"; exit 1; }
+          sudo -n docker exec "$app" test -f jobs/run-live-feeds.mjs || {
+            echo "::error::jobs/run-live-feeds.mjs is not in the running image; deploy first"; exit 1; }
+          sudo -n docker exec "$app" node jobs/run-live-feeds.mjs "--source=$SOURCE"
+          REMOTE
+          cat live-feeds.out
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f live-feeds.out ] || exit 0
+          tail -n 40 live-feeds.out
+          line="$(grep '"liveFeeds"' live-feeds.out | tail -n 1 || true)"
+          [ -n "$line" ] || { echo "(no JSON summary)"; exit 0; }
+          echo "$line" | jq -r '"totals: \(.totals | tojson)", (.results[] | [.source, .court, (if .ok then "ok" else "FAILED" end), "fetched=\(.itemsFetched)", "newCases=\(.newCases)", "newEntries=\(.newEntries)", "requests=\(.requests)", (.error // "")] | join(" "))' | tee -a "$GITHUB_STEP_SUMMARY"

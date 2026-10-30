@@ -99,6 +99,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-court-freshness.mjs"],
   },
   {
+    // New SCOTUS dockets from supremecourt.gov's per-docket JSON (draft cases).
+    // Probes just past the stored per-series watermark, then backfills newest
+    // first; ~15 polite requests when nothing is new. See docs/operations/live-feeds.md.
+    lane: "core",
+    name: "scotus-live-dockets",
+    initialDelayMs: 4 * minute,
+    intervalMs: 3 * 60 * minute,
+    budgetMs: 12 * minute,
+    command: ["jobs/run-live-feeds.mjs", "--source=scotus"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
@@ -204,6 +215,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   // API lane. There is no env/DB toggle for a lane, so removing it here is the
   // durable disable. See throughput-freewins-once.yml for the interim checkpoint
   // muzzle that stopped it before this shipped.
+  {
+    // Each circuit's own opinion feed (7 of 13 have one), one isolated budget
+    // per court: at most 4 requests each, 1.5 s apart. Draft cases only.
+    lane: "coa",
+    name: "coa-live-feeds",
+    initialDelayMs: 3 * minute,
+    intervalMs: 60 * minute,
+    budgetMs: 10 * minute,
+    command: ["jobs/run-live-feeds.mjs", "--source=coa"],
+  },
   {
     lane: "coa",
     name: "appellate-backfill-report",

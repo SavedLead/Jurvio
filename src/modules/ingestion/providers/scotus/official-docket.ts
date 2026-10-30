@@ -34,13 +34,13 @@ export interface OfficialDocket {
   events: OfficialDocketEvent[];
 }
 
-function decodeHtml(value: string) {
+export function decodeHtml(value: string) {
   return value.replaceAll(/<br\s*\/?>/gi, "\n").replaceAll(/<[^>]+>/g, " ")
     .replaceAll("&amp;", "&").replaceAll("&nbsp;", " ").replaceAll("&#39;", "'")
     .replaceAll("&quot;", '"').replaceAll(/\s+/g, " ").trim();
 }
 
-function isoLongDate(value: string): string | null {
+export function isoLongDate(value: string): string | null {
   const match = /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})$/i.exec(value.trim());
   if (!match) return null;
   const month = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf((match[1] ?? "").toLowerCase()) + 1;
@@ -53,7 +53,7 @@ function officialLink(href: string, base: string) {
   return url.toString();
 }
 
-function classifyEvent(description: string) {
+export function classifyEvent(description: string) {
   const value = description.toLowerCase();
   if (value.includes("petition for a writ of certiorari filed")) return "petition_filed";
   if (value.includes("judgment and mandate issued")) return "mandate_issued";
