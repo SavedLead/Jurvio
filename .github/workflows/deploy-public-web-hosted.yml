@@ -81,10 +81,24 @@ jobs:
           set -euo pipefail
           source "$RUNNER_TEMP/gh-api.sh"
           current="$(gh_api "repos/$GITHUB_REPOSITORY/commits/main" | jq -r .sha)"
-          test "$TARGET_SHA" = "$current" || {
-            echo "::error::This run is not the current main commit ($current)."
-            exit 1
-          }
+          if [ "$TARGET_SHA" != "$current" ]; then
+            # CI skips docs, scripts/diag and workflow-only pushes to main (see
+            # ci.yml paths-ignore), so a newer commit like that never gets its own
+            # CI run. Without this check, one such merge would block every public
+            # deploy until the next app change. TARGET_SHA may still deploy, but
+            # only if main is strictly ahead of it and every file changed since
+            # is in that ignore list. Anything else is refused, as before.
+            compare="$(gh_api "repos/$GITHUB_REPOSITORY/compare/$TARGET_SHA...$current")"
+            status="$(jq -r .status <<<"$compare")"
+            files="$(jq -r '.files | length' <<<"$compare")"
+            app_files="$(jq -r '[.files[].filename
+              | select((test("\\.md$") or startswith("scripts/diag/") or startswith(".github/workflows/")) | not)] | length' <<<"$compare")"
+            if [ "$status" != "ahead" ] || [ "$files" -ge 300 ] || [ "$app_files" != "0" ]; then
+              echo "::error::This run is not the current main commit ($current), and main has app changes since $TARGET_SHA (status=$status, files=$files, app_files=$app_files)."
+              exit 1
+            fi
+            echo "Main ($current) is ahead of $TARGET_SHA only by CI-ignored files ($files); releasing $TARGET_SHA."
+          fi
           conclusion="$(gh_api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$TARGET_SHA&status=completed&per_page=20" \
             | jq -r '[.workflow_runs[] | select(.conclusion=="success")][0].conclusion // empty')"
           test "$conclusion" = success || {
