@@ -1,6 +1,7 @@
 import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { cache } from "react";
 import { db } from "@/db/client";
 import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicCourt } from "@/modules/directory/application/public-directory";
@@ -9,9 +10,12 @@ import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ courtId: string }> }
+// generateMetadata and the page share one lookup per request. The count and the
+// newest-cases list come from court_public_stats (see public-directory-stats).
+const loadCourt = cache(async (courtId: string) => isPublicId("court", courtId) ? getPublicCourt(db(), courtId) : null);
 async function load(params: Props["params"]) {
-  const { courtId } = await params; if (!isPublicId("court", courtId)) return null;
-  return getPublicCourt(db(), courtId);
+  const { courtId } = await params;
+  return loadCourt(courtId);
 }
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const court = await load(params); if (!court) return { title: "Court not found", robots: { index: false, follow: false } };
