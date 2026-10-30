@@ -60,17 +60,32 @@ async function findCases(
   const districtCodes = keys.map((key) => key.districtCode);
   const docketCores = keys.map((key) => key.docketCore);
 
+  // Courts first, then one LATERAL probe per key on (court_id, docket core), so
+  // every lookup uses both columns of legal_case_federal_docket_core_idx. The
+  // previous plain join let the planner probe the index on the second column
+  // only (scanning all ~8M entries per key), which hit statement_timeout in
+  // production on the first batch. The IS NOT NULL repeats the partial-index
+  // predicate so the index is provably usable; OFFSET 0 stops the planner from
+  // flattening the probe back into a join.
   const rows = await sql<CaseMatch[]>`
-    SELECT legal_case.id AS "caseId", want.court_code AS "courtCode",
+    WITH want AS MATERIALIZED (
+      SELECT court.id AS court_id, key.court_code, key.docket_core
+      FROM unnest(${districtCodes}::text[], ${docketCores}::text[]) AS key(court_code, docket_core)
+      JOIN court ON lower(court.provider_court_id) = key.court_code
+    )
+    SELECT matched.id AS "caseId", want.court_code AS "courtCode",
       want.docket_core AS "docketCore",
-      federal_docket_office(legal_case.docket_number) AS "docketOffice",
-      extract(year FROM legal_case.filed_on)::int AS "filedYear"
-    FROM unnest(
-      ${districtCodes}::text[], ${docketCores}::text[]
-    ) AS want(court_code, docket_core)
-    JOIN court ON lower(court.provider_court_id) = want.court_code
-    JOIN legal_case ON legal_case.court_id = court.id
-      AND federal_docket_core(legal_case.docket_number) = want.docket_core
+      federal_docket_office(matched.docket_number) AS "docketOffice",
+      extract(year FROM matched.filed_on)::int AS "filedYear"
+    FROM want
+    CROSS JOIN LATERAL (
+      SELECT legal_case.id, legal_case.docket_number, legal_case.filed_on
+      FROM legal_case
+      WHERE legal_case.court_id = want.court_id
+        AND federal_docket_core(legal_case.docket_number) IS NOT NULL
+        AND federal_docket_core(legal_case.docket_number) = want.docket_core
+      OFFSET 0 -- keep the probe parameterized (no pull-up into a hash join)
+    ) AS matched
   `;
 
   const matches = new Map<string, CaseMatch[]>();
