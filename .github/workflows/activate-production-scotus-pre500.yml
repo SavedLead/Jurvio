@@ -1,11 +1,15 @@
 name: Activate pre-500 SCOTUS publication
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/scotus-pre500-start"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=ACTIVATE_PRODUCTION_SCOTUS_PRE500.
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type ACTIVATE_PRODUCTION_SCOTUS_PRE500 to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +24,14 @@ jobs:
     environment: production
     timeout-minutes: 180
     steps:
+      - name: Require confirm=ACTIVATE_PRODUCTION_SCOTUS_PRE500
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "ACTIVATE_PRODUCTION_SCOTUS_PRE500" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=ACTIVATE_PRODUCTION_SCOTUS_PRE500."
+            exit 1
+          fi
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

@@ -1,11 +1,15 @@
 name: Phase 1.3 backup via public jump
 
 on:
-  workflow_dispatch: {}
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/phase-1-3-via-public-jump.yml"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PHASE_1_3_VIA_PUBLIC_JUMP.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type PHASE_1_3_VIA_PUBLIC_JUMP to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -30,6 +34,14 @@ jobs:
       BACKUP_ACCESS_KEY_ID: ${{ secrets.JURVIO_BACKUP_ACCESS_KEY_ID }}
       BACKUP_SECRET_ACCESS_KEY: ${{ secrets.JURVIO_BACKUP_SECRET_ACCESS_KEY }}
     steps:
+      - name: Require confirm=PHASE_1_3_VIA_PUBLIC_JUMP
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PHASE_1_3_VIA_PUBLIC_JUMP" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PHASE_1_3_VIA_PUBLIC_JUMP."
+            exit 1
+          fi
       - name: Require protected off-site backup configuration
         run: |
           set -euo pipefail

@@ -1,8 +1,15 @@
 name: Direct federal court ingestion
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=DIRECT_COURT_INGESTION.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type DIRECT_COURT_INGESTION to run this workflow against production"
+        required: true
+        type: string
       court:
         description: Official court code or all
         required: true
@@ -21,6 +28,14 @@ jobs:
     environment: production
     timeout-minutes: 15
     steps:
+      - name: Require confirm=DIRECT_COURT_INGESTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIRECT_COURT_INGESTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIRECT_COURT_INGESTION."
+            exit 1
+          fi
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

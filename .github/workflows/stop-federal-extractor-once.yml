@@ -9,14 +9,24 @@ name: Stop federal extractor (once)
 # lock auto-releases when the process (its reserved connection) dies.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=STOP_FEDERAL_EXTRACTOR.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type STOP_FEDERAL_EXTRACTOR to run this workflow against production"
+        required: true
+        type: string
       service:
-        description: "Worker container the extractor runs in"
+        description: Worker container the extractor runs in
         required: false
         default: worker-core
         type: choice
-        options: [worker-core, worker-coa, app]
+        options:
+        - worker-core
+        - worker-coa
+        - app
 
 permissions:
   contents: read
@@ -36,6 +46,14 @@ jobs:
       DB_HOST: 10.116.0.2
       SERVICE: ${{ inputs.service }}
     steps:
+      - name: Require confirm=STOP_FEDERAL_EXTRACTOR
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "STOP_FEDERAL_EXTRACTOR" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=STOP_FEDERAL_EXTRACTOR."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

@@ -1,20 +1,27 @@
 name: CL bulk appellate validate (once)
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=CL_BULK_APPELLATE_VALIDATE.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type CL_BULK_APPELLATE_VALIDATE to run this workflow against production"
+        required: true
+        type: string
       snapshot_date:
         description: CourtListener bulk snapshot date (YYYY-MM-DD)
         required: false
-        default: "2026-06-30"
+        default: '2026-06-30'
       min_year:
         description: Minimum decision year
         required: false
-        default: "2018"
+        default: '2018'
       limit:
         description: Max opinions/clusters to persist (bounded validation)
         required: false
-        default: "2000"
+        default: '2000'
 
 permissions:
   contents: read
@@ -36,6 +43,14 @@ jobs:
       MIN_YEAR: ${{ inputs.min_year || '2018' }}
       LIMIT: ${{ inputs.limit || '2000' }}
     steps:
+      - name: Require confirm=CL_BULK_APPELLATE_VALIDATE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CL_BULK_APPELLATE_VALIDATE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CL_BULK_APPELLATE_VALIDATE."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

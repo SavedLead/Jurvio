@@ -20,34 +20,44 @@ name: Extract federal opinion chunks (once)
 # `sudo -n docker exec`, the same route the other *-once controls use.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=EXTRACT_FEDERAL_OPINION_CHUNKS.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type EXTRACT_FEDERAL_OPINION_CHUNKS to run this workflow against production"
+        required: true
+        type: string
       snapshot_date:
-        description: "Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)"
+        description: Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)
         required: false
-        default: ""
+        default: ''
         type: string
       chunk_size:
-        description: "Opinions per chunk (smaller = more resumable + more visible progress)"
+        description: Opinions per chunk (smaller = more resumable + more visible progress)
         required: false
-        default: "25000"
+        default: '25000'
         type: string
       out_dir:
-        description: "Directory on the box for chunk files (must be writable inside the worker container)"
+        description: Directory on the box for chunk files (must be writable inside the worker container)
         required: false
-        default: "/var/lib/jurvio/artifacts/federal-chunks"
+        default: /var/lib/jurvio/artifacts/federal-chunks
         type: string
       detached:
-        description: "Run the extractor detached on the box (frees the builder; output tees to a persistent logfile that survives workflow cancellation)"
+        description: Run the extractor detached on the box (frees the builder; output tees to a persistent logfile that survives workflow cancellation)
         required: false
         default: false
         type: boolean
       service:
-        description: "Worker container to run in"
+        description: Worker container to run in
         required: false
         default: worker-core
         type: choice
-        options: [worker-core, worker-coa, app]
+        options:
+        - worker-core
+        - worker-coa
+        - app
 
 permissions:
   contents: read
@@ -72,6 +82,14 @@ jobs:
       DETACHED: ${{ inputs.detached }}
       SERVICE: ${{ inputs.service }}
     steps:
+      - name: Require confirm=EXTRACT_FEDERAL_OPINION_CHUNKS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "EXTRACT_FEDERAL_OPINION_CHUNKS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=EXTRACT_FEDERAL_OPINION_CHUNKS."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

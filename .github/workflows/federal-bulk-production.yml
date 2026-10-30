@@ -1,27 +1,40 @@
 name: Federal bulk production backfill
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=FEDERAL_BULK_PRODUCTION.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type FEDERAL_BULK_PRODUCTION to run this workflow against production"
+        required: true
+        type: string
       year:
         description: Filing year to ingest, enrich, and publish
         required: true
-        default: "2026"
+        default: '2026'
       jurisdiction:
         description: Federal jurisdiction segment
         required: true
         type: choice
         default: F
-        options: [F, FD, FB]
+        options:
+        - F
+        - FD
+        - FB
       snapshot_date:
         description: CourtListener snapshot date
         required: true
-        default: "2026-03-31"
+        default: '2026-03-31'
       row_limit:
         description: Bounded production cohort size
         required: true
         type: choice
-        default: "1000"
-        options: ["100", "1000", "5000"]
+        default: '1000'
+        options:
+        - '100'
+        - '1000'
+        - '5000'
 permissions:
   contents: read
 concurrency:
@@ -33,6 +46,14 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - name: Require confirm=FEDERAL_BULK_PRODUCTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "FEDERAL_BULK_PRODUCTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=FEDERAL_BULK_PRODUCTION."
+            exit 1
+          fi
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

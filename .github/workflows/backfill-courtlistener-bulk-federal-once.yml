@@ -18,39 +18,49 @@ name: Backfill CourtListener bulk FEDERAL opinions (once)
 # Leave `limit` set for a bounded smoke test; clear it for the full backfill.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=BACKFILL_COURTLISTENER_BULK_FEDERAL.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type BACKFILL_COURTLISTENER_BULK_FEDERAL to run this workflow against production"
+        required: true
+        type: string
       snapshot_date:
-        description: "Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)"
+        description: Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)
         required: false
-        default: ""
+        default: ''
         type: string
       min_year:
-        description: "Earliest cluster filing year to ingest"
+        description: Earliest cluster filing year to ingest
         required: false
-        default: "1900"
+        default: '1900'
         type: string
       max_year:
-        description: "Latest cluster filing year to ingest (blank = no upper bound). Set to run bounded year windows."
+        description: Latest cluster filing year to ingest (blank = no upper bound). Set to run bounded year windows.
         required: false
-        default: ""
+        default: ''
         type: string
       limit:
-        description: "Cap opinions written (blank = no cap = full backfill; set for a smoke test)"
+        description: Cap opinions written (blank = no cap = full backfill; set for a smoke test)
         required: false
-        default: ""
+        default: ''
         type: string
       include_bankruptcy:
-        description: "Include federal bankruptcy courts {FB, FBP} (enormous, low-value; default off)"
+        description: Include federal bankruptcy courts {FB, FBP} (enormous, low-value; default off)
         required: false
         default: false
         type: boolean
       service:
-        description: "Worker container to run in"
+        description: Worker container to run in
         required: false
         default: worker-core
         type: choice
-        options: [worker-core, worker-coa, app]
+        options:
+        - worker-core
+        - worker-coa
+        - app
 
 permissions:
   contents: read
@@ -75,6 +85,14 @@ jobs:
       INCLUDE_BANKRUPTCY: ${{ inputs.include_bankruptcy }}
       SERVICE: ${{ inputs.service }}
     steps:
+      - name: Require confirm=BACKFILL_COURTLISTENER_BULK_FEDERAL
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKFILL_COURTLISTENER_BULK_FEDERAL" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_COURTLISTENER_BULK_FEDERAL."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

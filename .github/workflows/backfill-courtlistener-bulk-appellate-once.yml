@@ -13,22 +13,29 @@ name: Backfill CourtListener bulk appellate opinions (once)
 # runners' egress IPs are blocked by the box SSH firewall.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=BACKFILL_COURTLISTENER_BULK_APPELLATE.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type BACKFILL_COURTLISTENER_BULK_APPELLATE to run this workflow against production"
+        required: true
+        type: string
       snapshot_date:
-        description: "Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)"
+        description: Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)
         required: false
-        default: ""
+        default: ''
         type: string
       min_year:
-        description: "Earliest cluster filing year to ingest"
+        description: Earliest cluster filing year to ingest
         required: false
-        default: "1900"
+        default: '1900'
         type: string
       limit:
-        description: "Cap opinions written (blank = no cap; use for smoke tests)"
+        description: Cap opinions written (blank = no cap; use for smoke tests)
         required: false
-        default: ""
+        default: ''
         type: string
 
 permissions:
@@ -51,6 +58,14 @@ jobs:
       MIN_YEAR: ${{ inputs.min_year }}
       LIMIT: ${{ inputs.limit }}
     steps:
+      - name: Require confirm=BACKFILL_COURTLISTENER_BULK_APPELLATE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKFILL_COURTLISTENER_BULK_APPELLATE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_COURTLISTENER_BULK_APPELLATE."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

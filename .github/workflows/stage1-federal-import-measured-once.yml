@@ -9,17 +9,24 @@ name: Stage 1 federal import (measured, once)
 # Bounded and synchronous: never drains the backlog.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=STAGE1_FEDERAL_IMPORT_MEASURED.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type STAGE1_FEDERAL_IMPORT_MEASURED to run this workflow against production"
+        required: true
+        type: string
       snapshot_date:
-        description: "Bulk snapshot date YYYY-MM-DD"
+        description: Bulk snapshot date YYYY-MM-DD
         required: false
-        default: "2026-09-30"
+        default: '2026-09-30'
         type: string
       max_chunks:
-        description: "Hard cap on chunks this stage (<=10 for Stage 1)"
+        description: Hard cap on chunks this stage (<=10 for Stage 1)
         required: false
-        default: "10"
+        default: '10'
         type: string
 
 permissions:
@@ -41,6 +48,14 @@ jobs:
       SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
       MAX_CHUNKS: ${{ inputs.max_chunks }}
     steps:
+      - name: Require confirm=STAGE1_FEDERAL_IMPORT_MEASURED
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "STAGE1_FEDERAL_IMPORT_MEASURED" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=STAGE1_FEDERAL_IMPORT_MEASURED."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

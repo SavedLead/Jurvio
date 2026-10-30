@@ -1,9 +1,15 @@
 name: Reboot Jurvio ingestion server once
 
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/reboot-ingestion-once.yml]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=REBOOT_INGESTION.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type REBOOT_INGESTION to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +26,14 @@ jobs:
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
     steps:
+      - name: Require confirm=REBOOT_INGESTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "REBOOT_INGESTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=REBOOT_INGESTION."
+            exit 1
+          fi
       - name: Resolve and reboot only jurvio-web-01
         shell: bash
         run: |

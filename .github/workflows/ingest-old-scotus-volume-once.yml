@@ -9,12 +9,19 @@ name: Ingest one old U.S. Reports volume (2-90)
 # volume; no sweep, no other courts.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=INGEST_OLD_SCOTUS_VOLUME.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type INGEST_OLD_SCOTUS_VOLUME to run this workflow against production"
+        required: true
+        type: string
       volume:
         description: U.S. Reports volume number (2-90)
         required: true
-        default: "49"
+        default: '49'
 
 permissions:
   contents: read
@@ -34,6 +41,14 @@ jobs:
       DB_HOST: 10.116.0.2
       VOLUME: ${{ inputs.volume }}
     steps:
+      - name: Require confirm=INGEST_OLD_SCOTUS_VOLUME
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "INGEST_OLD_SCOTUS_VOLUME" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=INGEST_OLD_SCOTUS_VOLUME."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

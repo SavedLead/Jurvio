@@ -1,12 +1,15 @@
 name: COA production verification
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=COA_PRODUCTION_VERIFICATION.
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/coa-production-verification.yml
+    inputs:
+      confirm:
+        description: "Type COA_PRODUCTION_VERIFICATION to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,6 +24,14 @@ jobs:
     environment: production
     timeout-minutes: 25
     steps:
+      - name: Require confirm=COA_PRODUCTION_VERIFICATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "COA_PRODUCTION_VERIFICATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=COA_PRODUCTION_VERIFICATION."
+            exit 1
+          fi
       - name: Configure production SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

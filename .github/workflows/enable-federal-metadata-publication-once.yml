@@ -14,18 +14,28 @@ name: Enable federal metadata publication (once)
 # If JURVIO_PAUSE_FEDERAL_PUBLICATION=1, the scheduler no-ops until that pause
 # is cleared (set-federal-publication-pause-once.yml, mode=resume).
 #
-#    gh workflow run enable-federal-metadata-publication-once.yml -f mode=enable
+#    gh workflow run enable-federal-metadata-publication-once.yml \
+#      -f confirm=ENABLE_FEDERAL_METADATA_PUBLICATION -f mode=enable
 #
 # Leave this unrun until David Rosenberg decides to publish the held cases.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=ENABLE_FEDERAL_METADATA_PUBLICATION.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type ENABLE_FEDERAL_METADATA_PUBLICATION to run this workflow against production"
+        required: true
+        type: string
       mode:
-        description: "enable or disable metadata-only federal publication"
+        description: enable or disable metadata-only federal publication
         required: true
         type: choice
-        options: [enable, disable]
+        options:
+        - enable
+        - disable
 
 permissions:
   contents: read
@@ -45,6 +55,14 @@ jobs:
       DB_HOST: 10.116.0.2
       MODE: ${{ inputs.mode }}
     steps:
+      - name: Require confirm=ENABLE_FEDERAL_METADATA_PUBLICATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "ENABLE_FEDERAL_METADATA_PUBLICATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=ENABLE_FEDERAL_METADATA_PUBLICATION."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: ./.github/actions/vpc-ssh
         with:

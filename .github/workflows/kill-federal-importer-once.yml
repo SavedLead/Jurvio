@@ -8,24 +8,34 @@ name: Kill federal importer (once)
 # partial opinions_written until a later import run reclaims it (stale_minutes).
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=KILL_FEDERAL_IMPORTER.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type KILL_FEDERAL_IMPORTER to run this workflow against production"
+        required: true
+        type: string
       snapshot_date:
-        description: "Bulk snapshot date YYYY-MM-DD"
+        description: Bulk snapshot date YYYY-MM-DD
         required: false
-        default: "2026-09-30"
+        default: '2026-09-30'
         type: string
       pre_kill_sleep:
-        description: "Seconds to wait on the box before the kill (so a just-launched import reaches partial progress first)"
+        description: Seconds to wait on the box before the kill (so a just-launched import reaches partial progress first)
         required: false
-        default: "0"
+        default: '0'
         type: string
       service:
-        description: "Worker container the importer runs in"
+        description: Worker container the importer runs in
         required: false
         default: worker-core
         type: choice
-        options: [worker-core, worker-coa, app]
+        options:
+        - worker-core
+        - worker-coa
+        - app
 
 permissions:
   contents: read
@@ -47,6 +57,14 @@ jobs:
       PRE_KILL_SLEEP: ${{ inputs.pre_kill_sleep }}
       SERVICE: ${{ inputs.service }}
     steps:
+      - name: Require confirm=KILL_FEDERAL_IMPORTER
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "KILL_FEDERAL_IMPORTER" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=KILL_FEDERAL_IMPORTER."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

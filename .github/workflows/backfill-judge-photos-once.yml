@@ -6,7 +6,15 @@ name: Backfill judge photos (one-shot, VPC route)
 # authority. Read-through to the importer only; no schema changes.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=BACKFILL_JUDGE_PHOTOS.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKFILL_JUDGE_PHOTOS to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +33,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=BACKFILL_JUDGE_PHOTOS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKFILL_JUDGE_PHOTOS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_JUDGE_PHOTOS."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

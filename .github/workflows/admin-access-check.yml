@@ -6,7 +6,15 @@ name: Admin access check (jurvio-admin)
 # remote admin access still works without touching the DigitalOcean console.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=ADMIN_ACCESS_CHECK.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type ADMIN_ACCESS_CHECK to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +32,14 @@ jobs:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       A: jurvio-admin@127.0.0.1
     steps:
+      - name: Require confirm=ADMIN_ACCESS_CHECK
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "ADMIN_ACCESS_CHECK" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=ADMIN_ACCESS_CHECK."
+            exit 1
+          fi
       - name: Prepare key
         run: |
           set -euo pipefail

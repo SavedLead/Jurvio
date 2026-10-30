@@ -1,8 +1,14 @@
 name: Verify DigitalOcean backup restore migration
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/restore-do-validation-once.yml]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=RESTORE_DO_VALIDATION.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RESTORE_DO_VALIDATION to run this workflow against production"
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -18,6 +24,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       OBJECT_KEY: ""
     steps:
+      - name: Require confirm=RESTORE_DO_VALIDATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "RESTORE_DO_VALIDATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RESTORE_DO_VALIDATION."
+            exit 1
+          fi
       - name: Configure isolated SSH over the existing private VPC
         run: |
           set -euo pipefail

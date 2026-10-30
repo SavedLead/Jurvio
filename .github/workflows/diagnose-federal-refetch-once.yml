@@ -1,0 +1,131 @@
+name: Diagnose federal refetch progress (once, read-only)
+
+# Read-only snapshot for the federal-active-cases lane and the publication
+# state of legal_case. Changes nothing:
+#   * every query runs with default_transaction_read_only=on, so Postgres
+#     itself rejects any write;
+#   * the helper refuses any statement that does not start with SELECT/WITH;
+#   * no container, service, or file on the box is touched.
+#
+# Reports:
+#   1. pg_index.indisvalid / indisready for legal_case_open_refetch_idx
+#   2. legal_case rows with last_fetched_at set (count and fraction), overall
+#      and for the open set the active-case lane refetches
+#   3. federal_cluster_watermark row count
+#   4. ingestion_checkpoint rows
+#   5. legal_case counts by publication state
+#   6. the last federal-active-cases runs from scheduler_lane_run
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-federal-refetch
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Federal refetch report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          # Read-only at the server: any INSERT/UPDATE/DELETE/DDL fails with
+          # "cannot execute ... in a read-only transaction". No -i on docker exec:
+          # it would drain this heredoc.
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=240s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+
+          echo "=============================================================="
+          echo " FEDERAL REFETCH DIAGNOSIS @ $(date -u +'%Y-%m-%dT%H:%M:%SZ') (read-only)"
+          echo "=============================================================="
+          echo "session_read_only=$(q "SELECT current_setting('default_transaction_read_only')")"
+
+          echo "--- 1. legal_case_open_refetch_idx (name | indisvalid | indisready | indislive | size) ---"
+          idx="$(q "SELECT c.relname, i.indisvalid, i.indisready, i.indislive, pg_size_pretty(pg_relation_size(c.oid))
+                      FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+                     WHERE c.relname = 'legal_case_open_refetch_idx'")"
+          echo "${idx:-MISSING (no such index)}"
+
+          echo "--- 2. last_fetched_at coverage (scope | rows | with_last_fetched_at | pct | fetched_24h | newest) ---"
+          q "SELECT 'all_legal_case', count(*), count(last_fetched_at),
+                    round(100.0 * count(last_fetched_at) / nullif(count(*), 0), 3),
+                    count(*) FILTER (WHERE last_fetched_at > now() - interval '24 hours'),
+                    max(last_fetched_at)
+               FROM legal_case"
+          q "SELECT 'open_refetch_set', count(*), count(last_fetched_at),
+                    round(100.0 * count(last_fetched_at) / nullif(count(*), 0), 3),
+                    count(*) FILTER (WHERE last_fetched_at > now() - interval '24 hours'),
+                    max(last_fetched_at)
+               FROM legal_case
+              WHERE terminated_on IS NULL AND activity_state = 'active' AND publication <> 'restricted'"
+
+          echo "--- 3. federal_cluster_watermark (rows | newest update) ---"
+          q "SELECT count(*), max(updated_at) FROM federal_cluster_watermark"
+
+          echo "--- 4. ingestion_checkpoint (provider | stream | updated_at | cursor, first 240 chars) ---"
+          q "SELECT coalesce(p.code, ck.provider_id::text), ck.stream_name, ck.updated_at,
+                    left(regexp_replace(ck.cursor_value, '\s+', ' ', 'g'), 240)
+               FROM ingestion_checkpoint ck LEFT JOIN provider p ON p.id = ck.provider_id
+              ORDER BY ck.updated_at DESC"
+          echo "ingestion_checkpoint_rows=$(q "SELECT count(*) FROM ingestion_checkpoint")"
+
+          echo "--- 5. legal_case by publication state (publication | rows) ---"
+          q "SELECT publication::text, count(*) FROM legal_case GROUP BY 1 ORDER BY 2 DESC"
+
+          echo "--- 6. last federal-active-cases runs (started | duration_s | exit | signal | ok) ---"
+          q "SELECT started_at, round(duration_ms / 1000.0), exit_code, coalesce(signal, '-'), ok
+               FROM scheduler_lane_run WHERE lane = 'federal-active-cases'
+              ORDER BY started_at DESC LIMIT 8"
+          echo "=============================================================="
+          REMOTE
+          rc=${PIPESTATUS[0]}
+          {
+            echo '### Federal refetch diagnosis (read-only)'
+            echo ''
+            echo '```'
+            cat "$RUNNER_TEMP/report.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"

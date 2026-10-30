@@ -10,17 +10,24 @@ name: Drain federal publication (full speed, once)
 # and the publisher's own result line.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=DRAIN_FEDERAL_PUBLICATION.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type DRAIN_FEDERAL_PUBLICATION to run this workflow against production"
+        required: true
+        type: string
       max_items:
-        description: "Max cases to publish this pass (clamped to 100000)"
+        description: Max cases to publish this pass (clamped to 100000)
         required: false
-        default: "100000"
+        default: '100000'
         type: string
       max_concurrency:
-        description: "Publisher concurrency (1-16)"
+        description: Publisher concurrency (1-16)
         required: false
-        default: "8"
+        default: '8'
         type: string
 
 permissions:
@@ -42,6 +49,14 @@ jobs:
       MAX_ITEMS: ${{ inputs.max_items }}
       MAX_CC: ${{ inputs.max_concurrency }}
     steps:
+      - name: Require confirm=DRAIN_FEDERAL_PUBLICATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DRAIN_FEDERAL_PUBLICATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DRAIN_FEDERAL_PUBLICATION."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: ./.github/actions/vpc-ssh
         with:

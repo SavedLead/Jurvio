@@ -7,17 +7,24 @@ name: Pilot publish federal (bounded, once)
 # pages (HTTP 200 + real content) and search visibility. No lane is resumed here.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PILOT_PUBLISH_FEDERAL_BOUNDED.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type PILOT_PUBLISH_FEDERAL_BOUNDED to run this workflow against production"
+        required: true
+        type: string
       max_cases:
-        description: "Combined cap on newly published cases"
+        description: Combined cap on newly published cases
         required: false
-        default: "10"
+        default: '10'
         type: string
       max_docs:
-        description: "Combined cap on newly published opinion documents"
+        description: Combined cap on newly published opinion documents
         required: false
-        default: "10"
+        default: '10'
         type: string
 
 permissions:
@@ -39,6 +46,14 @@ jobs:
       MAX_CASES: ${{ inputs.max_cases }}
       MAX_DOCS: ${{ inputs.max_docs }}
     steps:
+      - name: Require confirm=PILOT_PUBLISH_FEDERAL_BOUNDED
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PILOT_PUBLISH_FEDERAL_BOUNDED" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PILOT_PUBLISH_FEDERAL_BOUNDED."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

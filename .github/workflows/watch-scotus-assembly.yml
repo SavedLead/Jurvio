@@ -1,7 +1,15 @@
 name: Watch SCOTUS historical assembly
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=WATCH_SCOTUS_ASSEMBLY.
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type WATCH_SCOTUS_ASSEMBLY to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   actions: write
@@ -17,6 +25,14 @@ jobs:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 5
     steps:
+      - name: Require confirm=WATCH_SCOTUS_ASSEMBLY
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "WATCH_SCOTUS_ASSEMBLY" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WATCH_SCOTUS_ASSEMBLY."
+            exit 1
+          fi
       - name: Inspect and recover SCOTUS assembly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,7 +54,7 @@ jobs:
 
           ASSEMBLY_ACTION="healthy"
           if [ "$ASSEMBLY_ACTIVE" -eq 0 ] && { [ "$HEARTBEAT_AGE" -ge 600 ] || grep -q 'release pending' <<<"$XRAY_BODY"; }; then
-            gh workflow run "$ASSEMBLY_WORKFLOW" --ref main -f term=25 -f limit=100 -f resume=true
+            gh workflow run "$ASSEMBLY_WORKFLOW" --ref main -f confirm=INGEST_PRODUCTION_SCOTUS_OFFICIAL -f term=25 -f limit=100 -f resume=true
             ASSEMBLY_ACTION="dispatched"
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
 
@@ -58,7 +74,7 @@ jobs:
           PUBLICATION_ACTIVE="$(jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length' <<<"$PUBLICATION_RUNS")"
           PUBLICATION_ACTION="idle"
           if [ "$PENDING" -gt 0 ] && [ "$PUBLICATION_ACTIVE" -eq 0 ]; then
-            gh workflow run "$PUBLICATION_WORKFLOW" --ref main -f limit=100
+            gh workflow run "$PUBLICATION_WORKFLOW" --ref main -f confirm=PUBLISH_OFFICIAL_SCOTUS_OPINIONS -f limit=100
             PUBLICATION_ACTION="dispatched"
           elif [ "$PUBLICATION_ACTIVE" -gt 0 ]; then
             PUBLICATION_ACTION="active"

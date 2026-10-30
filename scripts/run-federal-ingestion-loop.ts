@@ -33,9 +33,17 @@ import {
 } from "@/modules/ingestion/domain/federal-stream";
 import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import {
+  CourtListenerRateLimited,
   fetchDocketPage,
   fetchOpinionClusterIds,
+  setCourtListenerRequestPolicy,
 } from "@/modules/ingestion/providers/courtlistener/client";
+import {
+  ACTIVE_CASE_CHECKPOINT_STREAM,
+  activeCaseBudget,
+  activeCaseStopReason,
+  type ActiveCaseStopReason,
+} from "@/modules/ingestion/domain/active-case-budget";
 import { publishCaseOpinionDocuments } from "@/modules/ingestion/application/publish-federal-opinion-documents";
 
 function option(name: string, fallback: string): string {
@@ -171,6 +179,7 @@ const jobDeadlineMs = Date.now() + (
 function withinBudget(): boolean {
   return Date.now() < jobDeadlineMs;
 }
+const jobStartedAtMs = Date.now();
 
 const adaptiveConfig: AdaptiveConcurrencyConfig = resolveAdaptiveConfig({
   start: startConcurrency,
@@ -484,75 +493,177 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
 }
 
 async function runActiveUpdates() {
-  const rows = await sql<{ docket_id: string }[]>`
-    SELECT identifier.identifier_value AS docket_id
-    FROM legal_case
-    JOIN case_identifier identifier ON identifier.case_id = legal_case.id
-    JOIN court ON court.id = legal_case.court_id
-    WHERE identifier.identifier_type = 'courtlistener_docket_id'
-      AND identifier.provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
-      AND legal_case.terminated_on IS NULL
-      AND legal_case.activity_state = 'active'
-      AND legal_case.publication <> 'restricted'
-      AND (
-        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
-        OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
-        OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
-      )
-    ORDER BY legal_case.last_fetched_at NULLS FIRST, legal_case.id
-    LIMIT ${activeCaseLimit}
-  `;
+  // Budget-aware: the scheduler SIGTERMs this job at budgetMs (20 min). Stop
+  // taking new dockets well before that, cap every CourtListener request at a
+  // hard deadline just inside the budget, and stop the whole run on a 429
+  // instead of sleeping out the budget. Each docket stamps last_fetched_at and
+  // the stream checkpoint as it finishes, so a stopped run loses nothing.
+  const budget = activeCaseBudget({
+    startedAtMs: jobStartedAtMs,
+    budgetMs: Number.isFinite(configuredBudgetMs) && configuredBudgetMs > 0 ? configuredBudgetMs : null,
+  });
+  setCourtListenerRequestPolicy({ deadlineMs: budget.requestDeadlineMs, stopOnRateLimit: true });
+
+  let stopReason: ActiveCaseStopReason | null = null;
+  let retryAfterMs: number | null = null;
+  const selectionTimeoutMs = Math.max(5_000, Math.min(5 * 60_000, budget.stopPullingAtMs - Date.now()));
+  let rows: { docket_id: string; case_id: string }[];
+  try {
+    rows = await sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${Math.trunc(selectionTimeoutMs)}`);
+      return tx<{ docket_id: string; case_id: string }[]>`
+        SELECT identifier.identifier_value AS docket_id, legal_case.id AS case_id
+        FROM legal_case
+        JOIN case_identifier identifier ON identifier.case_id = legal_case.id
+        JOIN court ON court.id = legal_case.court_id
+        WHERE identifier.identifier_type = 'courtlistener_docket_id'
+          AND identifier.provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
+          AND legal_case.terminated_on IS NULL
+          AND legal_case.activity_state = 'active'
+          AND legal_case.publication <> 'restricted'
+          AND (
+            lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
+            OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
+            OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
+          )
+        ORDER BY legal_case.last_fetched_at NULLS FIRST, legal_case.id
+        LIMIT ${activeCaseLimit}
+      `;
+    });
+  } catch (error) {
+    // 57014 = query_canceled (statement_timeout). The selection could not finish
+    // inside the budget, usually because legal_case_open_refetch_idx is missing
+    // or invalid. End cleanly; the diagnostic workflow reports the index state.
+    if ((error as { code?: string } | null)?.code === "57014") {
+      return { loop, stoppedReason: "selection_timeout", discovered: 0, updated: 0, failed: 0, costs: 0 };
+    }
+    throw error;
+  }
+
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: "active-case-updates",
-    selection: concurrencySelection,
+    selection: { ...concurrencySelection, budgetMs: budget.budgetMs, stopPullingAtMs: budget.stopPullingAtMs },
     selectedCount: rows.length,
   });
+  let attempted = 0;
   let updated = 0;
   let failed = 0;
   let docketEntries = 0;
   let documents = 0;
+  let lastDocketId: string | null = null;
 
-  async function handle(row: { docket_id: string }): Promise<OutcomeSignal> {
+  async function checkpoint(): Promise<void> {
+    await writeActiveCaseCheckpoint({
+      runId,
+      lastDocketId,
+      attempted,
+      updated,
+      failed,
+      selected: rows.length,
+      stoppedReason: stopReason,
+      retryAfterMs,
+    }).catch((error: unknown) => {
+      process.stderr.write(`active-case checkpoint write failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+  }
+
+  // Mark a docket as tried so a permanently failing one (deleted upstream, bad
+  // data) rotates to the back instead of heading the queue every run.
+  async function stampAttempted(caseId: string): Promise<void> {
+    await sql`UPDATE legal_case SET last_fetched_at = now() WHERE id = ${caseId}`.catch(() => undefined);
+  }
+
+  async function handle(row: { docket_id: string; case_id: string }): Promise<OutcomeSignal> {
+    attempted += 1;
     try {
       await startIngestionRunItem(sql, runId, row.docket_id);
       const result = await ingestCourtListenerDocket(sql, artifactStore, Number(row.docket_id));
       updated += 1;
       docketEntries += result.docketEntries.accepted;
       documents += result.docketEntries.documents;
+      lastDocketId = row.docket_id;
       await finishIngestionRunItem(sql, {
         runId,
         sourceRecordId: row.docket_id,
         casePublicId: result.caseId,
         documentCount: result.docketEntries.documents,
       });
+      await checkpoint();
       return { ok: true };
     } catch (error) {
-      failed += 1;
       const message = error instanceof Error ? error.message : String(error);
+      const reason = activeCaseStopReason(error);
+      if (reason) {
+        // Not this docket's fault: leave last_fetched_at alone so it heads the
+        // next run, and stop handing out work.
+        stopReason ??= reason;
+        if (error instanceof CourtListenerRateLimited) retryAfterMs = error.retryAfterMs;
+      } else {
+        failed += 1;
+        lastDocketId = row.docket_id;
+        await stampAttempted(row.case_id);
+      }
       await finishIngestionRunItem(sql, { runId, sourceRecordId: row.docket_id, error: message })
         .catch(() => undefined);
+      await checkpoint();
       return { ok: false, ...classifyFailureSignal(error) };
     }
   }
 
-  const finalState = await processArrayWithPool(
-    rows,
+  let cursor = 0;
+  const pool = await runAdaptiveWorkerPool<{ docket_id: string; case_id: string }>({
+    config: adaptiveConfig,
+    initialState: initialConcurrencyState(adaptiveConfig),
+    pull: async () => {
+      if (stopReason) return undefined;
+      if (Date.now() >= budget.stopPullingAtMs) {
+        stopReason = "budget";
+        return undefined;
+      }
+      return cursor < rows.length ? rows[cursor++] : undefined;
+    },
     handle,
-    initialConcurrencyState(adaptiveConfig),
-  );
+  });
+  await checkpoint();
   await finishIngestionRun(sql, runId);
   return {
     loop,
     runId,
     discovered: rows.length,
+    attempted,
     updated,
     docketEntries,
     documents,
     failed,
-    finalConcurrency: finalState.concurrency,
+    skipped: rows.length - attempted,
+    stoppedReason: stopReason ?? (attempted === rows.length ? "drained" : null),
+    retryAfterMs,
+    elapsedMs: Date.now() - jobStartedAtMs,
+    budgetMs: budget.budgetMs,
+    finalConcurrency: pool.finalState.concurrency,
     costs: 0,
   };
+}
+
+async function writeActiveCaseCheckpoint(progress: {
+  runId: string;
+  lastDocketId: string | null;
+  attempted: number;
+  updated: number;
+  failed: number;
+  selected: number;
+  stoppedReason: ActiveCaseStopReason | null;
+  retryAfterMs: number | null;
+}): Promise<void> {
+  const id = await providerId();
+  const value = JSON.stringify({ ...progress, updatedAt: new Date().toISOString() });
+  await sql`
+    INSERT INTO ingestion_checkpoint (provider_id, stream_name, cursor_value)
+    VALUES (${id}, ${ACTIVE_CASE_CHECKPOINT_STREAM}, ${value})
+    ON CONFLICT (provider_id, stream_name)
+    DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = now()
+  `;
 }
 
 async function unseenClusterIds(providerId: string | undefined, ids: number[]): Promise<number[]> {

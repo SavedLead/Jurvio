@@ -10,13 +10,22 @@ name: Set federal publication pause (once)
 # dispatched deliberately as part of the approved controlled rollout.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=SET_FEDERAL_PUBLICATION_PAUSE.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type SET_FEDERAL_PUBLICATION_PAUSE to run this workflow against production"
+        required: true
+        type: string
       mode:
-        description: "pause or resume"
+        description: pause or resume
         required: true
         type: choice
-        options: [pause, resume]
+        options:
+        - pause
+        - resume
 
 permissions:
   contents: read
@@ -36,6 +45,14 @@ jobs:
       DB_HOST: 10.116.0.2
       MODE: ${{ inputs.mode }}
     steps:
+      - name: Require confirm=SET_FEDERAL_PUBLICATION_PAUSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "SET_FEDERAL_PUBLICATION_PAUSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=SET_FEDERAL_PUBLICATION_PAUSE."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

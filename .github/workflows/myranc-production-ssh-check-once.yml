@@ -1,8 +1,14 @@
 name: Check existing production deployment identity on MyRanc
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/myranc-production-ssh-check-once.yml]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=MYRANC_PRODUCTION_SSH_CHECK.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type MYRANC_PRODUCTION_SSH_CHECK to run this workflow against production"
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -18,6 +24,14 @@ jobs:
       SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       CONFIGURED_USER: ${{ secrets.DO_USER }}
     steps:
+      - name: Require confirm=MYRANC_PRODUCTION_SSH_CHECK
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "MYRANC_PRODUCTION_SSH_CHECK" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=MYRANC_PRODUCTION_SSH_CHECK."
+            exit 1
+          fi
       - name: Test existing deployment key using read-only commands
         shell: bash
         run: |
