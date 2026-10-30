@@ -27,6 +27,14 @@ on:
         description: "Type DIAGNOSE to run this read-only report"
         required: true
         type: string
+      sections:
+        description: "all = full report (heavy full scan); tier2 = only the cheap Tier 2 30/60/90-day split"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - tier2
 
 permissions:
   contents: read
@@ -43,6 +51,7 @@ jobs:
     env:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
+      SECTIONS: ${{ inputs.sections || 'all' }}
     steps:
       - name: Require confirm=DIAGNOSE
         env:
@@ -61,7 +70,8 @@ jobs:
           set -uo pipefail
           # shellcheck disable=SC1090
           source "$HOME/vpc-ssh.sh"
-          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          case "$SECTIONS" in all|tier2) ;; *) echo "::error::sections must be all or tier2"; exit 1 ;; esac
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SECTIONS='$SECTIONS' bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
           set -uo pipefail
           find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
           pg="$(find_svc postgres)"
@@ -131,6 +141,29 @@ jobs:
           echo " PUBLICATION TIERS @ $(date -u +'%Y-%m-%dT%H:%M:%SZ') (read-only)"
           echo "=============================================================="
           echo "session_read_only=$(q "SELECT current_setting('default_transaction_read_only')")"
+
+          echo "--- D. Tier 2 windows, overlap-free (cases filed in the window that are NOT tier 1) (window | status | cases | gate_ok | soft_blocked | hard_blocked) ---"
+          q "WITH r AS (
+               SELECT lc.id, lc.publication::text AS status, lc.filed_on, lc.caption, lc.verification, ct.provider_court_id, ct.verification AS court_verification
+                 FROM legal_case lc JOIN court ct ON ct.id = lc.court_id
+                WHERE lc.filed_on >= current_date - 90 AND lc.filed_on <= current_date + 1),
+             g AS (
+               SELECT r.*,
+                 CASE WHEN status IN ('restricted', 'suppressed') THEN 'hard'
+                      WHEN caption ~* '\y(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\y'
+                        OR EXISTS (SELECT 1 FROM federal_publication_hold h WHERE h.case_id = r.id AND 'restricted_or_sensitive' = ANY (h.reasons)) THEN 'hard'
+                      WHEN verification IN ('conflict', 'needs_review') THEN 'soft'
+                      WHEN lower(coalesce(provider_court_id, '')) <> 'scotus' AND court_verification IS DISTINCT FROM 'verified' THEN 'soft'
+                      WHEN EXISTS (SELECT 1 FROM federal_publication_hold h, unnest(h.reasons) x WHERE h.case_id = r.id AND x <> 'missing_readable_content') THEN 'soft'
+                      ELSE 'ok' END AS gate
+                 FROM r
+                WHERE NOT EXISTS (SELECT 1 FROM opinion_cluster oc WHERE oc.case_id = r.id)
+                  AND NOT EXISTS (SELECT 1 FROM case_citation_count cc WHERE cc.case_id = r.id AND (cc.cited > 0 OR cc.cited_by > 0 OR cc.cited_on_jurvio > 0)))
+             SELECT w, status, count(*), count(*) FILTER (WHERE gate = 'ok'), count(*) FILTER (WHERE gate = 'soft'), count(*) FILTER (WHERE gate = 'hard')
+               FROM g, LATERAL (VALUES ('0-30d', 30), ('31-60d', 60), ('61-90d', 90)) v(w, d)
+              WHERE filed_on >= current_date - d AND (d = 30 OR filed_on < current_date - (d - 30))
+              GROUP BY 1, 2 ORDER BY 1, 2"
+          if [ "$SECTIONS" = "tier2" ]; then echo "(sections=tier2: skipping the heavy full-scan sections A-C)"; echo "=============================================================="; exit 0; fi
 
           echo "--- A. one-pass breakdown (section | tier | status | key | cases | gate_ok | soft_blocked | hard_blocked) ---"
           echo "    sections: 1=tier x status, 2=+court type, 3=+decade, 4=+gate, 5=tier4 split (pre2000_solid / post2000_thin / undated)"
