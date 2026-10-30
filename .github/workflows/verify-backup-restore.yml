@@ -60,8 +60,66 @@ jobs:
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=VERIFY_BACKUP_RESTORE."
             exit 1
           fi
+      - name: Install GitHub REST helpers (builder-01 has no gh CLI)
+        if: always()
+        run: |
+          # jurvio-builder-01 has curl and jq but no gh CLI. These helpers replace the
+          # gh calls this workflow used. Issue comments and report updates are best
+          # effort and never fail the job; reads used for decisions still fail loudly.
+          cat > "$RUNNER_TEMP/gh-rest.sh" <<'GHREST'
+          _gh_curl() {
+            local method="$1" path="$2"; shift 2
+            curl -fsSL --retry 3 --retry-delay 2 -X "$method" \
+              -H "Authorization: Bearer ${GH_TOKEN:?GH_TOKEN is not set}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$@" "https://api.github.com/${path#/}"
+          }
+          gh_api() { _gh_curl GET "$1"; }
+          gh_api_post() {
+            if [ $# -ge 2 ]; then printf '%s' "$2" | _gh_curl POST "$1" -H "Content-Type: application/json" --data-binary @-
+            else _gh_curl POST "$1"; fi
+          }
+          # Every page of a list endpoint, one JSON document per page (pipe into jq).
+          gh_api_paginate() {
+            local path="$1" page=1 sep body count
+            case "$path" in *\?*) sep='&' ;; *) sep='?' ;; esac
+            while [ "$page" -le 50 ]; do
+              body="$(gh_api "${path}${sep}page=${page}")" || return 1
+              printf '%s\n' "$body"
+              count="$(jq '(if type == "array" then . else ([.[] | arrays] | .[0] // []) end) | length' <<<"$body")"
+              [ "${count:-0}" -gt 0 ] || break
+              page=$((page + 1))
+            done
+          }
+          gh_patch_body() {
+            jq -n --arg body "$2" '{body: $body}' \
+              | _gh_curl PATCH "$1" -H "Content-Type: application/json" --data-binary @- \
+              || { echo "::warning::GitHub update of $1 failed (non-fatal)" >&2; return 0; }
+          }
+          gh_comment() {
+            jq -n --arg body "$2" '{body: $body}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues/$1/comments" -H "Content-Type: application/json" --data-binary @- >/dev/null \
+              || echo "::warning::comment on issue #$1 failed (non-fatal)" >&2
+          }
+          gh_issue_create() {
+            jq -n --arg title "$1" --arg body "$2" '{title: $title, body: $body}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues" -H "Content-Type: application/json" --data-binary @- >/dev/null \
+              || echo "::warning::issue creation failed (non-fatal)" >&2
+          }
+          # gh_dispatch WORKFLOW REF key=value ...
+          gh_dispatch() {
+            local wf="$1" ref="$2"; shift 2
+            local inputs='{}' kv
+            for kv in "$@"; do inputs="$(jq -c --arg k "${kv%%=*}" --arg v "${kv#*=}" '. + {($k): $v}' <<<"$inputs")"; done
+            jq -n --arg ref "$ref" --argjson inputs "$inputs" '{ref: $ref, inputs: $inputs}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/dispatches" -H "Content-Type: application/json" --data-binary @- >/dev/null
+          }
+          export -f _gh_curl gh_api gh_api_post gh_api_paginate gh_patch_body gh_comment gh_issue_create gh_dispatch
+          GHREST
       - name: Open a temporary SSH path through the public host
         run: |
+          source "$RUNNER_TEMP/gh-rest.sh"
           set -euo pipefail
           api=https://api.digitalocean.com/v2
           auth=(-H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json")
@@ -94,7 +152,7 @@ jobs:
           curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$public_rule" >/dev/null
           private_rule="$(jq -n --arg src "$public_private_cidr" --argjson id "$public_id" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src],droplet_ids:[$id]}}]}')"
           curl -fsS -X POST "${auth[@]}" "$api/firewalls/$ingestion_firewall_id/rules" -d "$private_rule" >/dev/null
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.4 restore: `█░░░░░░░░░ 10%` Temporary SSH route opened; production database remains untouched.'
+          gh_comment 426 '1.4 restore: `█░░░░░░░░░ 10%` Temporary SSH route opened; production database remains untouched.'
 
       - name: Configure ephemeral SSH
         run: |
@@ -223,11 +281,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GATE_STATUS: ${{ job.status }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "Phase 1.4 restore [$GATE_STATUS]" --body "Status: **$GATE_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          source "$RUNNER_TEMP/gh-rest.sh"
+          gh_issue_create "Phase 1.4 restore [$GATE_STATUS]" "Status: **$GATE_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
       - name: Remove temporary SSH access
         if: always()
         run: |
+          source "$RUNNER_TEMP/gh-rest.sh"
           set +e
           api=https://api.digitalocean.com/v2
           if [ -n "${FIREWALL_ID:-}" ] && [ -n "${RUNNER_CIDR:-}" ]; then
@@ -239,4 +299,4 @@ jobs:
             curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$INGESTION_FIREWALL_ID/rules" -d "$private_rule"
           fi
           rm -f ~/.ssh/id_ed25519 ~/.ssh/config
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body "1.4 hosted restore finished with status: **${{ job.status }}**. Scratch data and temporary SSH access cleanup attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh_comment 426 "1.4 hosted restore finished with status: **${{ job.status }}**. Scratch data and temporary SSH access cleanup attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
