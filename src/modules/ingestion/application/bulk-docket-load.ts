@@ -564,6 +564,20 @@ export async function mergeDocketStage(sql: Sql, providerId: string, csv: string
       )
       SELECT count(*)::int AS n FROM created
     `;
+    // Per-court "last bulk load" for /internal/freshness (court_source_watermark).
+    await tx`
+      INSERT INTO court_source_watermark (
+        source, court_code, last_attempt_at, last_success_at, items_fetched_last, items_fetched_total, updated_at
+      )
+      SELECT 'bulk', lower(court_code), now(), now(), count(*)::int, count(*), now()
+      FROM courtlistener_docket_stage
+      GROUP BY lower(court_code)
+      ON CONFLICT (source, court_code) DO UPDATE SET
+        last_attempt_at = now(), last_success_at = now(),
+        items_fetched_last = EXCLUDED.items_fetched_last,
+        items_fetched_total = court_source_watermark.items_fetched_total + EXCLUDED.items_fetched_last,
+        consecutive_failures = 0, updated_at = now()
+    `;
     return {
       inserted: inserted?.n ?? 0,
       matchedByDocketId: byId?.n ?? 0,

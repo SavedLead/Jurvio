@@ -88,6 +88,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-public-case-search.mjs", "--max-batches=150"],
   },
   {
+    // Precomputes court_freshness for /internal/freshness: one grouped pass over
+    // legal_case for ~108 federal courts. Feed jobs also refresh the courts they
+    // touch, so this pass only has to catch bulk loads and publication changes.
+    lane: "core",
+    name: "court-freshness",
+    initialDelayMs: 1 * minute,
+    intervalMs: 30 * minute,
+    budgetMs: 10 * minute,
+    command: ["jobs/refresh-court-freshness.mjs"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
