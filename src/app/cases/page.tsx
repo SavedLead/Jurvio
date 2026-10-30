@@ -14,6 +14,7 @@ import {
   exactMatchKind,
   hasActiveFilters,
   hasUserText,
+  matchOpinionAuthorJudge,
   parseCaseListingParams,
   pickLatestCaseEvent,
   truncateLabel,
@@ -34,7 +35,7 @@ const PAGE_SIZE = 50;
 
 const listCachedPublicCases = unstable_cache(
   async (options: ListPublicCasesOptions) => listPublicCases(db(), options),
-  ["public-case-directory-v2"],
+  ["public-case-directory-v3"],
   { revalidate: 300, tags: ["public-cases"] },
 );
 const listCachedPublicCaseCourts = unstable_cache(
@@ -290,7 +291,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
                 const status = statusFor(legalCase);
                 const latest = pickLatestCaseEvent(legalCase);
                 const latestDate = latest ? formatPublicCaseDate(latest.date) ?? latest.date : null;
-                const opinionLabel = legalCase.perCuriam ? "Per curiam opinion" : legalCase.opinionAuthor ? `Opinion by ${legalCase.opinionAuthor}` : null;
+                const authorJudge = legalCase.perCuriam ? null : matchOpinionAuthorJudge(legalCase.opinionAuthor, legalCase.authorJudges ?? []);
                 return (
                   <li key={legalCase.publicId}>
                     <article className={styles.caseRow}>
@@ -299,7 +300,14 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
                           <span className={styles.court}>{legalCase.courtName}</span>
                           <span className={styles.mono}>{legalCase.docketNumber}</span>
                           {legalCase.officialCitation ? <span className={styles.mono}>{legalCase.officialCitation}</span> : null}
-                          {opinionLabel ? <span>{opinionLabel}</span> : null}
+                          {legalCase.perCuriam ? <span>Per curiam opinion</span> : legalCase.opinionAuthor ? (
+                            <span>
+                              Opinion by{" "}
+                              {authorJudge
+                                ? <Link href={`/judges/${authorJudge.publicId}` as Route} className={styles.authorLink}>{legalCase.opinionAuthor}</Link>
+                                : legalCase.opinionAuthor}
+                            </span>
+                          ) : null}
                         </div>
                         <h3>
                           <Link href={`/case/${legalCase.publicId}` as Route}>

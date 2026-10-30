@@ -211,3 +211,37 @@ export function exactMatchKind(
   if (citation && (citation === needle || citation.replace(/\s*\(\d{4}\)$/, "") === needle)) return "citation";
   return null;
 }
+
+const AUTHOR_TITLE_SUFFIX = /,?\s*(?:c\.\s*j\.|j\.|jj\.|chief\s+justice|justice|chief\s+judge|judge)\s*$/i;
+const AUTHOR_TITLE_PREFIX = /^(?:hon(?:orable)?\.?|chief\s+justice|justice|chief\s+judge|judge)\s+/i;
+
+function surnameOf(name: string) {
+  const words = name
+    .replace(AUTHOR_TITLE_PREFIX, "")
+    .replace(AUTHOR_TITLE_SUFFIX, "")
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word && !/^(?:jr|sr|ii|iii|iv)$/.test(word));
+  return words.at(-1) ?? null;
+}
+
+/**
+ * Picks the judge profile to link an opinion author's name to. Only verified
+ * public judges already assigned to the case as an opinion author are
+ * candidates, and the link is made only when exactly one shares the author's
+ * surname, so an ambiguous name stays plain text.
+ */
+export function matchOpinionAuthorJudge<T extends { normalizedName: string }>(
+  authorName: string | null,
+  candidates: T[],
+): T | null {
+  if (!authorName) return null;
+  const surname = surnameOf(authorName);
+  if (!surname) return null;
+  const matches = candidates.filter((candidate) => surnameOf(candidate.normalizedName) === surname);
+  return matches.length === 1 ? matches[0]! : null;
+}

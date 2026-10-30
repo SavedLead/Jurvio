@@ -6,6 +6,7 @@ import {
   hasActiveFilters,
   hasUserText,
   highlightSegments,
+  matchOpinionAuthorJudge,
   parseCaseListingParams,
   pickLatestCaseEvent,
   truncateLabel,
@@ -123,5 +124,25 @@ describe("exact identifier matches", () => {
   it("does not treat partial text as an exact match", () => {
     expect(exactMatchKind("22-45", loper)).toBeNull();
     expect(exactMatchKind("Loper", loper)).toBeNull();
+  });
+});
+
+describe("opinion author judge links", () => {
+  const roberts = { publicId: "jj-roberts1", normalizedName: "john g roberts jr" };
+  const kagan = { publicId: "jj-kagan001", normalizedName: "elena kagan" };
+
+  it("links an author to the single assigned judge with the same surname", () => {
+    expect(matchOpinionAuthorJudge("Roberts, C.J.", [roberts, kagan])?.publicId).toBe("jj-roberts1");
+    expect(matchOpinionAuthorJudge("Justice Kagan", [roberts, kagan])?.publicId).toBe("jj-kagan001");
+    expect(matchOpinionAuthorJudge("ELENA KAGAN", [kagan])?.publicId).toBe("jj-kagan001");
+  });
+
+  it("leaves the name unlinked when no candidate or several candidates match", () => {
+    expect(matchOpinionAuthorJudge("Barrett, J.", [roberts, kagan])).toBeNull();
+    expect(matchOpinionAuthorJudge("Smith", [
+      { publicId: "jj-smith0001", normalizedName: "john smith" },
+      { publicId: "jj-smith0002", normalizedName: "jane smith" },
+    ])).toBeNull();
+    expect(matchOpinionAuthorJudge(null, [roberts])).toBeNull();
   });
 });
