@@ -74,6 +74,37 @@ jobs:
           printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$ADMIN" 'sudo -n systemctl --version | head -1'
+      - name: Ensure a 2 GB swapfile (builder-01 has 3.8 GiB RAM and no swap)
+        run: |
+          set -uo pipefail
+          if [ "$(awk '/SwapTotal/ {print $2}' /proc/meminfo)" -gt 0 ]; then
+            echo "swap already present"; free -h
+          else
+            cat > "$RUNNER_TEMP/jurvio-swapfile.service" <<'UNIT'
+          [Unit]
+          Description=Jurvio 2 GB swapfile for builder-01 runners
+          After=local-fs.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/bin/sh -c 'test -f /swapfile || { fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile; }; swapon --show=NAME --noheadings | grep -qx /swapfile || swapon /swapfile'
+          ExecStop=/sbin/swapoff /swapfile
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+            sed -i 's/^          //' "$RUNNER_TEMP/jurvio-swapfile.service"
+            ssh -o BatchMode=yes "$ADMIN" 'sudo -n tee /etc/systemd/system/jurvio-swapfile.service >/dev/null && sudo -n systemctl daemon-reload && sudo -n systemctl enable --now jurvio-swapfile.service' < "$RUNNER_TEMP/jurvio-swapfile.service" \
+              || echo "::warning::could not install the swapfile unit"
+            free -h
+          fi
+          if [ "$(awk '/SwapTotal/ {print $2}' /proc/meminfo)" -gt 0 ]; then
+            echo "SWAP_OK=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no swap; registering only the first runner name"
+            echo "SWAP_OK=0" >> "$GITHUB_ENV"
+          fi
       - name: Download runner package (same version as builder-01)
         run: |
           set -euo pipefail
@@ -91,7 +122,10 @@ jobs:
         run: |
           set -euo pipefail
           user="$(id -un)"
-          for n in $NAMES; do
+          names="$NAMES"
+          if [ "${SWAP_OK:-0}" != "1" ]; then names="$(echo $NAMES | awk '{print $1}')"; fi
+          echo "free memory before install:"; free -h
+          for n in $names; do
             dir="$HOME/actions-runner-$n"
             unit="actions.runner.SavedLead-Jurvio.$n.service"
             if [ -f "$dir/.runner" ]; then
@@ -136,8 +170,8 @@ jobs:
           Nice=10
           CPUWeight=50
           IOWeight=50
-          MemoryHigh=2200M
-          MemoryMax=2800M
+          MemoryHigh=1800M
+          MemoryMax=2600M
           OOMScoreAdjust=500
 
           [Install]

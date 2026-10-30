@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
 import { loadCourtListenerBulkDockets, mergeDocketStage, stageCsv, stageDocket } from "./bulk-docket-load";
 import type { CourtListenerBulkDocket } from "../providers/courtlistener/bulk-dockets";
@@ -20,6 +20,11 @@ function expiringClock(ticks: number, budgetMs: number): () => number {
 
 // One file: both tests TRUNCATE the shared courtlistener_docket_stage table.
 describe.skipIf(!databaseUrl)("bulk docket merge", () => {
+  // See bulk-opinion-load.integration.test.ts: pin the load average so the load
+  // gate's 30s pauses on the shared CI runner do not time this test out.
+  beforeAll(() => { vi.spyOn(os, "loadavg").mockReturnValue([0, 0, 0]); });
+  afterAll(() => { vi.restoreAllMocks(); });
+
   it("inserts a draft case from a staged row and does not publish it", async () => {
     const sql = postgres(databaseUrl!, { max: 1, onnotice: () => {} });
     const courtCode = `zzb${randomUUID().slice(0, 8)}`;
