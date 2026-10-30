@@ -11,7 +11,15 @@ name: Create federal dedup index (once)
 # the dedup query exactly, so the planner can use it.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=CREATE_FEDERAL_DEDUP_INDEX.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CREATE_FEDERAL_DEDUP_INDEX to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -30,6 +38,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=CREATE_FEDERAL_DEDUP_INDEX
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CREATE_FEDERAL_DEDUP_INDEX" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CREATE_FEDERAL_DEDUP_INDEX."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

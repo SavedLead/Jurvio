@@ -1,13 +1,14 @@
 name: Refresh citation coverage after rollout
 on:
-  push:
-    branches: [main]
-    paths: ["ops/citation-coverage-replay.trigger"]
-  workflow_dispatch: {}
-  workflow_run:
-    workflows: ["Deploy production"]
-    types: [completed]
-    branches: [main]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=CITATION_COVERAGE_REPLAY.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CITATION_COVERAGE_REPLAY to run this workflow against production"
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -24,6 +25,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=CITATION_COVERAGE_REPLAY
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CITATION_COVERAGE_REPLAY" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CITATION_COVERAGE_REPLAY."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

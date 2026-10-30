@@ -20,9 +20,15 @@ name: Verify repaired DigitalOcean nightly backup
 # script fails loudly instead of appearing to succeed.
 
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/backup-repair-validation-once.yml]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=BACKUP_REPAIR_VALIDATION.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKUP_REPAIR_VALIDATION to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -41,6 +47,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=BACKUP_REPAIR_VALIDATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKUP_REPAIR_VALIDATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKUP_REPAIR_VALIDATION."
+            exit 1
+          fi
       - name: Configure isolated private-VPC SSH
         run: |
           set -euo pipefail

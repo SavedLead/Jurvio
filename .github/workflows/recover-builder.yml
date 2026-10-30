@@ -4,10 +4,15 @@ name: Recover builder runner
 # self-hosted runner is down, which a job on that runner cannot do.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/recover-builder.trigger"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=RECOVER_BUILDER.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RECOVER_BUILDER to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +30,14 @@ jobs:
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
     steps:
+      - name: Require confirm=RECOVER_BUILDER
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "RECOVER_BUILDER" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RECOVER_BUILDER."
+            exit 1
+          fi
       - name: Power-cycle jurvio-builder-01
         run: |
           set -euo pipefail

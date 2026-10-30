@@ -1,16 +1,23 @@
 name: Ingest official Supreme Court opinions
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=INGEST_PRODUCTION_SCOTUS_OFFICIAL.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type INGEST_PRODUCTION_SCOTUS_OFFICIAL to run this workflow against production"
+        required: true
+        type: string
       term:
         description: Supreme Court term (two-digit year)
         required: true
-        default: "25"
+        default: '25'
       limit:
         description: Maximum official opinions (1-100)
         required: true
-        default: "100"
+        default: '100'
       resume:
         description: Resume after the last successful official-source checkpoint
         required: true
@@ -31,6 +38,14 @@ jobs:
     environment: production
     timeout-minutes: 180
     steps:
+      - name: Require confirm=INGEST_PRODUCTION_SCOTUS_OFFICIAL
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "INGEST_PRODUCTION_SCOTUS_OFFICIAL" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=INGEST_PRODUCTION_SCOTUS_OFFICIAL."
+            exit 1
+          fi
       - name: Resolve batch inputs
         env:
           EVENT_NAME: ${{ github.event_name }}

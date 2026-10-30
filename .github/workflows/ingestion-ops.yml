@@ -8,24 +8,39 @@ name: Ingestion ops (status / logs / restart)
 # sanitized of obvious secret-bearing lines. No writes to data, no ingestion.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=INGESTION_OPS.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type INGESTION_OPS to run this workflow against production"
+        required: true
+        type: string
       action:
         description: Operation
         required: true
         type: choice
         default: status
-        options: [status, logs, restart]
+        options:
+        - status
+        - logs
+        - restart
       service:
         description: Jurvio service (for logs/restart)
         required: true
         type: choice
         default: app
-        options: [app, worker-core, worker-coa, worker-supervisor, postgres]
+        options:
+        - app
+        - worker-core
+        - worker-coa
+        - worker-supervisor
+        - postgres
       lines:
         description: Log lines (for logs)
         required: false
-        default: "200"
+        default: '200'
 
 permissions:
   contents: read
@@ -47,6 +62,14 @@ jobs:
       SERVICE: ${{ inputs.service }}
       LINES: ${{ inputs.lines }}
     steps:
+      - name: Require confirm=INGESTION_OPS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "INGESTION_OPS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=INGESTION_OPS."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

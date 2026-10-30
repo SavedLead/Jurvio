@@ -6,7 +6,15 @@ name: Recreate workers on correct image (once)
 # Loads JURVIO_DATABASE_BIND so the compose recreate keeps postgres VPC-bound.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=RECREATE_WORKERS_CORRECT_IMAGE.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RECREATE_WORKERS_CORRECT_IMAGE to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +33,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=RECREATE_WORKERS_CORRECT_IMAGE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "RECREATE_WORKERS_CORRECT_IMAGE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RECREATE_WORKERS_CORRECT_IMAGE."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

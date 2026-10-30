@@ -35,3 +35,24 @@ describe("federal re-scan stop", () => {
     expect(source).toContain("JURVIO_JOB_BUDGET_MS");
   });
 });
+
+describe("federal-active-cases budget awareness", () => {
+  const source = readFileSync("scripts/run-federal-ingestion-loop.ts", "utf8");
+  const active = source.slice(source.indexOf("async function runActiveUpdates"), source.indexOf("async function writeActiveCaseCheckpoint"));
+
+  it("sets a request deadline and stops on 429 instead of sleeping", () => {
+    expect(active).toContain("setCourtListenerRequestPolicy({ deadlineMs: budget.requestDeadlineMs, stopOnRateLimit: true })");
+    expect(active).toContain("budget.stopPullingAtMs");
+  });
+
+  it("checkpoints after every docket and stamps failed dockets so they rotate", () => {
+    expect(active.match(/await checkpoint\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(active).toContain("stampAttempted(row.case_id)");
+    expect(source).toContain("ACTIVE_CASE_CHECKPOINT_STREAM");
+  });
+
+  it("bounds the selection query by the budget", () => {
+    expect(active).toContain("SET LOCAL statement_timeout");
+    expect(active).toContain("selection_timeout");
+  });
+});

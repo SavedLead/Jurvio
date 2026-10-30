@@ -1,13 +1,14 @@
 name: Verify case citation graph
 on:
-  push:
-    branches: [main]
-    paths: ["ops/citation-report.trigger"]
-  workflow_run:
-    workflows: ["Deploy production"]
-    types: [completed]
-    branches: [main]
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=CASE_CITATIONS_STATUS.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CASE_CITATIONS_STATUS to run this workflow against production"
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -25,6 +26,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=CASE_CITATIONS_STATUS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CASE_CITATIONS_STATUS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CASE_CITATIONS_STATUS."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

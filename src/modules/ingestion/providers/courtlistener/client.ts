@@ -30,6 +30,66 @@ export class CourtListenerNotModified extends Error {
   }
 }
 
+/**
+ * CourtListener answered 429. Thrown instead of sleeping when the caller asked to
+ * stop on rate limits, or when honoring Retry-After would run past the deadline.
+ */
+export class CourtListenerRateLimited extends Error {
+  readonly retryAfterMs: number | null;
+
+  constructor(retryAfterMs: number | null) {
+    super(
+      `CourtListener rate limited (429)${retryAfterMs === null ? "" : `; retry after ${Math.ceil(retryAfterMs / 1000)}s`}`,
+    );
+    this.name = "CourtListenerRateLimited";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** The caller's deadline arrived before (or while) a request could finish. */
+export class CourtListenerDeadlineReached extends Error {
+  constructor() {
+    super("CourtListener request stopped: job deadline reached");
+    this.name = "CourtListenerDeadlineReached";
+  }
+}
+
+export type CourtListenerRequestPolicy = {
+  /** Epoch ms. No request starts, waits, or retries past this point. */
+  deadlineMs?: number;
+  /** Throw CourtListenerRateLimited on the first 429 instead of retrying. */
+  stopOnRateLimit?: boolean;
+};
+
+let requestPolicy: CourtListenerRequestPolicy = {};
+
+/**
+ * Process-wide request policy for budgeted jobs. Default (unset) keeps the old
+ * behavior: retry 429/5xx up to four times with Retry-After capped at 60s.
+ */
+export function setCourtListenerRequestPolicy(policy: CourtListenerRequestPolicy): void {
+  requestPolicy = { ...policy };
+}
+
+/** Retry-After as milliseconds: delta-seconds or an HTTP date. Null when absent or invalid. */
+export function parseRetryAfterMs(retryAfter: string | null, now = Date.now()): number | null {
+  if (retryAfter === null || retryAfter.trim() === "") return null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1_000 : null;
+  const date = Date.parse(retryAfter);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+function remainingMs(): number {
+  return requestPolicy.deadlineMs === undefined ? Number.POSITIVE_INFINITY : requestPolicy.deadlineMs - Date.now();
+}
+
+/** Sleep for delayMs unless that would cross the deadline. */
+async function waitWithinDeadline(delayMs: number, onPastDeadline: () => Error): Promise<void> {
+  if (delayMs >= remainingMs()) throw onPastDeadline();
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 export interface RetrievedRecord<T> {
   record: T;
   sourceUri: string;
@@ -84,6 +144,11 @@ async function retrieve(
   let useConfiguredApiToken = Boolean(env().COURTLISTENER_API_TOKEN);
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
     const sentConfiguredToken = useConfiguredApiToken;
+    // Budgeted jobs: never start a request after the deadline, and never let one
+    // run past it (the scheduler SIGTERMs the job at its budget).
+    const left = remainingMs();
+    if (left <= 0) throw new CourtListenerDeadlineReached();
+    const attemptTimeoutMs = Math.max(1_000, Math.min(timeoutMs, left));
     let response: Response;
     try {
       response = await fetch(url, {
@@ -93,19 +158,20 @@ async function retrieve(
           ...conditionalRequestHeaders(validators),
           ...(init.headers ?? {}),
         },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(attemptTimeoutMs),
       });
     } catch (error) {
       // A fetch-level rejection (request timeout via AbortSignal, or a DNS/socket
       // error) is transient. Retry with backoff instead of failing the lane; only
       // surface it after exhausting attempts, with the shared "CourtListener request
       // failed:" prefix so callers can degrade gracefully rather than crash-loop.
+      if (remainingMs() <= 0) throw new CourtListenerDeadlineReached();
       if (attempt === maximumAttempts) {
         throw new Error(
           `CourtListener request failed: network ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      await new Promise((resolve) => setTimeout(resolve, courtListenerRetryDelayMs(null, attempt)));
+      await waitWithinDeadline(courtListenerRetryDelayMs(null, attempt), () => new CourtListenerDeadlineReached());
       continue;
     }
     if (response.status === 304) {
@@ -124,13 +190,26 @@ async function retrieve(
       continue;
     }
 
+    if (response.status === 429) {
+      const retryAfter = response.headers.get("retry-after");
+      const retryAfterMs = parseRetryAfterMs(retryAfter);
+      // A budgeted job stops the run on a 429 rather than sleeping out the budget.
+      if (requestPolicy.stopOnRateLimit) throw new CourtListenerRateLimited(retryAfterMs);
+      // Honor the full Retry-After when it fits the deadline; otherwise stop.
+      if (retryAfterMs !== null && retryAfterMs >= remainingMs()) throw new CourtListenerRateLimited(retryAfterMs);
+    }
+
     const retryable = response.status === 429 || response.status >= 500;
     if (!retryable || attempt === maximumAttempts) {
       throw new Error(`CourtListener request failed: ${response.status} ${response.statusText}`);
     }
 
     const delayMs = courtListenerRetryDelayMs(response.headers.get("retry-after"), attempt);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    await waitWithinDeadline(delayMs, () =>
+      response.status === 429
+        ? new CourtListenerRateLimited(parseRetryAfterMs(response.headers.get("retry-after")))
+        : new CourtListenerDeadlineReached(),
+    );
   }
   throw new Error("CourtListener request retry loop exited unexpectedly");
 }

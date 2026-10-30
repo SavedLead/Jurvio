@@ -4,11 +4,15 @@ name: Repair builder runner once
 # runner service. That only works from a machine that is not the dead runner.
 
 on:
-  workflow_dispatch: {}
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/repair-builder-runner.trigger"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=REPAIR_BUILDER_RUNNER.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type REPAIR_BUILDER_RUNNER to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,6 +32,14 @@ jobs:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       DO_USER: ${{ secrets.DO_USER }}
     steps:
+      - name: Require confirm=REPAIR_BUILDER_RUNNER
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "REPAIR_BUILDER_RUNNER" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=REPAIR_BUILDER_RUNNER."
+            exit 1
+          fi
       - name: Temporarily allow SSH and restart runner service
         run: |
           set -euo pipefail

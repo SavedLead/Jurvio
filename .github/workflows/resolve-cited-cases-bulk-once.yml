@@ -18,34 +18,44 @@ name: Resolve cited cases from CourtListener bulk data (once)
 # reaches jurvio-web-01 over the private VPC, like the other *-once controls.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=RESOLVE_CITED_CASES_BULK.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type RESOLVE_CITED_CASES_BULK to run this workflow against production"
+        required: true
+        type: string
       snapshot_date:
-        description: "Bulk snapshot date YYYY-MM-DD (empty = newest snapshot with a citations file)"
+        description: Bulk snapshot date YYYY-MM-DD (empty = newest snapshot with a citations file)
         required: false
-        default: ""
+        default: ''
         type: string
       import:
-        description: "Also ingest resolved cases from the bulk opinion files (hours)"
+        description: Also ingest resolved cases from the bulk opinion files (hours)
         required: false
         default: false
         type: boolean
       import_limit:
-        description: "Max resolved cases to ingest in this run"
+        description: Max resolved cases to ingest in this run
         required: false
-        default: "50000"
+        default: '50000'
         type: string
       any_court:
-        description: "Import cited cases from state courts too (default: federal only)"
+        description: 'Import cited cases from state courts too (default: federal only)'
         required: false
         default: false
         type: boolean
       service:
-        description: "Worker container to run in"
+        description: Worker container to run in
         required: false
         default: worker-core
         type: choice
-        options: [worker-core, worker-coa, app]
+        options:
+        - worker-core
+        - worker-coa
+        - app
 
 permissions:
   contents: read
@@ -69,6 +79,14 @@ jobs:
       ANY_COURT: ${{ inputs.any_court }}
       SERVICE: ${{ inputs.service }}
     steps:
+      - name: Require confirm=RESOLVE_CITED_CASES_BULK
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "RESOLVE_CITED_CASES_BULK" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RESOLVE_CITED_CASES_BULK."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

@@ -2,24 +2,19 @@ name: Publish verified official Supreme Court opinions
 # Operational trigger: publish preserved official PDFs after the v3 publisher rollout.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PUBLISH_OFFICIAL_SCOTUS_OPINIONS.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type PUBLISH_OFFICIAL_SCOTUS_OPINIONS to run this workflow against production"
+        required: true
+        type: string
       limit:
         description: Maximum staged candidates to reconcile and publish
         required: true
-        default: "10000"
-  workflow_run:
-    workflows:
-      - "Ingest official Supreme Court opinions"
-    types:
-      - completed
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/publish-official-scotus-opinions.yml"
-      - ".github/scotus-xray-refresh"
-      - ".github/scotus-pre500-volume-499-start"
+        default: '10000'
 
 permissions:
   contents: read
@@ -36,6 +31,14 @@ jobs:
     environment: production
     timeout-minutes: 30
     steps:
+      - name: Require confirm=PUBLISH_OFFICIAL_SCOTUS_OPINIONS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PUBLISH_OFFICIAL_SCOTUS_OPINIONS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PUBLISH_OFFICIAL_SCOTUS_OPINIONS."
+            exit 1
+          fi
       - name: Resolve batch limit
         env:
           EVENT_NAME: ${{ github.event_name }}

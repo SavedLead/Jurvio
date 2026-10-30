@@ -22,12 +22,19 @@ name: Enable appellate batched writes (once)
 # GitHub-hosted runners' egress IPs are blocked by the box SSH firewall.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=ENABLE_APPELLATE_BATCHED_WRITES.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type ENABLE_APPELLATE_BATCHED_WRITES to run this workflow against production"
+        required: true
+        type: string
       batch_size:
-        description: "APPELLATE_WRITE_BATCH_SIZE (rows per set-based upsert)"
+        description: APPELLATE_WRITE_BATCH_SIZE (rows per set-based upsert)
         required: false
-        default: "25"
+        default: '25'
         type: string
 
 permissions:
@@ -48,6 +55,14 @@ jobs:
       DB_HOST: 10.116.0.2
       BATCH_SIZE: ${{ inputs.batch_size }}
     steps:
+      - name: Require confirm=ENABLE_APPELLATE_BATCHED_WRITES
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "ENABLE_APPELLATE_BATCHED_WRITES" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=ENABLE_APPELLATE_BATCHED_WRITES."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

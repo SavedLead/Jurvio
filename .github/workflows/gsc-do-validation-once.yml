@@ -1,9 +1,15 @@
 name: Verify DigitalOcean Search Console sync
 
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/gsc-do-validation-once.yml]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=GSC_DO_VALIDATION.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type GSC_DO_VALIDATION to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +30,14 @@ jobs:
       GSC_SITEMAP_URL: ${{ vars.GSC_SITEMAP_URL }}
       GSC_INSPECTION_URLS: ${{ vars.GSC_INSPECTION_URLS }}
     steps:
+      - name: Require confirm=GSC_DO_VALIDATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "GSC_DO_VALIDATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=GSC_DO_VALIDATION."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - name: Authenticate to Google Cloud
         id: google-auth

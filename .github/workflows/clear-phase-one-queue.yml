@@ -1,10 +1,15 @@
 name: Clear stale Phase 1 builder queue
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/clear-phase-one-queue.trigger"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=CLEAR_PHASE_ONE_QUEUE.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CLEAR_PHASE_ONE_QUEUE to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   actions: write
@@ -22,6 +27,14 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Require confirm=CLEAR_PHASE_ONE_QUEUE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CLEAR_PHASE_ONE_QUEUE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CLEAR_PHASE_ONE_QUEUE."
+            exit 1
+          fi
       - name: Cancel stale phase-one runs only
         run: |
           set -euo pipefail

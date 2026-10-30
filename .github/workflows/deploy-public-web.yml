@@ -2,12 +2,15 @@ name: Deploy public web app
 # Release trigger: replacement administrator bootstrap
 
 on:
-  workflow_dispatch: {}
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/deploy-public-web.yml
-      - ops/deploy-public-web.trigger
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=DEPLOY_PUBLIC_WEB.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DEPLOY_PUBLIC_WEB to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,6 +30,14 @@ jobs:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
     steps:
+      - name: Require confirm=DEPLOY_PUBLIC_WEB
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DEPLOY_PUBLIC_WEB" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DEPLOY_PUBLIC_WEB."
+            exit 1
+          fi
       - uses: actions/checkout@v4
 
       - name: Resolve public web server

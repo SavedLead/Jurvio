@@ -1,11 +1,15 @@
 name: Emergency production recovery
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/emergency-production-recovery.yml
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=EMERGENCY_PRODUCTION_RECOVERY.
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type EMERGENCY_PRODUCTION_RECOVERY to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +24,14 @@ jobs:
     environment: production
     timeout-minutes: 15
     steps:
+      - name: Require confirm=EMERGENCY_PRODUCTION_RECOVERY
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "EMERGENCY_PRODUCTION_RECOVERY" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=EMERGENCY_PRODUCTION_RECOVERY."
+            exit 1
+          fi
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

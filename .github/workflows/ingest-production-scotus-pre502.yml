@@ -2,13 +2,15 @@ name: SCOTUS Assembly X-Ray
 # Immediate production probe trigger: 2026-08-02 06:02 ET.
 
 on:
-  # A push-level probe can run before its matching production deployment and
-  # report a stale worker image. The workflow-run trigger is the deployment proof.
-  workflow_run:
-    workflows: ["Deploy production"]
-    branches: [main]
-    types: [completed]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=INGEST_PRODUCTION_SCOTUS_PRE502.
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type INGEST_PRODUCTION_SCOTUS_PRE502 to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +27,14 @@ jobs:
     environment: production
     timeout-minutes: 10
     steps:
+      - name: Require confirm=INGEST_PRODUCTION_SCOTUS_PRE502
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "INGEST_PRODUCTION_SCOTUS_PRE502" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=INGEST_PRODUCTION_SCOTUS_PRE502."
+            exit 1
+          fi
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

@@ -1,8 +1,14 @@
 name: Actions migration infrastructure inventory
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/actions-migration-inventory-once.yml]
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=ACTIONS_MIGRATION_INVENTORY.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type ACTIONS_MIGRATION_INVENTORY to run this workflow against production"
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -16,6 +22,14 @@ jobs:
     env:
       DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
     steps:
+      - name: Require confirm=ACTIONS_MIGRATION_INVENTORY
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "ACTIONS_MIGRATION_INVENTORY" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=ACTIONS_MIGRATION_INVENTORY."
+            exit 1
+          fi
       - name: Inspect host capacity and DigitalOcean droplet inventory
         shell: bash
         run: |

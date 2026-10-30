@@ -9,7 +9,15 @@ name: Graceful poweroff for resize (once)
 #      resized box boots. No manual bring-up needed afterward.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=GRACEFUL_POWEROFF.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type GRACEFUL_POWEROFF to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,6 +36,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=GRACEFUL_POWEROFF
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "GRACEFUL_POWEROFF" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=GRACEFUL_POWEROFF."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

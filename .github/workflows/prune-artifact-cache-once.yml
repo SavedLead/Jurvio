@@ -7,7 +7,15 @@ name: Prune ingested source PDF cache (once)
 # directories. Never touches the postgres volume, the database, or other dirs.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PRUNE_ARTIFACT_CACHE.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type PRUNE_ARTIFACT_CACHE to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -26,6 +34,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=PRUNE_ARTIFACT_CACHE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PRUNE_ARTIFACT_CACHE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PRUNE_ARTIFACT_CACHE."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

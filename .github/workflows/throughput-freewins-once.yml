@@ -29,17 +29,24 @@ name: Throughput free wins (once)
 # Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=THROUGHPUT_FREEWINS.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type THROUGHPUT_FREEWINS to run this workflow against production"
+        required: true
+        type: string
       reclaim_stuck_runs:
-        description: "Mark orphaned running ingestion_run (>1 day) as failed"
+        description: Mark orphaned running ingestion_run (>1 day) as failed
         required: false
-        default: "true"
+        default: 'true'
         type: string
       muzzle_cl_api:
-        description: "Set courtlistener_appellate_checkpoint rows to complete (stopgap)"
+        description: Set courtlistener_appellate_checkpoint rows to complete (stopgap)
         required: false
-        default: "true"
+        default: 'true'
         type: string
 
 permissions:
@@ -61,6 +68,14 @@ jobs:
       RECLAIM_STUCK_RUNS: ${{ inputs.reclaim_stuck_runs }}
       MUZZLE_CL_API: ${{ inputs.muzzle_cl_api }}
     steps:
+      - name: Require confirm=THROUGHPUT_FREEWINS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "THROUGHPUT_FREEWINS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=THROUGHPUT_FREEWINS."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

@@ -14,17 +14,24 @@ name: Publish cited federal opinions (once)
 # over the private VPC; the single runner serializes it behind any running job.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PUBLISH_CITED_FEDERAL_OPINIONS.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type PUBLISH_CITED_FEDERAL_OPINIONS to run this workflow against production"
+        required: true
+        type: string
       max_batches:
-        description: "Max batches to run (each up to batch_limit)"
+        description: Max batches to run (each up to batch_limit)
         required: false
-        default: "40"
+        default: '40'
         type: string
       batch_limit:
-        description: "Cases per batch (<=5000, run-case-citations cap)"
+        description: Cases per batch (<=5000, run-case-citations cap)
         required: false
-        default: "5000"
+        default: '5000'
         type: string
 
 permissions:
@@ -46,6 +53,14 @@ jobs:
       MAX_BATCHES: ${{ inputs.max_batches }}
       BATCH_LIMIT: ${{ inputs.batch_limit }}
     steps:
+      - name: Require confirm=PUBLISH_CITED_FEDERAL_OPINIONS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PUBLISH_CITED_FEDERAL_OPINIONS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PUBLISH_CITED_FEDERAL_OPINIONS."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

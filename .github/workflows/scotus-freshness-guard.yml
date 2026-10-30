@@ -10,7 +10,15 @@ name: SCOTUS freshness guard
 # is down and a current-term repair is needed.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=SCOTUS_FRESHNESS_GUARD.
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type SCOTUS_FRESHNESS_GUARD to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -31,6 +39,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=SCOTUS_FRESHNESS_GUARD
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "SCOTUS_FRESHNESS_GUARD" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=SCOTUS_FRESHNESS_GUARD."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: ./.github/actions/vpc-ssh
         with:

@@ -1,11 +1,15 @@
 name: Phase 1 launch gate audit
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/phase-one-gate.trigger"
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PHASE_ONE_GATE.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type PHASE_ONE_GATE to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +29,14 @@ jobs:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       REMOTE_USER: ${{ secrets.DO_USER }}
     steps:
+      - name: Require confirm=PHASE_ONE_GATE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PHASE_ONE_GATE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PHASE_ONE_GATE."
+            exit 1
+          fi
       - name: Resolve servers and configure SSH
         id: hosts
         run: |

@@ -1,23 +1,30 @@
 name: Federal ingestion loops
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=FEDERAL_INGESTION.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type FEDERAL_INGESTION to run this workflow against production"
+        required: true
+        type: string
       loop:
         description: Federal ingestion loop
         required: true
         type: choice
         default: new-case-discovery
         options:
-          - new-case-discovery
-          - active-case-updates
-          - material-decisions
-          - historical-backfill
-          - publication-quarantine
+        - new-case-discovery
+        - active-case-updates
+        - material-decisions
+        - historical-backfill
+        - publication-quarantine
       limit:
         description: Maximum records for this cycle (100, 1000, or 10000)
         required: true
-        default: "100"
+        default: '100'
       approve_scale_up:
         description: Promote a clean historical checkpoint by one reviewed stage
         required: true
@@ -37,6 +44,14 @@ jobs:
     environment: production
     timeout-minutes: 360
     steps:
+      - name: Require confirm=FEDERAL_INGESTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "FEDERAL_INGESTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=FEDERAL_INGESTION."
+            exit 1
+          fi
       - name: Resolve loop and safe batch ceiling
         env:
           EVENT_NAME: ${{ github.event_name }}

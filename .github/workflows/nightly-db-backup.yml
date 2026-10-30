@@ -20,13 +20,11 @@ name: Nightly database backup (out-of-band)
 # script fails loudly instead of appearing to succeed.
 
 on:
+  # Allowlisted schedule (tests/workflow-triggers.test.ts): pg_dump only reads
+  # production. No push trigger: a merge to main must never start this.
   schedule:
     - cron: "0 7 * * *" # 07:00 UTC nightly (~02:00-03:00 ET)
   workflow_dispatch: {}
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/nightly-db-backup.trigger"
 
 permissions:
   contents: read

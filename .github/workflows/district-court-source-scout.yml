@@ -1,12 +1,19 @@
 name: Scout district court sources
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=DISTRICT_COURT_SOURCE_SCOUT.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type DISTRICT_COURT_SOURCE_SCOUT to run this workflow against production"
+        required: true
+        type: string
       limit:
-        description: "Number of courts to scout (use 94 for full run)"
+        description: Number of courts to scout (use 94 for full run)
         required: false
-        default: "10"
+        default: '10'
 
 permissions:
   contents: read
@@ -20,6 +27,14 @@ jobs:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 45
     steps:
+      - name: Require confirm=DISTRICT_COURT_SOURCE_SCOUT
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DISTRICT_COURT_SOURCE_SCOUT" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DISTRICT_COURT_SOURCE_SCOUT."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

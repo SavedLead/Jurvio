@@ -12,22 +12,29 @@ name: Backfill GovInfo appellate (once)
 # runners' egress IPs are blocked by the box SSH firewall.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=BACKFILL_GOVINFO_APPELLATE.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type BACKFILL_GOVINFO_APPELLATE to run this workflow against production"
+        required: true
+        type: string
       iterations:
-        description: "Max full --court=all passes (completed circuits self-skip)"
+        description: Max full --court=all passes (completed circuits self-skip)
         required: false
-        default: "4"
+        default: '4'
         type: string
       pages_per_court:
-        description: "Pages (x1000 records) per circuit per pass (1-10)"
+        description: Pages (x1000 records) per circuit per pass (1-10)
         required: false
-        default: "10"
+        default: '10'
         type: string
       sleep_seconds:
-        description: "Pause between passes to stay under the hourly rate budget"
+        description: Pause between passes to stay under the hourly rate budget
         required: false
-        default: "60"
+        default: '60'
         type: string
 
 permissions:
@@ -50,6 +57,14 @@ jobs:
       PAGES_PER_COURT: ${{ inputs.pages_per_court }}
       SLEEP_SECONDS: ${{ inputs.sleep_seconds }}
     steps:
+      - name: Require confirm=BACKFILL_GOVINFO_APPELLATE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKFILL_GOVINFO_APPELLATE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_GOVINFO_APPELLATE."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail
