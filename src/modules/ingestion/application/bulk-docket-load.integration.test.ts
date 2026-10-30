@@ -126,5 +126,5 @@ describe.skipIf(!databaseUrl)("bulk docket merge", () => {
       await sql`DELETE FROM court WHERE provider_court_id = ${courtCode}`;
       await sql.end();
     }
-  });
+  }, 60_000);
 });
