@@ -1,0 +1,174 @@
+name: Measure CourtListener bulk opinion-text load (once)
+
+# Manual only. Step C of the top-down federal ingestion: streams the CourtListener
+# bulk opinions export straight from S3 (bzip2 on the fly; nothing lands on disk),
+# matches each opinion through its existing opinion_cluster to the legal_case,
+# keeps federal courts only (no bankruptcy, no SCOTUS), and merges new opinions
+# set-based in chunks through the unlogged courtlistener_opinion_stage table.
+# Everything written stays draft and is held from both automatic publishers.
+# Resumes from the ingestion_checkpoint; honors the 1-7am ET window (unless
+# allow_anytime=true), load/latency pauses, the 30% disk floor and a 90-min budget.
+# Prints rows/sec, rows merged, DB growth by table and public latency samples.
+# Dispatch only after deploy-production.yml has released an image that contains
+# jobs/load-courtlistener-bulk-opinions.mjs and migration 0132.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type MEASURE_OPINIONS to run the bulk opinion measurement"
+        required: true
+        type: string
+      snapshot_date:
+        description: "YYYY-MM-DD, or latest"
+        required: true
+        default: "latest"
+        type: string
+      row_limit:
+        description: "Opinions to merge this run"
+        required: true
+        default: "50000"
+        type: string
+      allow_anytime:
+        description: "true skips the 1-7am ET window"
+        required: true
+        default: "false"
+        type: string
+      reset_checkpoint:
+        description: "true starts this snapshot over at the first row"
+        required: true
+        default: "false"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Shared with the bulk docket loads so two bulk merges never run at once.
+  group: jurvio-bulk-docket-load
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 120
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      ROW_LIMIT: ${{ inputs.row_limit }}
+      ALLOW_ANYTIME: ${{ inputs.allow_anytime }}
+      RESET_CHECKPOINT: ${{ inputs.reset_checkpoint }}
+    steps:
+      - name: Require confirm=MEASURE_OPINIONS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "MEASURE_OPINIONS" ]; then
+            echo "::error::Refusing to load opinions. Re-run with confirm=MEASURE_OPINIONS."
+            exit 1
+          fi
+          case "$ROW_LIMIT" in
+            ''|*[!0-9]*) echo "::error::row_limit must be a positive integer"; exit 1;;
+          esac
+          if [ "$ROW_LIMIT" -lt 1 ] || [ "$ROW_LIMIT" -gt 200000 ]; then
+            echo "::error::row_limit must be 1-200000 for a measurement"
+            exit 1
+          fi
+          case "$ALLOW_ANYTIME" in true|false) ;; *) echo "::error::allow_anytime must be true or false"; exit 1;; esac
+          case "$RESET_CHECKPOINT" in true|false) ;; *) echo "::error::reset_checkpoint must be true or false"; exit 1;; esac
+          case "$SNAPSHOT_DATE" in
+            latest|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be latest or YYYY-MM-DD"; exit 1;;
+          esac
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+
+      - name: Stream, merge and measure
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' ROW_LIMIT='$ROW_LIMIT' ALLOW_ANYTIME='$ALLOW_ANYTIME' RESET_CHECKPOINT='$RESET_CHECKPOINT' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          find_svc() {
+            sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+          app="$(find_svc app)"
+          pg="$(find_svc postgres)"
+          [ -n "$app" ] && [ -n "$pg" ] || { echo "::error::app or postgres container missing"; exit 1; }
+          if ! sudo -n docker exec "$app" test -f jobs/load-courtlistener-bulk-opinions.mjs; then
+            echo "::error::jobs/load-courtlistener-bulk-opinions.mjs is not in the running image. Release it with deploy-production.yml first."
+            exit 1
+          fi
+          psql_q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "$1"; }
+          if [ "$(psql_q "SELECT to_regclass('courtlistener_opinion_stage') IS NOT NULL")" != "t" ]; then
+            echo "::error::migration 0132 (courtlistener_opinion_stage) is not applied"
+            exit 1
+          fi
+          bucket="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          snap="$SNAPSHOT_DATE"
+          if [ "$snap" = "latest" ]; then
+            snap="$(curl -fsS "${bucket}/?list-type=2&prefix=bulk-data/opinions-" \
+              | grep -oE 'opinions-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' | sort | tail -1 \
+              | sed -E 's/opinions-([0-9-]+)\.csv\.bz2/\1/')"
+          fi
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::could not resolve snapshot date ($snap)"; exit 1;;
+          esac
+          url="${bucket}/bulk-data/opinions-${snap}.csv.bz2"
+          bytes="$(curl -fsSI "$url" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -1)"
+          echo "snapshot=${snap} url=${url} compressed_bytes=${bytes:-unknown}"
+          read -r total avail < <(df -B1 --output=size,avail / | tail -1)
+          python3 - "$total" "$avail" <<'PY'
+          import sys
+          total, avail = (int(x) for x in sys.argv[1:3])
+          print(f"disk_total={total} disk_avail={avail} ratio={avail / total:.3f}")
+          if avail / total < 0.30:
+              raise SystemExit("refusing to start: free disk is under 30%")
+          PY
+          sizes() {
+            psql_q "SELECT string_agg(name || '=' || bytes, ' ' ORDER BY name) FROM (
+              SELECT 'db' AS name, pg_database_size('jurvio') AS bytes
+              UNION ALL SELECT relname, pg_total_relation_size(oid) FROM pg_class
+              WHERE relname IN ('document','document_content','judicial_opinion','opinion_search_projection','raw_artifact','document_identifier','publication_review')
+            ) s"
+          }
+          latency() {
+            for path in "/" "/search?q=due+process"; do
+              curl -o /dev/null -sS -w "%{http_code} %{time_total}\n" --max-time 20 "https://jurvio.com${path}" || echo "000 20"
+            done | awk '{s+=$2; n++} END {printf "%.3f", s/n}'
+          }
+          echo "sizes_before $(sizes)"
+          echo "latency_before_s $(latency) $(latency) $(latency)"
+          ( while sleep 60; do echo "latency_during_s $(date -u +%H:%M:%S) $(latency)"; done ) &
+          sampler=$!
+          trap 'kill $sampler 2>/dev/null || true' EXIT
+          set +e
+          sudo -n docker exec "$app" node jobs/load-courtlistener-bulk-opinions.mjs \
+            "--url=${url}" \
+            "--snapshot-date=${snap}" \
+            "--row-limit=${ROW_LIMIT}" \
+            "--budget-minutes=90" \
+            "--allow-anytime=${ALLOW_ANYTIME}" \
+            "--reset-checkpoint=${RESET_CHECKPOINT}" \
+            "--disk-path=/var/lib/jurvio/artifacts" > /tmp/jurvio-opinion-load.out
+          code=$?
+          set -e
+          kill $sampler 2>/dev/null || true
+          grep '"bulkOpinions":"chunk"' /tmp/jurvio-opinion-load.out | awk 'NR % 10 == 1' | cut -c1-400 || true
+          result="$(tail -n 1 /tmp/jurvio-opinion-load.out)"
+          rm -f /tmp/jurvio-opinion-load.out
+          echo "result=${result}"
+          echo "sizes_after $(sizes)"
+          echo "latency_after_s $(latency) $(latency) $(latency)"
+          df -h /
+          echo "loader_exit=${code}"
+          exit "$code"
+          REMOTE
