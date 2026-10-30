@@ -15,7 +15,7 @@ import { recordSourceWatermark, refreshCourtFreshness } from "@/modules/operatio
 // direct_court_alert_event rows (docket entries are kept; see
 // direct-court-retention.ts). --retention=0 skips it.
 //   node jobs/ingest-direct-court-feeds.mjs --court=all [--max-courts=16] [--budget-ms=360000] [--min-interval-minutes=120]
-//     [--retention=1] [--event-retention-days=30] [--alert-retention-days=90]
+//     [--retention=1] [--event-retention-days=14] [--alert-retention-days=30]
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
   return [key, raw] as const;
@@ -26,8 +26,8 @@ const budgetMs = Math.max(30_000, Number.parseInt(args.get("budget-ms") ?? "3600
 const minIntervalMinutes = Math.max(0, Number.parseInt(args.get("min-interval-minutes") ?? "120", 10) || 0);
 const pauseMs = 1_000;
 const retention = (args.get("retention") ?? "1") !== "0";
-const eventRetentionDays = Number.parseInt(args.get("event-retention-days") ?? "30", 10) || 30;
-const alertRetentionDays = Number.parseInt(args.get("alert-retention-days") ?? "90", 10) || 90;
+const eventRetentionDays = Number.parseInt(args.get("event-retention-days") ?? "14", 10) || 14;
+const alertRetentionDays = Number.parseInt(args.get("alert-retention-days") ?? "30", 10) || 30;
 
 const sql = db();
 const store = createArtifactStore({

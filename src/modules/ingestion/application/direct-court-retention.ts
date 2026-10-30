@@ -12,14 +12,15 @@ type Sql = ReturnType<typeof postgres>;
  *
  * What is kept and what is pruned:
  *   - `docket_entry` rows are never touched: the entries on cases are the product.
- *   - alert rows older than `alertDays` (default 90) are deleted.
- *   - event rows whose `last_seen_at` is older than `eventDays` (default 30) and
+ *   - alert rows older than `alertDays` (default 30) are deleted. Nothing reads
+ *     them after delivery (as of 2026-10-30 nothing in the app reads them at all).
+ *   - event rows whose `last_seen_at` is older than `eventDays` (default 14) and
  *     that no longer have an alert row are deleted. A feed covers 24 hours
- *     (`rss_coverage_hours`), so an item last seen 30 days ago cannot come back
+ *     (`rss_coverage_hours`), so an item last seen 14 days ago cannot come back
  *     through the feed; if it ever did, the docket_entry upsert on
  *     (provider_id, provider_entry_id = deduplication key) keeps it single.
- *     Linked events therefore live as long as their alert (90 days); unlinked
- *     (`needs_review`) and restricted (`suppressed`) events go after 30 days.
+ *     Linked events therefore live as long as their alert (30 days); unlinked
+ *     (`needs_review`) and restricted (`suppressed`) events go after 14 days.
  *
  * Work per call is bounded (`batchSize` rows per statement, at most `maxBatches`
  * statements per table) so the pass can run at the end of every feed run.
@@ -40,8 +41,8 @@ export interface DirectCourtRetentionResult {
   backlog: boolean;
 }
 
-export const DIRECT_COURT_EVENT_RETENTION_DAYS = 30;
-export const DIRECT_COURT_ALERT_RETENTION_DAYS = 90;
+export const DIRECT_COURT_EVENT_RETENTION_DAYS = 14;
+export const DIRECT_COURT_ALERT_RETENTION_DAYS = 30;
 /** The feed covers 24h; never prune anything the next polls could still return. */
 const MIN_EVENT_DAYS = 7;
 

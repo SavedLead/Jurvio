@@ -55,18 +55,18 @@ describe.skipIf(!databaseUrl)("district RSS retention", () => {
           VALUES (${`de-${eventLabel}-${tag}`}, ${legalCase!.id}, ${provider!.id}, ${`${eventLabel}-${tag}`}, current_date, ${eventLabel}, ${artifact!.id})`;
       };
 
-      const oldUnlinked = await event("old-unlinked", 40, false);
+      const oldUnlinked = await event("old-unlinked", 20, false);
       const recentUnlinked = await event("recent-unlinked", 2, false);
-      const oldLinkedLiveAlert = await event("old-linked-live-alert", 40, true);
-      await alert(oldLinkedLiveAlert, 40);
+      const oldLinkedLiveAlert = await event("old-linked-live-alert", 20, true);
+      await alert(oldLinkedLiveAlert, 20);
       await entry("old-linked-live-alert");
       const ancientLinked = await event("ancient-linked", 100, true);
       await alert(ancientLinked, 100);
       await entry("ancient-linked");
 
       const result = await pruneDirectCourtEvents(sql, { batchSize: 1, maxBatches: 50 });
-      expect(result.eventDays).toBe(30);
-      expect(result.alertDays).toBe(90);
+      expect(result.eventDays).toBe(14);
+      expect(result.alertDays).toBe(30);
       expect(result.alertsDeleted).toBeGreaterThanOrEqual(1);
       expect(result.eventsDeleted).toBeGreaterThanOrEqual(2);
 
