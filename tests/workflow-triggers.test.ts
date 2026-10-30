@@ -243,6 +243,18 @@ describe("workflow trigger policy", () => {
     }
   });
 
+  it("deploy and diagnostic workflows do not call the gh CLI (builder-01 does not have it)", () => {
+    // Since #543 these run on jurvio-builder-01, which has curl and jq but no gh.
+    // The first post-#544 public deploy failed at its CI gate with "gh: command not found".
+    for (const file of ["deploy-public-web-hosted.yml", "deploy-production.yml", "diagnose-federal-refetch-once.yml"]) {
+      for (const [name, job] of Object.entries(parsed.get(file)!.jobs ?? {})) {
+        for (const step of job.steps ?? []) {
+          expect(step.run ?? "", `${file} job ${name} step ${step.name ?? "(unnamed)"}`).not.toMatch(/(^|[\s;|&($])gh\s+(api|issue|pr|run|workflow|release)\b/m);
+        }
+      }
+    }
+  });
+
   it("helper rejects a step that does not compare confirm", () => {
     expect(isConfirmGate({ run: "echo hi", env: { CONFIRM: "${{ inputs.confirm }}" } })).toBe(false);
     expect(

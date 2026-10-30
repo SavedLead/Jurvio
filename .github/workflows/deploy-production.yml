@@ -52,7 +52,14 @@ jobs:
           INPUT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
-          LATEST_MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')"
+          # builder-01 has no gh CLI; the raw-SHA media type needs only curl.
+          LATEST_MAIN_SHA="$(curl -fsSL --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.sha" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/main")"
+          case "$LATEST_MAIN_SHA" in
+            *[!0-9a-f]*|'') echo "::error::could not resolve current main"; exit 1 ;;
+          esac
           if [ -n "${INPUT_SHA:-}" ]; then
             # A pinned commit may deploy ONLY if it is still the tip of main. This
             # makes it impossible to (re)deploy an older or side commit — an
