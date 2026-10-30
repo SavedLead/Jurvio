@@ -38,9 +38,10 @@ try {
   await sql`SELECT set_config('statement_timeout', '180s', false)`;
   // Streamed straight from S3 through bzip2 (resuming dropped connections with Range),
   // so the multi-GB opinions export never lands on disk.
-  const source = url ? openBulkCsvFromUrl(url) : openBulkCsv(filePath!);
+  // Opened lazily: a finished snapshot (or one with no federal clusters yet) never
+  // starts the 55 GB download.
   const result = await loadCourtListenerBulkOpinions(sql, {
-    opinions: readBulkOpinions(source),
+    openOpinions: () => readBulkOpinions(url ? openBulkCsvFromUrl(url) : openBulkCsv(filePath!)),
     snapshotDate,
     rowLimit,
     budgetMs: budgetMinutes * 60_000,

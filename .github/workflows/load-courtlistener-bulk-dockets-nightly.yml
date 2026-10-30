@@ -17,6 +17,18 @@ name: Load CourtListener bulk dockets (nightly, resumable)
 #   latest  the newest snapshot on S3 (switching dates starts that snapshot at row 0)
 #   YYYY-MM-DD  that snapshot
 # New and refreshed cases stay draft (or restricted); nothing is published.
+#
+# After the dockets, the same dispatch runs two more jobs in order (stages input):
+#   clusters  streams the opinion-clusters export for the same snapshot and resolves
+#             cluster -> docket -> case (pending clusters from earlier nights first).
+#             Once the snapshot's checkpoint is complete it only resolves pending
+#             clusters for newly loaded dockets and never re-reads the file.
+#   opinions  streams the opinions export and merges federal opinion text, fast-
+#             skipping rows whose cluster is not loaded. It waits until both the
+#             docket and the cluster checkpoints for the snapshot are complete, so a
+#             55 GB pass is not spent while most clusters cannot resolve yet.
+# Each job has its own 90-minute budget, the 1-7am ET window, load/latency pauses
+# and the 30% disk floor. Nothing is published; text and clusters stay draft/held.
 
 on:
   workflow_dispatch:
@@ -40,6 +52,11 @@ on:
         required: true
         default: "false"
         type: string
+      stages:
+        description: "Comma list of dockets, clusters, opinions (in that order)"
+        required: true
+        default: "dockets,clusters,opinions"
+        type: string
 
 permissions:
   contents: read
@@ -60,6 +77,7 @@ jobs:
       SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
       ROW_LIMIT: ${{ inputs.row_limit }}
       ALLOW_ANYTIME: ${{ inputs.allow_anytime }}
+      STAGES: ${{ inputs.stages }}
     steps:
       - name: Require confirm=LOAD_DOCKETS
         run: |
@@ -67,6 +85,13 @@ jobs:
           if [ "$CONFIRM" != "LOAD_DOCKETS" ]; then
             echo "::error::Refusing to load dockets. Re-run with confirm=LOAD_DOCKETS."
             exit 1
+          fi
+          for stage in ${STAGES//,/ }; do
+            case "$stage" in dockets|clusters|opinions) ;; *) echo "::error::unknown stage $stage"; exit 1;; esac
+          done
+          if [[ ",$STAGES," != *,dockets,* ]]; then
+            echo "::notice::dockets stage not requested"
+            echo "OUTSIDE_WINDOW=true" >> "$GITHUB_ENV"
           fi
           case "$ROW_LIMIT" in
             ''|*[!0-9]*) echo "::error::row_limit must be a positive integer"; exit 1;;
@@ -261,6 +286,316 @@ jobs:
               for kv in ${line#SUMMARY }; do echo "| ${kv%%=*} | ${kv#*=} |"; done
             else
               echo "No summary line (the load step failed before the loader ran)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "${line:-no summary}"
+
+  clusters:
+    needs: load
+    if: ${{ !cancelled() && contains(inputs.stages, 'clusters') }}
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 120
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      ALLOW_ANYTIME: ${{ inputs.allow_anytime }}
+    steps:
+      - name: Require confirm=LOAD_DOCKETS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "LOAD_DOCKETS" ]; then
+            echo "::error::Refusing to load clusters. Re-run with confirm=LOAD_DOCKETS."
+            exit 1
+          fi
+          case "$ALLOW_ANYTIME" in true|false) ;; *) echo "::error::allow_anytime must be true or false"; exit 1;; esac
+          case "$SNAPSHOT_DATE" in
+            auto|latest|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be auto, latest, or YYYY-MM-DD"; exit 1;;
+          esac
+          hour="$(TZ=America/New_York date +%-H)"
+          if [ "$ALLOW_ANYTIME" != "true" ] && { [ "$hour" -lt 1 ] || [ "$hour" -ge 7 ]; }; then
+            echo "::notice::Outside the 1-7am America/New_York window (hour $hour); nothing to do."
+            echo "OUTSIDE_WINDOW=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.OUTSIDE_WINDOW != 'true'
+      - uses: ./.github/actions/vpc-ssh
+        if: env.OUTSIDE_WINDOW != 'true'
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+
+      - name: Load bulk opinion clusters (streamed from S3, from checkpoint)
+        if: env.OUTSIDE_WINDOW != 'true'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' ALLOW_ANYTIME='$ALLOW_ANYTIME' bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/clusters.log"
+          set -euo pipefail
+          cd /opt/jurvio
+          find_svc() {
+            sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+          app="$(find_svc app)"
+          pg="$(find_svc postgres)"
+          [ -n "$app" ] && [ -n "$pg" ] || { echo "::error::app or postgres container missing"; exit 1; }
+          if ! sudo -n docker exec "$app" test -f jobs/load-courtlistener-bulk-clusters.mjs; then
+            echo "::error::jobs/load-courtlistener-bulk-clusters.mjs is not in the running image. Release it with deploy-production.yml first."
+            exit 1
+          fi
+          psql_value() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "$1"; }
+          if [ "$(psql_value "SELECT to_regclass('courtlistener_pending_cluster') IS NOT NULL")" != "t" ]; then
+            echo "::error::migration 0133 (courtlistener_pending_cluster) is not applied"
+            exit 1
+          fi
+          checkpoint_stopped() {
+            psql_value "SELECT coalesce(c.cursor_value::jsonb->>'stopped', '') FROM ingestion_checkpoint c JOIN provider p ON p.id = c.provider_id
+              WHERE p.code = 'courtlistener' AND c.stream_name = '$1'"
+          }
+          bucket="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          # Same snapshot as the docket load: the newest docket checkpoint (in progress or
+          # complete), unless a date was given; else the newest export on S3.
+          snap="$SNAPSHOT_DATE"
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *)
+              snap="$(psql_value "SELECT max(substring(c.stream_name from 'v1:(.*)$')) FROM ingestion_checkpoint c JOIN provider p ON p.id = c.provider_id
+                WHERE p.code = 'courtlistener' AND c.stream_name LIKE 'courtlistener:bulk-dockets:v1:%'")"
+              if [ -z "$snap" ]; then
+                snap="$(curl -fsS "${bucket}/?list-type=2&prefix=bulk-data/opinion-clusters-" \
+                  | grep -oE 'opinion-clusters-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' | sort | tail -1 \
+                  | sed -E 's/opinion-clusters-([0-9-]+)\.csv\.bz2/\1/')"
+              fi
+              ;;
+          esac
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::could not resolve snapshot date ($snap)"; exit 1;;
+          esac
+          echo "snapshot=${snap}"
+          url="${bucket}/bulk-data/opinion-clusters-${snap}.csv.bz2"
+          bytes="$(curl -fsSI "$url" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -1)"
+          [ -n "$bytes" ] || { echo "::error::$url has no Content-Length (missing export?)"; exit 1; }
+          echo "url=${url} compressed_bytes=${bytes}"
+          read -r total avail < <(df -B1 --output=size,avail / | tail -1)
+          python3 - "$total" "$avail" <<'PY'
+          import sys
+          total, avail = (int(x) for x in sys.argv[1:3])
+          print(f"disk_total={total} disk_avail={avail} ratio={avail / total:.3f}")
+          if avail / total < 0.30:
+              raise SystemExit("refusing to start: free disk is under 30%")
+          PY
+          echo "checkpoint_before=$(psql_value "SELECT c.cursor_value FROM ingestion_checkpoint c JOIN provider p ON p.id = c.provider_id
+            WHERE p.code = 'courtlistener' AND c.stream_name LIKE 'courtlistener:bulk-clusters:%:${snap}' ORDER BY c.stream_name DESC LIMIT 1")"
+          echo "database_size_before=$(psql_value "SELECT pg_database_size('jurvio')")"
+          set +e
+          sudo -n docker exec "$app" node jobs/load-courtlistener-bulk-clusters.mjs \
+            "--url=${url}" \
+            "--snapshot-date=${snap}" \
+            "--row-limit=20000000" \
+            "--budget-minutes=90" \
+            "--allow-anytime=${ALLOW_ANYTIME}" \
+            "--reset-checkpoint=false" \
+            "--disk-path=/var/lib/jurvio/artifacts" > /tmp/jurvio-clusters-load.out
+          code=$?
+          set -e
+          grep -v '"bulkClusters":"chunk"' /tmp/jurvio-clusters-load.out | grep -v '"bulkClusters":"skip"' | tail -n 20 | cut -c1-800 || true
+          result="$(tail -n 1 /tmp/jurvio-clusters-load.out)"
+          rm -f /tmp/jurvio-clusters-load.out
+          echo "result=${result}"
+          echo "database_size_after=$(psql_value "SELECT pg_database_size('jurvio')")"
+          df -h /
+          python3 - "$result" "$code" <<'PY'
+          import json, sys
+          raw, code = sys.argv[1:3]
+          try:
+              r = json.loads(raw)
+          except Exception:
+              r = {}
+          keys = ["snapshotDate", "rowsReadThisRun", "createdThisRun", "created", "alreadyPresent", "pending", "unmatched", "nonFederal", "restricted", "stopped", "rowsReadPerSecond", "pauses", "keepUnmatched", "freeDiskRatio"]
+          print("SUMMARY stage=clusters " + " ".join(f"{k}={r.get(k, '?')}" for k in keys) + f" loader_exit={code}")
+          PY
+          # Budget, window, pause and row-limit stops are normal; the next run resumes.
+          # Exit 2 (disk floor) and crashes fail the run.
+          exit "$code"
+          REMOTE
+
+      - name: Summary
+        if: always() && env.OUTSIDE_WINDOW != 'true'
+        run: |
+          line="$(grep -E '^SUMMARY ' "$RUNNER_TEMP/clusters.log" | tail -1 || true)"
+          {
+            echo "### Bulk clusters load"
+            echo
+            if [ -n "$line" ]; then
+              echo "| field | value |"
+              echo "| --- | --- |"
+              for kv in ${line#SUMMARY }; do echo "| ${kv%%=*} | ${kv#*=} |"; done
+            else
+              echo "No summary line (the step failed before the loader ran)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "${line:-no summary}"
+
+  opinions:
+    needs: clusters
+    if: ${{ !cancelled() && contains(inputs.stages, 'opinions') }}
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 120
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      ALLOW_ANYTIME: ${{ inputs.allow_anytime }}
+    steps:
+      - name: Require confirm=LOAD_DOCKETS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "LOAD_DOCKETS" ]; then
+            echo "::error::Refusing to load opinions. Re-run with confirm=LOAD_DOCKETS."
+            exit 1
+          fi
+          case "$ALLOW_ANYTIME" in true|false) ;; *) echo "::error::allow_anytime must be true or false"; exit 1;; esac
+          case "$SNAPSHOT_DATE" in
+            auto|latest|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be auto, latest, or YYYY-MM-DD"; exit 1;;
+          esac
+          hour="$(TZ=America/New_York date +%-H)"
+          if [ "$ALLOW_ANYTIME" != "true" ] && { [ "$hour" -lt 1 ] || [ "$hour" -ge 7 ]; }; then
+            echo "::notice::Outside the 1-7am America/New_York window (hour $hour); nothing to do."
+            echo "OUTSIDE_WINDOW=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.OUTSIDE_WINDOW != 'true'
+      - uses: ./.github/actions/vpc-ssh
+        if: env.OUTSIDE_WINDOW != 'true'
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+
+      - name: Load bulk opinion text (streamed from S3, from checkpoint)
+        if: env.OUTSIDE_WINDOW != 'true'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' ALLOW_ANYTIME='$ALLOW_ANYTIME' bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/opinions.log"
+          set -euo pipefail
+          cd /opt/jurvio
+          find_svc() {
+            sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+          app="$(find_svc app)"
+          pg="$(find_svc postgres)"
+          [ -n "$app" ] && [ -n "$pg" ] || { echo "::error::app or postgres container missing"; exit 1; }
+          if ! sudo -n docker exec "$app" test -f jobs/load-courtlistener-bulk-opinions.mjs; then
+            echo "::error::jobs/load-courtlistener-bulk-opinions.mjs is not in the running image. Release it with deploy-production.yml first."
+            exit 1
+          fi
+          psql_value() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "$1"; }
+          if [ "$(psql_value "SELECT to_regclass('courtlistener_pending_cluster') IS NOT NULL")" != "t" ]; then
+            echo "::error::migration 0133 (courtlistener_pending_cluster) is not applied"
+            exit 1
+          fi
+          checkpoint_stopped() {
+            psql_value "SELECT coalesce(c.cursor_value::jsonb->>'stopped', '') FROM ingestion_checkpoint c JOIN provider p ON p.id = c.provider_id
+              WHERE p.code = 'courtlistener' AND c.stream_name = '$1'"
+          }
+          bucket="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          # Same snapshot as the docket load: the newest docket checkpoint (in progress or
+          # complete), unless a date was given; else the newest export on S3.
+          snap="$SNAPSHOT_DATE"
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *)
+              snap="$(psql_value "SELECT max(substring(c.stream_name from 'v1:(.*)$')) FROM ingestion_checkpoint c JOIN provider p ON p.id = c.provider_id
+                WHERE p.code = 'courtlistener' AND c.stream_name LIKE 'courtlistener:bulk-dockets:v1:%'")"
+              if [ -z "$snap" ]; then
+                snap="$(curl -fsS "${bucket}/?list-type=2&prefix=bulk-data/opinions-" \
+                  | grep -oE 'opinions-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' | sort | tail -1 \
+                  | sed -E 's/opinions-([0-9-]+)\.csv\.bz2/\1/')"
+              fi
+              ;;
+          esac
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::could not resolve snapshot date ($snap)"; exit 1;;
+          esac
+          echo "snapshot=${snap}"
+          url="${bucket}/bulk-data/opinions-${snap}.csv.bz2"
+          bytes="$(curl -fsSI "$url" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -1)"
+          [ -n "$bytes" ] || { echo "::error::$url has no Content-Length (missing export?)"; exit 1; }
+          echo "url=${url} compressed_bytes=${bytes}"
+          dockets_done="$(checkpoint_stopped "courtlistener:bulk-dockets:v1:${snap}")"
+          clusters_done="$(checkpoint_stopped "courtlistener:bulk-clusters:v1:${snap}")"
+          echo "dockets_checkpoint=${dockets_done:-none} clusters_checkpoint=${clusters_done:-none}"
+          if [ "$dockets_done" != "complete" ] || [ "$clusters_done" != "complete" ]; then
+            echo "::notice::Opinion text waits until the ${snap} docket and cluster loads are complete."
+            echo "SUMMARY stage=opinions snapshot=${snap} waiting=true dockets=${dockets_done:-none} clusters=${clusters_done:-none}"
+            exit 0
+          fi
+          read -r total avail < <(df -B1 --output=size,avail / | tail -1)
+          python3 - "$total" "$avail" <<'PY'
+          import sys
+          total, avail = (int(x) for x in sys.argv[1:3])
+          print(f"disk_total={total} disk_avail={avail} ratio={avail / total:.3f}")
+          if avail / total < 0.30:
+              raise SystemExit("refusing to start: free disk is under 30%")
+          PY
+          echo "checkpoint_before=$(psql_value "SELECT c.cursor_value FROM ingestion_checkpoint c JOIN provider p ON p.id = c.provider_id
+            WHERE p.code = 'courtlistener' AND c.stream_name LIKE 'courtlistener:bulk-opinions:%:${snap}' ORDER BY c.stream_name DESC LIMIT 1")"
+          echo "database_size_before=$(psql_value "SELECT pg_database_size('jurvio')")"
+          set +e
+          sudo -n docker exec "$app" node jobs/load-courtlistener-bulk-opinions.mjs \
+            "--url=${url}" \
+            "--snapshot-date=${snap}" \
+            "--row-limit=20000000" \
+            "--budget-minutes=90" \
+            "--allow-anytime=${ALLOW_ANYTIME}" \
+            "--reset-checkpoint=false" \
+            "--disk-path=/var/lib/jurvio/artifacts" > /tmp/jurvio-opinions-load.out
+          code=$?
+          set -e
+          grep -v '"bulkOpinions":"chunk"' /tmp/jurvio-opinions-load.out | grep -v '"bulkOpinions":"skip"' | tail -n 20 | cut -c1-800 || true
+          result="$(tail -n 1 /tmp/jurvio-opinions-load.out)"
+          rm -f /tmp/jurvio-opinions-load.out
+          echo "result=${result}"
+          echo "database_size_after=$(psql_value "SELECT pg_database_size('jurvio')")"
+          df -h /
+          python3 - "$result" "$code" <<'PY'
+          import json, sys
+          raw, code = sys.argv[1:3]
+          try:
+              r = json.loads(raw)
+          except Exception:
+              r = {}
+          keys = ["snapshotDate", "pass", "rowsReadThisRun", "mergedThisRun", "merged", "unmatchedThisRun", "alreadyPresent", "clusterSetSize", "stopped", "rowsReadPerSecond", "mergedPerHour", "pauses", "freeDiskRatio"]
+          print("SUMMARY stage=opinions " + " ".join(f"{k}={r.get(k, '?')}" for k in keys) + f" loader_exit={code}")
+          PY
+          # Budget, window, pause and row-limit stops are normal; the next run resumes.
+          # Exit 2 (disk floor) and crashes fail the run.
+          exit "$code"
+          REMOTE
+
+      - name: Summary
+        if: always() && env.OUTSIDE_WINDOW != 'true'
+        run: |
+          line="$(grep -E '^SUMMARY ' "$RUNNER_TEMP/opinions.log" | tail -1 || true)"
+          {
+            echo "### Bulk opinions load"
+            echo
+            if [ -n "$line" ]; then
+              echo "| field | value |"
+              echo "| --- | --- |"
+              for kv in ${line#SUMMARY }; do echo "| ${kv%%=*} | ${kv#*=} |"; done
+            else
+              echo "No summary line (the step failed before the loader ran)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           echo "${line:-no summary}"

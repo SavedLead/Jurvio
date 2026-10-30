@@ -281,7 +281,8 @@ describe("workflow trigger policy", () => {
     const workflow = parsed.get(file)!;
     expect(Object.keys(triggers(workflow))).toEqual(["workflow_dispatch"]);
     const inputs = dispatchInputs(workflow) as Record<string, Input & { default?: string }>;
-    expect(Object.keys(inputs).sort()).toEqual(["allow_anytime", "confirm", "row_limit", "snapshot_date"]);
+    expect(Object.keys(inputs).sort()).toEqual(["allow_anytime", "confirm", "row_limit", "snapshot_date", "stages"]);
+    expect(inputs.stages?.default).toBe("dockets,clusters,opinions");
     expect(inputs.allow_anytime?.default).toBe("false");
     expect(Number(inputs.row_limit?.default)).toBeGreaterThanOrEqual(5_000_000);
     const job = workflow.jobs!.load!;
@@ -310,6 +311,48 @@ describe("workflow trigger policy", () => {
     const script = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
     expect(script).toContain("--budget-minutes=90");
     expect(script).toContain("avail / total < 0.30");
+  });
+
+  it("the bulk cluster measurement is dispatch-only, gated, bounded and serialized with docket loads", () => {
+    const workflow = parsed.get("measure-courtlistener-bulk-clusters-once.yml")!;
+    expect(Object.keys(triggers(workflow))).toEqual(["workflow_dispatch"]);
+    const inputs = dispatchInputs(workflow) as Record<string, Input & { default?: string }>;
+    expect(inputs.allow_anytime?.default).toBe("false");
+    expect(inputs.reset_checkpoint?.default).toBe("false");
+    const job = workflow.jobs!.measure!;
+    expect(runnerLabels(job)).toContain('"builder"');
+    expect(job.steps?.[0]?.run).toContain('"$CONFIRM" != "MEASURE_CLUSTERS"');
+    expect(JSON.stringify((workflow as { concurrency?: unknown }).concurrency)).toContain("jurvio-bulk-docket-load");
+    const script = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
+    expect(script).toContain("jobs/load-courtlistener-bulk-clusters.mjs");
+    expect(script).toContain("opinion-clusters-${snap}.csv.bz2");
+    expect(script).toContain("--budget-minutes=90");
+    expect(script).toContain("avail / total < 0.30");
+  });
+
+  it("the nightly load runs dockets, then clusters, then opinions, each gated, windowed and bounded", () => {
+    const workflow = parsed.get("load-courtlistener-bulk-dockets-nightly.yml")!;
+    const jobs = workflow.jobs as Record<string, Job & { needs?: string; "timeout-minutes"?: number }>;
+    expect(Object.keys(jobs)).toEqual(["load", "clusters", "opinions"]);
+    expect(jobs.clusters!.needs).toBe("load");
+    expect(jobs.opinions!.needs).toBe("clusters");
+    for (const [name, script] of [["clusters", "load-courtlistener-bulk-clusters"], ["opinions", "load-courtlistener-bulk-opinions"]] as const) {
+      const job = jobs[name]!;
+      expect(String(job.if)).toContain(`contains(inputs.stages, '${name}')`);
+      expect(String(job.if)).toContain("!cancelled()");
+      expect(runnerLabels(job)).toContain('"builder"');
+      expect(job.steps?.[0]?.run).toContain('"$CONFIRM" != "LOAD_DOCKETS"');
+      expect(job.steps?.[0]?.run).toContain('[ "$hour" -lt 1 ] || [ "$hour" -ge 7 ]');
+      expect(job["timeout-minutes"]).toBeLessThanOrEqual(120);
+      const body = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
+      expect(body).toContain(`jobs/${script}.mjs`);
+      expect(body).toContain("--budget-minutes=90");
+      expect(body).toContain("--reset-checkpoint=false");
+      expect(body).toContain("avail / total < 0.30");
+    }
+    const opinions = (jobs.opinions!.steps ?? []).map((step) => step.run ?? "").join("\n");
+    // Opinion text waits for complete docket and cluster checkpoints.
+    expect(opinions).toMatch(/\[ "\$dockets_done" != "complete" \] \|\| \[ "\$clusters_done" != "complete" \]/);
   });
 
   it("helper rejects a step that does not compare confirm", () => {

@@ -70,7 +70,7 @@ describe.skipIf(!databaseUrl)("bulk opinion load", () => {
       ];
       writeFileSync(file, `${header}\n${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`);
       const run = () => loadCourtListenerBulkOpinions(sql, {
-        opinions: readBulkOpinions(openBulkCsv(file)),
+        openOpinions: () => readBulkOpinions(openBulkCsv(file)),
         snapshotDate, rowLimit: 1_000, budgetMs: 60_000, allowAnytime: true, chunkRows: 3, diskPath: dir, log: () => {},
       });
 
@@ -78,8 +78,11 @@ describe.skipIf(!databaseUrl)("bulk opinion load", () => {
       expect(first.stopped).toBe("complete");
       expect(first.rowsConsumed).toBe(7);
       expect(first.mergedThisRun).toBe(3);
-      expect(first.nonFederal).toBe(2);
-      expect(first.unmatched).toBe(1);
+      // Bankruptcy and SCOTUS clusters are not in the federal cluster set, so they are
+      // fast-skipped like a missing cluster.
+      expect(first.clusterSetSize).toBeGreaterThanOrEqual(2);
+      expect(first.nonFederal).toBe(0);
+      expect(first.unmatched).toBe(3);
       expect(first.empty).toBe(1);
       expect(first.documentsHeld).toBe(3);
 
@@ -113,7 +116,7 @@ describe.skipIf(!databaseUrl)("bulk opinion load", () => {
 
       // Re-running a finished snapshot from a reset checkpoint writes nothing new.
       const again = await loadCourtListenerBulkOpinions(sql, {
-        opinions: readBulkOpinions(openBulkCsv(file)),
+        openOpinions: () => readBulkOpinions(openBulkCsv(file)),
         snapshotDate, rowLimit: 1_000, budgetMs: 60_000, allowAnytime: true, resetCheckpoint: true, chunkRows: 3, diskPath: dir, log: () => {},
       });
       expect(again.mergedThisRun).toBe(0);
@@ -134,17 +137,47 @@ describe.skipIf(!databaseUrl)("bulk opinion load", () => {
     }
   }, 60_000);
 
-  it("keeps the checkpoint at the last merged chunk when the budget ends", async () => {
+  it("keeps the checkpoint at the last merged chunk when the budget ends, and stops at once with no clusters", async () => {
     const sql = postgres(databaseUrl!, { max: 1, onnotice: () => {} });
     const snapshotDate = "2099-02-02";
+    const tag = randomUUID().slice(0, 8);
     const dir = mkdtempSync(join(tmpdir(), "bulk-opinions-"));
     const file = join(dir, "opinions.csv");
-    const rows = Array.from({ length: 8 }, (_, n) => `${6_000_000_000 + n},${6_000_000_000 + n},010combined,x`);
-    writeFileSync(file, `id,cluster_id,type,plain_text\n${rows.join("\n")}\n`);
-    let calls = 0;
+    const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'courtlistener'`;
+    const providerId = provider!.id;
+    const clusterId = String(6_100_000_000 + Math.floor(Math.random() * 1_000_000));
+    const code = `zzfd${tag}`;
     try {
+      // No federal cluster at all: the file is never opened.
+      writeFileSync(file, "id,cluster_id,type,plain_text\n");
+      let opened = false;
+      const none = await loadCourtListenerBulkOpinions(sql, {
+        openOpinions: () => { opened = true; return readBulkOpinions(openBulkCsv(file)); },
+        snapshotDate: "2099-02-03", rowLimit: 1_000, budgetMs: 60_000, allowAnytime: true, diskPath: dir, log: () => {},
+      });
+      // The shared test database may already hold federal clusters from other tests.
+      if (none.clusterSetSize === 0) {
+        expect(none.stopped).toBe("no-clusters");
+        expect(opened).toBe(false);
+      }
+
+      const [court] = await sql<{ id: string }[]>`
+        INSERT INTO court (public_id, provider_id, provider_court_id, name, jurisdiction, verification)
+        VALUES (${`jc-${code}`}, ${providerId}, ${code}, ${code}, 'FD', 'not_verified') RETURNING id`;
+      const [artifact] = await sql<{ id: string }[]>`
+        INSERT INTO raw_artifact (provider_id, source_uri, content_hash, object_key, media_type, retrieved_at)
+        VALUES (${providerId}, ${`test://cluster/${tag}`}, ${tag}, ${`test/${tag}`}, 'application/json', now()) RETURNING id`;
+      const [legalCase] = await sql<{ id: string }[]>`
+        INSERT INTO legal_case (public_id, court_id, docket_number, caption, verification, publication)
+        VALUES (${`case-${tag}`}, ${court!.id}, ${`1:98-cv-${tag}`}, 'Budget v. Test', 'not_verified', 'draft') RETURNING id`;
+      await sql`
+        INSERT INTO opinion_cluster (public_id, case_id, provider_id, provider_cluster_id, case_name, source_artifact_id)
+        VALUES (${`cl-${tag}`}, ${legalCase!.id}, ${providerId}, ${clusterId}, 'Budget v. Test', ${artifact!.id})`;
+      const rows = Array.from({ length: 8 }, (_, n) => `${6_000_000_000 + n},${clusterId},010combined,x`);
+      writeFileSync(file, `id,cluster_id,type,plain_text\n${rows.join("\n")}\n`);
+      let calls = 0;
       const result = await loadCourtListenerBulkOpinions(sql, {
-        opinions: readBulkOpinions(openBulkCsv(file)),
+        openOpinions: () => readBulkOpinions(openBulkCsv(file)),
         snapshotDate, rowLimit: 1_000, budgetMs: 1_000, allowAnytime: true, chunkRows: 3, diskPath: dir, log: () => {},
         now: () => (++calls > 8 ? 10_000_000 : 1_000 + calls),
       });
@@ -153,8 +186,12 @@ describe.skipIf(!databaseUrl)("bulk opinion load", () => {
       expect(result.rowsConsumed).toBeLessThan(8);
     } finally {
       rmSync(dir, { recursive: true, force: true });
-      const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'courtlistener'`;
-      await sql`DELETE FROM ingestion_checkpoint WHERE provider_id = ${provider!.id} AND stream_name = ${bulkOpinionStreamName(snapshotDate)}`;
+      await sql`DELETE FROM ingestion_checkpoint WHERE provider_id = ${providerId} AND stream_name IN (${bulkOpinionStreamName(snapshotDate)}, ${bulkOpinionStreamName("2099-02-03")})`;
+      await sql`DELETE FROM publication_review WHERE object_type = 'document' AND object_id IN (
+        SELECT document_id FROM judicial_opinion WHERE provider_id = ${providerId} AND provider_opinion_id LIKE '600000000%')`;
+      await sql`DELETE FROM legal_case WHERE public_id = ${`case-${tag}`}`;
+      await sql`DELETE FROM raw_artifact WHERE source_uri LIKE ${`https://www.courtlistener.com/help/api/bulk-data/#opinion-${snapshotDate}-%`} OR source_uri = ${`test://cluster/${tag}`}`;
+      await sql`DELETE FROM court WHERE provider_court_id = ${code}`;
       await sql.end();
     }
   }, 60_000);
