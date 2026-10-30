@@ -23,8 +23,11 @@ concurrency:
 
 jobs:
   verify:
-    # One job at a time on jurvio-builder-01 (2 vCPU / 4 GB). Postgres is a
-    # service container. Lint, typecheck, and tests stay under a 1 GB heap.
+    # Runs on the builder pool (jurvio-builder-01 plus -02/-03 from
+    # add-ci-runners-once.yml, the extras at low CPU/IO priority with a memory
+    # cap), so CI no longer queues behind deploys, backups and bulk loads.
+    # Postgres is a service container on a random host port, so two CI jobs on
+    # one host never collide. Lint, typecheck, and tests stay under a 1 GB heap.
     # The Next.js build is the peak and gets a separate 1.7 GB heap so it
     # does not sit on top of a still-running lint process.
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
@@ -32,7 +35,6 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=1024
       NEXT_TELEMETRY_DISABLED: "1"
-      DATABASE_URL: postgresql://jurvio:jurvio@localhost:5432/jurvio
       COURTLISTENER_API_BASE_URL: https://www.courtlistener.com/api/rest/v4
       JURVIO_ARTIFACT_ROOT: .data/artifacts
       INGESTION_USER_AGENT: Jurvio-CI/0.1
@@ -44,13 +46,16 @@ jobs:
           POSTGRES_USER: jurvio
           POSTGRES_PASSWORD: jurvio
         ports:
-          - 5432:5432
+          # Random host port; DATABASE_URL is set from it in the first step.
+          - 5432
         options: >-
           --health-cmd "pg_isready -U jurvio -d jurvio"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     steps:
+      - name: Point DATABASE_URL at the Postgres service port
+        run: echo "DATABASE_URL=postgresql://jurvio:jurvio@localhost:${{ job.services.postgres.ports['5432'] }}/jurvio" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:

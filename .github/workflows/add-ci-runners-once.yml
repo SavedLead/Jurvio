@@ -1,13 +1,15 @@
-name: Add CI runners on builder-01 (once)
+name: Add builder runners on builder-01 (once)
 
 # Registers extra self-hosted runners on jurvio-builder-01 so CI stops queueing
 # behind deploys, backups and bulk loads. Each new runner:
 #   * lives in its own directory ($HOME/actions-runner-<name>) with its own
 #     systemd unit actions.runner.SavedLead-Jurvio.<name>.service;
-#   * gets labels self-hosted, Linux, X64, jurvio, ci (NOT builder/trusted), so
-#     only ci.yml runs on it; deploys, backups, bulk loads and anything that
-#     needs builder-01-local state or the jurvio-admin loopback stay on
-#     jurvio-builder-01 itself;
+#   * gets the same labels as jurvio-builder-01 (self-hosted, Linux, X64,
+#     jurvio, builder, trusted) and runs on the same host as the same user, so
+#     existing workflows (local paths, jurvio-admin loopback, ~/.ssh) work
+#     unchanged; production workflows are serialized by their concurrency
+#     groups, and ci.yml uses a random Postgres host port so parallel CI jobs
+#     do not collide;
 #   * runs at Nice=10 / CPUWeight=50 / IOWeight=50 with MemoryHigh/MemoryMax and
 #     OOMScoreAdjust=500, so under pressure a CI job is throttled or killed
 #     before the production lane on this 2 vCPU / 4 GB box.
@@ -110,7 +112,7 @@ jobs:
                 --url "https://github.com/$GITHUB_REPOSITORY" \
                 --token "$token" \
                 --name "$n" \
-                --labels jurvio,ci \
+                --labels jurvio,builder,trusted \
                 --work _work)
               unset token
             fi
@@ -118,7 +120,7 @@ jobs:
             chmod 755 "$dir/runsvc.sh"
             cat > "$dir/$unit" <<UNIT
           [Unit]
-          Description=GitHub Actions Runner (SavedLead-Jurvio.$n, CI only)
+          Description=GitHub Actions Runner (SavedLead-Jurvio.$n)
           After=network-online.target docker.service
           Wants=network-online.target
 
