@@ -1,36 +1,38 @@
 name: Ingest production opinions
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/ingest-production-opinions.yml
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=INGEST_PRODUCTION_OPINIONS.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type INGEST_PRODUCTION_OPINIONS to run this workflow against production"
+        required: true
+        type: string
       court:
         description: Court to ingest
         required: true
         type: choice
         default: scotus
         options:
-          - scotus
+        - scotus
       since:
         description: Earliest filing date (YYYY-MM-DD)
         required: true
-        default: "2025-10-01"
+        default: '2025-10-01'
       limit:
         description: Maximum opinion clusters (1-100)
         required: true
-        default: "10"
+        default: '10'
       order:
         description: Selection priority
         required: true
         type: choice
         default: newest
         options:
-          - newest
-          - cited
+        - newest
+        - cited
 
 permissions:
   contents: read
@@ -41,10 +43,18 @@ concurrency:
 
 jobs:
   ingest:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 30
     steps:
+      - name: Require confirm=INGEST_PRODUCTION_OPINIONS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "INGEST_PRODUCTION_OPINIONS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=INGEST_PRODUCTION_OPINIONS."
+            exit 1
+          fi
       - name: Validate bounded batch
         env:
           COURT: ${{ github.event_name == 'workflow_dispatch' && inputs.court || 'scotus' }}

@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { publicCaseSearchReady } from "./public-case-search";
 import type { CaseListingSort } from "@/modules/cases/domain/case-listing";
 
 type Sql = ReturnType<typeof postgres>;
@@ -87,7 +88,28 @@ function clean(value: string | null | undefined) {
   return value?.trim().replace(/\s+/g, " ") || null;
 }
 
+/**
+ * Court facet for /cases from court_public_stats (refreshed off the request
+ * path by `public-directory-stats`). Falls back to the live GROUP BY over every
+ * published case when the table is missing or not refreshed yet.
+ */
 export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
+  try {
+    const rows = await sql<CourtFacet[]>`
+      SELECT court.public_id AS value, court.name AS label, stats.case_count AS count
+      FROM court_public_stats stats
+      JOIN court ON court.id = stats.court_id
+      WHERE stats.case_count > 0
+      ORDER BY stats.case_count DESC, court.name
+    `;
+    if (rows.length) return rows;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code !== "42P01") throw error;
+  }
+  return listPublicCaseCourtsLive(sql);
+}
+
+export async function listPublicCaseCourtsLive(sql: Sql): Promise<CourtFacet[]> {
   return sql<CourtFacet[]>`
     SELECT court.public_id AS value, court.name AS label, count(*)::int AS count
     FROM legal_case
@@ -176,6 +198,19 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
           )
       )
     )`);
+  }
+  // Free text: narrow to precomputed trigram candidates first (public_case_search,
+  // a superset of every text condition here), then apply the exact conditions
+  // below to those ids only. Until the first full sweep has completed, the live
+  // conditions run alone.
+  const textPatterns = [queryPattern, party ? containsPattern(party) : null, firm ? containsPattern(firm) : null]
+    .filter((pattern): pattern is string => pattern !== null);
+  if (textPatterns.length && await publicCaseSearchReady(sql)) {
+    for (const pattern of textPatterns) {
+      conditions.push(sql`legal_case.id = ANY(ARRAY(
+        SELECT search.case_id FROM public_case_search search WHERE search.search_text ILIKE ${pattern}
+      ))`);
+    }
   }
   if (courtFilter) conditions.push(sql`court.public_id = ${courtFilter}`);
   if (party) {

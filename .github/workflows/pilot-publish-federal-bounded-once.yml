@@ -1,0 +1,164 @@
+name: Pilot publish federal (bounded, once)
+
+# Hard-capped publication pilot across BOTH federal publishers with a COMBINED ceiling of
+# at most 10 newly published cases AND at most 10 newly published opinion documents (not per
+# publisher). The resident lanes must already be paused; this pilot uses the --publish=1
+# override to publish a bounded amount manually, then verifies the published case and opinion
+# pages (HTTP 200 + real content) and search visibility. No lane is resumed here.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PILOT_PUBLISH_FEDERAL_BOUNDED.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type PILOT_PUBLISH_FEDERAL_BOUNDED to run this workflow against production"
+        required: true
+        type: string
+      max_cases:
+        description: Combined cap on newly published cases
+        required: false
+        default: '10'
+        type: string
+      max_docs:
+        description: Combined cap on newly published opinion documents
+        required: false
+        default: '10'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      MAX_CASES: ${{ inputs.max_cases }}
+      MAX_DOCS: ${{ inputs.max_docs }}
+    steps:
+      - name: Require confirm=PILOT_PUBLISH_FEDERAL_BOUNDED
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PILOT_PUBLISH_FEDERAL_BOUNDED" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PILOT_PUBLISH_FEDERAL_BOUNDED."
+            exit 1
+          fi
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Bounded pilot over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" "MAX_CASES='${MAX_CASES:-10}' MAX_DOCS='${MAX_DOCS:-10}' bash -se" <<'REMOTE'
+          set -uo pipefail
+          CAP_C="${MAX_CASES:-10}"; CAP_D="${MAX_DOCS:-10}"
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
+          [ -n "$pg" ] && [ -n "$worker" ] || { echo "::error::missing pg/worker"; exit 1; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null; }
+          CASE_REASONS="('deterministic_federal_source_validation','verified_cited_federal_opinion')"
+          DOC_REASONS="('deterministic_federal_opinion_document','verified_cited_federal_opinion')"
+
+          echo "=== sanity: resident pause flags must be set ==="
+          grep -E '^JURVIO_PAUSE_(CITATION_PUBLISH|FEDERAL_PUBLICATION)=1' /opt/jurvio/.env.production || {
+            echo "::error::pause flags not both set; refusing pilot"; exit 1; }
+
+          BASE="$(q "SELECT (now())::text")"
+          echo "baseline=$BASE  caps: cases<=$CAP_C docs<=$CAP_D"
+          dc() { q "SELECT count(DISTINCT object_id) FROM publication_decision WHERE object_type='legal_case' AND displayable AND decided_at > '$BASE'::timestamptz AND reason_code IN $CASE_REASONS"; }
+          dd() { q "SELECT count(DISTINCT object_id) FROM publication_decision WHERE object_type='document' AND displayable AND decided_at > '$BASE'::timestamptz AND reason_code IN $DOC_REASONS"; }
+
+          echo "=== exercise CITED publisher (<=2) ==="
+          sudo -n docker exec "$worker" node jobs/run-case-citations.mjs --limit=2 --discover=0 --publish=1 2>&1 | tail -n 3
+          CC="$(dc)"; CD="$(dd)"
+          echo "after cited: cases=$CC docs=$CD"
+
+          REM=$(( CAP_C - CC )); [ "$REM" -lt 0 ] && REM=0
+          REM_D=$(( CAP_D - CD )); [ "$REM_D" -lt 0 ] && REM_D=0
+          echo "=== exercise DETERMINISTIC publisher (<=$REM cases, <=$REM_D docs; prefer doc-bearing) ==="
+          # --prefer-documents biases selection to cases that carry a draft opinion document so
+          # the document publish path is actually exercised; --max-documents caps cumulative
+          # publishes so the COMBINED (cited + deterministic) ceiling of $CAP_D docs is exact.
+          if [ "$REM" -gt 0 ] && [ "$REM_D" -gt 0 ]; then
+            sudo -n docker exec "$worker" node jobs/run-federal-ingestion-loop.mjs --loop=publication-quarantine --max-items="$REM" --max-documents="$REM_D" --prefer-documents --publish=1 2>&1 | tail -n 25
+            echo "deterministic_pipestatus=${PIPESTATUS[0]}"
+          elif [ "$REM" -le 0 ]; then
+            echo "combined case ceiling already reached by cited; skipping deterministic"
+          else
+            echo "combined document ceiling already reached by cited; skipping deterministic (doc path already exercised)"
+          fi
+
+          FC="$(dc)"; FD="$(dd)"
+          echo "=== PILOT PUBLISHED (net new since baseline): cases=$FC documents=$FD (caps $CAP_C/$CAP_D) ==="
+          if [ "$FC" -gt "$CAP_C" ] || [ "$FD" -gt "$CAP_D" ]; then echo "::warning::combined ceiling exceeded (cases=$FC docs=$FD)"; fi
+          echo "--- newly published cases (public_id | caption) ---"
+          q "SELECT lc.public_id||' | '||left(coalesce(lc.caption,''),60) FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id WHERE pd.object_type='legal_case' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $CASE_REASONS ORDER BY pd.decided_at"
+          echo "--- newly published opinion documents (case_pid/doc_pid) ---"
+          q "SELECT lc.public_id||'/'||d.public_id FROM publication_decision pd JOIN document d ON d.id=pd.object_id JOIN legal_case lc ON lc.id=d.case_id WHERE pd.object_type='document' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $DOC_REASONS ORDER BY pd.decided_at"
+
+          CASES="$(q "SELECT coalesce(string_agg(lc.public_id||chr(9)||replace(coalesce(lc.caption,''),chr(9),' '),chr(10)),'') FROM publication_decision pd JOIN legal_case lc ON lc.id=pd.object_id WHERE pd.object_type='legal_case' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $CASE_REASONS")"
+          DOCS="$(q "SELECT coalesce(string_agg(lc.public_id||'/'||d.public_id,chr(10)),'') FROM publication_decision pd JOIN document d ON d.id=pd.object_id JOIN legal_case lc ON lc.id=d.case_id WHERE pd.object_type='document' AND pd.displayable AND pd.decided_at>'$BASE'::timestamptz AND pd.reason_code IN $DOC_REASONS")"
+
+          if [ -z "$CASES" ]; then
+            echo "VERIFY_SUMMARY page_failures=0 search_failures=0 cases=0 docs=0 (nothing published to verify)"
+          else
+            echo "=== verify public pages (HTTP 200 + real content) + search visibility ==="
+            CASES="$CASES" DOCS="$DOCS" sudo -n docker exec -e CASES -e DOCS "$worker" node -e '
+              const base="http://app:3000";
+              const cases=(process.env.CASES||"").split("\n").filter(Boolean).map(l=>{const [pid,cap=""]=l.split("\t");return {pid,cap};});
+              const docs=(process.env.DOCS||"").split("\n").filter(Boolean);
+              const get=async u=>{try{const r=await fetch(u);const t=await r.text();return {s:r.status,n:t.length,t};}catch(e){return {s:0,n:0,t:"",e:String(e)};}};
+              (async()=>{
+                let pageFail=0, searchFail=0;
+                for(const {pid,cap} of cases){
+                  const r=await get(base+"/case/"+pid);
+                  const ok=r.s===200 && r.n>800 && r.t.includes(pid);
+                  if(!ok) pageFail++;
+                  console.log("CASE "+pid+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
+                  const kw=(cap.replace(/[^A-Za-z0-9 ]/g," ").split(/\s+/).filter(w=>w.length>3).slice(0,3).join(" "))||cap;
+                  if(kw.length>=2){
+                    const sr=await get(base+"/search?q="+encodeURIComponent(kw));
+                    const found=sr.s===200 && sr.t.includes(pid);
+                    if(!found) searchFail++;
+                    console.log("  SEARCH q=\""+kw+"\" status="+sr.s+" found_case="+(found?"yes":"NO"));
+                  }
+                }
+                for(const d of docs){
+                  // d is "<casePublicId>/<documentPublicId>"; the document route is
+                  // /case/<caseId>/documents/<documentId>, so insert the /documents/ segment.
+                  const r=await get(base+"/case/"+d.replace("/","/documents/"));
+                  const ok=r.s===200 && r.n>800;
+                  if(!ok) pageFail++;
+                  console.log("DOC  "+d+" status="+r.s+" bytes="+r.n+" content="+(ok?"ok":"THIN/MISSING"));
+                }
+                console.log("VERIFY_SUMMARY page_failures="+pageFail+" search_failures="+searchFail+" cases="+cases.length+" docs="+docs.length);
+              })();
+            '
+          fi
+          echo "=== PILOT RESULT: published_cases=$FC published_docs=$FD (caps $CAP_C/$CAP_D) ==="
+          echo "=== DONE ==="
+          REMOTE

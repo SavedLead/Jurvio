@@ -7,14 +7,22 @@ name: Outbox maintenance (drain + retention)
 # builder over the private VPC (no paid minutes). Also dispatchable on demand.
 
 on:
+  # Approved maintenance exception (tests/workflow-triggers.test.ts): the
+  # daily outbox drain and retention keeps its original schedule. No push, pull_request or
+  # workflow_run trigger. Manual runs fail closed unless confirm=OUTBOX_MAINTENANCE;
+  # scheduled runs skip that check.
   schedule:
     - cron: "17 7 * * *"   # 07:17 UTC daily
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type OUTBOX_MAINTENANCE to run this workflow against production"
+        required: true
+        type: string
       retention_days:
-        description: "Delete relayed events older than N days"
+        description: Delete relayed events older than N days
         required: false
-        default: "14"
+        default: '14'
 
 permissions:
   contents: read
@@ -34,6 +42,15 @@ jobs:
       DB_HOST: 10.116.0.2
       RETENTION_DAYS: ${{ github.event.inputs.retention_days || '14' }}
     steps:
+      - name: Require confirm=OUTBOX_MAINTENANCE on manual runs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ] && [ "$CONFIRM" != "OUTBOX_MAINTENANCE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=OUTBOX_MAINTENANCE."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - name: Configure SSH
         run: |

@@ -1,19 +1,24 @@
 name: SCOTUS freshness guard
 
-# Redundant production safety net for newly released Supreme Court opinions.
-# The on-box core scheduler already ingests SCOTUS every five minutes; this guard
-# independently runs the same idempotent ingest/enrich/publish/extract path so a
-# wedged or stale scheduler cannot leave a newly released opinion unpublished.
+# Manual repair only. The on-box core scheduler already runs the same idempotent
+# path: scotus-enriched every five minutes and scotus-publish every three minutes
+# (scripts/scheduler-jobs.ts). This workflow used to run on a 4-hour schedule with
+# a 20-minute job cap (#527). The repair step itself takes about 27-29 minutes
+# (runs 40437521053, 40419301760, 40389266736), so every scheduled run since that
+# cap was cancelled at 20 minutes and finished nothing while holding the only
+# builder. The schedule is retired. Dispatch this only when the on-box scheduler
+# is down and a current-term repair is needed.
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/scotus-freshness-guard.yml"
-  schedule:
-    - cron: '*/15 * * * *'
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=SCOTUS_FRESHNESS_GUARD.
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type SCOTUS_FRESHNESS_GUARD to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -26,31 +31,33 @@ jobs:
   repair-and-verify:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 60
+    # Successful repairs before the 20-minute cap took 27-29 minutes. 45 covers that
+    # with headroom for a manual run. This job is no longer on a schedule.
+    timeout-minutes: 45
     env:
       DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
-      - name: Configure SSH
+      - name: Require confirm=SCOTUS_FRESHNESS_GUARD
+        env:
+          CONFIRM: ${{ inputs.confirm }}
         run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          cat > ~/.ssh/config <<'CFG'
-          Host *
-            IdentityFile ~/.ssh/id_ed25519
-            BatchMode yes
-            ConnectTimeout 15
-            StrictHostKeyChecking accept-new
-          CFG
-          chmod 600 ~/.ssh/config
+          if [ "$CONFIRM" != "SCOTUS_FRESHNESS_GUARD" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=SCOTUS_FRESHNESS_GUARD."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
 
       - name: Run current-term SCOTUS repair cycle
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
 
@@ -85,7 +92,9 @@ jobs:
         if: github.event_name != 'schedule'
         run: |
           set -euo pipefail
-          ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'bash -se' <<'REMOTE'
           set -euo pipefail
           pg="$(sudo -n docker ps \
             --filter 'label=com.docker.compose.project=jurvio' \

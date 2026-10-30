@@ -30,6 +30,9 @@ const publishable: FederalPublicationCandidate = {
   identityCollisionCount: 1,
   unresolvedRejections: 0,
   restrictedText: "United States v. Smith 1:26-cr-00001",
+  providerScopedIdentifier: "123",
+  sourceRecordResolvesIdentity: true,
+  courtCaseLinkageVerified: true,
 };
 
 describe("federal ingestion stream controls", () => {
@@ -133,6 +136,17 @@ describe("federal ingestion stream controls", () => {
     expect(isFederalJurisdiction("State")).toBe(false);
   });
 
+  it("recognizes specialized (FS) and bankruptcy-appellate (FBP) federal jurisdictions", () => {
+    // Tax Court, Court of Federal Claims, CIT, and the historical specialized courts are
+    // coded 'FS'; bankruptcy appellate panels 'FBP'. They are federal jurisdiction classes;
+    // actual publication still requires the court to be registry-verified.
+    expect(isFederalJurisdiction("FS")).toBe(true);
+    expect(isFederalJurisdiction("fbp")).toBe(true);
+    expect(isFederalJurisdiction("Federal Special")).toBe(true);
+    expect(isFederalJurisdiction("SA")).toBe(false);
+    expect(isFederalJurisdiction("State Appellate")).toBe(false);
+  });
+
   it("holds restricted docket text", () => {
     expect(isRestrictedDocketText("Complaint filed under seal")).toBe(true);
     expect(isRestrictedDocketText("United States v. Smith")).toBe(false);
@@ -212,6 +226,58 @@ describe("federal ingestion stream controls", () => {
     const decision = evaluateFederalPublicationCandidate({ ...publishable, ...change });
     expect(decision.eligible).toBe(false);
     expect(decision.reasons).toContain(reason);
+  });
+
+  it("publishes a docket-less record with a validated alternative identity", () => {
+    // No docket number, but a provider-scoped id that resolves to the retrieved source
+    // record and a verified court/case linkage, plus a caption. This is a stable identity.
+    const decision = evaluateFederalPublicationCandidate({
+      ...publishable,
+      docketNumber: "   ",
+      providerScopedIdentifier: "cl-opinion-556677",
+      sourceRecordResolvesIdentity: true,
+      courtCaseLinkageVerified: true,
+    });
+    expect(decision.reasons).not.toContain("missing_stable_identity");
+    expect(decision.eligible).toBe(true);
+  });
+
+  it.each([
+    [
+      "caption alone is not sufficient without a resolvable alternative identity",
+      { docketNumber: "  ", providerScopedIdentifier: null, sourceRecordResolvesIdentity: false, courtCaseLinkageVerified: false },
+    ],
+    [
+      "docket-less with an id that does not resolve to the source record",
+      { docketNumber: "  ", providerScopedIdentifier: "cl-opinion-1", sourceRecordResolvesIdentity: false, courtCaseLinkageVerified: true },
+    ],
+    [
+      "docket-less with an unverified court/case linkage",
+      { docketNumber: "  ", providerScopedIdentifier: "cl-opinion-1", sourceRecordResolvesIdentity: true, courtCaseLinkageVerified: false },
+    ],
+  ])("holds a docket-less record when %s", (_label, change) => {
+    const decision = evaluateFederalPublicationCandidate({ ...publishable, ...change });
+    expect(decision.eligible).toBe(false);
+    expect(decision.reasons).toContain("missing_stable_identity");
+  });
+
+  it("publishes metadata without opinion text only when that waiver is explicit", () => {
+    const shell = { ...publishable, hasReadableContent: false };
+    expect(evaluateFederalPublicationCandidate(shell).reasons).toContain("missing_readable_content");
+    expect(evaluateFederalPublicationCandidate(shell).eligible).toBe(false);
+    const waived = evaluateFederalPublicationCandidate(shell, { allowMissingReadableContent: true });
+    expect(waived.reasons).not.toContain("missing_readable_content");
+    expect(waived.eligible).toBe(true);
+  });
+
+  it("does not waive unverified courts when metadata-only publication is on", () => {
+    const decision = evaluateFederalPublicationCandidate(
+      { ...publishable, hasReadableContent: false, courtVerification: "not_verified" },
+      { allowMissingReadableContent: true },
+    );
+    expect(decision.eligible).toBe(false);
+    expect(decision.reasons).toContain("unverified_court_record");
+    expect(decision.reasons).not.toContain("missing_readable_content");
   });
 
   it("marks restricted matters as restricted for publication downgrade", () => {

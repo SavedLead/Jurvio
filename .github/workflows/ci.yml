@@ -5,13 +5,14 @@ on:
   push:
     branches:
       - main
-    # Skip the heavy self-hosted build for pushes that only touch docs, one-off
-    # operational workflows, or read-only diagnostic scripts — none of which
-    # affect the application build. Keeps the serial builder free for real work.
+    # Docs and workflow-only pushes do not need a builder slot. Pull requests
+    # still verify. The builder is one 2 vCPU / 4 GB machine, so this keeps
+    # deploys from waiting on a docs commit.
     paths-ignore:
       - "**.md"
       - "scripts/diag/**"
-      - ".github/workflows/*-once.yml"
+      # Workflow-only changes are verified in PR CI; they do not change the app.
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -22,12 +23,27 @@ concurrency:
 
 jobs:
   verify:
-    # CI is isolated from production and requires no private VPC access.
-    # Keep the DigitalOcean builder available for deploy, backup, restore, and audits.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Runs on the builder pool (jurvio-builder-01 plus -02/-03 from
+    # add-ci-runners-once.yml, the extras at low CPU/IO priority with a memory
+    # cap), so CI no longer queues behind deploys, backups and bulk loads.
+    # All three runners share builder-01's 2 vCPUs, and two CI jobs at once
+    # make the bulk-load integration tests time out (2026-10-30), so this job
+    # runs one at a time across every branch: the ci-tests-builder group
+    # queues pending runs (queue: max) instead of cancelling them. Deploy and
+    # ops workflows keep their own groups and use the other runners.
+    # Postgres is a service container on a random host port, so two CI jobs on
+    # one host never collide. Lint, typecheck, and tests stay under a 1 GB heap.
+    # The Next.js build is the peak and gets a separate 1.7 GB heap so it
+    # does not sit on top of a still-running lint process.
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    concurrency:
+      group: ci-tests-builder
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 45
     env:
-      DATABASE_URL: postgresql://jurvio:jurvio@localhost:5432/jurvio
+      NODE_OPTIONS: --max-old-space-size=1024
+      NEXT_TELEMETRY_DISABLED: "1"
       COURTLISTENER_API_BASE_URL: https://www.courtlistener.com/api/rest/v4
       JURVIO_ARTIFACT_ROOT: .data/artifacts
       INGESTION_USER_AGENT: Jurvio-CI/0.1
@@ -39,13 +55,16 @@ jobs:
           POSTGRES_USER: jurvio
           POSTGRES_PASSWORD: jurvio
         ports:
-          - 5432:5432
+          # Random host port; DATABASE_URL is set from it in the first step.
+          - 5432
         options: >-
           --health-cmd "pg_isready -U jurvio -d jurvio"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     steps:
+      - name: Point DATABASE_URL at the Postgres service port
+        run: echo "DATABASE_URL=postgresql://jurvio:jurvio@localhost:${{ job.services.postgres.ports['5432'] }}/jurvio" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
@@ -54,10 +73,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prefer-offline
       - run: pnpm db:migrate
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build:jobs
       - run: pnpm build
+        env:
+          NODE_OPTIONS: --max-old-space-size=1792

@@ -1,0 +1,283 @@
+name: Diagnose publication gate (once, read-only)
+
+# Strictly read-only. Deep diagnosis of the federal cited-opinion publication gate:
+#  (A) platform-wide published counts (cases vs opinions, SCOTUS vs federal), and what
+#      the "verified_cited_federal_opinion" publication_decision rows actually count.
+#  (B) representative unverified_opinion_source draft records + a classification of how
+#      many are official CourtListener BULK provenance (metadata source=courtlistener_bulk,
+#      bulk help URL, source_record_id == provider_opinion_id, resolvable cluster) rather
+#      than genuinely unverifiable.
+#  (C) federal draft opinions reason breakdown -- each blocking reason counted
+#      independently (reasons OVERLAP), plus how many would become source-verified under a
+#      bulk-aware rule, and how many of THOSE still fail some other check.
+#  (D) the same within cited_targets (the only opinions the publisher can actually
+#      publish now -- those cited by an already-published source): currently eligible vs
+#      newly eligible under the bulk-aware rule vs still-blocked-by-reason.
+#  (E) word-count distribution (is the 100-word floor excluding legitimate short orders?).
+#  (F) why the publication worker is idle: advisory-lock holder + scheduler rows + heartbeats.
+# No writes. The SQL mirrors the gate in publish-cited-federal-opinions.ts; the authoritative
+# recount is the post-deploy dry-run pilot.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-publication-gate
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Diagnose over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no postgres container"; exit 1; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "SET statement_timeout='180s';" -c "$1" 2>&1; }
+
+          echo "=== (X1) court.verification distribution for federal (non-scotus) DRAFT opinions ==="
+          q "SELECT coalesce(ct.verification::text,'(null)') AS court_verification, count(DISTINCT ct.id) AS courts, count(*) AS federal_draft_opinions
+             FROM legal_case c JOIN court ct ON ct.id=c.court_id
+             JOIN document d ON d.case_id=c.id AND d.publication='draft'
+             JOIN judicial_opinion jo ON jo.document_id=d.id
+             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+             GROUP BY 1 ORDER BY 3 DESC;"
+          echo "=== (X2) overall court.verification distribution (are any courts verified at all?) ==="
+          q "SELECT coalesce(verification::text,'(null)') AS verification, count(*) AS courts FROM court GROUP BY 1 ORDER BY 2 DESC;"
+          echo "=== (X3) sample unverified courts carrying federal draft opinions (are these real federal courts?) ==="
+          q "SELECT ct.provider_court_id, left(ct.name,48) AS court_name, coalesce(ct.verification::text,'(null)') AS verification, count(*) AS draft_opinions
+             FROM court ct JOIN legal_case c ON c.court_id=ct.id
+             JOIN document d ON d.case_id=c.id AND d.publication='draft'
+             JOIN judicial_opinion jo ON jo.document_id=d.id
+             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus' AND ct.verification IS DISTINCT FROM 'verified'
+             GROUP BY 1,2,3 ORDER BY 4 DESC LIMIT 15;"
+          echo "=== (X4) identity_missing shape: null vs empty-string caption/docket among federal drafts ==="
+          q "SELECT count(*) FILTER (WHERE c.caption IS NULL) AS caption_null,
+                   count(*) FILTER (WHERE c.caption='') AS caption_empty,
+                   count(*) FILTER (WHERE c.docket_number IS NULL) AS docket_null,
+                   count(*) FILTER (WHERE c.docket_number='') AS docket_empty,
+                   count(*) FILTER (WHERE coalesce(c.caption,'')='' OR coalesce(c.docket_number,'')='') AS any_identity_missing
+             FROM legal_case c JOIN court ct ON ct.id=c.court_id
+             JOIN document d ON d.case_id=c.id AND d.publication='draft'
+             JOIN judicial_opinion jo ON jo.document_id=d.id
+             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus';"
+          echo "=== (X5) for identity_missing: does the opinion_cluster carry a case name we failed to map? sample ==="
+          q "SELECT left(coalesce(c.caption,'(null)'),24) AS lc_caption, coalesce(c.docket_number,'(null)') AS lc_docket,
+                   left(coalesce(oc.case_name,'(null)'),40) AS cluster_case_name
+             FROM legal_case c JOIN court ct ON ct.id=c.court_id
+             JOIN document d ON d.case_id=c.id AND d.publication='draft'
+             JOIN judicial_opinion jo ON jo.document_id=d.id
+             LEFT JOIN opinion_cluster oc ON oc.id=jo.cluster_id
+             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+               AND (coalesce(c.caption,'')='' OR coalesce(c.docket_number,'')='')
+             LIMIT 8;"
+          echo "=== (A1) platform-wide published counts (cases vs opinion documents), SCOTUS vs federal ==="
+          q "SELECT 'published_cases_total='||count(*)
+                 ||' scotus='||count(*) FILTER (WHERE ct.provider_court_id='scotus')
+                 ||' non_scotus='||count(*) FILTER (WHERE ct.provider_court_id IS DISTINCT FROM 'scotus')
+             FROM legal_case c JOIN court ct ON ct.id=c.court_id WHERE c.publication='published';"
+          q "SELECT 'published_opinion_documents_total='||count(*)
+                 ||' scotus='||count(*) FILTER (WHERE ct.provider_court_id='scotus')
+                 ||' non_scotus='||count(*) FILTER (WHERE ct.provider_court_id IS DISTINCT FROM 'scotus')
+             FROM document d JOIN legal_case c ON c.id=d.case_id JOIN court ct ON ct.id=c.court_id
+             WHERE d.publication='published' AND d.document_type='judicial_opinion';"
+
+          echo "=== (A2) what the publication_decision rows count (clarifies the \"2\") ==="
+          q "SELECT reason_code, object_type, count(*) AS decision_rows, count(DISTINCT object_id) AS distinct_objects,
+                    count(*) FILTER (WHERE displayable) AS displayable_rows, max(decided_at) AS latest
+             FROM publication_decision GROUP BY reason_code, object_type ORDER BY reason_code, object_type;"
+
+          echo "=== (B) representative UNVERIFIED-source federal draft opinions (sample 12) ==="
+          q "SELECT jo.provider_opinion_id AS opinion_id, dp.code AS doc_provider,
+                    left(da.source_uri,78) AS doc_source_uri,
+                    (da.source_record_id = jo.provider_opinion_id) AS recid_matches_opinion,
+                    da.response_metadata->>'source' AS artifact_source,
+                    da.response_metadata->>'snapshotDate' AS snapshot,
+                    (jo.cluster_id IS NOT NULL) AS has_cluster,
+                    EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=jo.cluster_id) AS cluster_resolves,
+                    dc.word_count
+             FROM legal_case c JOIN court ct ON ct.id=c.court_id
+             JOIN document d ON d.case_id=c.id AND d.publication='draft'
+             JOIN judicial_opinion jo ON jo.document_id=d.id
+             JOIN document_content dc ON dc.document_id=d.id
+             JOIN raw_artifact da ON da.id=dc.source_artifact_id
+             JOIN provider dp ON dp.id=da.provider_id
+             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+               AND (dp.code<>'courtlistener'
+                    OR da.source_uri !~ '^https://www\.courtlistener\.com/api/rest/v[34]/opinions/[0-9]+/\$')
+             ORDER BY d.created_at LIMIT 12;"
+
+          echo "=== (C) federal DRAFT opinion reason breakdown (reasons OVERLAP -- each counted independently) ==="
+          # Mirror the gate predicates from publish-cited-federal-opinions.ts /
+          # evaluateFederalPublicationCandidate. rest_ok = REST url; bulk_ok = official bulk
+          # provenance validated by metadata source + bulk help url + source_record_id ==
+          # provider_opinion_id + resolvable cluster. src_ok_current vs src_ok_fixed.
+          q "WITH g AS (
+               SELECT dc.word_count AS wc,
+                 (dc.content_hash ~ '^[a-f0-9]{64}\$' AND da.content_hash IS NOT NULL) AS provenance_ok,
+                 (dp.code='courtlistener'
+                   AND da.source_uri ~ '^https://www\.courtlistener\.com/api/rest/v[34]/opinions/[0-9]+/\$') AS rest_ok,
+                 (dp.code='courtlistener'
+                   AND da.response_metadata->>'source'='courtlistener_bulk'
+                   AND da.source_uri ~ '^https://www\.courtlistener\.com/help/api/bulk-data/#opinion-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+\$'
+                   AND da.source_record_id = jo.provider_opinion_id
+                   AND jo.cluster_id IS NOT NULL
+                   AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=jo.cluster_id)) AS bulk_ok,
+                 (dc.content_text ~* '[0-9]{3}-[0-9]{2}-[0-9]{4}|date of birth|social security number') AS sensitive,
+                 (c.verification IN ('conflict','needs_review')) AS court_case_conflict,
+                 (coalesce(ct.jurisdiction,'')='' ) AS jur_blank,
+                 (ct.verification IS DISTINCT FROM 'verified') AS court_unverified,
+                 (coalesce(c.caption,'')='' OR coalesce(c.docket_number,'')='') AS identity_missing,
+                 (ca.source_uri IS NULL OR ca.source_uri !~ '^https?://') AS case_source_url_bad,
+                 (ca.content_hash IS NULL OR ca.content_hash !~ '^[a-f0-9]{64}\$') AS case_checksum_bad
+               FROM legal_case c JOIN court ct ON ct.id=c.court_id
+               JOIN document d ON d.case_id=c.id AND d.publication='draft'
+               JOIN judicial_opinion jo ON jo.document_id=d.id
+               JOIN document_content dc ON dc.document_id=d.id
+               JOIN raw_artifact da ON da.id=dc.source_artifact_id
+               JOIN provider dp ON dp.id=da.provider_id
+               JOIN raw_artifact ca ON ca.id=c.source_artifact_id
+               WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+             )
+             SELECT 'federal_draft_opinions='||count(*)
+                ||' | thin_lt100w='||count(*) FILTER (WHERE wc<100)
+                ||' | sensitive_text='||count(*) FILTER (WHERE sensitive)
+                ||' | missing_provenance='||count(*) FILTER (WHERE NOT provenance_ok)
+                ||' | src_unverified_CURRENT='||count(*) FILTER (WHERE NOT rest_ok)
+                ||' | src_unverified_FIXED='||count(*) FILTER (WHERE NOT (rest_ok OR bulk_ok))
+                ||' | official_bulk_ok='||count(*) FILTER (WHERE bulk_ok)
+                ||' | court_unverified='||count(*) FILTER (WHERE court_unverified)
+                ||' | jurisdiction_blank='||count(*) FILTER (WHERE jur_blank)
+                ||' | identity_missing='||count(*) FILTER (WHERE identity_missing)
+                ||' | case_source_url_bad='||count(*) FILTER (WHERE case_source_url_bad)
+                ||' | case_checksum_bad='||count(*) FILTER (WHERE case_checksum_bad)
+             FROM g;"
+          echo "--- federal drafts whose ONLY source problem is the URL shape (would pass source under bulk-aware rule) ---"
+          q "WITH g AS (
+               SELECT (dp.code='courtlistener' AND da.source_uri ~ '^https://www\.courtlistener\.com/api/rest/v[34]/opinions/[0-9]+/\$') AS rest_ok,
+                 (dp.code='courtlistener' AND da.response_metadata->>'source'='courtlistener_bulk'
+                   AND da.source_uri ~ '^https://www\.courtlistener\.com/help/api/bulk-data/#opinion-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+\$'
+                   AND da.source_record_id = jo.provider_opinion_id AND jo.cluster_id IS NOT NULL
+                   AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=jo.cluster_id)) AS bulk_ok
+               FROM legal_case c JOIN court ct ON ct.id=c.court_id
+               JOIN document d ON d.case_id=c.id AND d.publication='draft'
+               JOIN judicial_opinion jo ON jo.document_id=d.id
+               JOIN document_content dc ON dc.document_id=d.id
+               JOIN raw_artifact da ON da.id=dc.source_artifact_id JOIN provider dp ON dp.id=da.provider_id
+               WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+             )
+             SELECT 'newly_source_verified_by_fix='||count(*) FILTER (WHERE (NOT rest_ok) AND bulk_ok) FROM g;"
+
+          echo "=== (D) cited_targets universe (what the publisher can ACTUALLY publish now) ==="
+          # Reuse the publisher's exact cited_targets CTE, then apply full gate reasons to
+          # the federal draft opinions within it, under current vs bulk-aware source rule.
+          q "WITH visible_sources AS MATERIALIZED (
+               SELECT d.id,d.case_id,content.content_hash FROM document d
+               JOIN legal_case c ON c.id=d.case_id JOIN document_content content ON content.document_id=d.id
+               WHERE d.publication='published' AND c.publication='published'
+                 AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='legal_case' AND object_id=c.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+                 AND COALESCE((SELECT displayable FROM publication_decision WHERE object_type='document' AND object_id=d.id ORDER BY decided_at DESC,id DESC LIMIT 1),false)
+             ), public_citations AS MATERIALIZED (
+               SELECT DISTINCT ref.citation_key,source.case_id FROM visible_sources source
+               JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash
+             ), cited_targets AS MATERIALIZED (
+               SELECT DISTINCT i.case_id FROM case_citation_identity i
+               JOIN public_citations ref ON ref.citation_key=i.citation_key AND ref.case_id<>i.case_id
+               WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=i.citation_key AND other.case_id<>i.case_id)
+             ), g AS (
+               SELECT d.id,
+                 (dc.word_count<100) AS thin,
+                 NOT (dc.content_hash ~ '^[a-f0-9]{64}\$' AND da.content_hash IS NOT NULL) AS r_provenance,
+                 NOT (dp.code='courtlistener' AND da.source_uri ~ '^https://www\.courtlistener\.com/api/rest/v[34]/opinions/[0-9]+/\$') AS r_src_current,
+                 NOT (dp.code='courtlistener' AND (
+                      da.source_uri ~ '^https://www\.courtlistener\.com/api/rest/v[34]/opinions/[0-9]+/\$'
+                      OR (da.response_metadata->>'source'='courtlistener_bulk'
+                          AND da.source_uri ~ '^https://www\.courtlistener\.com/help/api/bulk-data/#opinion-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+\$'
+                          AND da.source_record_id = jo.provider_opinion_id AND jo.cluster_id IS NOT NULL
+                          AND EXISTS(SELECT 1 FROM opinion_cluster oc WHERE oc.id=jo.cluster_id)))) AS r_src_fixed,
+                 (dc.content_text ~* '[0-9]{3}-[0-9]{2}-[0-9]{4}|date of birth|social security number') AS r_sensitive,
+                 (ct.verification IS DISTINCT FROM 'verified') AS r_court_unverified,
+                 (coalesce(c.caption,'')='' OR coalesce(c.docket_number,'')='') AS r_identity,
+                 (c.verification IN ('conflict','needs_review')) AS r_case_conflict
+               FROM cited_targets tgt
+               JOIN legal_case c ON c.id=tgt.case_id JOIN court ct ON ct.id=c.court_id
+               JOIN document d ON d.case_id=c.id AND d.publication='draft'
+               JOIN judicial_opinion jo ON jo.document_id=d.id
+               JOIN document_content dc ON dc.document_id=d.id
+               JOIN raw_artifact da ON da.id=dc.source_artifact_id JOIN provider dp ON dp.id=da.provider_id
+               WHERE coalesce(ct.provider_court_id,'')<>'scotus'
+             )
+             SELECT 'cited_target_federal_draft_opinions='||count(*)
+                ||' | eligible_CURRENT='||count(*) FILTER (WHERE NOT (thin OR r_provenance OR r_src_current OR r_sensitive OR r_court_unverified OR r_identity OR r_case_conflict))
+                ||' | eligible_FIXED='||count(*) FILTER (WHERE NOT (thin OR r_provenance OR r_src_fixed OR r_sensitive OR r_court_unverified OR r_identity OR r_case_conflict))
+                ||' | NEWLY_eligible_by_fix='||count(*) FILTER (WHERE (r_src_current AND NOT r_src_fixed)
+                        AND NOT (thin OR r_provenance OR r_sensitive OR r_court_unverified OR r_identity OR r_case_conflict))
+                ||' | still_thin='||count(*) FILTER (WHERE thin)
+                ||' | still_court_unverified='||count(*) FILTER (WHERE r_court_unverified)
+                ||' | still_sensitive='||count(*) FILTER (WHERE r_sensitive)
+                ||' | still_identity='||count(*) FILTER (WHERE r_identity)
+             FROM g;"
+
+          echo "=== (E) word-count distribution of federal draft opinions (short-order review) ==="
+          q "WITH wc AS (
+               SELECT dc.word_count AS n FROM legal_case c JOIN court ct ON ct.id=c.court_id
+               JOIN document d ON d.case_id=c.id AND d.publication='draft'
+               JOIN judicial_opinion jo ON jo.document_id=d.id
+               JOIN document_content dc ON dc.document_id=d.id
+               WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+             )
+             SELECT 'lt20='||count(*) FILTER (WHERE n<20)
+                ||' 20_49='||count(*) FILTER (WHERE n>=20 AND n<50)
+                ||' 50_99='||count(*) FILTER (WHERE n>=50 AND n<100)
+                ||' 100_499='||count(*) FILTER (WHERE n>=100 AND n<500)
+                ||' ge500='||count(*) FILTER (WHERE n>=500)
+                ||' median='||percentile_cont(0.5) WITHIN GROUP (ORDER BY n) FROM wc;"
+          echo "--- sample of 50-99 word drafts (are these legitimate short orders?) ---"
+          q "SELECT dc.word_count, left(regexp_replace(dc.content_text,'\s+',' ','g'),140) AS preview
+             FROM legal_case c JOIN court ct ON ct.id=c.court_id
+             JOIN document d ON d.case_id=c.id AND d.publication='draft'
+             JOIN judicial_opinion jo ON jo.document_id=d.id
+             JOIN document_content dc ON dc.document_id=d.id
+             WHERE c.publication='draft' AND coalesce(ct.provider_court_id,'')<>'scotus'
+               AND dc.word_count>=50 AND dc.word_count<100
+             ORDER BY d.created_at LIMIT 6;"
+
+          echo "=== (F) why the publication worker is idle: advisory lock + heartbeats ==="
+          q "SELECT a.pid, a.state, a.backend_start, round(extract(epoch FROM now()-a.query_start)) AS query_age_s
+             FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+             WHERE l.locktype='advisory' AND l.granted AND l.objsubid=1
+               AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database())
+               AND l.objid=((hashtext('jurvio-case-citations-v1')::bigint & 4294967295)::oid)
+               AND l.classid=(((hashtext('jurvio-case-citations-v1')::bigint >> 32) & 4294967295)::oid);"
+          q "SELECT worker_id, lane, status, last_heartbeat_at, round(extract(epoch FROM now()-last_heartbeat_at)) AS age_s
+             FROM ingestion_worker_heartbeat ORDER BY last_heartbeat_at DESC LIMIT 12;"
+          echo "=== DONE ==="
+          REMOTE

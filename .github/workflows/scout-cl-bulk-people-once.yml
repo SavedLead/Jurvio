@@ -3,7 +3,7 @@ name: Scout CourtListener bulk people-db (one-shot, read-only)
 # Discovers the current CourtListener bulk-data people-db files (people +
 # positions CSVs on public S3 — no token, no rate limit) and dumps their headers
 # + a couple of sample rows, so the Article I enrichment importer is written
-# against the real columns. GitHub-hosted; no VPC. No writes.
+# against the real columns. Runs on the builder. No VPC and no writes.
 
 on:
   workflow_dispatch: {}
@@ -11,9 +11,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: jurvio-scout-cl-bulk-people-once
+  cancel-in-progress: false
+
 jobs:
   scout:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 12
     env:
       BULK: https://com-courtlistener-storage.s3.amazonaws.com

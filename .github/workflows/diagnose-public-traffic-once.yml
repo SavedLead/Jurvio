@@ -1,0 +1,421 @@
+name: Diagnose public traffic (once, read-only)
+
+# Who is requesting jurvio.com, and is it one of our droplets?
+# Read-only. No nginx reload, no firewall edits, no deploys.
+#
+# SSH matches diagnose-db-load-once.yml: builder runner to jurvio-public-01
+# (10.116.0.5) and jurvio-web-01 (10.116.0.2). The runner itself is builder-01.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-public-traffic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      PUBLIC_HOST: 10.116.0.5
+      WEB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Record our own addresses
+        id: ours
+        run: |
+          set -euo pipefail
+          echo "=== runner ==="
+          hostname || true
+          runner_ip="$(curl -4 -fsS --max-time 15 https://ifconfig.me || echo failed)"
+          echo "runner_ifconfig=${runner_ip}"
+          echo "runner_ip=${runner_ip}" >> "$GITHUB_OUTPUT"
+          if [ -z "${DO_TOKEN:-}" ]; then
+            echo "DO token unset; droplet public IPs are not listed from the API"
+            echo "droplet_ips=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          droplets="$(curl -fsS --max-time 20 -H "Authorization: Bearer $DO_TOKEN" \
+            "https://api.digitalocean.com/v2/droplets?per_page=200")"
+          echo "=== droplet addresses ==="
+          jq -r '.droplets[] | select(.name=="jurvio-public-01" or .name=="jurvio-web-01" or .name=="jurvio-builder-01") | .name as $n | .networks.v4[] | "\($n) \(.type) \(.ip_address)"' <<<"$droplets"
+          ips="$(jq -r '.droplets[] | select(.name=="jurvio-public-01" or .name=="jurvio-web-01" or .name=="jurvio-builder-01") | .networks.v4[] | select(.type=="public") | .ip_address' <<<"$droplets" | paste -sd, -)"
+          echo "droplet_ips=${ips}" >> "$GITHUB_OUTPUT"
+
+      - name: Read public-01 access log
+        env:
+          RUNNER_IP: ${{ steps.ours.outputs.runner_ip }}
+          DROPLET_IPS: ${{ steps.ours.outputs.droplet_ips }}
+        run: |
+          set -euo pipefail
+          target=""
+          if ssh "root@$PUBLIC_HOST" true; then
+            target="root"
+          elif ssh "$INGESTION_USER@$PUBLIC_HOST" true; then
+            target="$INGESTION_USER"
+          else
+            echo "::error::could not SSH to jurvio-public-01 at $PUBLIC_HOST"
+            exit 1
+          fi
+          echo "public_ssh_user=${target}"
+          ssh "$target@$PUBLIC_HOST" "RUNNER_IP=$(printf '%q' "$RUNNER_IP") DROPLET_IPS=$(printf '%q' "$DROPLET_IPS") bash -s" <<'REMOTE'
+          set -uo pipefail
+          echo "=== public-01 clock ==="
+          date -u +%Y-%m-%dT%H:%M:%SZ
+          hostname || true
+          echo "=== public-01 ifconfig.me ==="
+          curl -4 -fsS --max-time 15 https://ifconfig.me || echo "(ifconfig.me failed)"
+          echo
+          echo "=== public-01 load / memory ==="
+          uptime || true
+          cat /proc/loadavg || true
+          free -m || true
+          nproc || true
+          echo "=== docker stats ==="
+          if command -v docker >/dev/null 2>&1; then
+            docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' || sudo -n docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' || echo "(docker stats failed)"
+          else
+            echo "(docker not installed)"
+          fi
+          echo "=== node event-loop signs ==="
+          echo "One Node process near 100% of a core, staying in R, means the event loop is busy. public-01 has 2 vCPU."
+          cid="$(docker ps -q --filter label=com.docker.compose.service=app 2>/dev/null | head -n1 || true)"
+          if [ -z "$cid" ]; then
+            cid="$(sudo -n docker ps -q --filter label=com.docker.compose.service=app 2>/dev/null | head -n1 || true)"
+          fi
+          if [ -n "$cid" ]; then
+            docker top "$cid" -eo pid,pcpu,pmem,nlwp,stat,args 2>/dev/null || sudo -n docker top "$cid" -eo pid,pcpu,pmem,nlwp,stat,args || true
+            node_pid="$(docker top "$cid" -eo pid,args 2>/dev/null | awk '/node|next/ && NR>1 {print $1; exit}')"
+            if [ -z "$node_pid" ]; then
+              node_pid="$(sudo -n docker top "$cid" -eo pid,args 2>/dev/null | awk '/node|next/ && NR>1 {print $1; exit}')"
+            fi
+            if [ -n "$node_pid" ] && [ -r "/proc/${node_pid}/stat" ]; then
+              clk="$(getconf CLK_TCK)"
+              read -r u1 s1 < <(awk '{sub(/.*\) /,""); split($0,f," "); print f[12], f[13]}' "/proc/${node_pid}/stat")
+              sleep 2
+              read -r u2 s2 < <(awk '{sub(/.*\) /,""); split($0,f," "); print f[12], f[13]}' "/proc/${node_pid}/stat")
+              awk -v u1="$u1" -v s1="$s1" -v u2="$u2" -v s2="$s2" -v clk="$clk" 'BEGIN {
+                pct = ((u2 - u1) + (s2 - s1)) / clk / 2 * 100
+                printf "node_pid=%s cpu_one_core_pct=%.1f over 2s\n", "'"$node_pid"'", pct
+              }'
+            else
+              echo "(could not sample a node pid)"
+            fi
+          else
+            echo "(app container not found)"
+          fi
+          echo "=== nginx log format ==="
+          if command -v nginx >/dev/null 2>&1; then
+            nginx -T 2>/dev/null | awk '/log_format|access_log/ {print}' | head -n 40 || true
+          elif command -v sudo >/dev/null 2>&1; then
+            sudo -n nginx -T 2>/dev/null | awk '/log_format|access_log/ {print}' | head -n 40 || true
+          else
+            echo "(nginx -T unavailable)"
+          fi
+          echo "=== upstream timing in the log ==="
+          if nginx -T 2>/dev/null | grep -q upstream_response_time || sudo -n nginx -T 2>/dev/null | grep -q upstream_response_time; then
+            echo "upstream_response_time_logged=yes"
+          else
+            echo "upstream_response_time_logged=no"
+            echo "The active log_format does not include \$upstream_response_time or \$request_time. A combined log records status and bytes, not how long the Node upstream took."
+          fi
+
+          python3 - <<'PY' || echo "(access-log summary failed)"
+          import collections, datetime, ipaddress, os, re, time, urllib.request
+          cutoff = time.time() - 45 * 60
+          ours = {
+              "104.248.239.68",   # jurvio-web-01
+              "198.211.113.171",  # jurvio-builder-01
+              "104.248.237.187",  # jurvio-public-01
+          }
+          for chunk in (os.environ.get("RUNNER_IP", ""), os.environ.get("DROPLET_IPS", "")):
+              ours.update(part.strip() for part in chunk.split(",") if part.strip() and part.strip() != "failed")
+
+          EMBEDDED_CF = """
+          173.245.48.0/20
+          103.21.244.0/22
+          103.22.200.0/22
+          103.31.4.0/22
+          141.101.64.0/18
+          108.162.192.0/18
+          190.93.240.0/20
+          188.114.96.0/20
+          197.234.240.0/22
+          198.41.128.0/17
+          162.158.0.0/15
+          104.16.0.0/13
+          104.24.0.0/14
+          172.64.0.0/13
+          131.0.72.0/22
+          2400:cb00::/32
+          2606:4700::/32
+          2803:f800::/32
+          2405:b500::/32
+          2405:8100::/32
+          2a06:98c0::/29
+          2c0f:f248::/32
+          """
+
+          def parse_nets(blobs):
+              nets = []
+              for blob in blobs:
+                  for line in blob.splitlines():
+                      line = line.strip()
+                      if not line or line.startswith("#"):
+                          continue
+                      try:
+                          nets.append(ipaddress.ip_network(line))
+                      except ValueError:
+                          pass
+              return nets
+
+          def fetch_nets():
+              blobs = []
+              try:
+                  for url in ("https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6"):
+                      request = urllib.request.Request(url, headers={"User-Agent": "Jurvio-Diagnostic/1.0 (contact@jurvio.com)"})
+                      with urllib.request.urlopen(request, timeout=15) as response:
+                          blobs.append(response.read().decode())
+                  return parse_nets(blobs), "live"
+              except Exception as error:
+                  return parse_nets([EMBEDDED_CF]), f"embedded after live fetch failed ({error})"
+
+          cf_nets, cf_source = fetch_nets()
+          print(f"cloudflare_ranges={cf_source} count={len(cf_nets)}")
+
+          def is_cf(value):
+              try:
+                  addr = ipaddress.ip_address(value)
+              except ValueError:
+                  return False
+              return any(addr in net for net in cf_nets)
+
+          candidates = ["/var/log/nginx/jurvio.access.log", "/var/log/nginx/access.log"]
+          path = next((item for item in candidates if os.path.isfile(item)), None)
+          if path is None:
+              print("no nginx access log at the usual paths")
+              raise SystemExit(0)
+          size = os.path.getsize(path)
+          print(f"path={path} size_bytes={size}")
+          with open(path, "rb") as handle:
+              handle.seek(max(0, size - 64_000_000))
+              if size > 64_000_000:
+                  handle.readline()
+              raw = handle.read().decode("utf-8", "replace")
+          sample = next((line for line in raw.splitlines() if line.strip()), "")
+          # jurvio_main is: "referer" "user agent" cf=... xff="..."
+          # rsplit on the last quotes returns the xff value, not the UA.
+          jurvio_ua = re.compile(r'"([^"]*)"\s+cf=')
+
+          def user_agent(line):
+              marked = jurvio_ua.search(line)
+              if marked:
+                  return marked.group(1)[:160]
+              tail = line.rsplit('"', 2)
+              return (tail[-2] if len(tail) >= 2 else "?")[:160]
+
+          print("--- sample log line (format check) ---")
+          print(sample[:400])
+          joined = sample.lower()
+          print(f"sample_mentions_cf_connecting_ip={' cf=' in sample or 'cf-connecting-ip' in joined or 'cf_connecting_ip' in joined}")
+          print(f"sample_user_agent={user_agent(sample)[:160]}")
+          print(f"sample_mentions_x_forwarded_for={'x-forwarded-for' in joined or 'x_forwarded_for' in joined}")
+          print("default combined format logs $remote_addr only. CF-Connecting-IP and X-Forwarded-For are present only if a custom log_format includes them. The lines above are that check.")
+
+          stamp = re.compile(r"\[(\d{2})/([A-Za-z]{3})/(\d{4}):(\d{2}):(\d{2}):(\d{2}) ([+-]\d{4})\]")
+          request = re.compile(r'"([A-Z]+) ([^" ]+)')
+          ip_re = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b|(?:[A-Fa-f0-9]{0,4}:){2,7}[A-Fa-f0-9]{0,4}")
+          months = {name: index for index, name in enumerate(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], 1)}
+          id_re = re.compile(r"/jv-[a-z0-9]{8,10}|/jd-[a-z0-9]{8,10}", re.I)
+          per_ip = collections.Counter()
+          ua_by_ip = collections.defaultdict(collections.Counter)
+          path_by_ip = collections.defaultdict(collections.Counter)
+          ua_minute = collections.defaultdict(collections.Counter)
+          ua_total = collections.Counter()
+          via = collections.Counter()
+          extra_addrs = collections.Counter()
+          aion_ips = collections.Counter()
+          upstream_times = []
+          kept = 0
+          for line in raw.splitlines():
+              stamped = stamp.search(line)
+              if not stamped:
+                  continue
+              day, mon, year, hour, minute, second, offset = stamped.groups()
+              month = months.get(mon)
+              if not month:
+                  continue
+              sign = 1 if offset[0] == "+" else -1
+              shift = sign * (int(offset[1:3]) * 3600 + int(offset[3:5]) * 60)
+              epoch = datetime.datetime(int(year), month, int(day), int(hour), int(minute), int(second), tzinfo=datetime.timezone.utc).timestamp() - shift
+              if epoch < cutoff:
+                  continue
+              kept += 1
+              remote = line.split(" ", 1)[0]
+              per_ip[remote] += 1
+              via["cloudflare_edge" if is_cf(remote) else "direct_to_origin"] += 1
+              req = request.search(line)
+              path = req.group(2).split("?", 1)[0] if req else "?"
+              path_by_ip[remote][id_re.sub("/:id", path)] += 1
+              agent = user_agent(line)
+              ua_by_ip[remote][agent] += 1
+              ua_total[agent] += 1
+              if "aionbot" in agent.lower():
+                  aion_ips[remote] += 1
+              timing = re.search(r"urt=([0-9.]+)", line)
+              if timing:
+                  upstream_times.append(float(timing.group(1)))
+              minute_key = f"{year}-{month:02d}-{int(day):02d} {hour}:{minute}"
+              ua_minute[minute_key][agent] += 1
+              for found in ip_re.findall(line)[1:4]:
+                  if found != remote:
+                      extra_addrs[found] += 1
+          print(f"requests_in_45m={kept}")
+          print("--- upstream_response_time from log lines ---")
+          if not upstream_times:
+              print("no urt= values in the lines read. The combined log does not store upstream_response_time; jurvio.access.log does after the nginx conf install.")
+          else:
+              ordered = sorted(upstream_times)
+              def pct(p):
+                  return ordered[min(len(ordered) - 1, int(p * (len(ordered) - 1)))]
+              print(f"samples={len(ordered)} p50={pct(0.50):.3f}s p95={pct(0.95):.3f}s max={ordered[-1]:.3f}s")
+          print("--- how the TCP peer reached nginx ---")
+          for key, count in via.most_common():
+              print(f"{count:7d} {key}")
+          print("--- extra IP tokens after remote_addr (X-Forwarded-For only if the log format stores it) ---")
+          if not extra_addrs:
+              print("(none)")
+          for key, count in extra_addrs.most_common(10):
+              mark = " OUR_DROPLET" if key in ours else ""
+              print(f"{count:7d} {key}{mark}")
+          print("--- AionBot top IPs ---")
+          if not aion_ips:
+              print("(no user agent containing AionBot in this window)")
+          for ip, count in aion_ips.most_common(15):
+              marks = []
+              if ip in ours:
+                  marks.append("OUR_DROPLET_OR_RUNNER")
+              marks.append("cloudflare_edge" if is_cf(ip) else "direct_to_origin")
+              print(f"{count:7d} {ip} {' '.join(marks)}")
+          print("--- top client IPs (remote_addr) ---")
+          top_ips = per_ip.most_common(12)
+          for ip, count in top_ips:
+              marks = []
+              if ip in ours:
+                  marks.append("OUR_DROPLET_OR_RUNNER")
+              marks.append("cloudflare_edge" if is_cf(ip) else "direct_to_origin")
+              print(f"{count:7d} {ip} {' '.join(marks)}")
+          print("--- top user agents per top IP ---")
+          for ip, _count in top_ips[:8]:
+              print(f"IP {ip}")
+              for agent, count in ua_by_ip[ip].most_common(5):
+                  print(f"  {count:7d} {agent}")
+          print("--- top paths per top IP ---")
+          for ip, _count in top_ips[:5]:
+              print(f"IP {ip}")
+              for path, count in path_by_ip[ip].most_common(8):
+                  print(f"  {count:7d} {path}")
+          top_uas = [agent for agent, _count in ua_total.most_common(3)]
+          print("--- requests per minute for top 3 user agents ---")
+          print("minute " + " | ".join(agent[:40] for agent in top_uas))
+          for minute_key in sorted(ua_minute):
+              counts = " ".join(f"{ua_minute[minute_key][agent]:6d}" for agent in top_uas)
+              print(f"{minute_key} {counts}")
+          PY
+
+          echo "=== public-01 outbound connections to :80/:443 ==="
+          (ss -H -tpn state established dst :443 2>/dev/null; ss -H -tpn state established dst :80 2>/dev/null) || sudo -n sh -c 'ss -H -tpn state established dst :443; ss -H -tpn state established dst :80' || true
+          echo "=== public-01 fetcher processes ==="
+          ps -eo pid,user,args | awk 'BEGIN{IGNORECASE=1} /curl|wget|chrome|chromium|playwright|puppeteer|firefox|headless|jurvio\.com/ {print}' | head -n 40
+          echo "=== PUBLIC DONE ==="
+          exit 0
+          REMOTE
+
+      - name: Check web-01 and this builder for outbound fetches
+        run: |
+          set -euo pipefail
+          echo "=== sitemap snapshot on web-01 ==="
+          ssh "$INGESTION_USER@$WEB_HOST" bash -s <<'REMOTE' || echo "(sitemap check ssh failed)"
+          set -uo pipefail
+          find_svc() {
+            sudo -n docker ps -a --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+          core="$(find_svc worker-core)"
+          echo "worker-core=${core:-missing}"
+          if [ -n "$core" ]; then
+            echo "=== worker-core processes ==="
+            sudo -n docker top "$core" -eo pid,pcpu,pmem,args | head -n 40 || true
+          fi
+          cites="$(find_svc worker-citations)"
+          echo "worker-citations=${cites:-missing}"
+          if [ -n "$cites" ]; then
+            sudo -n docker inspect -f 'image={{.Config.Image}} started={{.State.StartedAt}} status={{.State.Status}}' "$cites" || true
+            echo "=== worker-citations processes ==="
+            sudo -n docker top "$cites" -eo pid,etime,args | head -n 40 || true
+            echo "=== refresh script in image ==="
+            sudo -n docker exec "$cites" sh -c 'ls -l jobs/refresh-sitemap-snapshot.mjs jobs/refresh-case-citation-counts.mjs 2>&1 || true'
+            echo "=== scheduler bundle registers citation-count-snapshot ==="
+            sudo -n docker exec "$cites" sh -c 'grep -c citation-count-snapshot jobs/run-production-scheduler.mjs; grep -c refresh-case-citation-counts.mjs jobs/run-production-scheduler.mjs' || echo "(scheduler bundle check failed)"
+            echo "=== sitemap scheduler log ==="
+            sudo -n docker exec "$cites" sh -c 'tail -n 40 /var/lib/jurvio/artifacts/scheduler/sitemap-snapshot.log 2>&1 || echo "(no sitemap-snapshot.log)"'
+            echo "=== citation-count scheduler log ==="
+            sudo -n docker exec "$cites" sh -c 'tail -n 60 /var/lib/jurvio/artifacts/scheduler/citation-count-snapshot.log 2>&1 || echo "(no citation-count-snapshot.log)"'
+          fi
+          pg="$(find_svc postgres)"
+          if [ -n "$pg" ]; then
+            echo "=== sitemap_document ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT kind, count(*) AS pages, max(refreshed_at) AS refreshed FROM sitemap_document GROUP BY kind ORDER BY kind;" || echo "(sitemap_document query failed)"
+            echo "=== case_citation_count ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT count(*) AS rows, min(refreshed_at) AS first_refresh, max(refreshed_at) AS last_refresh, now() - max(refreshed_at) AS age FROM case_citation_count;" || echo "(case_citation_count query failed)"
+            echo "=== jurvio-citations activity ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT pid, application_name, state, wait_event_type, wait_event, now() - query_start AS query_age, left(query, 220) AS query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND (application_name = 'jurvio-citations' OR query ILIKE '%case_citation_count%') ORDER BY query_start NULLS LAST;" || echo "(activity query failed)"
+            echo "=== advisory locks ==="
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=15s' "$pg" psql -U jurvio -d jurvio -c "SELECT a.application_name, a.state, now() - a.query_start AS query_age, left(a.query, 180) AS query FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND a.datname = current_database();" || echo "(advisory lock query failed)"
+          else
+            echo "(postgres container missing)"
+          fi
+          REMOTE
+          echo "=== web-01 ${WEB_HOST} ==="
+          ssh "$INGESTION_USER@$WEB_HOST" bash -s <<'REMOTE' || echo "(web-01 ssh failed)"
+          set -uo pipefail
+          hostname || true
+          echo "=== web-01 ifconfig.me ==="
+          curl -4 -fsS --max-time 15 https://ifconfig.me || echo "(ifconfig.me failed)"
+          echo
+          echo "=== web-01 outbound connections to :80/:443 ==="
+          (ss -H -tpn state established dst :443 2>/dev/null; ss -H -tpn state established dst :80 2>/dev/null) || sudo -n sh -c 'ss -H -tpn state established dst :443; ss -H -tpn state established dst :80' || true
+          echo "=== web-01 fetcher processes ==="
+          ps -eo pid,user,args | awk 'BEGIN{IGNORECASE=1} /curl|wget|chrome|chromium|playwright|puppeteer|firefox|headless|jurvio\.com/ {print}' | head -n 40
+          REMOTE
+          echo "=== builder (this runner) outbound connections to :80/:443 ==="
+          hostname || true
+          (ss -H -tpn state established dst :443 2>/dev/null; ss -H -tpn state established dst :80 2>/dev/null) || sudo -n sh -c 'ss -H -tpn state established dst :443; ss -H -tpn state established dst :80' || true
+          echo "=== builder fetcher processes ==="
+          ps -eo pid,user,args | awk 'BEGIN{IGNORECASE=1} /curl|wget|chrome|chromium|playwright|puppeteer|firefox|headless|jurvio\.com/ {print}' | head -n 40
+          echo "=== DONE ==="
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/config

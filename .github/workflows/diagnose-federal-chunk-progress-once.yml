@@ -1,0 +1,127 @@
+name: Diagnose federal chunk progress (once, read-only)
+
+# Read-only snapshot of the chunked federal import's live progress, designed to be run
+# WHILE a detached import is working (it does not hold the import; it just reads the
+# ledger + container stats), so progress is observable without waiting for the import job
+# to release the builder. Prints: per-status ledger counts + total opinions written, the
+# active 'importing' chunk(s) with written count and seconds since last progress, elapsed
+# since the first chunk started, worker memory/CPU, and the tail of the newest import log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "Bulk snapshot date YYYY-MM-DD"
+        required: false
+        default: "2026-09-30"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Its OWN group so it can run even while an import holds the bulk-federal group --
+  # but note the single self-hosted builder still serialises jobs; run this detached-mode.
+  group: jurvio-federal-chunk-progress
+  cancel-in-progress: true
+
+jobs:
+  progress:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Read progress over private VPC
+        run: |
+          set -euo pipefail
+          case "$SNAPSHOT_DATE" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be YYYY-MM-DD"; exit 1;;
+          esac
+          ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="$SNAPSHOT_DATE"
+          find_svc() { sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"; worker="$(find_svc worker-core)"
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null || echo "(query failed)"; }
+
+          echo "=== ledger status (snapshot ${SNAPSHOT}) ==="
+          q "SELECT 'ready=' || count(*) FILTER (WHERE status='ready')
+                 || ' importing=' || count(*) FILTER (WHERE status='importing')
+                 || ' completed=' || count(*) FILTER (WHERE status='completed')
+                 || ' failed=' || count(*) FILTER (WHERE status='failed')
+                 || ' opinions_written=' || coalesce(sum(opinions_written),0)
+                 || ' opinions_skipped=' || coalesce(sum(opinions_skipped),0)
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';"
+
+          echo "=== active importing chunk(s): written + seconds since last progress ==="
+          q "SELECT chunk_key || ' written=' || opinions_written
+                 || ' last_progress=' || to_char(updated_at,'HH24:MI:SS')
+                 || ' age_s=' || round(extract(epoch FROM now()-updated_at))
+             FROM federal_import_chunk
+             WHERE snapshot_date='${SNAPSHOT}' AND status='importing'
+             ORDER BY updated_at DESC LIMIT 10;"
+
+          echo "=== elapsed window ==="
+          q "SELECT 'first_started=' || coalesce(min(import_started_at)::text,'(none)')
+                 || ' last_finished=' || coalesce(max(import_finished_at)::text,'(none)')
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';"
+
+          echo "=== extraction progress (chunks + matched records + newest extraction) ==="
+          q "SELECT 'chunks=' || count(*)
+                 || ' matched_records=' || coalesce(sum(record_count),0)
+                 || ' newest_extracted=' || coalesce(to_char(max(extracted_at),'MM-DD HH24:MI:SS'),'(none)')
+                 || ' age_s=' || coalesce(round(extract(epoch FROM now()-max(extracted_at)))::text,'(none)')
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}';"
+
+          echo "=== recent failures (last_error) ==="
+          q "SELECT chunk_key || ': ' || left(coalesce(last_error,''),160)
+             FROM federal_import_chunk
+             WHERE snapshot_date='${SNAPSHOT}' AND status='failed'
+             ORDER BY updated_at DESC LIMIT 5;"
+
+          echo "=== worker-core memory / CPU ==="
+          [ -n "$worker" ] && sudo -n docker stats --no-stream \
+            --format '{{.Name}} mem={{.MemUsage}} memperc={{.MemPerc}} cpu={{.CPUPerc}}' "$worker" || echo "(no worker-core)"
+
+          echo "=== newest import logfile tail ==="
+          logf="$(sudo -n docker exec "$worker" sh -lc 'ls -t /var/lib/jurvio/artifacts/federal-chunks/import-*.log 2>/dev/null | head -1' || true)"
+          if [ -n "$logf" ]; then
+            echo "logfile: $logf"
+            sudo -n docker exec "$worker" sh -lc "tail -n 15 '$logf'" || echo "(tail failed)"
+          else
+            echo "(no import logfile yet)"
+          fi
+
+          echo "=== newest extract logfile tail (detached census) ==="
+          elogf="$(sudo -n docker exec "$worker" sh -lc 'ls -t /var/lib/jurvio/artifacts/federal-chunks/extract-*.log 2>/dev/null | head -1' || true)"
+          if [ -n "$elogf" ]; then
+            echo "logfile: $elogf"
+            sudo -n docker exec "$worker" sh -lc "tail -n 15 '$elogf'" || echo "(tail failed)"
+          else
+            echo "(no extract logfile yet)"
+          fi
+          echo "=== DONE ==="
+          REMOTE

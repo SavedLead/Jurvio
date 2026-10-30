@@ -1,0 +1,72 @@
+name: Post-resize verify (once, read-only)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-post-resize-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Verify resized box health over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter "label=com.docker.compose.project=jurvio" --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+
+          echo "=== NEW SPECS (expect 8 vCPU / ~16Gi / 320G) ==="
+          echo "vCPU = $(nproc)"
+          echo "RAM  = $(free -h | awk '/^Mem:/{print $2}')"
+          echo "Disk:"; df -h / | tail -1
+
+          echo "=== container health (all should be running/healthy) ==="
+          for s in app worker-core worker-coa worker-supervisor postgres; do
+            id="$(find_svc "$s")"; [ -n "$id" ] || { echo "$s: ABSENT"; continue; }
+            up="$(sudo -n docker inspect -f '{{.State.Status}}' "$id")"
+            h="$(sudo -n docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$id")"
+            echo "$s: state=$up health=$h"
+          done
+
+          echo "=== postgres port bind (MUST be 10.116.0.2, not loopback) ==="
+          pg="$(find_svc postgres)"
+          sudo -n docker inspect --format '{{json .NetworkSettings.Ports}}' "$pg" 2>/dev/null || echo "(no pg)"
+
+          echo "=== DB integrity (counts should match pre-resize ~427k) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "SET TIME ZONE 'America/New_York';
+            SELECT 'legal_case=' || count(*) FROM legal_case
+            UNION ALL SELECT 'published=' || count(*) FROM legal_case WHERE publication='published'
+            UNION ALL SELECT 'db_size=' || pg_size_pretty(pg_database_size('jurvio'));" 2>/dev/null || echo "(db query failed)"
+
+          echo "=== public site reachable from box? ==="
+          app="$(find_svc app)"
+          sudo -n docker exec "$app" sh -lc "wget -qO- --timeout=10 http://127.0.0.1:3000/api/ready >/dev/null 2>&1 && echo 'app /api/ready = OK' || echo 'app /api/ready = NOT READY'" || true
+          echo "=== DONE ==="
+          REMOTE

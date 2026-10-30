@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { isMissingTable } from "@/modules/directory/application/public-directory-stats";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -85,6 +86,57 @@ export async function listPublicJudges(sql: Sql, limit = 5_000): Promise<JudgeDi
     ORDER BY count(DISTINCT legal_case.id) DESC, judge.display_name
     LIMIT ${safeLimit}
   `;
+}
+
+export const JUDGE_DIRECTORY_PAGE_SIZE = 200;
+
+export interface JudgeDirectoryPage {
+  judges: JudgeDirectorySummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * One page of the judge directory from judge_public_stats (refreshed by the
+ * citations-lane `public-directory-stats` job), most public cases first. The
+ * judge's verification and publication decision are still checked live. Falls
+ * back to the live aggregate when the table is missing or not refreshed yet.
+ */
+export async function listPublicJudgePage(
+  sql: Sql,
+  options: { page?: number; pageSize?: number } = {},
+): Promise<JudgeDirectoryPage> {
+  const pageSize = Math.min(Math.max(options.pageSize ?? JUDGE_DIRECTORY_PAGE_SIZE, 1), 500);
+  const page = Math.min(Math.max(Math.trunc(options.page ?? 1) || 1, 1), 1000);
+  try {
+    const rows = await sql<Array<JudgeDirectorySummary & { total: number }>>`
+      SELECT judge.public_id AS "publicId", judge.display_name AS "displayName",
+        court.name AS "courtName", stats.case_count AS "caseCount",
+        stats.outcome_sample AS "outcomeSample",
+        count(*) OVER ()::int AS total
+      FROM judge_public_stats stats
+      JOIN judge ON judge.id = stats.judge_id
+      LEFT JOIN court ON court.id = judge.court_id
+      WHERE ${sql.unsafe(displayableJudge)}
+      ORDER BY stats.case_count DESC, judge.display_name, judge.public_id
+      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+    `;
+    if (rows.length || page > 1) {
+      const total = rows[0]?.total ?? 0;
+      const judges = rows.map((row) => ({
+        publicId: row.publicId, displayName: row.displayName, courtName: row.courtName,
+        caseCount: row.caseCount, outcomeSample: row.outcomeSample,
+      }));
+      return { judges, total, page, pageSize };
+    }
+    const [refreshed] = await sql<{ any: boolean }[]>`SELECT EXISTS (SELECT 1 FROM judge_public_stats) AS any`;
+    if (refreshed?.any) return { judges: [], total: 0, page, pageSize };
+  } catch (error) {
+    if (!isMissingTable(error)) throw error;
+  }
+  const all = await listPublicJudges(sql, 10_000);
+  return { judges: all.slice((page - 1) * pageSize, page * pageSize), total: all.length, page, pageSize };
 }
 
 export async function getPublicJudge(sql: Sql, publicId: string): Promise<JudgeAnalyticsProfile | null> {

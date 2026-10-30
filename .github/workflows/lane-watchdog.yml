@@ -41,10 +41,21 @@ name: Lane watchdog (self-heal wedged scheduler workers)
 #   because GitHub-hosted runners' egress IPs are firewalled off the box SSH.
 
 on:
+  # Allowlisted schedule (tests/workflow-triggers.test.ts). The scheduled run
+  # only recreates worker containers that Docker already reports unhealthy, and
+  # never postgres or app (--no-deps). A manual dispatch must type
+  # confirm=WATCHDOG.
   schedule:
-    - cron: '*/15 * * * *'
+    # Was every 15 minutes. The builder is a single 2 vCPU machine and this
+    # job only SSHes in to recreate an unhealthy worker. Half an hour still
+    # bounds a wedged worker, and it leaves more of the runner for CI.
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type WATCHDOG to run the watchdog by hand"
+        required: true
+        type: string
       dry_run:
         description: "Report what WOULD be restarted without doing it"
         required: false
@@ -69,6 +80,15 @@ jobs:
       DB_HOST: 10.116.0.2
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
     steps:
+      - name: Require confirm=WATCHDOG on manual runs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ] && [ "$CONFIRM" != "WATCHDOG" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WATCHDOG."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail
@@ -185,7 +205,7 @@ jobs:
             fi
             echo "--- Recreating ${svc} (container ${cname}) ---"
             sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$DB_BIND" \
-              docker compose -f docker-compose.production.yml up -d --force-recreate "$svc"
+              docker compose -f docker-compose.production.yml up -d --no-deps --force-recreate "$svc"
             restarted=$((restarted + 1))
           done <<< "$unhealthy"
 

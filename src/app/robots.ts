@@ -22,13 +22,18 @@ export default function robots(): MetadataRoute.Robots {
   }
 
   // Launched: allow crawling of public pages, keep internal surfaces out, and
-  // advertise the sitemap.
+  // advertise the sitemap. AionBot and MJ12bot are separate groups so they
+  // are refused while Googlebot and Bingbot still match the * group.
   return {
-    rules: {
-      userAgent: "*",
-      allow: "/",
-      disallow: ["/internal", "/in", "/preview", "/heartbeat"],
-    },
+    rules: [
+      { userAgent: "AionBot", disallow: "/" },
+      { userAgent: "MJ12bot", disallow: "/" },
+      {
+        userAgent: "*",
+        allow: "/",
+        disallow: ["/internal", "/in", "/preview", "/heartbeat"],
+      },
+    ],
     sitemap: `${siteOrigin()}/sitemap.xml`,
   };
 }

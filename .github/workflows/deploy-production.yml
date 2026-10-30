@@ -1,14 +1,17 @@
 name: Deploy production
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "ops/deploy-hosted-login.trigger"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=DEPLOY_PRODUCTION.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type DEPLOY_PRODUCTION to run this workflow against production"
+        required: true
+        type: string
       commit_sha:
-        description: "Optional verified main commit SHA (defaults to current main)"
+        description: Optional verified main commit SHA (defaults to current main)
         required: false
         type: string
 
@@ -29,11 +32,19 @@ concurrency:
 
 jobs:
   release-gate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     outputs:
       current: ${{ steps.resolve.outputs.current }}
       deploy: ${{ steps.resolve.outputs.deploy }}
     steps:
+      - name: Require confirm=DEPLOY_PRODUCTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DEPLOY_PRODUCTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DEPLOY_PRODUCTION."
+            exit 1
+          fi
       - id: resolve
         name: Resolve deploy commit (always current main, never older)
         env:
@@ -41,7 +52,14 @@ jobs:
           INPUT_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
-          LATEST_MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')"
+          # builder-01 has no gh CLI; the raw-SHA media type needs only curl.
+          LATEST_MAIN_SHA="$(curl -fsSL --retry 3 --retry-delay 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.sha" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/main")"
+          case "$LATEST_MAIN_SHA" in
+            *[!0-9a-f]*|'') echo "::error::could not resolve current main"; exit 1 ;;
+          esac
           if [ -n "${INPUT_SHA:-}" ]; then
             # A pinned commit may deploy ONLY if it is still the tip of main. This
             # makes it impossible to (re)deploy an older or side commit — an
@@ -76,6 +94,14 @@ jobs:
     outputs:
       image: ${{ steps.image.outputs.value }}
     steps:
+      - name: Require confirm=DEPLOY_PRODUCTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DEPLOY_PRODUCTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DEPLOY_PRODUCTION."
+            exit 1
+          fi
       - name: Require successful CI for commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -111,6 +137,14 @@ jobs:
     env:
       DEPLOY_COMMIT: ${{ needs.release-gate.outputs.deploy }}
     steps:
+      - name: Require confirm=DEPLOY_PRODUCTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DEPLOY_PRODUCTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DEPLOY_PRODUCTION."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_COMMIT }}
@@ -310,12 +344,10 @@ jobs:
           # The SSH wrapper timeout MUST exceed the sum of release-production.sh's own
           # inner deadlines, or a legitimately-slow release is killed before it can
           # finish. Worst case with a pending migration: image pull (<=900s) + pre-release
-          # DB backup (<=1800s) + migration (<=300s) + app/worker startup (<=180s) +
-          # readiness (<=60s). The prior 1500s was SHORTER than the backup budget alone,
-          # so any migration deploy (which triggers the backup) timed out mid-dump. 3600s
-          # covers the full chain with headroom; the inner per-step timeouts still bound
-          # each phase.
-          timeout --signal=TERM --kill-after=30s 3600s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
+          # DB backup (<=3600s) + migration (<=1800s) + app/worker startup (<=180s) +
+          # readiness (<=60s) = 6540s. 7200s covers that chain; the inner per-step
+          # timeouts still bound each phase.
+          timeout --signal=TERM --kill-after=30s 7200s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
       - name: Verify hosted command-center login externally
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |

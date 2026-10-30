@@ -1,6 +1,6 @@
 name: Vendor FJC roster snapshot
 
-# One-shot helper (GitHub-hosted, open internet) that downloads the authoritative
+# One-shot helper on the builder that downloads the authoritative
 # Federal Judicial Center roster CSVs and commits them under db/seed/fjc/. The
 # Dockerfile copies db/ into the image, so this vendored snapshot ships with the
 # app and the importer falls back to it when the production box cannot reach
@@ -9,16 +9,36 @@ name: Vendor FJC roster snapshot
 # commits them to the repo.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=VENDOR_FJC_ROSTER.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type VENDOR_FJC_ROSTER to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: jurvio-vendor-fjc-roster
+  cancel-in-progress: false
+
 jobs:
   vendor:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 10
     steps:
+      - name: Require confirm=VENDOR_FJC_ROSTER
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "VENDOR_FJC_ROSTER" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=VENDOR_FJC_ROSTER."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}

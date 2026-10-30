@@ -1,0 +1,166 @@
+name: Diagnose self-hosted runners (once, read-only)
+
+# Read-only inventory of every GitHub Actions self-hosted runner installed on
+# the three Jurvio droplets: builder-01 (locally), web-01 and public-01 (over
+# the private VPC). For each box it prints the actions.runner* systemd units
+# and their status, every runner directory, the agent name / pool / labels
+# from each .runner file (only whitelisted, non-secret fields), running
+# Runner.Listener processes, and CPU / memory / root-disk headroom.
+#
+# Changes nothing: no systemctl start/stop/restart/enable, no config.sh or
+# svc.sh, no registration. .credentials and .credentials_rsaparams are never
+# read. Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-runners
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      WEB_HOST: 10.116.0.2
+      PUBLIC_HOST: 10.116.0.5
+      # public-01 has no DO_USER account; deploy-public-web-hosted.yml uses root.
+      PUBLIC_USER: root
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - name: Write the read-only inventory script
+        run: |
+          cat > "$RUNNER_TEMP/runner-inventory.sh" <<'SCRIPT'
+          set -u
+          SUDO=""
+          if [ "$(id -u)" != "0" ] && sudo -n true 2>/dev/null; then SUDO="sudo -n"; fi
+          echo "=============================================================="
+          echo " HOST $(hostname) as $(id -un) @ $(date -u +'%Y-%m-%dT%H:%M:%SZ') (read-only)"
+          echo "=============================================================="
+          echo "--- systemctl list-units --all 'actions.runner*' ---"
+          systemctl list-units --all --no-pager 'actions.runner*' 2>&1 | cat
+          echo "--- unit files ---"
+          systemctl list-unit-files --no-pager 'actions.runner*' 2>&1 | cat
+          for u in $(systemctl list-units --all --no-legend --plain 'actions.runner*' 2>/dev/null | awk '{print $1}') \
+                   $(systemctl list-unit-files --no-legend 'actions.runner*' 2>/dev/null | awk '{print $1}'); do
+            echo "$u"
+          done | sort -u > /tmp/runner-units.$$
+          while read -r u; do
+            [ -n "$u" ] || continue
+            echo "--- status $u ---"
+            systemctl status --no-pager --lines=5 "$u" 2>&1 | cat
+            echo "ActiveState=$(systemctl show -p ActiveState --value "$u") SubState=$(systemctl show -p SubState --value "$u") UnitFileState=$(systemctl show -p UnitFileState --value "$u") WorkingDirectory=$(systemctl show -p WorkingDirectory --value "$u")"
+          done < /tmp/runner-units.$$
+          rm -f /tmp/runner-units.$$
+          echo "--- runner directories ---"
+          dirs="$(ls -d /opt/actions-runner* /home/*/actions-runner* /root/actions-runner* /srv/*runner* 2>/dev/null)"
+          if [ -n "$SUDO" ]; then
+            dirs="$( { echo "$dirs"; $SUDO find /root /home /opt /srv -maxdepth 2 -name '.runner' -printf '%h\n' 2>/dev/null; } | grep -v '^$' | sort -u)"
+          fi
+          echo "${dirs:-(none found)}"
+          for d in $dirs; do
+            echo "--- $d/.runner (non-secret fields only) ---"
+            $SUDO cat "$d/.runner" 2>/dev/null | tr -d '\r' \
+              | grep -o -E '"(agentName|poolName|poolId|agentId|gitHubUrl|workFolder|ephemeral|disableUpdate)" *: *("[^"]*"|[^,}]*)' \
+              || echo "(no readable .runner)"
+            echo "service unit recorded in $d/.service: $($SUDO cat "$d/.service" 2>/dev/null || echo '(none)')"
+            last="$($SUDO ls -t "$d/_diag" 2>/dev/null | grep '^Runner_' | head -1)"
+            echo "newest listener diag log: ${last:-(none)}"
+            if [ -n "$last" ]; then
+              echo "last 3 listener status lines:"
+              $SUDO tail -n 400 "$d/_diag/$last" 2>/dev/null | grep -E 'Listening for Jobs|Connected to GitHub|Running job|completed with result|Exiting|error' | tail -n 3 | cut -c1-200
+            fi
+          done
+          echo "--- ps aux | grep -i Runner.Listener ---"
+          ps aux | grep -i '[R]unner.Listener' || echo "(no Runner.Listener processes)"
+          echo "--- headroom ---"
+          echo "nproc=$(nproc)"
+          free -h
+          df -h /
+          echo "uptime: $(uptime)"
+          echo "--- vmstat 5 3 ---"
+          vmstat 5 3 2>/dev/null || true
+          echo "--- top 8 by CPU ---"
+          ps -eo pid,user,pcpu,pmem,rss,comm --sort=-pcpu | head -9
+          echo "--- top 8 by memory ---"
+          ps -eo pid,user,pcpu,pmem,rss,comm --sort=-rss | head -9
+          echo "--- docker stats (if permitted) ---"
+          $SUDO docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}' 2>/dev/null || docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}' 2>/dev/null || echo "(docker stats not permitted)"
+          echo "--- what this user may run with sudo (privilege check, read-only) ---"
+          echo "user=$(id -un) groups=$(id -Gn)"
+          sudo -n -l 2>/dev/null | sed -e 's/[[:space:]]\+/ /g' | tail -n 20 || echo "(no passwordless sudo)"
+          echo "--- listening TCP ports ---"
+          ss -ltn 2>/dev/null | awk 'NR>1{print $4}' | sort -u | tr '\n' ' '; echo
+          SCRIPT
+      - name: builder-01 (local)
+        run: |
+          set -uo pipefail
+          bash "$RUNNER_TEMP/runner-inventory.sh" 2>&1 | tee "$RUNNER_TEMP/builder.txt"
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: web-01 and public-01 over private VPC
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          for target in "$INGESTION_USER@$WEB_HOST" "$PUBLIC_USER@$PUBLIC_HOST"; do
+            host="${target#*@}"
+            echo "##### $host #####"
+            vpc_ssh "$target" "bash -s" < "$RUNNER_TEMP/runner-inventory.sh" 2>&1 | tee "$RUNNER_TEMP/$host.txt" \
+              || echo "(ssh to $host failed)"
+          done
+      - name: Runners registered with GitHub (GET only, names/labels/status)
+        env:
+          RUNNER_REG_PAT: ${{ secrets.RUNNER_REG_PAT }}
+        run: |
+          set +e
+          {
+            echo "=== GET /repos/$GITHUB_REPOSITORY/actions/runners ==="
+            if [ -z "${RUNNER_REG_PAT:-}" ]; then
+              echo "(RUNNER_REG_PAT not set in this environment)"
+            else
+              code="$(curl -s -o /tmp/runners.$$.json -w '%{http_code}' \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $RUNNER_REG_PAT" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100")"
+              echo "HTTP $code"
+              echo "total_count: $(jq -r '.total_count' /tmp/runners.$$.json 2>/dev/null)"
+              jq -r '.runners[]? | " - id=\(.id) name=\(.name) os=\(.os) status=\(.status) busy=\(.busy) labels=\([.labels[].name]|join(","))"' \
+                /tmp/runners.$$.json 2>/dev/null || echo "(could not parse)"
+              rm -f /tmp/runners.$$.json
+            fi
+          } | tee "$RUNNER_TEMP/github.txt"
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Self-hosted runner inventory (read-only)'
+            for f in builder.txt 10.116.0.2.txt 10.116.0.5.txt github.txt; do
+              echo ''
+              echo "#### $f"
+              echo '```'
+              cat "$RUNNER_TEMP/$f" 2>/dev/null || echo '(missing)'
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,34 +1,109 @@
 name: Clear stale Phase 1 builder queue
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/clear-phase-one-queue.trigger"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=CLEAR_PHASE_ONE_QUEUE.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CLEAR_PHASE_ONE_QUEUE to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   actions: write
   contents: read
   issues: write
 
+concurrency:
+  group: jurvio-clear-phase-one-queue
+  cancel-in-progress: false
+
 jobs:
   clear:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Require confirm=CLEAR_PHASE_ONE_QUEUE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CLEAR_PHASE_ONE_QUEUE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CLEAR_PHASE_ONE_QUEUE."
+            exit 1
+          fi
+      - name: Install GitHub REST helpers (builder-01 has no gh CLI)
+        if: always()
+        run: |
+          # jurvio-builder-01 has curl and jq but no gh CLI. These helpers replace the
+          # gh calls this workflow used. Issue comments and report updates are best
+          # effort and never fail the job; reads used for decisions still fail loudly.
+          cat > "$RUNNER_TEMP/gh-rest.sh" <<'GHREST'
+          _gh_curl() {
+            local method="$1" path="$2"; shift 2
+            curl -fsSL --retry 3 --retry-delay 2 -X "$method" \
+              -H "Authorization: Bearer ${GH_TOKEN:?GH_TOKEN is not set}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$@" "https://api.github.com/${path#/}"
+          }
+          gh_api() { _gh_curl GET "$1"; }
+          gh_api_post() {
+            if [ $# -ge 2 ]; then printf '%s' "$2" | _gh_curl POST "$1" -H "Content-Type: application/json" --data-binary @-
+            else _gh_curl POST "$1"; fi
+          }
+          # Every page of a list endpoint, one JSON document per page (pipe into jq).
+          gh_api_paginate() {
+            local path="$1" page=1 sep body count
+            case "$path" in *\?*) sep='&' ;; *) sep='?' ;; esac
+            while [ "$page" -le 50 ]; do
+              body="$(gh_api "${path}${sep}page=${page}")" || return 1
+              printf '%s\n' "$body"
+              count="$(jq '(if type == "array" then . else ([.[] | arrays] | .[0] // []) end) | length' <<<"$body")"
+              [ "${count:-0}" -gt 0 ] || break
+              page=$((page + 1))
+            done
+          }
+          gh_patch_body() {
+            jq -n --arg body "$2" '{body: $body}' \
+              | _gh_curl PATCH "$1" -H "Content-Type: application/json" --data-binary @- \
+              || { echo "::warning::GitHub update of $1 failed (non-fatal)" >&2; return 0; }
+          }
+          gh_comment() {
+            jq -n --arg body "$2" '{body: $body}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues/$1/comments" -H "Content-Type: application/json" --data-binary @- >/dev/null \
+              || echo "::warning::comment on issue #$1 failed (non-fatal)" >&2
+          }
+          gh_issue_create() {
+            jq -n --arg title "$1" --arg body "$2" '{title: $title, body: $body}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues" -H "Content-Type: application/json" --data-binary @- >/dev/null \
+              || echo "::warning::issue creation failed (non-fatal)" >&2
+          }
+          # gh_dispatch WORKFLOW REF key=value ...
+          gh_dispatch() {
+            local wf="$1" ref="$2"; shift 2
+            local inputs='{}' kv
+            for kv in "$@"; do inputs="$(jq -c --arg k "${kv%%=*}" --arg v "${kv#*=}" '. + {($k): $v}' <<<"$inputs")"; done
+            jq -n --arg ref "$ref" --argjson inputs "$inputs" '{ref: $ref, inputs: $inputs}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/dispatches" -H "Content-Type: application/json" --data-binary @- >/dev/null
+          }
+          export -f _gh_curl gh_api gh_api_post gh_api_paginate gh_patch_body gh_comment gh_issue_create gh_dispatch
+          GHREST
       - name: Cancel stale phase-one runs only
         run: |
+          source "$RUNNER_TEMP/gh-rest.sh"
           set -euo pipefail
           current="$GITHUB_RUN_ID"
           names='^(CI|Deploy production|Nightly database backup \(out-of-band\)|Verify backup restore \(weekly rehearsal\)|Phase 1 launch gate audit)$'
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" --jq '.workflow_runs[] | [.id,.name,.status] | @tsv' |
+          gh_api_paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" | jq -r '.workflow_runs[] | [.id,.name,.status] | @tsv' |
           while IFS=$'\t' read -r id name status; do
             [ "$id" = "$current" ] && continue
             [[ "$status" == queued || "$status" == in_progress || "$status" == waiting || "$status" == pending ]] || continue
             [[ "$name" =~ $names ]] || continue
             echo "Cancelling stale run $id: $name ($status)"
-            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel" || true
+            gh_api_post "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel" || true
           done
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY" --body '1.3 recovery: stale Phase 1 builder runs cleared; preparing one clean backup run.'
+          gh_comment 426 '1.3 recovery: stale Phase 1 builder runs cleared; preparing one clean backup run.'

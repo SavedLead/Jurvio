@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import https from "node:https";
-import type { ClientRequest } from "node:http";
+import http, { type ClientRequest } from "node:http";
 import { z } from "zod";
 import { bulkCsvProcessCompleted, parseBulkCsv, type BulkCsvSource } from "./bulk";
 
@@ -86,6 +86,39 @@ export const courtListenerBulkOpinionSchema = z
 
 export type CourtListenerBulkOpinion = z.infer<typeof courtListenerBulkOpinionSchema>;
 
+// The chunked pipeline serializes an ALREADY-PARSED opinion (the output of
+// courtListenerBulkOpinionSchema) to JSONL, so by the time a chunk is read back the
+// CSV transforms have already run: `per_curiam`/`extracted_by_ocr` are booleans and
+// `author_id`/`ordering_key`/`page_count` are string|null -- NOT the raw all-string CSV
+// shape. Re-validating a chunk line with the CSV schema above therefore fails on every
+// record (expected string, received boolean/null). This schema validates that parsed
+// shape instead, so the importer can structurally verify a chunk (catching corruption)
+// without the type mismatch. Its inferred type is assignable to CourtListenerBulkOpinion.
+export const courtListenerBulkOpinionChunkSchema = z
+  .object({
+    id: z.string().regex(/^\d+$/),
+    cluster_id: z.string().regex(/^\d+$/),
+    type: z.string().optional().default(""),
+    author_id: z.string().nullable().optional(),
+    author_str: z.string().optional().default(""),
+    joined_by_str: z.string().optional().default(""),
+    per_curiam: z.boolean().optional(),
+    ordering_key: z.string().nullable().optional(),
+    download_url: z.string().optional().default(""),
+    local_path: z.string().optional().default(""),
+    sha1: z.string().optional().default(""),
+    page_count: z.string().nullable().optional(),
+    extracted_by_ocr: z.boolean().optional(),
+    html_with_citations: z.string().optional().default(""),
+    html_columbia: z.string().optional().default(""),
+    html_lawbox: z.string().optional().default(""),
+    html: z.string().optional().default(""),
+    xml_harvard: z.string().optional().default(""),
+    plain_text: z.string().optional().default(""),
+    date_modified: z.string().optional().default(""),
+  })
+  .passthrough();
+
 // search_citation -- the official reporter citations, one row per (cluster, cite).
 export const courtListenerBulkCitationSchema = z
   .object({
@@ -168,15 +201,49 @@ export function bulkOpinionSourceUri(snapshotDate: string, opinionId: string): s
   return `https://www.courtlistener.com/help/api/bulk-data/#opinion-${snapshotDate}-${opinionId}`;
 }
 
+// Inverse of bulkOpinionSourceUri, kept next to the producer so the two cannot drift.
+// Matches ONLY the official bulk-opinion provenance URI and captures the snapshot date
+// and opinion id so a verifier can cross-check them against the stored record. The
+// opinion-cluster URI (`#opinion-cluster-...`) does not match: a digit must follow
+// `#opinion-` here, while the cluster form has `cluster-` there.
+const BULK_OPINION_SOURCE_URI_RE =
+  /^https:\/\/www\.courtlistener\.com\/help\/api\/bulk-data\/#opinion-(\d{4}-\d{2}-\d{2})-(\d+)$/;
+
+export function parseBulkOpinionSourceUri(
+  uri: string | null | undefined,
+): { snapshotDate: string; opinionId: string } | null {
+  if (!uri) return null;
+  const match = BULK_OPINION_SOURCE_URI_RE.exec(uri);
+  if (!match) return null;
+  return { snapshotDate: match[1]!, opinionId: match[2]! };
+}
+
 export function bulkContentHash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
 const BULK_URL_REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
-// Stream a multi-GB `.bz2` bulk file straight from S3 over HTTPS, decompressing
-// through `bzip2 -dc` without ever landing the file on disk: the http response
-// is piped into bzip2's stdin and the decompressed CSV comes out of stdout.
+// How many consecutive reconnection attempts that make NO forward progress are
+// tolerated before giving up. The budget is reset to this value whenever a
+// connection delivers at least one new byte, so a long run that drops and resumes
+// many times (each time making progress) can continue indefinitely; only a stream
+// that is genuinely wedged -- this many reconnects in a row with zero bytes -- fails.
+const BULK_STREAM_MAX_STALLED_RECONNECTS = 20;
+
+// Stream a multi-GB `.bz2` bulk file straight from S3, decompressing through
+// `bzip2 -dc` without ever landing the file on disk: the HTTP response bytes are
+// fed into bzip2's stdin and the decompressed CSV comes out of stdout.
+//
+// RESILIENCE: a single HTTP connection held open for a multi-hour federal pass is
+// routinely aborted by S3 / the network ("aborted" / ECONNRESET) long before the
+// multi-GB body finishes. Rather than lose the whole pass, we track how many
+// compressed bytes have been handed to bzip2 and, on any mid-stream drop, reconnect
+// with a `Range: bytes=<received>-` request and keep feeding the SAME decompressor.
+// bzip2 consumes one continuous compressed byte stream and is indifferent to HTTP
+// connection boundaries, so its decode state is preserved across reconnects and the
+// output is identical to an uninterrupted download. (http:// is honored too, for
+// tests; production uses https://.)
 export function openBulkCsvFromUrl(url: string): BulkCsvSource {
   const decompressor: ChildProcessWithoutNullStreams = spawn("bzip2", ["-dc"], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -184,38 +251,152 @@ export function openBulkCsvFromUrl(url: string): BulkCsvSource {
   let standardError = "";
   let transportError: string | null = null;
   let closedByConsumer = false;
+  let stdinSettled = false;
   let activeRequest: ClientRequest | undefined;
+  let received = 0; // compressed bytes already written to bzip2 stdin
+  let total: number | null = null; // full compressed length, once a response reveals it
+  let reconnectsLeft = BULK_STREAM_MAX_STALLED_RECONNECTS;
+
   decompressor.stderr.setEncoding("utf8");
   decompressor.stderr.on("data", (chunk: string) => {
     standardError += chunk;
   });
 
+  // Error terminal: record the first error and tear down the decompressor so
+  // `completion` rejects with it.
   const fail = (message: string) => {
     if (transportError === null) transportError = message;
-    decompressor.stdin.destroy();
+    if (!stdinSettled) {
+      stdinSettled = true;
+      decompressor.stdin.destroy();
+    }
+  };
+  // Success terminal: the full body has been delivered; flush and close stdin so
+  // bzip2 finishes cleanly.
+  const finish = () => {
+    if (!stdinSettled) {
+      stdinSettled = true;
+      decompressor.stdin.end();
+    }
   };
 
-  const request = (target: string, redirectsLeft: number): void => {
-    activeRequest = https.get(target, (response) => {
+  // bzip2's stdin is a Socket, and a write that races the decoder going away -- the
+  // teardown after close()/limit, a decode error, or the OS killing bzip2 under
+  // memory pressure -- completes asynchronously with EPIPE. Node treats an
+  // unhandled stream 'error' as fatal and crashes the whole process (this is what
+  // sank the first throughput run), so we MUST listen. During teardown the write
+  // races are expected and harmless (ignore); otherwise the decoder is gone and
+  // this feed cannot continue, so record it as a transport failure rather than
+  // crash. We never resume on a stdin error: a dead bzip2 can't be revived by
+  // reconnecting the HTTP source.
+  decompressor.stdin.on("error", (error: NodeJS.ErrnoException) => {
+    if (closedByConsumer || stdinSettled) return;
+    fail(`bzip2 stdin ${error.code ?? "stream"} error for ${url}: ${error.message}`);
+  });
+
+  const scheduleResume = (reason: string): void => {
+    if (closedByConsumer || stdinSettled) return;
+    if (total === null || reconnectsLeft <= 0) {
+      fail(
+        `${reason}; cannot resume (received=${received}, total=${total ?? "unknown"}, ` +
+          `reconnectsLeft=${reconnectsLeft})`,
+      );
+      return;
+    }
+    reconnectsLeft -= 1;
+    const backoffMs = Math.min(8000, 500 * (BULK_STREAM_MAX_STALLED_RECONNECTS - reconnectsLeft));
+    setTimeout(() => {
+      if (!closedByConsumer && !stdinSettled) connect(url, 5);
+    }, backoffMs);
+  };
+
+  const connect = (target: string, redirectsLeft: number): void => {
+    if (closedByConsumer || stdinSettled) return;
+    let connectionSettled = false; // at most one terminal action per connection
+    const client = target.startsWith("http:") ? http : https;
+    const headers: Record<string, string> = {};
+    if (received > 0) headers.Range = `bytes=${received}-`;
+
+    activeRequest = client.get(target, { headers }, (response) => {
       const status = response.statusCode ?? 0;
       const location = response.headers.location;
       if (BULK_URL_REDIRECT_CODES.has(status) && location && redirectsLeft > 0) {
+        connectionSettled = true; // handed off to the redirect target
         response.resume();
-        request(new URL(location, target).toString(), redirectsLeft - 1);
+        connect(new URL(location, target).toString(), redirectsLeft - 1);
         return;
       }
-      if (status !== 200) {
+      // We asked to resume from an offset but the server ignored Range and is
+      // replaying from byte 0: we cannot splice that into the in-flight decoder.
+      if (received > 0 && status === 200) {
+        connectionSettled = true;
+        response.resume();
+        fail(`server ignored Range (HTTP 200) resuming ${target} at byte ${received}`);
+        return;
+      }
+      if (status !== 200 && status !== 206) {
+        connectionSettled = true;
         response.resume();
         fail(`HTTP ${status} ${response.statusMessage ?? ""} for ${target}`.trim());
         return;
       }
-      response.on("error", (error) => fail(`HTTP stream error for ${target}: ${error.message}`));
-      response.pipe(decompressor.stdin);
+      if (total === null) {
+        if (status === 200) {
+          const length = Number(response.headers["content-length"]);
+          if (Number.isFinite(length) && length > 0) total = length;
+        } else {
+          // 206: Content-Range is "bytes <start>-<end>/<total>".
+          const contentRange = response.headers["content-range"];
+          const match = contentRange ? /\/(\d+)\s*$/.exec(contentRange) : null;
+          if (match) total = Number(match[1]);
+        }
+      }
+
+      let progressed = false;
+      response.on("data", (chunk: Buffer) => {
+        if (closedByConsumer || stdinSettled) return;
+        received += chunk.length;
+        if (!progressed) {
+          progressed = true;
+          reconnectsLeft = BULK_STREAM_MAX_STALLED_RECONNECTS; // forward progress resets the budget
+        }
+        if (!decompressor.stdin.write(chunk)) {
+          response.pause();
+          decompressor.stdin.once("drain", () => {
+            if (!closedByConsumer && !stdinSettled) response.resume();
+          });
+        }
+      });
+      response.on("end", () => {
+        if (connectionSettled) return;
+        connectionSettled = true;
+        if (closedByConsumer || stdinSettled) return;
+        if (total !== null && received < total) {
+          scheduleResume(`stream ended early at ${received}/${total} for ${target}`);
+        } else {
+          finish();
+        }
+      });
+      const onBroken = (reason: string) => {
+        if (connectionSettled) return;
+        connectionSettled = true;
+        scheduleResume(reason);
+      };
+      response.on("aborted", () =>
+        onBroken(`HTTP stream aborted for ${target} at ${received}/${total ?? "unknown"}`),
+      );
+      response.on("error", (error) =>
+        onBroken(`HTTP stream error for ${target}: ${error.message}`),
+      );
     });
-    activeRequest.on("error", (error) => fail(`HTTP request error for ${target}: ${error.message}`));
+    activeRequest.on("error", (error) => {
+      if (connectionSettled) return;
+      connectionSettled = true;
+      scheduleResume(`HTTP request error for ${target}: ${error.message}`);
+    });
   };
 
-  request(url, 5);
+  connect(url, 5);
 
   return {
     stream: decompressor.stdout,

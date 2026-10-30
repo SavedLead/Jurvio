@@ -38,7 +38,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           inputs.confirm == 'DEPLOY')
       }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 60
     environment: production
     env:
@@ -53,15 +53,54 @@ jobs:
         with:
           ref: ${{ env.TARGET_SHA }}
 
+      - name: Install GitHub API helper (builder-01 has no gh CLI)
+        run: |
+          set -euo pipefail
+          # jurvio-builder-01 has curl and jq but not the gh CLI; since #543 moved
+          # this job onto it, every `gh` call failed with exit 127.
+          cat > "$RUNNER_TEMP/gh-api.sh" <<'EOF'
+          gh_api() {
+            curl -fsSL --retry 3 --retry-delay 2 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/$1"
+          }
+          # Progress comment on issue #426. Best effort: a failed comment never fails the deploy.
+          gh_comment() {
+            jq -n --arg body "$1" '{body: $body}' | curl -fsS --retry 3 --retry-delay 2 -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/426/comments" -d @- >/dev/null \
+              || echo "::warning::could not comment on issue #426"
+          }
+          EOF
+
       - name: Require current main and successful CI
         run: |
           set -euo pipefail
-          current="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-          test "$TARGET_SHA" = "$current" || {
-            echo "::error::This run is not the current main commit ($current)."
-            exit 1
-          }
-          conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$TARGET_SHA&status=completed&per_page=20"             --jq '[.workflow_runs[] | select(.conclusion=="success")][0].conclusion // empty')"
+          source "$RUNNER_TEMP/gh-api.sh"
+          current="$(gh_api "repos/$GITHUB_REPOSITORY/commits/main" | jq -r .sha)"
+          if [ "$TARGET_SHA" != "$current" ]; then
+            # CI skips docs, scripts/diag and workflow-only pushes to main (see
+            # ci.yml paths-ignore), so a newer commit like that never gets its own
+            # CI run. Without this check, one such merge would block every public
+            # deploy until the next app change. TARGET_SHA may still deploy, but
+            # only if main is strictly ahead of it and every file changed since
+            # is in that ignore list. Anything else is refused, as before.
+            compare="$(gh_api "repos/$GITHUB_REPOSITORY/compare/$TARGET_SHA...$current")"
+            status="$(jq -r .status <<<"$compare")"
+            files="$(jq -r '.files | length' <<<"$compare")"
+            app_files="$(jq -r '[.files[].filename
+              | select((test("\\.md$") or startswith("scripts/diag/") or startswith(".github/workflows/")) | not)] | length' <<<"$compare")"
+            if [ "$status" != "ahead" ] || [ "$files" -ge 300 ] || [ "$app_files" != "0" ]; then
+              echo "::error::This run is not the current main commit ($current), and main has app changes since $TARGET_SHA (status=$status, files=$files, app_files=$app_files)."
+              exit 1
+            fi
+            echo "Main ($current) is ahead of $TARGET_SHA only by CI-ignored files ($files); releasing $TARGET_SHA."
+          fi
+          conclusion="$(gh_api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$TARGET_SHA&status=completed&per_page=20" \
+            | jq -r '[.workflow_runs[] | select(.conclusion=="success")][0].conclusion // empty')"
           test "$conclusion" = success || {
             echo "::error::Current main does not have a successful CI run."
             exit 1
@@ -89,7 +128,8 @@ jobs:
           } >> "$GITHUB_ENV"
           rule="$(jq -n --arg src "$runner_cidr" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src]}}]}')"
           curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$rule" >/dev/null
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body '2.6 deploy fallback: temporary /32 SSH route opened to jurvio-public-01.'
+          source "$RUNNER_TEMP/gh-api.sh"
+          gh_comment '2.6 deploy fallback: temporary /32 SSH route opened to jurvio-public-01.'
 
       - name: Configure ephemeral SSH
         run: |
@@ -185,8 +225,8 @@ jobs:
           docker image inspect "$rollback_image" >/dev/null
           printf 'ROLLBACK_READY=%s\n' "$rollback_image"
           REMOTE
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY" \
-            --body '1.5 rollback readiness: previous public image recorded and retained locally; new container health and noindex verified.'
+          source "$RUNNER_TEMP/gh-api.sh"
+          gh_comment '1.5 rollback readiness: previous public image recorded and retained locally; new container health and noindex verified.'
 
       - name: Verify public and private boundaries externally
         run: |
@@ -209,7 +249,8 @@ jobs:
           printf '%s' "$login_body" | grep -Fiq 'PRIVATE COMMAND CENTER'
           public_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://jurvio.com/login)"
           test "$public_status" = 404
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body "2.6 deploy fallback: current main deployed to jurvio.com; indexing $indexing_status and public/private route boundaries verified."
+          source "$RUNNER_TEMP/gh-api.sh"
+          gh_comment "2.6 deploy fallback: current main deployed to jurvio.com; indexing $indexing_status and public/private route boundaries verified."
 
       - name: Verify launch routes and performance
         run: |
@@ -266,8 +307,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           summary="$(while IFS='|' read -r name code ttfb total; do printf '%s: HTTP %s, %ss total; ' "$name" "$code" "$total"; done < "$results")"
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY" \
-            --body "1.6/2.6 live gate passed. $summary Indexing is $INDEXING_STATUS."
+          source "$RUNNER_TEMP/gh-api.sh"
+          gh_comment "1.6/2.6 live gate passed. $summary Indexing is $INDEXING_STATUS."
 
       - name: Remove temporary SSH access
         if: always()
@@ -279,4 +320,5 @@ jobs:
             curl -fsS -X DELETE               -H "Authorization: Bearer $DO_TOKEN"               -H "Content-Type: application/json"               "$api/firewalls/$FIREWALL_ID/rules" -d "$rule"
           fi
           rm -f ~/.ssh/id_ed25519 ~/.ssh/config
-          gh issue comment 426 --repo "$GITHUB_REPOSITORY"             --body "2.6 deploy fallback finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          source "$RUNNER_TEMP/gh-api.sh"
+          gh_comment "2.6 deploy fallback finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

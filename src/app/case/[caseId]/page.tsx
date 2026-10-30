@@ -3,20 +3,28 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { db } from "@/db/client";
-import { getPublicCase } from "@/modules/cases/application/get-public-case";
+import { loadRequestPublicCase } from "@/app/case/load-public-case";
 import {
   listPublicDocketEntries,
   listPublicDocuments,
   listPublicParties,
 } from "@/modules/cases/application/list-public-case-sections";
 import { formatPublicCaseDate, formatVerifiedOutcome, visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
+import {
+  OPINION_TEXT_PENDING_BODY,
+  OPINION_TEXT_PENDING_HEADING,
+  opinionTextIsPending,
+} from "@/modules/cases/domain/opinion-availability";
+import { robotsFor } from "@/lib/seo/indexing";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseNav } from "@/modules/cases/ui/case-nav";
 import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import "./case-intelligence.css";
-import { publicCitationTargets, relatedCitationCases } from "@/modules/citations/application/public-citations";
+import { loadCachedCaseCitations } from "@/modules/citations/application/cached-public-citations";
+import { publicCitationTargets } from "@/modules/citations/application/public-citations";
+import { citationCountLine } from "@/modules/citations/domain/citation-summary";
 import { CitedCaseText } from "@/modules/citations/ui/cited-case-text";
 import { CitationCaseList } from "@/modules/citations/ui/citation-case-list";
 
@@ -28,8 +36,7 @@ interface CasePageProps {
 
 async function loadCase(params: CasePageProps["params"]) {
   const { caseId } = await params;
-  if (!/^jv-[a-z0-9]{8,10}$/.test(caseId)) return null;
-  const legalCase = await getPublicCase(db(), caseId);
+  const legalCase = await loadRequestPublicCase(caseId);
   return legalCase ? { caseId, legalCase } : null;
 }
 
@@ -54,6 +61,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
     openGraph: { title, description, type: "article" },
+    robots: robotsFor(loaded.legalCase.hasReadableOpinion),
   };
 }
 
@@ -78,18 +86,19 @@ export default async function CasePage({ params }: CasePageProps) {
   if (!loaded) notFound();
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents, citedCases, citingCases] = await Promise.all([
+  const [docketEntries, parties, documents, citations] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
-    relatedCitationCases(sql, caseId, "cited"),
-    relatedCitationCases(sql, caseId, "citing"),
+    loadCachedCaseCitations(caseId),
   ]);
+  const { cited: citedCases, citing: citingCases, counts: citationCounts } = citations;
   const verified = legalCase.verification === "verified";
   const statusDetails = verified ? visibleCaseStatusDetails(legalCase) : [];
   const outcome = verified ? formatVerifiedOutcome(legalCase.dispositionScope) : null;
   const supportingStatusDetails = outcome ? statusDetails.filter(([label]) => label !== "Disposition") : statusDetails;
   const readableDocuments = documents.filter((document) => document.hasReadableContent);
+  const opinionTextPending = opinionTextIsPending(legalCase.hasReadableOpinion);
   const sourceDocument = documents.find((document) => document.sourceDownloadUrl);
   const primaryOpinion = readableDocuments.find((document) => document.opinionType || document.documentType.includes("opinion")) ?? readableDocuments[0];
   const opinionPath = primaryOpinion ? `/case/${caseId}/documents/${primaryOpinion.publicId}` : null;
@@ -224,7 +233,9 @@ export default async function CasePage({ params }: CasePageProps) {
               <p className="sectionKicker">Case status</p>
               <dl className="railFacts">
                 <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
-                {readableDocuments.length > 0 ? <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div> : null}
+                {opinionTextPending
+                  ? <div><dt>Opinion text</dt><dd>Pending</dd></div>
+                  : <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div>}
                 {legalCase.decidedOn ? <div><dt>Decision date</dt><dd>{legalCase.decidedOn}</dd></div> : null}
                 {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
                 {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
@@ -243,6 +254,12 @@ export default async function CasePage({ params }: CasePageProps) {
         </aside>
 
         <div className="caseWorkspaceMain">
+          {opinionTextPending ? (
+            <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
+              <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
+              <p>{OPINION_TEXT_PENDING_BODY}</p>
+            </section>
+          ) : null}
           <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
             <p className="sectionKicker">Case intelligence</p>
             <h2 id="case-answers-title">{recentlyFiled ? "This case was recently filed" : "What the verified record tells us"}</h2>
@@ -273,7 +290,11 @@ export default async function CasePage({ params }: CasePageProps) {
             ) : (
               <p className="verifiedFactSummary">
                 The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as {legalCase.courtName} docket {legalCase.docketNumber}.
-                {readableDocuments.length > 0 ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.` : ""}
+                {opinionTextPending
+                  ? ` ${OPINION_TEXT_PENDING_BODY}`
+                  : readableDocuments.length > 0
+                    ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.`
+                    : ""}
               </p>
             )}
             {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{linkedText(legalCase.backgroundSummary)}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
@@ -331,8 +352,18 @@ export default async function CasePage({ params }: CasePageProps) {
             </section>
           ) : null}
 
-          <CitationCaseList title="Cases cited" cases={citedCases} />
-          <CitationCaseList title="Cited by" cases={citingCases} />
+          <CitationCaseList
+            title="Cases cited"
+            cases={citedCases}
+            total={citationCounts.cited}
+            summary={citationCounts.cited ? citationCountLine(citationCounts.cited, citationCounts.citedOnJurvio) : undefined}
+          />
+          <CitationCaseList
+            title="Cited by"
+            cases={citingCases}
+            total={citationCounts.citedBy}
+            summary={citationCounts.citedBy ? `${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio cite this case` : undefined}
+          />
 
           {timelineEvents.length > 0 ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">

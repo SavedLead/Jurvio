@@ -19,7 +19,15 @@ name: Restore Postgres VPC bind (once)
 # reconnect automatically. Runs on the self-hosted builder over the VPC.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=RESTORE_POSTGRES_VPC_BIND.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RESTORE_POSTGRES_VPC_BIND to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +46,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=RESTORE_POSTGRES_VPC_BIND
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "RESTORE_POSTGRES_VPC_BIND" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RESTORE_POSTGRES_VPC_BIND."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

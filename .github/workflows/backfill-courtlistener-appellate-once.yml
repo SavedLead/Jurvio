@@ -17,27 +17,34 @@ name: Backfill CourtListener appellate (once)
 # and the other *-once controls use.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=BACKFILL_COURTLISTENER_APPELLATE.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type BACKFILL_COURTLISTENER_APPELLATE to run this workflow against production"
+        required: true
+        type: string
       iterations:
-        description: "Max --court=all passes (completed circuit-years self-skip)"
+        description: Max --court=all passes (completed circuit-years self-skip)
         required: false
-        default: "5"
+        default: '5'
         type: string
       batch_size:
-        description: "Clusters processed per circuit per pass (1-100)"
+        description: Clusters processed per circuit per pass (1-100)
         required: false
-        default: "30"
+        default: '30'
         type: string
       delay_ms:
-        description: "Delay between clusters (ms) to respect CL rate limits"
+        description: Delay between clusters (ms) to respect CL rate limits
         required: false
-        default: "800"
+        default: '800'
         type: string
       min_year:
-        description: "Earliest filing year to backfill"
+        description: Earliest filing year to backfill
         required: false
-        default: "1900"
+        default: '1900'
         type: string
 
 permissions:
@@ -61,6 +68,14 @@ jobs:
       DELAY_MS: ${{ inputs.delay_ms }}
       MIN_YEAR: ${{ inputs.min_year }}
     steps:
+      - name: Require confirm=BACKFILL_COURTLISTENER_APPELLATE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKFILL_COURTLISTENER_APPELLATE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_COURTLISTENER_APPELLATE."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

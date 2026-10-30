@@ -23,6 +23,7 @@ import {
   decodeStreamCursor,
   encodeStreamCursor,
   evaluateFederalPublicationCandidate,
+  FEDERAL_PUBLICATION_RULE_VERSION,
   isNonBankruptcyFederalJurisdiction,
   isRestrictedDocketText,
   LEGACY_CURSOR_BATCH_SIZE,
@@ -32,9 +33,18 @@ import {
 } from "@/modules/ingestion/domain/federal-stream";
 import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import {
+  CourtListenerRateLimited,
   fetchDocketPage,
   fetchOpinionClusterIds,
+  setCourtListenerRequestPolicy,
 } from "@/modules/ingestion/providers/courtlistener/client";
+import {
+  ACTIVE_CASE_CHECKPOINT_STREAM,
+  activeCaseBudget,
+  activeCaseStopReason,
+  type ActiveCaseStopReason,
+} from "@/modules/ingestion/domain/active-case-budget";
+import { publishCaseOpinionDocuments } from "@/modules/ingestion/application/publish-federal-opinion-documents";
 
 function option(name: string, fallback: string): string {
   const equals = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -78,20 +88,74 @@ const PUBLICATION_CHUNK_SIZE = 250;
 const loop = option("loop", "new-case-discovery") as FederalLoop;
 const lookbackDays = Number(option("lookback-days", "2"));
 
-const maxConcurrency = Math.max(
-  1,
-  Math.min(
-    FEDERAL_HARD_MAX_CONCURRENCY,
-    intSetting("max-concurrency", "FEDERAL_MAX_CONCURRENCY", FEDERAL_DEFAULT_MAX_CONCURRENCY),
-  ),
+// Pause control for the resident deterministic publication-quarantine lane, mirroring
+// run-case-citations' JURVIO_PAUSE_CITATION_PUBLISH. The scheduler still spawns the lane,
+// but the job no-ops when paused -- so a deploy can land a corrected gate WITHOUT the
+// resident lane mass-publishing before a bounded manual pilot has validated it. An explicit
+// --publish=1 overrides the pause for a single manual invocation (the capped pilot);
+// --publish=0 forces skip. Only the publication-quarantine loop consults this.
+const federalPublishArg = option("publish", "");
+if (federalPublishArg !== "" && federalPublishArg !== "0" && federalPublishArg !== "1") {
+  throw new Error("--publish must be 0 or 1");
+}
+const federalPublicationPaused =
+  federalPublishArg === "1"
+    ? false
+    : federalPublishArg === "0"
+      ? true
+      : process.env.JURVIO_PAUSE_FEDERAL_PUBLICATION === "1";
+
+// Pilot-only opinion-document ceiling for the publication-quarantine loop. Default is
+// unbounded (production drains every eligible document). When set to a finite N -- the
+// bounded opinion-document pilot -- the loop publishes AT MOST N opinion documents this run
+// and then stops, leaving the rest draft. The cap is cumulative and exact: a finite cap also
+// forces single-threaded processing (concurrency clamp below) so the running count can never
+// be raced past N. Only the publication-quarantine loop consults this.
+const publicationMaxDocumentsRaw = option("max-documents", process.env.FEDERAL_PUBLICATION_MAX_DOCUMENTS ?? "");
+if (publicationMaxDocumentsRaw !== "" && !/^\d+$/.test(publicationMaxDocumentsRaw)) {
+  throw new Error("--max-documents must be a non-negative integer");
+}
+const publicationMaxDocuments =
+  publicationMaxDocumentsRaw === "" ? Number.POSITIVE_INFINITY : Number(publicationMaxDocumentsRaw);
+const publicationDocumentCapActive = Number.isFinite(publicationMaxDocuments);
+// Pilot-only ordering bias: prefer draft cases that actually carry a draft opinion document,
+// so a bounded pilot exercises the document publish path instead of publishing document-less
+// cases first. Default false (production keeps the deterministic created_at ordering).
+const preferDocumentCandidates =
+  process.argv.includes("--prefer-documents") || process.env.FEDERAL_PUBLICATION_PREFER_DOCUMENTS === "1";
+
+// Owner switch for issue #179: publish a verified case before its opinion text
+// exists. Default off. A sole `missing_readable_content` hold is re-opened only
+// while this is on; every other gate (court, provenance, sealed, collision) still
+// holds. Metadata-only rows are displayable and not indexable.
+const metadataWithoutTextRaw = option(
+  "publish-metadata-without-text",
+  process.env.JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT ?? "0",
 );
-const startConcurrency = Math.max(
-  1,
-  Math.min(
-    maxConcurrency,
-    intSetting("start-concurrency", "FEDERAL_START_CONCURRENCY", FEDERAL_DEFAULT_START_CONCURRENCY),
-  ),
-);
+if (metadataWithoutTextRaw !== "0" && metadataWithoutTextRaw !== "1") {
+  throw new Error("--publish-metadata-without-text must be 0 or 1");
+}
+const allowMetadataWithoutOpinionText = metadataWithoutTextRaw === "1";
+
+// A finite document cap forces single-threaded publication so the cumulative count is exact.
+const maxConcurrency = publicationDocumentCapActive
+  ? 1
+  : Math.max(
+      1,
+      Math.min(
+        FEDERAL_HARD_MAX_CONCURRENCY,
+        intSetting("max-concurrency", "FEDERAL_MAX_CONCURRENCY", FEDERAL_DEFAULT_MAX_CONCURRENCY),
+      ),
+    );
+const startConcurrency = publicationDocumentCapActive
+  ? 1
+  : Math.max(
+      1,
+      Math.min(
+        maxConcurrency,
+        intSetting("start-concurrency", "FEDERAL_START_CONCURRENCY", FEDERAL_DEFAULT_START_CONCURRENCY),
+      ),
+    );
 const runawayItemLimit = Math.max(
   1,
   Math.min(
@@ -99,6 +163,23 @@ const runawayItemLimit = Math.max(
     intSetting("max-items", "FEDERAL_RUNAWAY_ITEM_LIMIT", FEDERAL_DEFAULT_RUNAWAY_ITEM_LIMIT),
   ),
 );
+// Active cases re-fetch stored dockets. A few hundred per cycle is enough to
+// rotate the open set; 15,000 re-downloaded the oldest slice for days.
+const ACTIVE_CASE_CAP = 300;
+const activeCaseLimit = Math.min(runawayItemLimit, ACTIVE_CASE_CAP);
+
+// The scheduler kills the process at JURVIO_JOB_BUDGET_MS. Stop pulling new
+// work 30 seconds earlier so the checkpoint is written and the process exits.
+const configuredBudgetMs = Number(process.env.JURVIO_JOB_BUDGET_MS ?? "");
+const jobDeadlineMs = Date.now() + (
+  Number.isFinite(configuredBudgetMs) && configuredBudgetMs > 0
+    ? Math.max(15_000, configuredBudgetMs - 30_000)
+    : 18 * 60_000
+);
+function withinBudget(): boolean {
+  return Date.now() < jobDeadlineMs;
+}
+const jobStartedAtMs = Date.now();
 
 const adaptiveConfig: AdaptiveConcurrencyConfig = resolveAdaptiveConfig({
   start: startConcurrency,
@@ -179,7 +260,7 @@ async function processArrayWithPool<T>(
   const result = await runAdaptiveWorkerPool<T>({
     config: adaptiveConfig,
     initialState: state,
-    pull: async () => (cursor < items.length ? items[cursor++] : undefined),
+    pull: async () => (withinBudget() && cursor < items.length ? items[cursor++] : undefined),
     handle,
   });
   return result.finalState;
@@ -292,7 +373,7 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
     // idempotent, so at-least-once re-processing is safe). We keep going until the source
     // window is exhausted OR the runaway safety bound is reached.
     let courtlistenerUnauthorized = false;
-    while (discovered < runawayItemLimit) {
+    while (discovered < runawayItemLimit && withinBudget()) {
       let page: Awaited<ReturnType<typeof fetchDocketPage>>;
       try {
         page = await fetchDocketPage(kind === "historical-backfill"
@@ -412,73 +493,204 @@ async function runDocketStream(kind: "new-case-discovery" | "historical-backfill
 }
 
 async function runActiveUpdates() {
-  const rows = await sql<{ docket_id: string }[]>`
-    SELECT identifier_value AS docket_id
-    FROM case_identifier
-    JOIN legal_case ON legal_case.id = case_identifier.case_id
-    JOIN court ON court.id = legal_case.court_id
-    WHERE case_identifier.identifier_type = 'courtlistener_docket_id'
-      AND case_identifier.provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
-      AND legal_case.publication <> 'restricted'
-      AND (
-        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
-        OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
-        OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
-      )
-    ORDER BY legal_case.source_updated_at ASC NULLS FIRST
-    LIMIT ${runawayItemLimit}
-  `;
+  // Budget-aware: the scheduler SIGTERMs this job at budgetMs (20 min). Stop
+  // taking new dockets well before that, cap every CourtListener request at a
+  // hard deadline just inside the budget, and stop the whole run on a 429
+  // instead of sleeping out the budget. Each docket stamps last_fetched_at and
+  // the stream checkpoint as it finishes, so a stopped run loses nothing.
+  const budget = activeCaseBudget({
+    startedAtMs: jobStartedAtMs,
+    budgetMs: Number.isFinite(configuredBudgetMs) && configuredBudgetMs > 0 ? configuredBudgetMs : null,
+  });
+  setCourtListenerRequestPolicy({ deadlineMs: budget.requestDeadlineMs, stopOnRateLimit: true });
+
+  let stopReason: ActiveCaseStopReason | null = null;
+  let retryAfterMs: number | null = null;
+  const selectionTimeoutMs = Math.max(5_000, Math.min(5 * 60_000, budget.stopPullingAtMs - Date.now()));
+  let rows: { docket_id: string; case_id: string }[];
+  try {
+    rows = await sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${Math.trunc(selectionTimeoutMs)}`);
+      return tx<{ docket_id: string; case_id: string }[]>`
+        SELECT identifier.identifier_value AS docket_id, legal_case.id AS case_id
+        FROM legal_case
+        JOIN case_identifier identifier ON identifier.case_id = legal_case.id
+        JOIN court ON court.id = legal_case.court_id
+        WHERE identifier.identifier_type = 'courtlistener_docket_id'
+          AND identifier.provider_id = (SELECT id FROM provider WHERE code = 'courtlistener')
+          AND legal_case.terminated_on IS NULL
+          AND legal_case.activity_state = 'active'
+          AND legal_case.publication <> 'restricted'
+          AND (
+            lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'federal')
+            OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
+            OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
+          )
+        ORDER BY legal_case.last_fetched_at NULLS FIRST, legal_case.id
+        LIMIT ${activeCaseLimit}
+      `;
+    });
+  } catch (error) {
+    // 57014 = query_canceled (statement_timeout). The selection could not finish
+    // inside the budget, usually because legal_case_open_refetch_idx is missing
+    // or invalid. End cleanly; the diagnostic workflow reports the index state.
+    if ((error as { code?: string } | null)?.code === "57014") {
+      return { loop, stoppedReason: "selection_timeout", discovered: 0, updated: 0, failed: 0, costs: 0 };
+    }
+    throw error;
+  }
+
   const runId = await startIngestionRun(sql, {
     providerCode: "courtlistener",
     runType: "active-case-updates",
-    selection: concurrencySelection,
+    selection: { ...concurrencySelection, budgetMs: budget.budgetMs, stopPullingAtMs: budget.stopPullingAtMs },
     selectedCount: rows.length,
   });
+  let attempted = 0;
   let updated = 0;
   let failed = 0;
   let docketEntries = 0;
   let documents = 0;
+  let lastDocketId: string | null = null;
 
-  async function handle(row: { docket_id: string }): Promise<OutcomeSignal> {
+  async function checkpoint(): Promise<void> {
+    await writeActiveCaseCheckpoint({
+      runId,
+      lastDocketId,
+      attempted,
+      updated,
+      failed,
+      selected: rows.length,
+      stoppedReason: stopReason,
+      retryAfterMs,
+    }).catch((error: unknown) => {
+      process.stderr.write(`active-case checkpoint write failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+  }
+
+  // Mark a docket as tried so a permanently failing one (deleted upstream, bad
+  // data) rotates to the back instead of heading the queue every run.
+  async function stampAttempted(caseId: string): Promise<void> {
+    await sql`UPDATE legal_case SET last_fetched_at = now() WHERE id = ${caseId}`.catch(() => undefined);
+  }
+
+  async function handle(row: { docket_id: string; case_id: string }): Promise<OutcomeSignal> {
+    attempted += 1;
     try {
       await startIngestionRunItem(sql, runId, row.docket_id);
       const result = await ingestCourtListenerDocket(sql, artifactStore, Number(row.docket_id));
       updated += 1;
       docketEntries += result.docketEntries.accepted;
       documents += result.docketEntries.documents;
+      lastDocketId = row.docket_id;
       await finishIngestionRunItem(sql, {
         runId,
         sourceRecordId: row.docket_id,
         casePublicId: result.caseId,
         documentCount: result.docketEntries.documents,
       });
+      await checkpoint();
       return { ok: true };
     } catch (error) {
-      failed += 1;
       const message = error instanceof Error ? error.message : String(error);
+      const reason = activeCaseStopReason(error);
+      if (reason) {
+        // Not this docket's fault: leave last_fetched_at alone so it heads the
+        // next run, and stop handing out work.
+        stopReason ??= reason;
+        if (error instanceof CourtListenerRateLimited) retryAfterMs = error.retryAfterMs;
+      } else {
+        failed += 1;
+        lastDocketId = row.docket_id;
+        await stampAttempted(row.case_id);
+      }
       await finishIngestionRunItem(sql, { runId, sourceRecordId: row.docket_id, error: message })
         .catch(() => undefined);
+      await checkpoint();
       return { ok: false, ...classifyFailureSignal(error) };
     }
   }
 
-  const finalState = await processArrayWithPool(
-    rows,
+  let cursor = 0;
+  const pool = await runAdaptiveWorkerPool<{ docket_id: string; case_id: string }>({
+    config: adaptiveConfig,
+    initialState: initialConcurrencyState(adaptiveConfig),
+    pull: async () => {
+      if (stopReason) return undefined;
+      if (Date.now() >= budget.stopPullingAtMs) {
+        stopReason = "budget";
+        return undefined;
+      }
+      return cursor < rows.length ? rows[cursor++] : undefined;
+    },
     handle,
-    initialConcurrencyState(adaptiveConfig),
-  );
+  });
+  await checkpoint();
   await finishIngestionRun(sql, runId);
   return {
     loop,
     runId,
     discovered: rows.length,
+    attempted,
     updated,
     docketEntries,
     documents,
     failed,
-    finalConcurrency: finalState.concurrency,
+    skipped: rows.length - attempted,
+    stoppedReason: stopReason ?? (attempted === rows.length ? "drained" : null),
+    retryAfterMs,
+    elapsedMs: Date.now() - jobStartedAtMs,
+    budgetMs: budget.budgetMs,
+    finalConcurrency: pool.finalState.concurrency,
     costs: 0,
   };
+}
+
+async function writeActiveCaseCheckpoint(progress: {
+  runId: string;
+  lastDocketId: string | null;
+  attempted: number;
+  updated: number;
+  failed: number;
+  selected: number;
+  stoppedReason: ActiveCaseStopReason | null;
+  retryAfterMs: number | null;
+}): Promise<void> {
+  const id = await providerId();
+  const value = JSON.stringify({ ...progress, updatedAt: new Date().toISOString() });
+  await sql`
+    INSERT INTO ingestion_checkpoint (provider_id, stream_name, cursor_value)
+    VALUES (${id}, ${ACTIVE_CASE_CHECKPOINT_STREAM}, ${value})
+    ON CONFLICT (provider_id, stream_name)
+    DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = now()
+  `;
+}
+
+async function unseenClusterIds(providerId: string | undefined, ids: number[]): Promise<number[]> {
+  if (!providerId || ids.length === 0) return ids;
+  const rows = await sql<{ id: string }[]>`
+    SELECT provider_cluster_id AS id
+    FROM opinion_cluster
+    WHERE provider_id = ${providerId}
+      AND provider_cluster_id = ANY(${ids.map(String)}::text[])
+  `;
+  const seen = new Set(rows.map((row) => row.id));
+  return ids.filter((id) => !seen.has(String(id)));
+}
+
+async function rememberClusterWatermark(providerCourtId: string, newestClusterId: number): Promise<void> {
+  const value = String(newestClusterId);
+  await sql`
+    INSERT INTO federal_cluster_watermark (provider_court_id, newest_cluster_id, updated_at)
+    VALUES (${providerCourtId}, ${value}, now())
+    ON CONFLICT (provider_court_id) DO UPDATE SET
+      newest_cluster_id = CASE
+        WHEN EXCLUDED.newest_cluster_id::bigint > federal_cluster_watermark.newest_cluster_id::bigint
+          THEN EXCLUDED.newest_cluster_id
+        ELSE federal_cluster_watermark.newest_cluster_id
+      END,
+      updated_at = now()
+  `;
 }
 
 async function runMaterialDecisions() {
@@ -532,8 +744,11 @@ async function runMaterialDecisions() {
   // Discover cluster ids in priority order, capped per court and by the runaway bound.
   const filedAfter = isoDaysAgo(lookbackDays).slice(0, 10);
   const clusterIds: number[] = [];
+  const [clusterProvider] = await sql<{ id: string }[]>`
+    SELECT id FROM provider WHERE code = 'courtlistener'
+  `;
   for (const court of orderedCourts) {
-    if (clusterIds.length >= runawayItemLimit) break;
+    if (!withinBudget() || clusterIds.length >= runawayItemLimit) break;
     const remaining = runawayItemLimit - clusterIds.length;
     const ids = await fetchOpinionClusterIds({
       courtCode: court.providerCourtId,
@@ -541,7 +756,16 @@ async function runMaterialDecisions() {
       limit: Math.min(MATERIAL_PER_COURT_DISCOVERY_CAP, remaining),
       order: "newest",
     });
-    for (const id of ids) clusterIds.push(id);
+    const fresh = await unseenClusterIds(clusterProvider?.id, ids);
+    const newest = ids.reduce((max, id) => Math.max(max, id), 0);
+    if (newest > 0) await rememberClusterWatermark(court.providerCourtId, newest);
+    console.log(JSON.stringify({
+      materialCourt: court.providerCourtId,
+      listed: ids.length,
+      alreadyStored: ids.length - fresh.length,
+      ingesting: fresh.length,
+    }));
+    for (const id of fresh) clusterIds.push(id);
   }
 
   let opinions = 0;
@@ -605,7 +829,33 @@ type PublicationCandidate = {
   has_readable_content: boolean;
   document_count: number;
   restricted_text: string;
+  provider_scoped_identifier: string | null;
+  source_record_resolves_identity: boolean;
+  court_case_linkage_verified: boolean;
 };
+
+async function attachRestrictedText(candidates: PublicationCandidate[]): Promise<void> {
+  if (candidates.length === 0) return;
+  const ids = candidates.map((candidate) => candidate.id);
+  const rows = await sql<{ case_id: string; body: string | null }[]>`
+    SELECT case_id, string_agg(text, ' ') AS body
+    FROM (
+      SELECT case_id, coalesce(description, '') AS text
+      FROM docket_entry
+      WHERE case_id = ANY(${ids}::uuid[])
+      UNION ALL
+      SELECT case_id, coalesce(title, '') AS text
+      FROM document
+      WHERE case_id = ANY(${ids}::uuid[])
+    ) parts
+    GROUP BY case_id
+  `;
+  const byCase = new Map(rows.map((row) => [row.case_id, row.body ?? ""]));
+  for (const candidate of candidates) {
+    const extra = byCase.get(candidate.id);
+    if (extra) candidate.restricted_text = `${candidate.restricted_text} ${extra}`;
+  }
+}
 
 async function selectPublicationCandidates(limit: number): Promise<PublicationCandidate[]> {
   return await sql<PublicationCandidate[]>`
@@ -625,9 +875,18 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
          AND identifier.provider_id = source_provider.id
          AND identifier.identifier_type = 'courtlistener_docket_id'
       ) AS canonical_identifier_count,
+      -- Identity-collision count: other cases in the same court sharing this docket.
+      -- Normalize with the SAME expression as legal_case_normalized_docket_idx
+      -- (lower(regexp_replace(docket_number,'[^a-zA-Z0-9]','','g'))) so this correlated
+      -- subquery uses that index instead of a full sequential scan of legal_case per
+      -- candidate (the ~1.5s/row scan that made each publication chunk take minutes). This
+      -- also matches the canonical dedup normalization, so collision detection is consistent
+      -- with how ingestion decides two dockets are the same case.
       (SELECT count(*)::int FROM legal_case collision
        WHERE collision.court_id = legal_case.court_id
-         AND lower(trim(collision.docket_number)) = lower(trim(legal_case.docket_number))
+         AND nullif(lower(regexp_replace(collision.docket_number, '[^a-zA-Z0-9]', '', 'g')), '') IS NOT NULL
+         AND lower(regexp_replace(collision.docket_number, '[^a-zA-Z0-9]', '', 'g'))
+             = lower(regexp_replace(legal_case.docket_number, '[^a-zA-Z0-9]', '', 'g'))
       ) AS identity_collision_count,
       (SELECT count(*)::int FROM ingestion_rejection rejection
        WHERE rejection.resolved_at IS NULL
@@ -646,12 +905,19 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
         )
       ) AS has_readable_content,
       (SELECT count(*)::int FROM document WHERE case_id = legal_case.id) AS document_count,
-      concat_ws(' ', legal_case.caption, legal_case.docket_number,
-        (SELECT string_agg(coalesce(entry.description, ''), ' ')
-         FROM docket_entry entry WHERE entry.case_id = legal_case.id),
-        (SELECT string_agg(coalesce(document.title, ''), ' ')
-         FROM document WHERE document.case_id = legal_case.id)
-      ) AS restricted_text
+      concat_ws(' ', legal_case.caption, legal_case.docket_number) AS restricted_text,
+      -- Validated alternative identity (for docket-less records): the provider-scoped CL
+      -- docket id, whether it resolves to the retrieved source record, and whether the
+      -- court/case linkage is verified via a provider-scoped case identifier.
+      canonical.identifier_value AS provider_scoped_identifier,
+      (source_artifact.source_record_id IS NOT NULL
+        AND source_artifact.source_record_id = canonical.identifier_value) AS source_record_resolves_identity,
+      (court.provider_court_id IS NOT NULL AND EXISTS(
+        SELECT 1 FROM case_identifier link
+        WHERE link.case_id = legal_case.id
+          AND link.provider_id = source_provider.id
+          AND link.identifier_type = 'courtlistener_docket_id'
+      )) AS court_case_linkage_verified
     FROM legal_case
     JOIN court ON court.id = legal_case.court_id
     LEFT JOIN raw_artifact source_artifact ON source_artifact.id = legal_case.source_artifact_id
@@ -666,18 +932,46 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
       LIMIT 1
     ) canonical ON true
     WHERE legal_case.publication = 'draft'
-      -- Skip cases already evaluated and held for review so the publisher keeps
-      -- reaching newer, unevaluated, publishable drafts instead of re-scanning
-      -- the same held head-of-queue on every run. Eligibility itself is
-      -- unchanged; held cases still surface in the review queue.
-      AND legal_case.verification <> 'needs_review'
+      -- Skip a case only while it is held under the CURRENT rule version. A case held by
+      -- an older rule (or by the pre-table gate, which left no hold row) is re-evaluated
+      -- once under the new rule -- so a gate improvement (e.g. the court registry fix)
+      -- lets previously held-but-now-eligible cases publish instead of being suppressed
+      -- forever. Restricted cases have publication<>'draft' and are already excluded above.
+      -- SCOTUS belongs to the official pipeline (federalPublicationIncludesCourt).
+      -- Holding those rows here only records unverified_court_record.
+      AND lower(coalesce(court.provider_court_id, '')) <> 'scotus'
+      AND NOT EXISTS (
+        SELECT 1 FROM federal_publication_hold hold
+        WHERE hold.case_id = legal_case.id
+          AND hold.rule_version = ${FEDERAL_PUBLICATION_RULE_VERSION}
+          -- Mirrors federalHoldSuppressesCandidate: a sole missing-text hold is
+          -- re-opened only while metadata-only publication is explicitly enabled.
+          AND NOT (
+            ${allowMetadataWithoutOpinionText}
+            AND hold.reasons = ARRAY['missing_readable_content']::text[]
+          )
+      )
       AND (
-        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'federal')
+        -- Select the federal jurisdiction classes (including 'fs' specialized and 'fbp'
+        -- bankruptcy appellate panels) OR any registry-verified court. The gate still
+        -- applies every check, so non-court 'fs' tribunals selected here are held, not
+        -- published; verified-court selection ensures specialized/historical courts
+        -- (Tax Court, Board of Tax Appeals, Customs Court, ...) are reached.
+        lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'fbp', 'fs', 'federal')
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal appellate%'
         OR lower(coalesce(court.jurisdiction, '')) LIKE '%bankruptcy%'
+        OR court.verification = 'verified'
       )
-    ORDER BY legal_case.created_at
+    -- Pilot bias (preferDocumentCandidates): sort cases that carry a draft opinion document
+    -- first so a bounded run reaches the document publish path. When the flag is false the
+    -- first key is constant-false for every row, so ordering falls back to created_at --
+    -- production behavior is unchanged.
+    ORDER BY (${preferDocumentCandidates} AND EXISTS(
+        SELECT 1 FROM document doc2
+        JOIN judicial_opinion opinion2 ON opinion2.document_id = doc2.id
+        WHERE doc2.case_id = legal_case.id AND doc2.publication = 'draft'
+      )) DESC, legal_case.created_at
     LIMIT ${limit}
   `;
 }
@@ -693,12 +987,29 @@ async function runPublicationAndQuarantine() {
   let published = 0;
   let held = 0;
   let failed = 0;
+  let publishedDocuments = 0;
+  let heldDocuments = 0;
   const holdReasons: Record<string, number> = {};
+  const documentHoldReasons: Record<string, number> = {};
   let controllerState = initialConcurrencyState(adaptiveConfig);
+  console.log(JSON.stringify({
+    phase: "publication-quarantine",
+    publishMetadataWithoutOpinionText: allowMetadataWithoutOpinionText,
+    ruleVersion: FEDERAL_PUBLICATION_RULE_VERSION,
+  }));
+  // Pilot opinion-document ceiling. Once publishedDocuments reaches publicationMaxDocuments
+  // (finite only under --max-documents) we stop publishing further candidates this run.
+  let documentCapReached = false;
 
   async function handle(candidate: PublicationCandidate): Promise<OutcomeSignal> {
     try {
+      if (documentCapReached) {
+        // The bounded document ceiling was reached earlier this run; leave this and any
+        // remaining candidate draft rather than exceed the cap. Not a hold, not a failure.
+        return { ok: true };
+      }
       await startIngestionRunItem(sql, runId, candidate.id);
+      const metadataOnly = allowMetadataWithoutOpinionText && !candidate.has_readable_content;
       const decision = evaluateFederalPublicationCandidate({
         caption: candidate.caption,
         docketNumber: candidate.docket_number,
@@ -717,19 +1028,36 @@ async function runPublicationAndQuarantine() {
         identityCollisionCount: candidate.identity_collision_count,
         unresolvedRejections: candidate.unresolved_rejections,
         restrictedText: candidate.restricted_text,
-      });
+        providerScopedIdentifier: candidate.provider_scoped_identifier,
+        sourceRecordResolvesIdentity: candidate.source_record_resolves_identity,
+        courtCaseLinkageVerified: candidate.court_case_linkage_verified,
+      }, { allowMissingReadableContent: allowMetadataWithoutOpinionText });
+      const publicationReason = metadataOnly
+        ? "deterministic_federal_metadata_without_opinion_text"
+        : "deterministic_federal_source_validation";
+      const indexable = !metadataOnly;
       if (!decision.eligible) {
         held += 1;
         for (const reason of decision.reasons) {
           holdReasons[reason] = (holdReasons[reason] ?? 0) + 1;
         }
-        await sql`
-          UPDATE legal_case SET verification = 'needs_review',
-            publication = CASE WHEN ${decision.restricted}
-              THEN 'restricted'::publication_state ELSE publication END,
-            updated_at = now()
-          WHERE id = ${candidate.id}
-        `;
+        await sql.begin(async (tx) => {
+          await tx`
+            UPDATE legal_case SET verification = 'needs_review',
+              publication = CASE WHEN ${decision.restricted}
+                THEN 'restricted'::publication_state ELSE publication END,
+              updated_at = now()
+            WHERE id = ${candidate.id}
+          `;
+          // Record the hold with the CURRENT rule version so this case is skipped until the
+          // rule changes again, then re-evaluated once. Mirrors citation_publication_hold.
+          await tx`
+            INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
+            VALUES (${candidate.id}, ${decision.reasons}, ${FEDERAL_PUBLICATION_RULE_VERSION})
+            ON CONFLICT (case_id) DO UPDATE SET
+              reasons = EXCLUDED.reasons, rule_version = EXCLUDED.rule_version, held_at = now()
+          `;
+        });
         await finishIngestionRunItem(sql, {
           runId,
           sourceRecordId: candidate.id,
@@ -743,13 +1071,16 @@ async function runPublicationAndQuarantine() {
             updated_at = now()
           WHERE id = ${candidate.id}
         `;
+        // A published case is no longer held; drop any stale hold row so a future rule
+        // change starts it fresh rather than seeing a current-rule hold.
+        await tx`DELETE FROM federal_publication_hold WHERE case_id = ${candidate.id}`;
         await tx`
           INSERT INTO publication_decision (
             object_type, object_id, displayable, indexable, machine_accessible,
             downloadable, summary_eligible, reason_code, rule_version
           )
-          SELECT 'legal_case', ${candidate.id}, true, true, true, false, false,
-            'deterministic_federal_source_validation', 'federal-publication-v2'
+          SELECT 'legal_case', ${candidate.id}, true, ${indexable}, true, false, false,
+            ${publicationReason}, ${FEDERAL_PUBLICATION_RULE_VERSION}
           WHERE NOT COALESCE((
             SELECT displayable FROM publication_decision
             WHERE object_type = 'legal_case' AND object_id = ${candidate.id}
@@ -765,8 +1096,25 @@ async function runPublicationAndQuarantine() {
             ${tx.json({ source: "courtlistener", policy: "federal-publication-v2" })}
           )
         `;
+        // Extend the deterministic path from case-only to case + opinion document, reusing
+        // the shared opinion-document checks. Publishing the case is unchanged above; the
+        // document step is additive, idempotent, and holds (never publishes) documents that
+        // fail a document-level check. See publishCaseOpinionDocuments for the contract.
+        // Honor the pilot ceiling exactly: publish at most the documents still remaining in
+        // the budget for this case (unbounded in production, where the remainder is Infinity).
+        const docResult = await publishCaseOpinionDocuments(tx, candidate.id, {
+          maxPublish: publicationMaxDocuments - publishedDocuments,
+        });
+        publishedDocuments += docResult.published;
+        heldDocuments += docResult.held;
+        for (const [reason, count] of Object.entries(docResult.holdReasons)) {
+          documentHoldReasons[reason] = (documentHoldReasons[reason] ?? 0) + count;
+        }
       });
       published += 1;
+      if (publishedDocuments >= publicationMaxDocuments) {
+        documentCapReached = true;
+      }
       await finishIngestionRunItem(sql, {
         runId,
         sourceRecordId: candidate.id,
@@ -786,12 +1134,15 @@ async function runPublicationAndQuarantine() {
     // Drain in bounded chunks. Every processed row leaves the draft/not-needs_review
     // predicate (it becomes published or needs_review), so the same LIMITed query
     // returns the next slice each pass until the queue is empty or the runaway cap hits.
-    while (discovered < runawayItemLimit) {
+    while (discovered < runawayItemLimit && withinBudget()) {
       const chunkSize = Math.min(PUBLICATION_CHUNK_SIZE, runawayItemLimit - discovered);
       const candidates = await selectPublicationCandidates(chunkSize);
       if (candidates.length === 0) break;
+      await attachRestrictedText(candidates);
       discovered += candidates.length;
       controllerState = await processArrayWithPool(candidates, handle, controllerState);
+      // Stop drawing further chunks once the bounded document ceiling is reached.
+      if (documentCapReached) break;
     }
     await finishIngestionRun(sql, runId);
     return {
@@ -801,6 +1152,9 @@ async function runPublicationAndQuarantine() {
       published,
       held,
       holdReasons,
+      publishedDocuments,
+      heldDocuments,
+      documentHoldReasons,
       failed,
       finalConcurrency: controllerState.concurrency,
       costs: 0,
@@ -820,7 +1174,9 @@ try {
       ? await runActiveUpdates()
       : loop === "material-decisions"
         ? await runMaterialDecisions()
-        : await runPublicationAndQuarantine();
+        : federalPublicationPaused
+          ? { loop, paused: true, discovered: 0, published: 0, held: 0, publishedDocuments: 0, heldDocuments: 0 }
+          : await runPublicationAndQuarantine();
   process.stdout.write(`${JSON.stringify({
     ...result,
     executionTimeMs: Date.now() - startedAt,

@@ -1,0 +1,130 @@
+name: Diagnose federal publication holds (read-only)
+
+# Read-only breakdown of WHY federal draft cases are being held out of publication, so we can tell
+# whether a rising hold count is correct quality gating (true duplicates / thin / unverified /
+# sealed) or over-holding introduced by a rule change. Publishes nothing, changes nothing.
+#
+# Motivation: after the candidate-query speed fix (#525) normalized docket matching to reuse
+# legal_case_normalized_docket_idx, the `duplicate_identity_collision` hold
+# (identityCollisionCount > 1 in src/modules/ingestion/domain/federal-stream.ts) can fire for
+# punctuation/spacing docket variants that previously did not match. This surfaces whether the
+# cases it now holds are genuine duplicates (correct) or distinct cases sharing a normalized
+# docket within one court (over-hold to fix).
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "Collision-legitimacy sample size"
+        required: false
+        default: "2000"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-federal-holds
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SAMPLE: ${{ inputs.sample }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Hold breakdown over private VPC
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          case "${SAMPLE:-2000}" in ''|*[!0-9]*) echo "::error::sample must be numeric"; exit 1;; esac
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SAMPLE='${SAMPLE:-2000}' bash -s" <<'REMOTE'
+          set -uo pipefail
+          SAMPLE="${SAMPLE:-2000}"
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          # Print SQL errors. One failed query must not abort the rest of the report
+          # (run 40467097721 died this way, and 2>/dev/null hid the missing column).
+          q() {
+            sudo -n docker exec -e PGOPTIONS='-c statement_timeout=90s' "$pg" \
+              psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -Atc "$1" || echo "(query failed)"
+          }
+
+          echo "=============================================================="
+          echo " FEDERAL PUBLICATION HOLD DIAGNOSIS @ $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "=============================================================="
+          echo "total_holds=$(q "SELECT count(*) FROM federal_publication_hold")"
+          echo "holds_last_24h=$(q "SELECT count(*) FROM federal_publication_hold WHERE held_at > now() - interval '24 hours'")"
+
+          echo "--- reason breakdown (ALL holds) ---"
+          q "SELECT '  '||reason||' = '||count(*) FROM federal_publication_hold, unnest(reasons) AS reason GROUP BY reason ORDER BY count(*) DESC"
+
+          echo "--- reason breakdown (holds in last 24h) ---"
+          q "SELECT '  '||reason||' = '||count(*) FROM federal_publication_hold, unnest(reasons) AS reason WHERE held_at > now() - interval '24 hours' GROUP BY reason ORDER BY count(*) DESC"
+
+          echo "--- holds by rule_version ---"
+          q "SELECT '  '||rule_version||' = '||count(*) FROM federal_publication_hold GROUP BY rule_version ORDER BY count(*) DESC"
+
+          echo "--- sole missing_readable_content holds (metadata-only candidates) ---"
+          q "SELECT '  sole_missing_readable_content=' || count(*) FROM federal_publication_hold WHERE reasons = ARRAY['missing_readable_content']::text[]"
+
+          echo "--- unverified_court_record holds by court ---"
+          q "SELECT '  ' || ct.provider_court_id || ' | ' || left(ct.name, 48) || ' | ' || coalesce(ct.jurisdiction,'') || ' | ' || ct.verification::text || ' | holds=' || count(*)
+               FROM federal_publication_hold h
+               JOIN legal_case lc ON lc.id = h.case_id
+               JOIN court ct ON ct.id = lc.court_id
+              WHERE 'unverified_court_record' = ANY(h.reasons)
+              GROUP BY ct.provider_court_id, ct.name, ct.jurisdiction, ct.verification
+              ORDER BY count(*) DESC
+              LIMIT 40"
+
+          echo "--- collision legitimacy (sample of ${SAMPLE} collision-held cases) ---"
+          echo "  legal_case has caption, not case_name. For each sampled collision hold, is the"
+          echo "  court+normalized-docket group one caption (true duplicate) or several (possible over-hold)?"
+          q "
+          WITH held AS (
+            SELECT lc.court_id,
+                   lower(regexp_replace(lc.docket_number,'[^a-zA-Z0-9]','','g')) AS nd
+              FROM federal_publication_hold h
+              JOIN legal_case lc ON lc.id = h.case_id
+             WHERE 'duplicate_identity_collision' = ANY(h.reasons)
+               AND nullif(lower(regexp_replace(lc.docket_number,'[^a-zA-Z0-9]','','g')),'') IS NOT NULL
+             ORDER BY h.case_id
+             LIMIT ${SAMPLE}
+          ),
+          grp AS (
+            SELECT (SELECT count(DISTINCT lower(coalesce(c2.caption,'')))
+                      FROM legal_case c2
+                     WHERE c2.court_id = held.court_id
+                       AND lower(regexp_replace(c2.docket_number,'[^a-zA-Z0-9]','','g')) = held.nd
+                   ) AS distinct_names,
+                   (SELECT count(*)
+                      FROM legal_case c3
+                     WHERE c3.court_id = held.court_id
+                       AND lower(regexp_replace(c3.docket_number,'[^a-zA-Z0-9]','','g')) = held.nd
+                       AND c3.publication = 'published'
+                   ) AS already_published_twin
+              FROM held
+          )
+          SELECT '  sampled='||count(*)
+               ||'  true_duplicate(one_name)='||count(*) FILTER (WHERE distinct_names <= 1)
+               ||'  possible_overhold(multi_name)='||count(*) FILTER (WHERE distinct_names > 1)
+               ||'  group_has_published_twin='||count(*) FILTER (WHERE already_published_twin > 0)
+            FROM grp"
+          echo "=============================================================="
+          echo "READING: if possible_overhold is a large share, #525 normalization is suppressing distinct"
+          echo "cases and the collision check needs tightening (e.g. require a published twin, or compare"
+          echo "case name/decided date). If ~all are true_duplicate, the holds are correct dedup."
+          echo "=============================================================="
+          REMOTE

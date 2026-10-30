@@ -1,5 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { normalizeOpinionSearchFilters } from "./search-public-opinions";
+import type postgres from "postgres";
+import {
+  assertStatementTimeoutMs,
+  emptyOpinionSearchFacets,
+  excerptAnchor,
+  FACET_STATEMENT_TIMEOUT_MS,
+  interpretSettledSearch,
+  isStatementTimeout,
+  listOpinionSearchFacets,
+  normalizeOpinionSearchFilters,
+  OPINION_SEARCH_STATEMENT_TIMEOUT_MS,
+  QueryTimedOutError,
+  readQueryTimeout,
+  responseForSearchError,
+  searchPublicOpinions,
+  settleSearchThenFacets,
+  timeoutSearchResponse,
+} from "./search-public-opinions";
+
+type Sql = ReturnType<typeof postgres>;
+
+function failingSql(error: Error): Sql {
+  return { begin: async () => { throw error; } } as unknown as Sql;
+}
 
 describe("normalizeOpinionSearchFilters", () => {
   it("bounds and validates public filter input", () => {
@@ -11,5 +34,92 @@ describe("normalizeOpinionSearchFilters", () => {
   it("uses safe defaults", () => {
     expect(normalizeOpinionSearchFilters({ sort: "random", page: "zero" }).sort).toBe("relevance");
     expect(normalizeOpinionSearchFilters({ page: "zero" }).page).toBe(1);
+  });
+});
+
+describe("opinion search degradation", () => {
+  const filters = normalizeOpinionSearchFilters({ q: "securities", page: "2" });
+
+  it("anchors excerpts on the first real word", () => {
+    expect(excerptAnchor("Callais")).toBe("Callais");
+    expect(excerptAnchor('"securities fraud"')).toBe("securities");
+    expect(excerptAnchor("a an or")).toBe("");
+  });
+
+  it("rejects a statement timeout that is not a small integer", () => {
+    expect(() => assertStatementTimeoutMs(8_000)).not.toThrow();
+    expect(() => assertStatementTimeoutMs(0)).toThrow(/statement timeout/);
+    expect(() => assertStatementTimeoutMs(1.5)).toThrow(/statement timeout/);
+    expect(() => assertStatementTimeoutMs(60_000)).toThrow(/statement timeout/);
+  });
+
+  it("recognizes a Postgres statement timeout", () => {
+    expect(isStatementTimeout({ code: "57014" })).toBe(true);
+    expect(isStatementTimeout(new Error("canceling statement due to statement timeout"))).toBe(true);
+    expect(isStatementTimeout(new Error("connection refused"))).toBe(false);
+  });
+
+  it("turns a statement timeout into an empty, uncached search response", async () => {
+    const timeout = Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" });
+    const response = await searchPublicOpinions(failingSql(timeout), filters);
+    expect(response).toMatchObject({ results: [], total: 0, page: 2, timedOut: true });
+    expect(responseForSearchError(filters, new Error("connection refused"))).toBeNull();
+    await expect(searchPublicOpinions(failingSql(new Error("connection refused")), filters)).rejects.toThrow("connection refused");
+  });
+
+  it("turns a facet timeout into empty filters instead of failing the page", async () => {
+    const timeout = Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" });
+    await expect(listOpinionSearchFacets(failingSql(timeout))).resolves.toMatchObject({ courts: [], timedOut: true });
+  });
+
+  it("keeps a successful side when the other query times out", () => {
+    const facets = { courts: [], precedentialStatuses: [], opinionTypes: [] };
+    const settled = interpretSettledSearch(
+      filters,
+      { status: "rejected", reason: new QueryTimedOutError("search", timeoutSearchResponse(filters)) },
+      { status: "fulfilled", value: facets },
+    );
+    expect(settled.response.timedOut).toBe(true);
+    expect(settled.facets).toBe(facets);
+    expect(readQueryTimeout(new Error("wrapped", { cause: new QueryTimedOutError("facets") }))?.scope).toBe("facets");
+  });
+
+  it("keeps the keyword guard and gives facets a shorter one", () => {
+    expect(OPINION_SEARCH_STATEMENT_TIMEOUT_MS).toBe(8_000);
+    expect(FACET_STATEMENT_TIMEOUT_MS).toBeLessThan(OPINION_SEARCH_STATEMENT_TIMEOUT_MS);
+  });
+
+  it("runs facets only after a keyword search that returned", async () => {
+    const calls: string[] = [];
+    const filters = normalizeOpinionSearchFilters({ q: "Callais" });
+    const succeeded = { ...timeoutSearchResponse(filters), timedOut: undefined, results: [], total: 0 };
+    const settled = await settleSearchThenFacets(
+      true,
+      async () => { calls.push("search"); return succeeded; },
+      async () => { calls.push("facets"); return { courts: [], precedentialStatuses: [], opinionTypes: [] }; },
+    );
+    expect(calls).toEqual(["search", "facets"]);
+    expect(settled.search.status).toBe("fulfilled");
+  });
+
+  it("does not start facets when keyword search hits the guard", async () => {
+    let facetsCalled = false;
+    const filters = normalizeOpinionSearchFilters({ q: "securities" });
+    const settled = await settleSearchThenFacets(
+      true,
+      async () => timeoutSearchResponse(filters),
+      async () => { facetsCalled = true; return emptyOpinionSearchFacets(); },
+    );
+    expect(facetsCalled).toBe(false);
+    expect(settled.facets.status).toBe("fulfilled");
+    if (settled.facets.status === "fulfilled") expect(settled.facets.value.timedOut).toBeUndefined();
+  });
+
+  it("does not hide an unexpected search failure", () => {
+    expect(() => interpretSettledSearch(
+      filters,
+      { status: "rejected", reason: new Error("connection refused") },
+      { status: "fulfilled", value: { courts: [], precedentialStatuses: [], opinionTypes: [] } },
+    )).toThrow("connection refused");
   });
 });

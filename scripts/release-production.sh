@@ -5,15 +5,21 @@ DEPLOY_DIR=${DEPLOY_DIR:-/opt/jurvio}
 COMPOSE="$DEPLOY_DIR/docker-compose.production.yml"
 NEW_IMAGE=${JURVIO_IMAGE:?JURVIO_IMAGE is required}
 PREVIOUS_IMAGE=""
-BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-1800}
+# The compressed dump of the ~66 GB database took 2,203s in the 2026-10-30
+# nightly backup (41065461876), so the old 1800s budget failed every release
+# with a pending migration (41050301671). 3600s leaves headroom for growth.
+BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-3600}
 PULL_TIMEOUT_SECONDS=${PULL_TIMEOUT_SECONDS:-900}
-MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-300}
+# 0124 builds a concurrent index and backfills search visibility on the live
+# opinion corpus. 300s can kill that mid-build and leave an INVALID index.
+# 1800s is the migration budget (the backup has its own, longer one).
+MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-1800}
 START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-180}
 
 diagnose() {
   printf '\n--- production release diagnostics ---\n' >&2
   docker compose -f "$COMPOSE" ps >&2 || true
-  docker compose -f "$COMPOSE" logs --tail=150 app worker-core worker-coa postgres >&2 || true
+  docker compose -f "$COMPOSE" logs --tail=150 app worker-core worker-coa worker-citations worker-federal-import postgres >&2 || true
 }
 
 fail() {
@@ -60,7 +66,7 @@ export JURVIO_IMAGE="$NEW_IMAGE"
 # self-repair supervisor (run-ingestion-supervisor.mjs). It MUST be pulled and
 # recreated on every release like the other workers, otherwise it keeps running
 # a stale image and the control loop never picks up new code.
-run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa worker-supervisor
+run_with_timeout "Image pull" "$PULL_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" pull app worker-core worker-coa worker-citations worker-supervisor worker-federal-import
 run_with_timeout "Postgres startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d postgres
 
 # The pre-release backup guards against a bad MIGRATION. An app-only release (no
@@ -102,7 +108,32 @@ done
 [ "$DATABASE_READY" -eq 1 ] || fail "Database readiness failed before migration"
 
 run_with_timeout "Database migration" "$MIGRATION_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" run --rm --no-deps app node scripts/migrate.mjs
-run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker-core worker-coa worker-supervisor
+
+# Opinion chunks were extracted onto the worker container's writable layer
+# (/var/lib/jurvio/federal-chunks), which a recreate deletes. Copy them onto the
+# artifacts volume while the old container still exists. Missing source is fine
+# (already moved, or never extracted on this container). timeout(1) cannot call
+# a shell function, so the copy is a direct docker exec.
+CHUNK_CID=$(docker compose -f "$COMPOSE" ps -q worker-core || true)
+if [ -z "$CHUNK_CID" ]; then
+  printf 'No running worker-core; skipping federal chunk preservation\n'
+else
+  run_with_timeout "Preserve federal opinion chunks" 1200 \
+    docker exec "$CHUNK_CID" sh -c '
+      src=/var/lib/jurvio/federal-chunks
+      dest=/var/lib/jurvio/artifacts/federal-chunks
+      if [ ! -d "$src" ]; then
+        echo "no legacy federal chunk directory in worker-core"
+        exit 0
+      fi
+      mkdir -p "$dest"
+      cp -a "$src/." "$dest/"
+      echo "preserved federal chunk files onto artifacts volume:"
+      find "$dest" -type f | wc -l
+    '
+fi
+
+run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker-core worker-coa worker-citations worker-supervisor worker-federal-import
 
 READY=0
 for attempt in $(seq 1 30); do
@@ -122,7 +153,7 @@ fi
 printf 'Readiness failed for %s\n' "$NEW_IMAGE" >&2
 if [ -n "$PREVIOUS_IMAGE" ]; then
   export JURVIO_IMAGE="$PREVIOUS_IMAGE"
-  docker compose -f "$COMPOSE" up -d app worker-core worker-coa || true
+  docker compose -f "$COMPOSE" up -d app worker-core worker-coa worker-citations worker-federal-import || true
   printf 'Application and worker rolled back to %s\n' "$PREVIOUS_IMAGE" >&2
 fi
 diagnose

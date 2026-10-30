@@ -1,12 +1,19 @@
 name: CL bulk check + cleanup (once)
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=CL_BULK_CHECK_AND_CLEANUP.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type CL_BULK_CHECK_AND_CLEANUP to run this workflow against production"
+        required: true
+        type: string
       kill_loader:
         description: Kill an orphaned bulk-loader process if found (true/false)
         required: false
-        default: "true"
+        default: 'true'
 
 permissions:
   contents: read
@@ -26,6 +33,14 @@ jobs:
       DB_HOST: 10.116.0.2
       KILL_LOADER: ${{ inputs.kill_loader || 'true' }}
     steps:
+      - name: Require confirm=CL_BULK_CHECK_AND_CLEANUP
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CL_BULK_CHECK_AND_CLEANUP" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CL_BULK_CHECK_AND_CLEANUP."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

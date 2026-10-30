@@ -1,0 +1,191 @@
+name: Add builder runners on builder-01 (once)
+
+# Registers extra self-hosted runners on jurvio-builder-01 so CI stops queueing
+# behind deploys, backups and bulk loads. Each new runner:
+#   * lives in its own directory ($HOME/actions-runner-<name>) with its own
+#     systemd unit actions.runner.SavedLead-Jurvio.<name>.service;
+#   * gets the same labels as jurvio-builder-01 (self-hosted, Linux, X64,
+#     jurvio, builder, trusted) and runs on the same host as the same user, so
+#     existing workflows (local paths, jurvio-admin loopback, ~/.ssh) work
+#     unchanged; production workflows are serialized by their concurrency
+#     groups, and ci.yml uses a random Postgres host port so parallel CI jobs
+#     do not collide;
+#   * runs at Nice=10 / CPUWeight=50 / IOWeight=50 with MemoryHigh/MemoryMax and
+#     OOMScoreAdjust=500, so under pressure a CI job is throttled or killed
+#     before the production lane on this 2 vCPU / 4 GB box.
+# The registration token is minted inside this job from RUNNER_REG_PAT, masked,
+# and never printed. Existing runners are never touched (no --replace).
+#
+# Dispatch by hand with confirm=ADD_CI_RUNNERS.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type ADD_CI_RUNNERS to register the CI runners"
+        required: true
+        type: string
+      names:
+        description: "Space-separated runner names"
+        required: true
+        default: "jurvio-builder-02 jurvio-builder-03"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-add-ci-runners
+  cancel-in-progress: false
+
+jobs:
+  add:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      RUNNER_REG_PAT: ${{ secrets.RUNNER_REG_PAT }}
+      NAMES: ${{ inputs.names }}
+      ADMIN: jurvio-admin@127.0.0.1
+    steps:
+      - name: Require confirm=ADD_CI_RUNNERS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "ADD_CI_RUNNERS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=ADD_CI_RUNNERS."
+            exit 1
+          fi
+      - name: Validate names
+        run: |
+          set -euo pipefail
+          for n in $NAMES; do
+            case "$n" in
+              jurvio-builder-01) echo "::error::refusing to touch jurvio-builder-01"; exit 1 ;;
+              jurvio-builder-[0-9][0-9]) ;;
+              *) echo "::error::bad runner name $n"; exit 1 ;;
+            esac
+          done
+      - name: Admin loopback key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$ADMIN" 'sudo -n systemctl --version | head -1'
+      - name: Ensure a 2 GB swapfile (builder-01 has 3.8 GiB RAM and no swap)
+        run: |
+          set -uo pipefail
+          if [ "$(awk '/SwapTotal/ {print $2}' /proc/meminfo)" -gt 0 ]; then
+            echo "swap already present"; free -h
+          else
+            cat > "$RUNNER_TEMP/jurvio-swapfile.service" <<'UNIT'
+          [Unit]
+          Description=Jurvio 2 GB swapfile for builder-01 runners
+          After=local-fs.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/bin/sh -c 'test -f /swapfile || { fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile; }; swapon --show=NAME --noheadings | grep -qx /swapfile || swapon /swapfile'
+          ExecStop=/sbin/swapoff /swapfile
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+            sed -i 's/^          //' "$RUNNER_TEMP/jurvio-swapfile.service"
+            ssh -o BatchMode=yes "$ADMIN" 'sudo -n tee /etc/systemd/system/jurvio-swapfile.service >/dev/null && sudo -n systemctl daemon-reload && sudo -n systemctl enable --now jurvio-swapfile.service' < "$RUNNER_TEMP/jurvio-swapfile.service" \
+              || echo "::warning::could not install the swapfile unit"
+            free -h
+          fi
+          if [ "$(awk '/SwapTotal/ {print $2}' /proc/meminfo)" -gt 0 ]; then
+            echo "SWAP_OK=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no swap; registering only the first runner name"
+            echo "SWAP_OK=0" >> "$GITHUB_ENV"
+          fi
+      - name: Download runner package (same version as builder-01)
+        run: |
+          set -euo pipefail
+          ver="$(/opt/actions-runner/bin/Runner.Listener --version 2>/dev/null || true)"
+          [ -n "$ver" ] || ver="$(curl -fsS https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')"
+          echo "runner version: $ver"
+          pkg="$RUNNER_TEMP/actions-runner-$ver.tar.gz"
+          curl -fsSL -o "$pkg" "https://github.com/actions/runner/releases/download/v$ver/actions-runner-linux-x64-$ver.tar.gz"
+          want="$(curl -fsS "https://api.github.com/repos/actions/runner/releases/tags/v$ver" | jq -r .body | grep -o "<!-- BEGIN SHA linux-x64 -->[0-9a-f]*" | sed 's/.*-->//')"
+          got="$(sha256sum "$pkg" | cut -d' ' -f1)"
+          if [ -n "$want" ] && [ "$want" != "$got" ]; then echo "::error::sha256 mismatch"; exit 1; fi
+          echo "sha256 ok: $got (expected ${want:-unknown})"
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+      - name: Register and install each runner
+        run: |
+          set -euo pipefail
+          user="$(id -un)"
+          names="$NAMES"
+          if [ "${SWAP_OK:-0}" != "1" ]; then names="$(echo $NAMES | awk '{print $1}')"; fi
+          echo "free memory before install:"; free -h
+          for n in $names; do
+            dir="$HOME/actions-runner-$n"
+            unit="actions.runner.SavedLead-Jurvio.$n.service"
+            if [ -f "$dir/.runner" ]; then
+              echo "$n already configured in $dir; leaving registration as is"
+            else
+              mkdir -p "$dir"
+              tar -xzf "$PKG" -C "$dir"
+              code="$(curl -s -o "$RUNNER_TEMP/reg.json" -w '%{http_code}' -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $RUNNER_REG_PAT" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners/registration-token")"
+              token="$(jq -r '.token // empty' "$RUNNER_TEMP/reg.json")"
+              rm -f "$RUNNER_TEMP/reg.json"
+              if [ -z "$token" ]; then echo "::error::registration-token HTTP $code (no token)"; exit 1; fi
+              echo "::add-mask::$token"
+              (cd "$dir" && ./config.sh --unattended \
+                --url "https://github.com/$GITHUB_REPOSITORY" \
+                --token "$token" \
+                --name "$n" \
+                --labels jurvio,builder,trusted \
+                --work _work)
+              unset token
+            fi
+            cp "$dir/bin/runsvc.sh" "$dir/runsvc.sh"
+            chmod 755 "$dir/runsvc.sh"
+            cat > "$dir/$unit" <<UNIT
+          [Unit]
+          Description=GitHub Actions Runner (SavedLead-Jurvio.$n)
+          After=network-online.target docker.service
+          Wants=network-online.target
+
+          [Service]
+          ExecStart=$dir/runsvc.sh
+          User=$user
+          WorkingDirectory=$dir
+          KillMode=process
+          KillSignal=SIGTERM
+          TimeoutStopSec=5min
+          Restart=always
+          RestartSec=15
+          Nice=10
+          CPUWeight=50
+          IOWeight=50
+          MemoryHigh=1800M
+          MemoryMax=2600M
+          OOMScoreAdjust=500
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+            sed -i 's/^          //' "$dir/$unit"
+            echo "$unit" > "$dir/.service"
+            ssh -o BatchMode=yes "$ADMIN" "sudo -n systemctl link '$dir/$unit' && sudo -n systemctl enable --now '$unit' && sudo -n systemctl is-active '$unit'"
+          done
+      - name: Show runners (names, status, labels only)
+        if: always()
+        run: |
+          set +e
+          systemctl list-units --all --no-pager 'actions.runner*' | cat
+          curl -s -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $RUNNER_REG_PAT" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners" \
+            | jq -r '.runners[]? | "\(.name) status=\(.status) busy=\(.busy) labels=\([.labels[].name]|join(","))"'

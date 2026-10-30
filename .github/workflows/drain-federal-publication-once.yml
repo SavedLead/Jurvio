@@ -1,0 +1,91 @@
+name: Drain federal publication (full speed, once)
+
+# Publishes the federal DRAFT backlog at full speed by running the deterministic
+# publication-quarantine loop with a high item cap and normal concurrency (NOT the
+# single-threaded doc-capped pilot path). Every case still passes the publication gate, so
+# sealed/restricted/sensitive and thin/duplicate records are HELD, never published -- that
+# protection is independent of speed. Idempotent: already-published cases are skipped, so this
+# can be re-run to drain the remaining backlog in successive passes (each pass publishes up to
+# max_items, the absolute runaway ceiling being 100000). Prints before/after published counts
+# and the publisher's own result line.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=DRAIN_FEDERAL_PUBLICATION.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DRAIN_FEDERAL_PUBLICATION to run this workflow against production"
+        required: true
+        type: string
+      max_items:
+        description: Max cases to publish this pass (clamped to 100000)
+        required: false
+        default: '100000'
+        type: string
+      max_concurrency:
+        description: Publisher concurrency (1-16)
+        required: false
+        default: '8'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 120
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      MAX_ITEMS: ${{ inputs.max_items }}
+      MAX_CC: ${{ inputs.max_concurrency }}
+    steps:
+      - name: Require confirm=DRAIN_FEDERAL_PUBLICATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DRAIN_FEDERAL_PUBLICATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DRAIN_FEDERAL_PUBLICATION."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Full-speed publication drain over private VPC
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          case "${MAX_ITEMS:-100000}" in ''|*[!0-9]*) echo "::error::max_items must be numeric"; exit 1;; esac
+          case "${MAX_CC:-8}" in ''|*[!0-9]*) echo "::error::max_concurrency must be numeric"; exit 1;; esac
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "MAX_ITEMS='${MAX_ITEMS:-100000}' MAX_CC='${MAX_CC:-8}' bash -se" <<'REMOTE'
+          set -uo pipefail
+          MAX="${MAX_ITEMS:-100000}"; CC="${MAX_CC:-8}"
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          worker="$(find_svc worker-core)"; pg="$(find_svc postgres)"
+          [ -n "$worker" ] && [ -n "$pg" ] || { echo "::error::worker/pg missing"; exit 1; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc "$1" 2>/dev/null; }
+          FED="(court.verification='verified' OR lower(coalesce(court.jurisdiction,'')) IN ('f','fd','fb','fbp','fs','federal'))"
+
+          BEFORE="$(q "SELECT count(*) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE legal_case.publication='published' AND ${FED}")"
+          echo "federal_cases_published_before=${BEFORE}  (cap this pass: ${MAX}, concurrency ${CC})"
+          echo "=== running publication-quarantine --publish=1 --max-items=${MAX} ==="
+          sudo -n docker exec "$worker" node jobs/run-federal-ingestion-loop.mjs \
+            --loop=publication-quarantine --publish=1 --max-items="${MAX}" \
+            --max-concurrency="${CC}" --start-concurrency="${CC}" 2>&1 | tail -n 40
+          rc="${PIPESTATUS[0]}"
+          AFTER="$(q "SELECT count(*) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE legal_case.publication='published' AND ${FED}")"
+          REMAIN="$(q "SELECT count(*) FROM legal_case JOIN court ON court.id=legal_case.court_id WHERE legal_case.publication='draft' AND ${FED}")"
+          echo "=== DRAIN RESULT: published_before=${BEFORE} published_after=${AFTER} newly_published=$(( AFTER - BEFORE )) federal_draft_remaining=${REMAIN} node_rc=${rc} ==="
+          echo "=== DONE ==="
+          REMOTE

@@ -1,0 +1,156 @@
+name: Kill federal importer (once)
+
+# Interrupt-test helper: forcibly stop the federal importer PROCESS inside the worker
+# container (cancelling the Actions run alone does not guarantee the detached process
+# dies). Records partial progress from the ledger before the kill, kills any process
+# running jobs/import-federal-opinion-chunks.mjs by scanning /proc (portable -- no procps
+# needed), then confirms none remain. The interrupted chunk is left 'importing' with its
+# partial opinions_written until a later import run reclaims it (stale_minutes).
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=KILL_FEDERAL_IMPORTER.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type KILL_FEDERAL_IMPORTER to run this workflow against production"
+        required: true
+        type: string
+      snapshot_date:
+        description: Bulk snapshot date YYYY-MM-DD
+        required: false
+        default: '2026-09-30'
+        type: string
+      pre_kill_sleep:
+        description: Seconds to wait on the box before the kill (so a just-launched import reaches partial progress first)
+        required: false
+        default: '0'
+        type: string
+      service:
+        description: Worker container the importer runs in
+        required: false
+        default: worker-core
+        type: choice
+        options:
+        - worker-core
+        - worker-coa
+        - app
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-federal-kill
+  cancel-in-progress: false
+
+jobs:
+  kill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      PRE_KILL_SLEEP: ${{ inputs.pre_kill_sleep }}
+      SERVICE: ${{ inputs.service }}
+    steps:
+      - name: Require confirm=KILL_FEDERAL_IMPORTER
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "KILL_FEDERAL_IMPORTER" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=KILL_FEDERAL_IMPORTER."
+            exit 1
+          fi
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Kill importer over private VPC
+        run: |
+          set -euo pipefail
+          case "$SNAPSHOT_DATE" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::bad snapshot_date"; exit 1;; esac
+          case "${PRE_KILL_SLEEP:-0}" in ''|*[!0-9]*) echo "::error::pre_kill_sleep must be numeric"; exit 1;; esac
+          case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' PRE_KILL_SLEEP='${PRE_KILL_SLEEP:-0}' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="$SNAPSHOT_DATE"; SERVICE="${SERVICE:-worker-core}"; PRE_KILL_SLEEP="${PRE_KILL_SLEEP:-0}"
+          if [ "$PRE_KILL_SLEEP" -gt 0 ]; then
+            echo "waiting ${PRE_KILL_SLEEP}s for the importer to reach partial progress before killing..."
+            sleep "$PRE_KILL_SLEEP"
+          fi
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          worker="$(find_svc "$SERVICE")"; pg="$(find_svc postgres)"
+          [ -n "$worker" ] || { echo "::error::no worker container"; exit 1; }
+
+          echo "=== PARTIAL PROGRESS before kill (importing chunk) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT chunk_key||' status='||status||' opinions_written='||opinions_written
+                 ||' updated='||to_char(updated_at,'HH24:MI:SS')
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo "(query failed)"
+
+          # Match ONLY node processes whose cmdline runs the importer. Guarding on
+          # comm=node excludes this scan's own shell/grep (whose cmdline contains the
+          # pattern string) and the resident worker node (different script) -- without it
+          # the scan killed itself (exit 143) before confirming the result.
+          echo "=== importer processes BEFORE kill ==="
+          PROCS="$(sudo -n docker exec "$worker" sh -lc '
+            n=0; for p in /proc/[0-9]*; do
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              if grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+                echo "pid=${p#/proc/}" 1>&2; n=$((n+1)); fi; done; echo "$n"')"
+          echo "running importer processes: ${PROCS}"
+
+          # Safeguard: only kill once the pilot importer is actually running AND has made
+          # partial progress on an 'importing' chunk (0<written). Killing before progress
+          # proves nothing; killing nothing is a no-op. Abort otherwise.
+          WRITTEN="$(sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT coalesce(max(opinions_written),0) FROM federal_import_chunk
+             WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo 0)"
+          echo "max partial opinions_written on an importing chunk: ${WRITTEN}"
+          if [ "${PROCS:-0}" -lt 1 ] || [ "${WRITTEN:-0}" -lt 1 ]; then
+            echo "::warning::ABORT kill -- not safely mid-chunk (processes=${PROCS}, partial_written=${WRITTEN}). No process killed."
+            echo "=== DONE (no-op) ==="
+            exit 0
+          fi
+
+          echo "=== KILL (scan /proc for node importer, SIGTERM then SIGKILL) ==="
+          sudo -n docker exec "$worker" sh -lc '
+            for p in /proc/[0-9]*; do
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              if grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+                pid=${p#/proc/}; echo "killing $pid"; kill "$pid" 2>/dev/null || true; fi; done
+            sleep 3
+            for p in /proc/[0-9]*; do
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              if grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null; then
+                pid=${p#/proc/}; echo "SIGKILL $pid"; kill -9 "$pid" 2>/dev/null || true; fi; done
+            sleep 1'
+
+          echo "=== importer processes AFTER kill (expect count=0) ==="
+          sudo -n docker exec "$worker" sh -lc '
+            n=0; for p in /proc/[0-9]*; do
+              [ "$(cat "$p/comm" 2>/dev/null)" = node ] || continue
+              grep -qa "jobs/import-federal-opinion-chunks.mjs" "$p/cmdline" 2>/dev/null && n=$((n+1)); done; echo "count=$n"'
+
+          echo "=== ledger AFTER kill (chunk remains importing with partial written until reclaim) ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT chunk_key||' status='||status||' opinions_written='||opinions_written
+             FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' AND status='importing';" 2>/dev/null || echo "(query failed)"
+          echo "=== DONE ==="
+          REMOTE

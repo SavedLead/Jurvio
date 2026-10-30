@@ -60,7 +60,7 @@ export default async function InternalOperationsPage() {
 
       <nav className={styles.nav} aria-label="Internal sections">
         <strong>Operations</strong>
-        <Link href={"/heartbeat" as Route}>Court coverage status</Link>
+        <Link href={"/internal/freshness" as Route}>Court freshness</Link>
         <Link href={"/internal/analytics" as Route}>Demand analytics</Link>
         <Link href={"/internal/publication" as Route}>Publication review</Link>
       </nav>

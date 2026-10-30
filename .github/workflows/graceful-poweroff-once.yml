@@ -1,0 +1,79 @@
+name: Graceful poweroff for resize (once)
+
+# Cleanly powers off jurvio-web-01 for a DigitalOcean resize, the safe way the
+# DO panel recommends (command-line shutdown, not the panel's force-off):
+#   1. CHECKPOINT postgres so all dirty buffers are flushed to disk.
+#   2. `systemctl poweroff --no-block` -- systemd stops docker gracefully, which
+#      SIGTERMs the containers (NOT an explicit `compose stop`), so their
+#      `restart: unless-stopped` policy auto-starts the whole stack when the
+#      resized box boots. No manual bring-up needed afterward.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=GRACEFUL_POWEROFF.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type GRACEFUL_POWEROFF to run this workflow against production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  poweroff:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 8
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=GRACEFUL_POWEROFF
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "GRACEFUL_POWEROFF" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=GRACEFUL_POWEROFF."
+            exit 1
+          fi
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Checkpoint postgres, then graceful poweroff
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          if [ -n "$pg" ]; then
+            echo "=== CHECKPOINT postgres (flush to disk) ==="
+            sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c "CHECKPOINT;" && echo "CHECKPOINT OK"
+          else
+            echo "::warning::no postgres container found; proceeding to poweroff"
+          fi
+          echo "=== pre-shutdown container state ==="
+          sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --format '{{.Label "com.docker.compose.service"}}\t{{.Status}}' || true
+          echo "=== issuing graceful poweroff (box will go Off shortly; SSH drops) ==="
+          sudo -n systemctl poweroff --no-block
+          echo "poweroff scheduled"
+          REMOTE

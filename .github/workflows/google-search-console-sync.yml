@@ -1,12 +1,13 @@
 name: Google Search Console sync
 
 on:
+  # Allowlisted schedule (tests/workflow-triggers.test.ts): talks only to the
+  # Google Search Console API and reads public jurvio.com. It does not touch
+  # the droplets or the database. No workflow_run: a merge to main starts only
+  # CI and the public web deploy.
   workflow_dispatch:
   schedule:
     - cron: "17 5 * * *"
-  workflow_run:
-    workflows: ["Deploy public web via hosted runner"]
-    types: [completed]
 
 permissions:
   contents: read
@@ -19,7 +20,7 @@ concurrency:
 jobs:
   sync:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 10
     env:
       GCP_SERVICE_ACCOUNT: jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com

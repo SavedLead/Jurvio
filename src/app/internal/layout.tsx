@@ -12,7 +12,7 @@ const navigation = [
   { href: "/internal/operations", icon: "↻", label: "Ingestion & workers" },
   { href: "/internal/uptime", icon: "♥", label: "Uptime & Speed" },
   { href: "/internal/ingestion-report", icon: "≣", label: "Publication X-ray" },
-  { href: "/internal#sources", icon: "◎", label: "Court sources" },
+  { href: "/internal/freshness", icon: "◷", label: "Court freshness" },
   { href: "/internal#alerts", icon: "◉", label: "Case alerts" },
   { href: "/internal/governance", icon: "◇", label: "Costs & governance" },
   { href: "/internal/analytics", icon: "↗", label: "Product analytics" },

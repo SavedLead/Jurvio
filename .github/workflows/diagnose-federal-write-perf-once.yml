@@ -1,0 +1,79 @@
+name: Diagnose federal write perf (once, read-only)
+
+# Read-only. Confirms whether the bulk ensureCase dedup lookup
+# (normalized docket_number per court) is index-backed or a per-row scan -- the
+# suspected cause of the ~4k cases/hour write ceiling -- and reports current
+# corpus counts and legal_case indexes. Runs on the self-hosted builder over the
+# private VPC, exactly like the other read-only *-once controls. No writes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-federal-write-perf
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Diagnose over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' \
+            --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no postgres container"; exit 1; }
+          psql() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio "$@"; }
+
+          echo "=== corpus counts ==="
+          psql -Atc "SELECT 'legal_case=' || count(*) FROM legal_case
+            UNION ALL SELECT 'published=' || count(*) FROM legal_case WHERE publication='published'
+            UNION ALL SELECT 'draft=' || count(*) FROM legal_case WHERE publication='draft'
+            UNION ALL SELECT 'legal_case_size=' || pg_size_pretty(pg_total_relation_size('legal_case'))
+            UNION ALL SELECT 'judicial_opinion=' || count(*) FROM judicial_opinion;" 2>/dev/null || echo "(counts failed)"
+
+          echo "=== indexes on legal_case ==="
+          psql -Atc "SELECT indexname || ' :: ' || indexdef FROM pg_indexes WHERE tablename='legal_case' ORDER BY indexname;" 2>/dev/null || echo "(index list failed)"
+
+          echo "=== EXPLAIN ANALYZE the ensureCase dedup lookup (sample court cand) ==="
+          psql -c "EXPLAIN (ANALYZE, BUFFERS, SUMMARY)
+            SELECT legal_case.id
+            FROM legal_case
+            JOIN court ON court.id = legal_case.court_id
+            WHERE lower(coalesce(court.provider_court_id,'')) = lower('cand')
+              AND lower(regexp_replace(legal_case.docket_number,'[^a-zA-Z0-9]','','g'))
+                = lower(regexp_replace('3:20-cv-09999-TEST','[^a-zA-Z0-9]','','g'))
+            ORDER BY (legal_case.verification='verified') DESC,
+                     (legal_case.publication='published') DESC, legal_case.created_at
+            LIMIT 2;" 2>&1 || echo "(explain failed)"
+
+          echo "=== DONE ==="
+          REMOTE

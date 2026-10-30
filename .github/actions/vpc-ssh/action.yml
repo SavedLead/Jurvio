@@ -1,0 +1,73 @@
+name: Configure ingestion-box SSH
+description: >-
+  SSH config plus a vpc_ssh helper that retries banner-exchange timeouts.
+  jurvio-web-01 drops bursty connections (sshd MaxStartups / fail2ban); a single
+  15s attempt fails the job even though the next try succeeds. Source
+  "$HOME/vpc-ssh.sh" and call vpc_ssh instead of ssh.
+
+inputs:
+  ssh_key_b64:
+    description: Base64-encoded ed25519 private key (DO_SSH_KEY_B64)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install SSH key and retry helper
+      shell: bash
+      env:
+        DO_SSH_KEY_B64: ${{ inputs.ssh_key_b64 }}
+      run: |
+        set -euo pipefail
+        install -m 700 -d ~/.ssh
+        printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+        chmod 600 ~/.ssh/id_ed25519
+        cat > ~/.ssh/config <<'CFG'
+        Host *
+          IdentityFile ~/.ssh/id_ed25519
+          BatchMode yes
+          ConnectTimeout 20
+          ConnectionAttempts 1
+          ServerAliveInterval 30
+          ServerAliveCountMax 4
+          StrictHostKeyChecking accept-new
+        CFG
+        chmod 600 ~/.ssh/config
+        cat > "$HOME/vpc-ssh.sh" <<'EOF'
+        # Retry SSH. Exit 255 with "banner exchange" / "Connection timed out" is the
+        # droplet rate-limiting a burst, not a dead host. Five attempts, 5s..80s.
+        vpc_ssh() {
+          local attempt=1
+          local max=5
+          local delay=5
+          local rc=0
+          local script=""
+          # Buffer stdin so a retry still has the remote script. A heredoc is consumed
+          # by the first ssh; without this, the second attempt sends an empty script
+          # and the step exits 0 without doing the work.
+          if [ ! -t 0 ]; then
+            script="$(cat || true)"
+          fi
+          while true; do
+            if [ -n "$script" ]; then
+              printf '%s\n' "$script" | ssh "$@" && return 0
+            else
+              ssh "$@" && return 0
+            fi
+            rc=$?
+            # Remote command failures (exit 1) are not connection drops. Only retry
+            # SSH's own 255 (banner timeout, connection reset, no route).
+            if [ "$rc" -ne 255 ] || [ "$attempt" -ge "$max" ]; then
+              if [ "$rc" -eq 255 ]; then
+                echo "::error::SSH failed after ${max} attempts (last exit ${rc}). A banner-exchange timeout means sshd accepted TCP and then did not answer (MaxStartups / fail2ban), which deploy-production.yml already avoids with a multiplexed connection."
+              fi
+              return "$rc"
+            fi
+            echo "SSH attempt ${attempt} failed (exit ${rc}); sleeping ${delay}s before retry"
+            sleep "$delay"
+            attempt=$((attempt + 1))
+            delay=$((delay * 2))
+          done
+        }
+        EOF
+        chmod 700 "$HOME/vpc-ssh.sh"

@@ -1,11 +1,15 @@
 name: Start first pre-500 SCOTUS volume
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/scotus-pre500-volume-499-start"
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=START_SCOTUS_PRE500_VOLUME_499.
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type START_SCOTUS_PRE500_VOLUME_499 to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,10 +20,18 @@ concurrency:
 
 jobs:
   ingest-publish:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 60
     steps:
+      - name: Require confirm=START_SCOTUS_PRE500_VOLUME_499
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "START_SCOTUS_PRE500_VOLUME_499" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=START_SCOTUS_PRE500_VOLUME_499."
+            exit 1
+          fi
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

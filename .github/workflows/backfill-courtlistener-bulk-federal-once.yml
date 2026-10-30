@@ -1,0 +1,195 @@
+name: Backfill CourtListener bulk FEDERAL opinions (once)
+
+# One-shot loader for ALL federal courts (the 13 Courts of Appeals + every federal
+# district court + federal special courts; bankruptcy opt-in) from the FREE public
+# CourtListener S3 bulk export (com-courtlistener-storage). No account, no API key,
+# no rate limit. It streams every multi-GB .bz2 straight through on the worker,
+# driven by CourtListener's own `courts` bulk file (Pass 0) to build the federal
+# court-code set, then joins dockets -> opinion-clusters -> citations -> opinions and
+# keeps only federal courts. Opinion artifacts are routed to Spaces object storage
+# by the Spaces-aware artifact-store factory (never the local disk), so the box's
+# disk does not grow -- the failure mode behind the 2026-08-16 100%-full incident.
+#
+# Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC
+# (10.116.0.2) with `sudo -n docker exec` -- the SAME route the production deploy,
+# the bulk-appellate once control, and the other *-once controls use, because
+# GitHub-hosted runners' egress IPs are blocked by the box SSH firewall.
+#
+# Leave `limit` set for a bounded smoke test; clear it for the full backfill.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=BACKFILL_COURTLISTENER_BULK_FEDERAL.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKFILL_COURTLISTENER_BULK_FEDERAL to run this workflow against production"
+        required: true
+        type: string
+      snapshot_date:
+        description: Bulk snapshot date YYYY-MM-DD (empty = discover the newest opinions-*.csv.bz2)
+        required: false
+        default: ''
+        type: string
+      min_year:
+        description: Earliest cluster filing year to ingest
+        required: false
+        default: '1900'
+        type: string
+      max_year:
+        description: Latest cluster filing year to ingest (blank = no upper bound). Set to run bounded year windows.
+        required: false
+        default: ''
+        type: string
+      limit:
+        description: Cap opinions written (blank = no cap = full backfill; set for a smoke test)
+        required: false
+        default: ''
+        type: string
+      include_bankruptcy:
+        description: Include federal bankruptcy courts {FB, FBP} (enormous, low-value; default off)
+        required: false
+        default: false
+        type: boolean
+      service:
+        description: Worker container to run in
+        required: false
+        default: worker-core
+        type: choice
+        options:
+        - worker-core
+        - worker-coa
+        - app
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-courtlistener-bulk-federal-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 2880
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      MIN_YEAR: ${{ inputs.min_year }}
+      MAX_YEAR: ${{ inputs.max_year }}
+      LIMIT: ${{ inputs.limit }}
+      INCLUDE_BANKRUPTCY: ${{ inputs.include_bankruptcy }}
+      SERVICE: ${{ inputs.service }}
+    steps:
+      - name: Require confirm=BACKFILL_COURTLISTENER_BULK_FEDERAL
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "BACKFILL_COURTLISTENER_BULK_FEDERAL" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_COURTLISTENER_BULK_FEDERAL."
+            exit 1
+          fi
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run CourtListener bulk federal backfill
+        run: |
+          set -euo pipefail
+          case "$MIN_YEAR" in ''|*[!0-9]*) echo "::error::min_year must be numeric"; exit 1;; esac
+          if [ -n "$MAX_YEAR" ]; then
+            case "$MAX_YEAR" in ''|*[!0-9]*) echo "::error::max_year must be numeric or empty"; exit 1;; esac
+          fi
+          if [ -n "$SNAPSHOT_DATE" ]; then
+            case "$SNAPSHOT_DATE" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+              *) echo "::error::snapshot_date must be YYYY-MM-DD or empty"; exit 1;;
+            esac
+          fi
+          if [ -n "$LIMIT" ]; then
+            case "$LIMIT" in ''|*[!0-9]*) echo "::error::limit must be numeric or empty"; exit 1;; esac
+          fi
+          case "$SERVICE" in worker-core|worker-coa|app) ;; *) echo "::error::invalid service"; exit 1;; esac
+          case "$INCLUDE_BANKRUPTCY" in true|false) ;; *) echo "::error::include_bankruptcy must be true/false"; exit 1;; esac
+          # Pass inputs as env (not positional args): an empty snapshot_date would be
+          # dropped by ssh's remote re-split, shifting args and tripping set -u.
+          ssh "$INGESTION_USER@$DB_HOST" \
+            "SNAPSHOT_DATE='$SNAPSHOT_DATE' MIN_YEAR='$MIN_YEAR' MAX_YEAR='$MAX_YEAR' LIMIT='$LIMIT' INCLUDE_BANKRUPTCY='$INCLUDE_BANKRUPTCY' SERVICE='$SERVICE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="${SNAPSHOT_DATE:-}"; MIN_YEAR="${MIN_YEAR:-1900}"; MAX_YEAR="${MAX_YEAR:-}"; LIMIT="${LIMIT:-}"
+          INCLUDE_BANKRUPTCY="${INCLUDE_BANKRUPTCY:-false}"; SERVICE="${SERVICE:-worker-core}"
+          BUCKET="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          find_svc() { sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" \
+            --format '{{.ID}}' | head -n1; }
+
+          worker="$(find_svc "$SERVICE")"
+          [ -n "$worker" ] || worker="$(find_svc worker-core)"
+          [ -n "$worker" ] || worker="$(find_svc worker-coa)"
+          [ -n "$worker" ] || worker="$(find_svc app)"
+          [ -n "$worker" ] || { echo "::error::no running jurvio worker/app container"; exit 1; }
+          echo "running in container: $worker (requested $SERVICE)"
+
+          echo "=== Confirm the federal bulk job is present in the image ==="
+          sudo -n docker exec "$worker" sh -lc 'test -f jobs/ingest-courtlistener-bulk-federal.mjs' \
+            || { echo "::error::jobs/ingest-courtlistener-bulk-federal.mjs missing -- image predates the federal loader; redeploy first"; exit 2; }
+
+          if [ -z "$SNAPSHOT" ]; then
+            echo "=== Discover newest opinions snapshot from S3 ListBucket ==="
+            SNAPSHOT="$(curl -fsS "${BUCKET}/?list-type=2&prefix=bulk-data/opinions-" \
+              | grep -oE 'opinions-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' \
+              | sed -E 's/^opinions-//; s/\.csv\.bz2$//' \
+              | sort -r | head -n1)"
+            [ -n "$SNAPSHOT" ] || { echo "::error::could not discover a bulk opinions snapshot"; exit 4; }
+            echo "discovered snapshot: ${SNAPSHOT}"
+          fi
+
+          echo "=== Confirm the courts bulk file exists for snapshot ${SNAPSHOT} (needed for Pass 0) ==="
+          curl -fsI "${BUCKET}/bulk-data/courts-${SNAPSHOT}.csv.bz2" >/dev/null \
+            || { echo "::error::courts-${SNAPSHOT}.csv.bz2 not found; pick a snapshot that has a courts file"; exit 5; }
+
+          echo "=== Disk before (must not climb; artifacts go to Spaces) ==="
+          df -h / | tail -1
+
+          echo "=== Baseline corpus counts ==="
+          pg="$(find_svc postgres)"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'legal_case=' || count(*) FROM legal_case
+             UNION ALL SELECT 'published=' || count(*) FROM legal_case WHERE publication='published';" 2>/dev/null || echo "(baseline query failed)"
+
+          echo "=== CourtListener bulk FEDERAL ingest (snapshot ${SNAPSHOT}, min-year ${MIN_YEAR}, max-year ${MAX_YEAR:-none}, limit ${LIMIT:-none}, bankruptcy ${INCLUDE_BANKRUPTCY}) ==="
+          set -- --snapshot-date="$SNAPSHOT" --min-year="$MIN_YEAR"
+          [ -n "$MAX_YEAR" ] && set -- "$@" --max-year="$MAX_YEAR"
+          [ -n "$LIMIT" ] && set -- "$@" --limit="$LIMIT"
+          [ "$INCLUDE_BANKRUPTCY" = "true" ] && set -- "$@" --include-bankruptcy
+          # Cap the Node heap so a pathological pass fails THIS job cleanly instead of
+          # growing until the kernel OOM-kills postgres on the shared 16 GB box. 8 GiB
+          # leaves comfortable headroom for postgres + the resident workers; the fixed
+          # loader's working set is a small fraction of this.
+          sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=8192 "$worker" \
+            node jobs/ingest-courtlistener-bulk-federal.mjs "$@"
+
+          echo "=== Disk after ==="
+          df -h / | tail -1
+
+          echo "=== Final corpus counts ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -Atc \
+            "SELECT 'legal_case=' || count(*) FROM legal_case
+             UNION ALL SELECT 'published=' || count(*) FROM legal_case WHERE publication='published';" 2>/dev/null || echo "(final query failed)"
+          REMOTE

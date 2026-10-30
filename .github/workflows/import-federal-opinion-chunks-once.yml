@@ -1,0 +1,121 @@
+name: Import federal opinion chunks (once)
+
+# Starts the supervised worker-federal-import service on jurvio-web-01.
+#
+# The importer used to be `docker exec -d` inside worker-core with an 8GB heap.
+# That process was not supervised: the Oct 27 launches (40487336239, 40487685592)
+# returned success as soon as the process was spawned, then died with the worker
+# (deploy or the lane watchdog) and nothing resumed them. Chunk files on the
+# container writable layer were also deleted by that recreate (ENOENT in run
+# 38251524796).
+#
+# worker-federal-import is the importer. It claims federal_import_chunk rows,
+# reclaims abandoned 'importing' rows on start, and exits 0 when the queue is
+# drained or when chunk files are missing (it does not stamp the ledger failed
+# in that case). This workflow only ensures that service is running. It does not
+# launch a second importer.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=IMPORT_FEDERAL_OPINION_CHUNKS.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type IMPORT_FEDERAL_OPINION_CHUNKS to run this workflow against production"
+        required: true
+        type: string
+      snapshot_date:
+        description: Bulk snapshot date YYYY-MM-DD (must match the extracted chunks)
+        required: true
+        type: string
+        default: '2026-09-30'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-courtlistener-bulk-federal-backfill
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+    steps:
+      - name: Require confirm=IMPORT_FEDERAL_OPINION_CHUNKS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "IMPORT_FEDERAL_OPINION_CHUNKS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=IMPORT_FEDERAL_OPINION_CHUNKS."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Ensure the federal chunk importer is running
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          case "$SNAPSHOT_DATE" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be YYYY-MM-DD"; exit 1;;
+          esac
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' bash -s" <<'REMOTE'
+          set -euo pipefail
+          SNAPSHOT="$SNAPSHOT_DATE"
+          cd /opt/jurvio
+          find_svc() { sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter "label=com.docker.compose.service=$1" \
+            --format '{{.ID}}' | head -n1; }
+
+          app="$(find_svc app)"
+          [ -n "$app" ] || { echo "::error::no running jurvio app container"; exit 1; }
+          IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$app")"
+          case "$IMG" in
+            *jurvio*) ;;
+            *) echo "::error::resolved image is not jurvio (${IMG})"; exit 1;;
+          esac
+          DB_BIND="$(grep -E '^JURVIO_DATABASE_BIND=' /opt/jurvio/.env.production | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+          [ -n "$DB_BIND" ] || { echo "::error::JURVIO_DATABASE_BIND missing"; exit 1; }
+
+          pg="$(find_svc postgres)"
+          echo "=== Ledger before ==="
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -c \
+            "SELECT status, count(*) FROM federal_import_chunk WHERE snapshot_date='${SNAPSHOT}' GROUP BY status ORDER BY status;" \
+            || echo "(ledger query failed)"
+
+          existing="$(sudo -n docker ps \
+            --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=worker-federal-import' \
+            --format '{{.ID}}' | head -n1)"
+          if [ -n "$existing" ]; then
+            echo "worker-federal-import is already running (${existing}); not launching a second importer"
+            sudo -n docker logs --tail 20 "$existing" || true
+            exit 0
+          fi
+
+          echo "=== Starting worker-federal-import (snapshot ${SNAPSHOT}) ==="
+          sudo -n env \
+            JURVIO_IMAGE="$IMG" \
+            JURVIO_DATABASE_BIND="$DB_BIND" \
+            JURVIO_FEDERAL_CHUNK_SNAPSHOT="$SNAPSHOT" \
+            docker compose -f docker-compose.production.yml up -d --no-deps worker-federal-import
+          sleep 3
+          cid="$(find_svc worker-federal-import || true)"
+          echo "container=${cid:-not-running}"
+          if [ -n "${cid:-}" ]; then
+            sudo -n docker logs --tail 30 "$cid" || true
+          fi
+          echo "=== DONE (service start; progress is docker logs / diagnose-federal-chunk-progress-once) ==="
+          REMOTE

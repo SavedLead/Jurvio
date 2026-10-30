@@ -1,16 +1,23 @@
 name: Ingest official Supreme Court opinions
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=INGEST_PRODUCTION_SCOTUS_OFFICIAL.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type INGEST_PRODUCTION_SCOTUS_OFFICIAL to run this workflow against production"
+        required: true
+        type: string
       term:
         description: Supreme Court term (two-digit year)
         required: true
-        default: "25"
+        default: '25'
       limit:
         description: Maximum official opinions (1-100)
         required: true
-        default: "100"
+        default: '100'
       resume:
         description: Resume after the last successful official-source checkpoint
         required: true
@@ -27,10 +34,75 @@ concurrency:
 
 jobs:
   ingest:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 180
     steps:
+      - name: Require confirm=INGEST_PRODUCTION_SCOTUS_OFFICIAL
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "INGEST_PRODUCTION_SCOTUS_OFFICIAL" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=INGEST_PRODUCTION_SCOTUS_OFFICIAL."
+            exit 1
+          fi
+      - name: Install GitHub REST helpers (builder-01 has no gh CLI)
+        if: always()
+        run: |
+          # jurvio-builder-01 has curl and jq but no gh CLI. These helpers replace the
+          # gh calls this workflow used. Issue comments and report updates are best
+          # effort and never fail the job; reads used for decisions still fail loudly.
+          cat > "$RUNNER_TEMP/gh-rest.sh" <<'GHREST'
+          _gh_curl() {
+            local method="$1" path="$2"; shift 2
+            curl -fsSL --retry 3 --retry-delay 2 -X "$method" \
+              -H "Authorization: Bearer ${GH_TOKEN:?GH_TOKEN is not set}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$@" "https://api.github.com/${path#/}"
+          }
+          gh_api() { _gh_curl GET "$1"; }
+          gh_api_post() {
+            if [ $# -ge 2 ]; then printf '%s' "$2" | _gh_curl POST "$1" -H "Content-Type: application/json" --data-binary @-
+            else _gh_curl POST "$1"; fi
+          }
+          # Every page of a list endpoint, one JSON document per page (pipe into jq).
+          gh_api_paginate() {
+            local path="$1" page=1 sep body count
+            case "$path" in *\?*) sep='&' ;; *) sep='?' ;; esac
+            while [ "$page" -le 50 ]; do
+              body="$(gh_api "${path}${sep}page=${page}")" || return 1
+              printf '%s\n' "$body"
+              count="$(jq '(if type == "array" then . else ([.[] | arrays] | .[0] // []) end) | length' <<<"$body")"
+              [ "${count:-0}" -gt 0 ] || break
+              page=$((page + 1))
+            done
+          }
+          gh_patch_body() {
+            jq -n --arg body "$2" '{body: $body}' \
+              | _gh_curl PATCH "$1" -H "Content-Type: application/json" --data-binary @- \
+              || { echo "::warning::GitHub update of $1 failed (non-fatal)" >&2; return 0; }
+          }
+          gh_comment() {
+            jq -n --arg body "$2" '{body: $body}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues/$1/comments" -H "Content-Type: application/json" --data-binary @- >/dev/null \
+              || echo "::warning::comment on issue #$1 failed (non-fatal)" >&2
+          }
+          gh_issue_create() {
+            jq -n --arg title "$1" --arg body "$2" '{title: $title, body: $body}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues" -H "Content-Type: application/json" --data-binary @- >/dev/null \
+              || echo "::warning::issue creation failed (non-fatal)" >&2
+          }
+          # gh_dispatch WORKFLOW REF key=value ...
+          gh_dispatch() {
+            local wf="$1" ref="$2"; shift 2
+            local inputs='{}' kv
+            for kv in "$@"; do inputs="$(jq -c --arg k "${kv%%=*}" --arg v "${kv#*=}" '. + {($k): $v}' <<<"$inputs")"; done
+            jq -n --arg ref "$ref" --argjson inputs "$inputs" '{ref: $ref, inputs: $inputs}' \
+              | _gh_curl POST "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/dispatches" -H "Content-Type: application/json" --data-binary @- >/dev/null
+          }
+          export -f _gh_curl gh_api gh_api_post gh_api_paginate gh_patch_body gh_comment gh_issue_create gh_dispatch
+          GHREST
       - name: Resolve batch inputs
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -68,7 +140,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           XRAY_COMMENT_ID: "5133453027"
         run: |
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+          source "$RUNNER_TEMP/gh-rest.sh"
+          gh_patch_body "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" "### SCOTUS Assembly X-Ray
 
           - Phase: **runner started**
           - Target: U.S. Reports Volumes **567 → 502**
@@ -146,8 +219,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           XRAY_COMMENT_ID: "5133453027"
         run: |
+          source "$RUNNER_TEMP/gh-rest.sh"
           set -euo pipefail
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+          gh_patch_body "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" "### SCOTUS Assembly X-Ray
 
           - Phase: **mirroring 66 official PDFs**
           - Target: U.S. Reports Volumes **567 → 502**
@@ -214,8 +288,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           XRAY_COMMENT_ID: "5133453027"
         run: |
+          source "$RUNNER_TEMP/gh-rest.sh"
           set -euo pipefail
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="### SCOTUS Assembly X-Ray
+          gh_patch_body "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" "### SCOTUS Assembly X-Ray
 
           - Phase: **mirroring and converting 66 official PDFs**
           - Target: U.S. Reports Volumes **567 → 502**
@@ -260,6 +335,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           XRAY_COMMENT_ID: "5133453027"
         run: |
+          source "$RUNNER_TEMP/gh-rest.sh"
           set -o pipefail
           RESULT_DIR="$(mktemp -d)"
           trap 'rm -rf "$RESULT_DIR"' EXIT
@@ -277,7 +353,7 @@ jobs:
             COMPLETED="$(find "$RESULT_DIR" -name '*.ok' -o -name '*.failed' | wc -l)"
             FAILURES="$(find "$RESULT_DIR" -name '*.failed' | wc -l)"
             BODY="$(printf '### SCOTUS Assembly X-Ray\n\n- Phase: `parallel staging`\n- Target: U.S. Reports Volumes **567 → 502**\n- PDF mirror and text conversion: complete\n- PDF-to-text workers: 4 on GitHub runner\n- Production staging workers: 8\n- Volumes completed: %s / 66\n- Failures: %s\n- Latest volume: %s (%s)\n- Run: %s/%s/actions/runs/%s\n- Last heartbeat: %s' "$COMPLETED" "$FAILURES" "$VOLUME" "$STATUS" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" --raw-field body="$BODY" >/dev/null || true
+            gh_patch_body "repos/$GITHUB_REPOSITORY/issues/comments/$XRAY_COMMENT_ID" "$BODY" >/dev/null || true
           }
           export -f run_volume
           export DO_USER DO_HOST JURVIO_IMAGE RESULT_DIR GH_TOKEN XRAY_COMMENT_ID GITHUB_REPOSITORY GITHUB_SERVER_URL GITHUB_RUN_ID
@@ -318,6 +394,7 @@ jobs:
           WORKFLOW_STATUS: ${{ job.status }}
           ENRICH_OUTCOME: ${{ steps.enrich.outcome }}
         run: |
+          source "$RUNNER_TEMP/gh-rest.sh"
           REPORT_EXIT=0
           if [ -z "${JURVIO_IMAGE:-}" ]; then
             QUEUE='{"report":"unavailable","reason":"active production image unresolved"}'
@@ -333,7 +410,7 @@ jobs:
           PUBLICATION_RESULT="$(tail -n 1 /tmp/scotus-publication.log 2>/dev/null || true)"
           test -n "$PUBLICATION_RESULT" || PUBLICATION_RESULT='{"cycle":"no publication output available"}'
           BODY="$(printf '### SCOTUS ingestion and publication\n\n- Status: **%s**\n- CourtListener enrichment: **%s**\n- Updated: `%s`\n- Run: %s/%s/actions/runs/%s\n\nOfficial-source batch:\n\n```json\n%s\n```\n\nPublication batch:\n\n```json\n%s\n```\n\nLive totals:\n\n```json\n%s\n```' "$WORKFLOW_STATUS" "$ENRICH_OUTCOME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$BATCH_RESULT" "$PUBLICATION_RESULT" "$QUEUE")"
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" --raw-field body="$BODY"
+          gh_patch_body "repos/$GITHUB_REPOSITORY/issues/comments/$REPORT_COMMENT_ID" "$BODY"
           exit "$REPORT_EXIT"
 
 # Trigger the repaired historical SCOTUS assembly after publication blockers were removed.

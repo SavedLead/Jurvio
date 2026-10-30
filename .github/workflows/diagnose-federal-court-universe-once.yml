@@ -1,0 +1,94 @@
+name: Diagnose federal court universe (once, read-only)
+
+# Strictly read-only. Enumerates the CourtListener court universe so an EXPLICIT,
+# authoritative court-ID registry can be built and verified against the real data:
+#  (U0) CL courts grouped by jurisdiction code (overview of the federal-code universe).
+#  (U1) every CL court carrying >=1 legal_case, with provider_court_id, name, jurisdiction,
+#       verification, draft case/opinion counts and published counts -- the set that must be
+#       classified (current / specialized / historical federal) and the eligibility base.
+#  (U2) CL courts whose jurisdiction code is federal (F/FD/FB/FBP/FS) but which carry no
+#       cases yet -- so the registry can include them for future ingestion.
+# No writes. This only informs the registry; it changes nothing.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-federal-court-universe
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Diagnose over private VPC
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' \
+            --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::no postgres container"; exit 1; }
+          q() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -c "SET statement_timeout='180s';" -c "$1" 2>&1; }
+
+          echo "=== (U0) CL courts grouped by jurisdiction code ==="
+          q "SELECT coalesce(ct.jurisdiction,'(null)') AS jurisdiction,
+                    coalesce(ct.verification::text,'(null)') AS verification,
+                    count(*) AS courts
+             FROM court ct JOIN provider p ON p.id=ct.provider_id
+             WHERE p.code='courtlistener'
+             GROUP BY 1,2 ORDER BY 3 DESC LIMIT 60;"
+
+          echo "=== (U1) every CL court carrying >=1 legal_case (classification + eligibility base) ==="
+          q "SELECT ct.provider_court_id AS id, left(ct.name,52) AS court_name,
+                    coalesce(ct.jurisdiction,'') AS jur, coalesce(ct.verification::text,'(null)') AS verif,
+                    count(DISTINCT c.id) FILTER (WHERE c.publication='draft') AS draft_cases,
+                    count(DISTINCT d.id) FILTER (WHERE c.publication='draft' AND d.publication='draft') AS draft_op_docs,
+                    count(DISTINCT c.id) FILTER (WHERE c.publication='published') AS pub_cases
+             FROM court ct JOIN provider p ON p.id=ct.provider_id
+             JOIN legal_case c ON c.court_id=ct.id
+             LEFT JOIN document d ON d.case_id=c.id
+             LEFT JOIN judicial_opinion jo ON jo.document_id=d.id
+             WHERE p.code='courtlistener'
+             GROUP BY 1,2,3,4 ORDER BY draft_op_docs DESC NULLS LAST, draft_cases DESC LIMIT 500;"
+
+          echo "=== (U2) CL courts with FEDERAL jurisdiction code but no cases yet (future scope) ==="
+          q "SELECT ct.provider_court_id AS id, left(ct.name,56) AS court_name,
+                    ct.jurisdiction AS jur, coalesce(ct.verification::text,'(null)') AS verif
+             FROM court ct JOIN provider p ON p.id=ct.provider_id
+             WHERE p.code='courtlistener'
+               AND upper(coalesce(ct.jurisdiction,'')) IN ('F','FD','FB','FBP','FS')
+               AND NOT EXISTS(SELECT 1 FROM legal_case c WHERE c.court_id=ct.id)
+             ORDER BY ct.jurisdiction, ct.provider_court_id LIMIT 300;"
+
+          echo "=== (U3) totals ==="
+          q "SELECT 'cl_courts_total='||count(*)
+                 ||' federal_code='||count(*) FILTER (WHERE upper(coalesce(jurisdiction,'')) IN ('F','FD','FB','FBP','FS'))
+                 ||' verified='||count(*) FILTER (WHERE verification::text='verified')
+             FROM court ct JOIN provider p ON p.id=ct.provider_id WHERE p.code='courtlistener';"
+          echo "=== DONE ==="
+          REMOTE

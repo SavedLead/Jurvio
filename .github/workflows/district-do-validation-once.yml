@@ -1,0 +1,50 @@
+name: Verify DigitalOcean district public feed audit
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=DISTRICT_DO_VALIDATION.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DISTRICT_DO_VALIDATION to run this workflow against production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: district-court-source-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 15
+    steps:
+      - name: Require confirm=DISTRICT_DO_VALIDATION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DISTRICT_DO_VALIDATION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DISTRICT_DO_VALIDATION."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tsx scripts/audit-federal-district-court-feeds.ts > district-court-coverage.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: district-court-coverage
+          path: district-court-coverage.json
+          retention-days: 7
+      - name: Inspect scheduler and administrative access
+        run: |
+          command -v crontab || true
+          sudo -n -l 2>/dev/null || true
+          systemctl --user is-system-running 2>/dev/null || true

@@ -1,8 +1,15 @@
 name: Appellate ingestion control
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=APPELLATE_INGESTION.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type APPELLATE_INGESTION to run this workflow against production"
+        required: true
+        type: string
       court:
         description: ca1..ca11, cadc, cafc, or all
         required: true
@@ -10,7 +17,7 @@ on:
       concurrency:
         description: Concurrent circuit workers
         required: true
-        default: "13"
+        default: '13'
 
 permissions:
   contents: read
@@ -21,10 +28,18 @@ concurrency:
 
 jobs:
   control:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 20
     steps:
+      - name: Require confirm=APPELLATE_INGESTION
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "APPELLATE_INGESTION" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=APPELLATE_INGESTION."
+            exit 1
+          fi
       - name: Configure SSH
         env:
           DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}

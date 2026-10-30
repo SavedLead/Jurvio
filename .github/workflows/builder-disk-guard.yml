@@ -1,0 +1,105 @@
+name: Builder disk guard (reclaim runner work dirs and Docker cache)
+
+# builder-01 hosts three runners (jurvio-builder-01/-02/-03) on one 77 GB disk.
+# The bulk-load integration tests in CI stop on purpose below 30% free disk
+# (BULK_DOCKET_DISK_FLOOR), so this keeps the disk above that:
+#   * every 2 hours (schedule) it acts only when free disk is under 35%;
+#   * by hand with confirm=RECLAIM_BUILDER_DISK it always acts.
+# What it removes, and only that:
+#   * the _work folder contents of jurvio-builder-02/-03, each only while that
+#     runner is idle per the GitHub API and never the runner running this job
+#     (they are rebuilt by the next job);
+#   * Docker build cache (default builder and every buildx builder) and unused
+#     images, both older than 24h. Never volumes, never containers, so running
+#     containers and their images are untouched;
+#   * runner _diag logs older than 7 days.
+# It never touches jurvio-builder-01's _work, config or service, never stops a
+# runner, and never touches other droplets.
+
+on:
+  # Approved maintenance exception (David Rosenberg, 2026-10-30), listed in
+  # tests/workflow-triggers.test.ts. Scheduled runs skip the confirm check.
+  schedule:
+    - cron: "41 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RECLAIM_BUILDER_DISK to reclaim disk on builder-01 now"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-builder-disk-guard
+  cancel-in-progress: false
+
+jobs:
+  reclaim:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      RUNNER_REG_PAT: ${{ secrets.RUNNER_REG_PAT }}
+      EVENT_NAME: ${{ github.event_name }}
+      THRESHOLD_PCT: "35"
+    steps:
+      - name: Require confirm=RECLAIM_BUILDER_DISK on manual runs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ] && [ "$CONFIRM" != "RECLAIM_BUILDER_DISK" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RECLAIM_BUILDER_DISK."
+            exit 1
+          fi
+      - name: Reclaim disk
+        run: |
+          set -uo pipefail
+          free_pct() { df -P / | awk 'NR==2 {printf "%.1f", $4 * 100 / $2}'; }
+          rhome="$(getent passwd "$(id -un)" | cut -d: -f6)"
+          before="$(free_pct)"
+          echo "host=$(hostname) job_runner=$RUNNER_NAME free_before=${before}%"
+          echo "--- sizes before ---"
+          du -sh /opt/actions-runner/_work "$rhome"/actions-runner-*/_work /opt/actions-runner/_diag "$rhome"/actions-runner-*/_diag 2>/dev/null
+          docker system df 2>/dev/null || true
+
+          if [ "$EVENT_NAME" = "schedule" ] && awk -v f="$before" -v t="$THRESHOLD_PCT" 'BEGIN {exit !(f >= t)}'; then
+            echo "free ${before}% >= ${THRESHOLD_PCT}%: nothing to do"
+            echo "### Builder disk guard: free ${before}% (>= ${THRESHOLD_PCT}%), no action" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          busy_of() {
+            curl -fsS -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $RUNNER_REG_PAT" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" \
+              | jq -r --arg n "$1" '[.runners[] | select(.name == $n) | .busy][0] // "unknown"'
+          }
+
+          echo "--- runner work folders (jurvio-builder-02/-03 only, idle only) ---"
+          for n in jurvio-builder-02 jurvio-builder-03; do
+            work="$rhome/actions-runner-$n/_work"
+            [ -d "$work" ] || { echo "$n: no _work"; continue; }
+            if [ "$n" = "$RUNNER_NAME" ]; then echo "$n: runs this job, skipped"; continue; fi
+            busy="$(busy_of "$n" 2>/dev/null || echo unknown)"
+            if [ "$busy" != "false" ]; then echo "$n: busy=$busy, skipped"; continue; fi
+            find "$work" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+            echo "$n: _work emptied"
+          done
+
+          echo "--- Docker: build cache and unused images older than 24h (no volumes, no containers) ---"
+          docker builder prune -af --filter until=24h 2>&1 | tail -1
+          for c in $(docker ps --filter name=buildx_buildkit_ --format '{{.Names}}'); do
+            b="${c#buildx_buildkit_}"; b="${b%0}"
+            docker buildx prune -af --builder "$b" --filter until=24h 2>&1 | tail -1 || true
+          done
+          docker image prune -af --filter until=24h 2>&1 | tail -1
+
+          echo "--- runner _diag logs older than 7 days ---"
+          find /opt/actions-runner/_diag "$rhome"/actions-runner-*/_diag -maxdepth 1 -type f -name '*.log' -mtime +7 -print -delete 2>/dev/null | wc -l
+
+          after="$(free_pct)"
+          echo "free_before=${before}% free_after=${after}%"
+          docker system df 2>/dev/null || true
+          echo "### Builder disk guard: free ${before}% -> ${after}%" >> "$GITHUB_STEP_SUMMARY"

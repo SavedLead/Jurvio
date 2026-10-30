@@ -6,14 +6,39 @@ services:
     restart: unless-stopped
     # Raise max_connections (default 100) so the app + workers + every spawned
     # scheduler child (each with its own pool) have aggregate connection headroom
-    # for the higher-concurrency ingestion/publication lanes. Modest shared_buffers
-    # bump for the resized box; both are safe well within 8 GB.
+    # for the higher-concurrency ingestion/publication lanes. jurvio-web-01 is
+    # s-8vcpu-16gb-amd (16 GB) and also runs the Node workers, so Postgres does
+    # not get the usual 25% (4 GB) shared_buffers. 2 GB cache, 4 MB work_mem
+    # (200 connections cannot each take more), planner hint 8 GB.
     command:
       - "postgres"
       - "-c"
       - "max_connections=200"
       - "-c"
-      - "shared_buffers=512MB"
+      - "shared_buffers=2GB"
+      - "-c"
+      - "effective_cache_size=8GB"
+      - "-c"
+      - "work_mem=4MB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      # DO volumes are SSD. The default random_page_cost=4 makes the planner
+      # prefer sequential scans of opinion text.
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      # One worker query was gathering enough parallel workers to pin postgres
+      # at 800% CPU. Cap the server; worker sessions set gather to 0.
+      - "max_parallel_workers_per_gather=2"
+      - "-c"
+      - "max_parallel_workers=2"
+    # Parallel queries allocate dynamic shared-memory segments in /dev/shm. Docker's
+    # 64MB default is too small for the heavier federal publication candidate query and
+    # fails it with "could not resize shared memory segment ... No space left on device"
+    # (SQLSTATE 53100). 1g gives ample headroom without touching shared_buffers.
+    shm_size: "1g"
     env_file: .env.production
     environment:
       # Render timestamps in Eastern time (EST/EDT). Postgres stores timestamptz
@@ -72,6 +97,8 @@ services:
       TZ: America/New_York
       NODE_ENV: production
       JURVIO_SCHEDULER_LANE: core
+      JURVIO_DB_WORKER: "1"
+      JURVIO_DB_POOL_MAX: "2"
       RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
       JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
     # Workers run the scheduler, not the web server, so the image's default HTTP
@@ -100,6 +127,8 @@ services:
       TZ: America/New_York
       NODE_ENV: production
       JURVIO_SCHEDULER_LANE: coa
+      JURVIO_DB_WORKER: "1"
+      JURVIO_DB_POOL_MAX: "2"
       RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
       JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
     # See worker-core: health is the scheduler heartbeat, not an HTTP endpoint.
@@ -116,6 +145,69 @@ services:
       - jurvio_artifacts:/var/lib/jurvio/artifacts
     networks: [private]
 
+  # Citation linking (citation-graph sync, missing-case discovery, cited-opinion
+  # publication, daily bulk resolution) in its own scheduler so it never competes
+  # with ingestion for scheduler slots or start-up. Its jobs hold one database
+  # connection each (run-case-citations uses max:1 under a session advisory lock),
+  # so the extra container adds only a few connections. See ADR 0076.
+  worker-citations:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    command: ["node", "jobs/run-production-scheduler.mjs"]
+    env_file: .env.production
+    environment:
+      TZ: America/New_York
+      NODE_ENV: production
+      JURVIO_SCHEDULER_LANE: citations
+      JURVIO_DB_WORKER: "1"
+      JURVIO_DB_POOL_MAX: "2"
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    # See worker-core: health is the scheduler heartbeat, not an HTTP endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "hb=$$(cat /var/lib/jurvio/artifacts/scheduler/citations.alive 2>/dev/null || echo 0); [ $$(( $$(date +%s) - hb )) -lt 180 ]"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
+  # Sole federal opinion-chunk importer. The ledger in federal_import_chunk is the
+  # resume cursor: a crash (restart: on-failure) reclaims an abandoned 'importing'
+  # row and continues. A clean exit (queue drained, or chunk files missing) stays
+  # stopped so this does not hot-loop. Chunk files must live on the artifacts
+  # volume; the legacy container-layer path is copied onto that volume at release.
+  # Heap is capped at 768MB — the previous detached launcher set 8GB inside
+  # worker-core and could OOM the scheduler container on this box.
+  worker-federal-import:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: on-failure:20
+    init: true
+    command: ["node", "jobs/import-federal-opinion-chunks.mjs", "--reclaim-importing=all"]
+    env_file: .env.production
+    environment:
+      TZ: America/New_York
+      NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=768"
+      JURVIO_DB_WORKER: "1"
+      JURVIO_DB_POOL_MAX: "2"
+      JURVIO_FEDERAL_CHUNK_SNAPSHOT: ${JURVIO_FEDERAL_CHUNK_SNAPSHOT:-2026-09-30}
+      JURVIO_FEDERAL_CHUNK_RECLAIM: all
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
   worker-supervisor:
     image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
     restart: unless-stopped
@@ -125,6 +217,8 @@ services:
     environment:
       TZ: America/New_York
       NODE_ENV: production
+      JURVIO_DB_WORKER: "1"
+      JURVIO_DB_POOL_MAX: "2"
       RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
       JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
     # Health is the supervisor liveness heartbeat file (refreshed every tick),

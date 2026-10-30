@@ -84,6 +84,12 @@
 .opinionTextSurface[data-reader-width="wide"] .opinionBody { max-width: 920px; }
 .opinionTextSurface .opinionBody { overflow-wrap: break-word; }
 .readerMetadataRail .railFacts dd { font-size: 13px; }
+.citationCount { margin-left: 6px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 0.7em; font-weight: 650; vertical-align: middle; font-variant-numeric: tabular-nums; }
+.citationSummary, .citationRail > p { color: var(--muted); font-size: 13px; }
+.citationPendingList { margin-top: 10px; font-size: 13px; }
+.citationPendingList summary { cursor: pointer; color: var(--muted); font-weight: 650; }
+.citationPendingList li { color: var(--muted); }
+.jurvioCitationPending { border-bottom: 1px dashed var(--muted); cursor: help; }
 .caseCaptionVersus { font-family: "Courier New", ui-monospace, monospace; font-size: .82em; font-weight: 700; letter-spacing: -.08em; }
 .caseCaptionVersus > span { color: var(--accent); }
 @media (min-width: 901px) { .caseShell > .caseNavDesktop { flex-wrap: wrap; overflow: visible; } }
@@ -129,6 +135,24 @@
   .readerPublicTools button { min-height: 46px; }
   .opinionTextSurface[data-reader-size="large"] .opinionBody { font-size: 19px; }
   .opinionTextSurface .opinionBody { max-width: 100% !important; padding-right: 18px; padding-left: 18px; }
+}
+.opinionPendingNotice {
+  margin: 0 0 18px;
+  padding: 16px 18px;
+  border: 1px solid #e4d3b4;
+  border-left: 5px solid #8a5a12;
+  border-radius: 8px;
+  background: #fff8ee;
+}
+.opinionPendingNotice h2 {
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+}
+.opinionPendingNotice p {
+  margin: 0;
+  color: #3d3426;
+  line-height: 1.55;
 }
 @media (max-width: 380px) {
   .caseMeta { grid-template-columns: 1fr; }

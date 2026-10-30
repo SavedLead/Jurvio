@@ -15,10 +15,17 @@ name: Provision backup bucket (once)
 # the first nightly upload.
 
 on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=PROVISION_BACKUP_BUCKET.
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type PROVISION_BACKUP_BUCKET to run this workflow against production"
+        required: true
+        type: string
       bucket:
-        description: "Bucket name (default: JURVIO_BACKUP_BUCKET, else jurvio-db-backups)"
+        description: 'Bucket name (default: JURVIO_BACKUP_BUCKET, else jurvio-db-backups)'
         required: false
         type: string
 
@@ -40,6 +47,14 @@ jobs:
       DB_HOST: 10.116.0.2
       BUCKET: ${{ inputs.bucket }}
     steps:
+      - name: Require confirm=PROVISION_BACKUP_BUCKET
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "PROVISION_BACKUP_BUCKET" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PROVISION_BACKUP_BUCKET."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail

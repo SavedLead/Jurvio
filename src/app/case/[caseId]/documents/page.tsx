@@ -3,9 +3,15 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { db } from "@/db/client";
-import { getPublicCase } from "@/modules/cases/application/get-public-case";
+import { loadRequestPublicCase } from "@/app/case/load-public-case";
 import { listPublicDocuments } from "@/modules/cases/application/list-public-case-sections";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import {
+  OPINION_TEXT_PENDING_BODY,
+  OPINION_TEXT_PENDING_HEADING,
+  opinionTextIsPending,
+} from "@/modules/cases/domain/opinion-availability";
+import { robotsFor } from "@/lib/seo/indexing";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 
@@ -15,7 +21,7 @@ interface DocumentsPageProps { params: Promise<{ caseId: string }> }
 
 async function load(params: DocumentsPageProps["params"]) {
   const { caseId } = await params;
-  const legalCase = await getPublicCase(db(), caseId);
+  const legalCase = await loadRequestPublicCase(caseId);
   return legalCase ? { caseId, legalCase } : null;
 }
 
@@ -27,6 +33,7 @@ export async function generateMetadata({ params }: DocumentsPageProps): Promise<
     title: [caption, "Documents", loaded.legalCase.docketNumber, loaded.legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified court documents currently available for ${caption}, docket ${loaded.legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${loaded.caseId}/documents` },
+    robots: robotsFor(loaded.legalCase.hasReadableOpinion),
   };
 }
 
@@ -47,6 +54,12 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
     <main className="shell caseShell">
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn} />
+      {opinionTextIsPending(legalCase.hasReadableOpinion) ? (
+        <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
+          <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
+          <p>{OPINION_TEXT_PENDING_BODY}</p>
+        </section>
+      ) : null}
       {records.length > 0 ? (
         <section className="contentSection availableDocuments">
           <p className="sectionKicker">Available court materials</p>

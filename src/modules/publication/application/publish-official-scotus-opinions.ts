@@ -159,6 +159,37 @@ export async function publishVerifiedOfficialScotusOpinions(
         let existing = exactMetadataMatches[0];
 
         if (!existing) {
+          // The live docket feed may already hold this case as a draft keyed by
+          // its docket ("26-1", identifier scotus_docket) with no citation or
+          // Term yet. Adopt that row instead of creating a second case for the
+          // same modern docket. Historical dockets never carry that identifier.
+          // The update below (the existing-case branch) then gives it the
+          // citation and Term and publishes it, exactly as for any matched case.
+          const [docketDraft] = await tx<{ case_id: string; case_public_id: string; case_caption: string }[]>`
+            SELECT legal_case.id AS case_id, legal_case.public_id AS case_public_id, legal_case.caption AS case_caption
+            FROM case_identifier identifier
+            JOIN legal_case ON legal_case.id = identifier.case_id
+            JOIN court ON court.id = legal_case.court_id
+            WHERE identifier.identifier_type = 'scotus_docket'
+              AND identifier.identifier_value = ${candidate.docket_number.trim()}
+              AND lower(court.provider_court_id) = 'scotus'
+              AND legal_case.official_citation IS NULL
+              AND legal_case.supreme_court_term IS NULL
+              AND legal_case.publication = 'draft'
+            ORDER BY legal_case.created_at LIMIT 1
+            FOR UPDATE OF legal_case
+          `;
+          if (docketDraft) {
+            existing = docketDraft;
+            await tx`
+              INSERT INTO case_identifier (case_id, provider_id, identifier_type, identifier_value)
+              VALUES (${docketDraft.case_id}, ${candidate.provider_id}, 'scotus_official_opinion', ${candidate.source_record_id})
+              ON CONFLICT (provider_id, identifier_type, identifier_value) DO UPDATE SET case_id = EXCLUDED.case_id
+            `;
+          }
+        }
+
+        if (!existing) {
           const [court] = await tx<{ id: string }[]>`
             INSERT INTO court (
               public_id, provider_id, provider_court_id, name, short_name,

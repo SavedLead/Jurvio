@@ -1,0 +1,95 @@
+name: Set federal publication pause (once)
+
+# Pause or resume BOTH federal publishers by editing .env.production on the production box:
+#  - JURVIO_PAUSE_CITATION_PUBLISH   (cited publisher, run-case-citations)
+#  - JURVIO_PAUSE_FEDERAL_PUBLICATION (deterministic publisher, publication-quarantine)
+# mode=pause  : ensure both flags =1 (a following production deploy recreates the worker and
+#               picks them up, so both resident publication lanes start paused).
+# mode=resume : remove both flags and recreate ONLY worker-core so publication resumes.
+# The file is backed up before every edit. This changes production runtime config, so it is
+# dispatched deliberately as part of the approved controlled rollout.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=SET_FEDERAL_PUBLICATION_PAUSE.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type SET_FEDERAL_PUBLICATION_PAUSE to run this workflow against production"
+        required: true
+        type: string
+      mode:
+        description: pause or resume
+        required: true
+        type: choice
+        options:
+        - pause
+        - resume
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-production
+  cancel-in-progress: false
+
+jobs:
+  set-pause:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      MODE: ${{ inputs.mode }}
+    steps:
+      - name: Require confirm=SET_FEDERAL_PUBLICATION_PAUSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "SET_FEDERAL_PUBLICATION_PAUSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=SET_FEDERAL_PUBLICATION_PAUSE."
+            exit 1
+          fi
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Edit pause flags over private VPC
+        run: |
+          set -euo pipefail
+          case "$MODE" in pause|resume) ;; *) echo "::error::mode must be pause|resume"; exit 1;; esac
+          ssh "$INGESTION_USER@$DB_HOST" "MODE='$MODE' bash -se" <<'REMOTE'
+          set -euo pipefail
+          ENVF=/opt/jurvio/.env.production
+          COMPOSE=/opt/jurvio/docker-compose.production.yml
+          [ -f "$ENVF" ] || { echo "::error::$ENVF not found"; exit 1; }
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a "$ENVF" "${ENVF}.bak-${ts}"
+          echo "backed up $ENVF -> ${ENVF}.bak-${ts}"
+          # Always strip any existing copies of both flags first (idempotent).
+          sudo -n sed -i '/^JURVIO_PAUSE_CITATION_PUBLISH=/d;/^JURVIO_PAUSE_FEDERAL_PUBLICATION=/d' "$ENVF"
+          if [ "$MODE" = "pause" ]; then
+            printf 'JURVIO_PAUSE_CITATION_PUBLISH=1\nJURVIO_PAUSE_FEDERAL_PUBLICATION=1\n' | sudo -n tee -a "$ENVF" >/dev/null
+            echo "paused: both flags set to 1 (effective on next worker recreate / deploy)"
+          else
+            echo "resume: both flags removed; recreating worker-core"
+            sudo -n docker compose -f "$COMPOSE" up -d worker-core
+          fi
+          echo "--- current pause flags in $ENVF ---"
+          grep -E '^JURVIO_PAUSE_(CITATION_PUBLISH|FEDERAL_PUBLICATION)=' "$ENVF" || echo "(none present)"
+          echo "=== DONE ==="
+          REMOTE

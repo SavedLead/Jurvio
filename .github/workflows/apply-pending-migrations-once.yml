@@ -11,7 +11,15 @@ name: Apply pending migrations (once)
 # Runs on the self-hosted builder and reaches jurvio-web-01 over the private VPC.
 
 on:
-  workflow_dispatch: {}
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
+  # pull_request, workflow_run or schedule trigger may start this workflow;
+  # every job fails closed unless confirm=APPLY_PENDING_MIGRATIONS.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY_PENDING_MIGRATIONS to run this workflow against production"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -30,6 +38,14 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
     steps:
+      - name: Require confirm=APPLY_PENDING_MIGRATIONS
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "APPLY_PENDING_MIGRATIONS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=APPLY_PENDING_MIGRATIONS."
+            exit 1
+          fi
       - name: Configure SSH
         run: |
           set -euo pipefail
