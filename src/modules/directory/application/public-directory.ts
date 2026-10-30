@@ -1,4 +1,6 @@
 import type postgres from "postgres";
+import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
+import { isMissingTable } from "./public-directory-stats";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -137,7 +139,41 @@ export async function getPublicEntity(
   return { ...entity, appearances };
 }
 
+const displayableCourt = `
+  COALESCE((
+    SELECT decision.displayable FROM publication_decision decision
+    WHERE decision.object_type = 'court' AND decision.object_id = court.id
+    ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+  ), true)
+`;
+
+/**
+ * Court directory from court_public_stats (refreshed by the citations-lane
+ * `public-directory-stats` job). Falls back to the live GROUP BY when the
+ * table is missing or not refreshed yet.
+ */
 export async function listPublicCourts(sql: Sql, limit = 100): Promise<CourtDirectorySummary[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 200);
+  try {
+    const rows = await sql<CourtDirectorySummary[]>`
+      SELECT court.public_id AS "publicId", court.name, court.short_name AS "shortName",
+        court.jurisdiction, stats.case_count AS "caseCount",
+        stats.latest_case_date::text AS "latestCaseDate"
+      FROM court_public_stats stats
+      JOIN court ON court.id = stats.court_id
+      WHERE stats.case_count > 0
+        AND ${sql.unsafe(displayableCourt)}
+      ORDER BY stats.case_count DESC, court.name
+      LIMIT ${safeLimit}
+    `;
+    if (rows.length) return rows;
+  } catch (error) {
+    if (!isMissingTable(error)) throw error;
+  }
+  return listPublicCourtsLive(sql, safeLimit);
+}
+
+export async function listPublicCourtsLive(sql: Sql, limit = 100): Promise<CourtDirectorySummary[]> {
   const safeLimit = Math.min(Math.max(limit, 1), 200);
   return sql<CourtDirectorySummary[]>`
     SELECT court.public_id AS "publicId", court.name, court.short_name AS "shortName",
@@ -145,18 +181,64 @@ export async function listPublicCourts(sql: Sql, limit = 100): Promise<CourtDire
       max(legal_case.filed_on)::text AS "latestCaseDate"
     FROM court JOIN legal_case ON legal_case.court_id = court.id
     WHERE ${sql.unsafe(displayableCase)}
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'court' AND decision.object_id = court.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), true)
+      AND ${sql.unsafe(displayableCourt)}
     GROUP BY court.id
     ORDER BY count(legal_case.id) DESC, court.name
     LIMIT ${safeLimit}
   `;
 }
 
+const visibleCaseById = latestPublicationColumnSql("displayable", "legal_case", "legal_case.id");
+
+/**
+ * Court profile. The count, latest date and newest-100 list come from
+ * court_public_stats; the court row, its gate and each listed case's
+ * visibility are read live, so an unpublished case never shows. A court with
+ * no stats row (new court, table not migrated) uses the live query.
+ */
 export async function getPublicCourt(sql: Sql, publicId: string): Promise<CourtDirectoryProfile | null> {
+  type Row = Omit<CourtDirectoryProfile, "cases" | "caseCount" | "latestCaseDate"> & {
+    caseCount: number | null; latestCaseDate: string | null; recentCaseIds: string[] | null;
+  };
+  let court: Row | undefined;
+  try {
+    [court] = await sql<Row[]>`
+      SELECT court.public_id AS "publicId", court.name, court.short_name AS "shortName",
+        court.jurisdiction, court.source_url AS "sourceUrl", court.verification::text AS verification,
+        stats.case_count AS "caseCount", stats.latest_case_date::text AS "latestCaseDate",
+        stats.recent_case_ids::text[] AS "recentCaseIds",
+        COALESCE((
+          SELECT decision.indexable FROM publication_decision decision
+          WHERE decision.object_type = 'court' AND decision.object_id = court.id
+          ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+        ), false) AS indexable
+      FROM court
+      LEFT JOIN court_public_stats stats ON stats.court_id = court.id
+      WHERE court.public_id = ${publicId}
+        AND ${sql.unsafe(displayableCourt)}
+      LIMIT 1
+    `;
+  } catch (error) {
+    if (!isMissingTable(error)) throw error;
+    return getPublicCourtLive(sql, publicId);
+  }
+  if (!court) return null;
+  if (court.caseCount === null || court.recentCaseIds === null) return getPublicCourtLive(sql, publicId);
+  if (court.caseCount === 0) return null;
+  const { recentCaseIds, caseCount, ...profile } = court;
+  const cases = recentCaseIds.length ? await sql<CourtDirectoryProfile["cases"]>`
+    SELECT legal_case.public_id AS "publicId", legal_case.caption,
+      legal_case.docket_number AS "docketNumber", legal_case.filed_on::text AS "filedOn"
+    FROM unnest(${recentCaseIds}::uuid[]) WITH ORDINALITY AS recent(id, ord)
+    JOIN legal_case ON legal_case.id = recent.id
+    WHERE legal_case.publication = 'published'
+      AND ${sql.unsafe(visibleCaseById)}
+    ORDER BY recent.ord
+  ` : [];
+  return { ...profile, caseCount, cases };
+}
+
+export async function getPublicCourtLive(sql: Sql, publicId: string): Promise<CourtDirectoryProfile | null> {
   const [court] = await sql<Array<Omit<CourtDirectoryProfile, "cases">>>`
     SELECT court.public_id AS "publicId", court.name, court.short_name AS "shortName",
       court.jurisdiction, court.source_url AS "sourceUrl", court.verification::text AS verification,
@@ -168,11 +250,7 @@ export async function getPublicCourt(sql: Sql, publicId: string): Promise<CourtD
       ), false) AS indexable
     FROM court JOIN legal_case ON legal_case.court_id = court.id
     WHERE court.public_id = ${publicId} AND ${sql.unsafe(displayableCase)}
-      AND COALESCE((
-        SELECT decision.displayable FROM publication_decision decision
-        WHERE decision.object_type = 'court' AND decision.object_id = court.id
-        ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), true)
+      AND ${sql.unsafe(displayableCourt)}
     GROUP BY court.id LIMIT 1
   `;
   if (!court) return null;

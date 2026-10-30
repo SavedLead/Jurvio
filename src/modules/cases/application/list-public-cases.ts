@@ -78,7 +78,28 @@ function clean(value: string | null | undefined) {
   return value?.trim().replace(/\s+/g, " ") || null;
 }
 
+/**
+ * Court facet for /cases from court_public_stats (refreshed off the request
+ * path by `public-directory-stats`). Falls back to the live GROUP BY over every
+ * published case when the table is missing or not refreshed yet.
+ */
 export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
+  try {
+    const rows = await sql<CourtFacet[]>`
+      SELECT court.public_id AS value, court.name AS label, stats.case_count AS count
+      FROM court_public_stats stats
+      JOIN court ON court.id = stats.court_id
+      WHERE stats.case_count > 0
+      ORDER BY stats.case_count DESC, court.name
+    `;
+    if (rows.length) return rows;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code !== "42P01") throw error;
+  }
+  return listPublicCaseCourtsLive(sql);
+}
+
+export async function listPublicCaseCourtsLive(sql: Sql): Promise<CourtFacet[]> {
   return sql<CourtFacet[]>`
     SELECT court.public_id AS value, court.name AS label, count(*)::int AS count
     FROM legal_case

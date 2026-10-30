@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { cache } from "react";
 import type { Metadata, Route } from "next";
 import { db } from "@/db/client";
 import { calculateOutcomeRates, getPublicJudge } from "@/modules/judges/application/public-judge-analytics";
@@ -9,9 +10,12 @@ import { robotsFor } from "@/lib/seo/indexing";
 
 export const dynamic = "force-dynamic";
 
+// generateMetadata and the page share one set of judge queries per request.
+const loadJudge = cache((publicId: string) => getPublicJudge(db(), publicId));
+
 export async function generateMetadata({ params }: { params: Promise<{ publicId: string }> }): Promise<Metadata> {
   const { publicId } = await params;
-  const judge = await getPublicJudge(db(), publicId);
+  const judge = await loadJudge(publicId);
   if (!judge) return { title: "Judge profile not found", robots: { index: false, follow: false } };
   return {
     title: `${judge.displayName} — Federal Judge Analytics`,
@@ -29,7 +33,7 @@ function money(value: number | null) {
 
 export default async function JudgePage({ params }: { params: Promise<{ publicId: string }> }) {
   const { publicId } = await params;
-  const judge = await getPublicJudge(db(), publicId);
+  const judge = await loadJudge(publicId);
   if (!judge) notFound();
   const rates = calculateOutcomeRates(judge);
   const maxNos = Math.max(...judge.natureOfSuit.map((item) => item.caseCount), 1);

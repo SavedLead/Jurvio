@@ -64,6 +64,18 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-case-citation-counts.mjs"],
   },
   {
+    // Fills court_public_stats and judge_public_stats so /courts, /courts/[id],
+    // the /cases court facet and /judges read stored counts instead of
+    // aggregating every published case per request. Small committed batches
+    // with a pause between them, one connection, own advisory lock. ADR 0080.
+    lane: "citations",
+    name: "public-directory-stats",
+    initialDelayMs: 6 * minute,
+    intervalMs: 30 * minute,
+    budgetMs: 25 * minute,
+    command: ["jobs/refresh-public-directory-stats.mjs"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
