@@ -276,6 +276,27 @@ describe("workflow trigger policy", () => {
     }
   });
 
+  it("the nightly bulk docket load is dispatch-only, gated, resumable and bounded", () => {
+    const file = "load-courtlistener-bulk-dockets-nightly.yml";
+    const workflow = parsed.get(file)!;
+    expect(Object.keys(triggers(workflow))).toEqual(["workflow_dispatch"]);
+    const inputs = dispatchInputs(workflow) as Record<string, Input & { default?: string }>;
+    expect(Object.keys(inputs).sort()).toEqual(["allow_anytime", "confirm", "row_limit", "snapshot_date"]);
+    expect(inputs.allow_anytime?.default).toBe("false");
+    expect(Number(inputs.row_limit?.default)).toBeGreaterThanOrEqual(5_000_000);
+    const job = workflow.jobs!.load!;
+    expect(runnerLabels(job)).toContain('"builder"');
+    expect(job.steps?.[0]?.run).toContain('"$CONFIRM" != "LOAD_DOCKETS"');
+    const script = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
+    expect(script).toContain("--budget-minutes=90");
+    expect(script).toContain("--reset-checkpoint=false");
+    expect(script).toContain("--include-bankruptcy=false");
+    expect(script).toContain("remain / total < 0.30");
+    // Cached between runs; deleted only when the checkpoint says complete.
+    expect(script).toMatch(/cache=hit/);
+    expect(script).toMatch(/"stopped":"complete"'; then\s+done_flag=true[\s\S]*rm -f "\$file"/);
+  });
+
   it("helper rejects a step that does not compare confirm", () => {
     expect(isConfirmGate({ run: "echo hi", env: { CONFIRM: "${{ inputs.confirm }}" } })).toBe(false);
     expect(
