@@ -1,3 +1,5 @@
+import { robotsBlocksGoogleSearch } from "./robots-google-blocked.mjs";
+
 const token = process.env.GOOGLE_OAUTH_ACCESS_TOKEN?.trim();
 const serviceAccount = process.env.GCP_SERVICE_ACCOUNT?.trim() || "jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com";
 const siteUrl = process.env.GSC_SITE_URL?.trim() || "sc-domain:jurvio.com";
@@ -35,7 +37,9 @@ console.log(`Search Console connection verified for ${siteUrl} as ${serviceAccou
 
 const robots = await fetch("https://jurvio.com/robots.txt");
 const robotsText = robots.ok ? await robots.text() : "";
-if (!robots.ok || /Disallow:\s*\/\s*$/im.test(robotsText)) {
+// Only the Googlebot / "*" group counts; Cloudflare's managed AI-crawler blocks
+// ("User-agent: GPTBot / Disallow: /") used to make this skip every run.
+if (!robots.ok || robotsBlocksGoogleSearch(robotsText)) {
   console.log("Jurvio is still pre-launch/noindex; sitemap submission and URL inspection skipped safely.");
   process.exit(0);
 }
