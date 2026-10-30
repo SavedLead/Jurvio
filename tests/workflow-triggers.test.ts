@@ -39,10 +39,18 @@ const AUTO_TRIGGERS: Record<string, readonly string[]> = {
   // on their original schedules; manual runs still need confirm.
   "outbox-maintenance.yml": ["schedule"],
   "verify-backup-restore.yml": ["schedule"],
+  // Keeps builder-01's disk above the 30% floor the bulk-load tests need
+  // (approved by David Rosenberg, 2026-10-30). Acts only under 35% free.
+  "builder-disk-guard.yml": ["schedule"],
 };
 
 /** Scheduled workflows whose confirm gate must skip schedule events (and only those). */
-const SCHEDULED_WITH_CONFIRM = new Set(["lane-watchdog.yml", "outbox-maintenance.yml", "verify-backup-restore.yml"]);
+const SCHEDULED_WITH_CONFIRM = new Set([
+  "lane-watchdog.yml",
+  "outbox-maintenance.yml",
+  "verify-backup-restore.yml",
+  "builder-disk-guard.yml",
+]);
 
 /** Workflows checked to only read. Everything else must have a confirm gate. */
 const READ_ONLY = new Set([
@@ -355,6 +363,14 @@ describe("workflow trigger policy", () => {
     const opinions = (jobs.opinions!.steps ?? []).map((step) => step.run ?? "").join("\n");
     // Opinion text waits for complete docket and cluster checkpoints.
     expect(opinions).toMatch(/\[ "\$dockets_done" != "complete" \] \|\| \[ "\$clusters_done" != "complete" \]/);
+  });
+
+  it("the builder disk guard never prunes volumes or containers and never touches builder-01's work dir", () => {
+    const script = (parsed.get("builder-disk-guard.yml")!.jobs!.reclaim!.steps ?? []).map((step) => step.run ?? "").join("\n");
+    expect(script).not.toMatch(/volume prune|system prune|container prune|docker rm\b|--volumes/);
+    expect(script).not.toMatch(/rm -rf[^\n]*\/opt\/actions-runner\/_work/);
+    expect(script).toContain('[ "$busy" != "false" ]');
+    expect(script).toContain('"$n" = "$RUNNER_NAME"');
   });
 
   it("helper rejects a step that does not compare confirm", () => {
