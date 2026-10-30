@@ -1,0 +1,145 @@
+name: Publish Tier 1 + Tier 2 cases (once)
+
+# Tiered publishing, step 1 (approved by David Rosenberg 2026-10-30: "Publish only
+# Tiers 1 and 2 for now"). Scope is fixed to Tier 1 (opinion cluster or case
+# citations) and Tier 2 (filed in the last 90 days) drafts that pass every gate in
+# scripts/ops/tiers-1-2-candidates.sql. Never Tier 3/4, never restricted, sealed or
+# soft-held cases, never an already-published case, never an environment flag
+# (the federal metadata publication switch is untouched).
+#
+#   mode=dry_run   confirm=DRY_RUN_TIERS_1_2    counts only; nothing is written
+#   mode=publish   confirm=PUBLISH_TIERS_1_2    recount, abort if either tier differs
+#                                               from expected_t1/expected_t2 by > 2%,
+#                                               record every case in
+#                                               publication_tier_release, then publish
+#                                               in committed batches
+#   mode=unpublish confirm=UNPUBLISH_TIERS_1_2  undo the release recorded under
+#                                               revert_run_id (gh-<run id>)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "DRY_RUN_TIERS_1_2, PUBLISH_TIERS_1_2 or UNPUBLISH_TIERS_1_2 (must match mode)"
+        required: true
+        type: string
+      mode:
+        description: dry_run, publish or unpublish
+        required: true
+        type: choice
+        default: dry_run
+        options:
+          - dry_run
+          - publish
+          - unpublish
+      expected_t1:
+        description: Tier 1 publishable count from diagnose-publication-tiers-once (abort if off by > 2%)
+        required: false
+        default: "18465"
+        type: string
+      expected_t2:
+        description: Tier 2 publishable count from diagnose-publication-tiers-once (abort if off by > 2%)
+        required: false
+        default: "52110"
+        type: string
+      batch_size:
+        description: Cases per committed batch
+        required: false
+        default: "2000"
+        type: string
+      revert_run_id:
+        description: "unpublish only: the release run to undo, e.g. gh-41070000000"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-publication-tiers
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 90
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      MODE: ${{ inputs.mode }}
+      EXPECTED_T1: ${{ inputs.expected_t1 }}
+      EXPECTED_T2: ${{ inputs.expected_t2 }}
+      BATCH_SIZE: ${{ inputs.batch_size }}
+      REVERT_RUN_ID: ${{ inputs.revert_run_id }}
+    steps:
+      - name: Require the confirm keyword for this mode
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          case "$MODE" in
+            dry_run) want=DRY_RUN_TIERS_1_2 ;;
+            publish) want=PUBLISH_TIERS_1_2 ;;
+            unpublish) want=UNPUBLISH_TIERS_1_2 ;;
+            *) want="" ;;
+          esac
+          if [ -z "$want" ] || [ "$CONFIRM" != "$want" ]; then
+            echo "::error::Refusing to run. mode=$MODE needs confirm=$want."
+            exit 1
+          fi
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          for v in "$EXPECTED_T1" "$EXPECTED_T2" "$BATCH_SIZE"; do
+            case "$v" in ''|*[!0-9]*) echo "::error::expected_t1, expected_t2 and batch_size must be positive integers"; exit 1 ;; esac
+          done
+          [ "$BATCH_SIZE" -ge 1 ] && [ "$BATCH_SIZE" -le 5000 ] || { echo "::error::batch_size must be 1..5000"; exit 1; }
+          if [ "$MODE" = "unpublish" ]; then
+            case "$REVERT_RUN_ID" in gh-[0-9]*) ;; *) echo "::error::unpublish needs revert_run_id=gh-<run id>"; exit 1 ;; esac
+            case "$REVERT_RUN_ID" in *[!a-z0-9-]*) echo "::error::bad revert_run_id"; exit 1 ;; esac
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run the release over private VPC
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          if [ "$MODE" = "unpublish" ]; then main=unpublish-tiers-1-2.sql; run_id="$REVERT_RUN_ID"; else main=publish-tiers-1-2.sql; run_id="gh-${GITHUB_RUN_ID}"; fi
+          apply=false; [ "$MODE" = "publish" ] && apply=true
+          echo "mode=$MODE run_id=$run_id expected_t1=$EXPECTED_T1 expected_t2=$EXPECTED_T2 batch_size=$BATCH_SIZE"
+          {
+            echo "CAND_B64='$(base64 -w0 scripts/ops/tiers-1-2-candidates.sql)'"
+            echo "MAIN_B64='$(base64 -w0 "scripts/ops/$main")'"
+            echo "RUN_ID='$run_id' APPLY='$apply' EXPECTED_T1='$EXPECTED_T1' EXPECTED_T2='$EXPECTED_T2' BATCH_SIZE='$BATCH_SIZE'"
+            cat <<'REMOTE'
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          tmp="$(mktemp -d)"
+          printf '%s' "$CAND_B64" | base64 -d > "$tmp/tiers-1-2-candidates.sql"
+          printf '%s' "$MAIN_B64" | base64 -d > "$tmp/main.sql"
+          sudo -n docker cp "$tmp/tiers-1-2-candidates.sql" "$pg:/tmp/tiers-1-2-candidates.sql"
+          sudo -n docker cp "$tmp/main.sql" "$pg:/tmp/tiers-1-2-main.sql"
+          rm -rf "$tmp"
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -P pager=off \
+            -v run_id="$RUN_ID" -v apply="$APPLY" -v expected_t1="$EXPECTED_T1" -v expected_t2="$EXPECTED_T2" \
+            -v tolerance=0.02 -v batch_size="$BATCH_SIZE" -v sleep_s=1 -f /tmp/tiers-1-2-main.sql
+          rc=$?
+          sudo -n docker exec "$pg" rm -f /tmp/tiers-1-2-candidates.sql /tmp/tiers-1-2-main.sql
+          exit "$rc"
+          REMOTE
+          } | vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" 2>&1 | tee "$RUNNER_TEMP/report.txt"
+          rc=${PIPESTATUS[1]}
+          {
+            echo "### Tier 1 + Tier 2 release: mode=$MODE run_id=$run_id (exit $rc)"
+            echo ''
+            echo '```'
+            cat "$RUNNER_TEMP/report.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
