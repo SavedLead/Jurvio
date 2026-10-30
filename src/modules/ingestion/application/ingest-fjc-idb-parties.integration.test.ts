@@ -54,9 +54,9 @@ describe.skipIf(!databaseUrl)("FJC IDB party backfill", () => {
 
       // Idempotent: a re-run writes no new rows.
       await ingestFjcIdbParties(sql as never, { filePath: file, snapshotDate: "2026-09-30", filingYear: 2021 });
-      const [{ count }] = await sql<{ count: string }[]>`
+      const [counted] = await sql<{ count: string }[]>`
         SELECT count(*) FROM party_appearance WHERE case_id = ${match!.id}`;
-      expect(Number(count)).toBe(2);
+      expect(Number(counted?.count)).toBe(2);
     } finally {
       await sql.end();
     }
