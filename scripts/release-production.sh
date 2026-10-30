@@ -5,11 +5,14 @@ DEPLOY_DIR=${DEPLOY_DIR:-/opt/jurvio}
 COMPOSE="$DEPLOY_DIR/docker-compose.production.yml"
 NEW_IMAGE=${JURVIO_IMAGE:?JURVIO_IMAGE is required}
 PREVIOUS_IMAGE=""
-BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-1800}
+# The compressed dump of the ~66 GB database took 2,203s in the 2026-10-30
+# nightly backup (41065461876), so the old 1800s budget failed every release
+# with a pending migration (41050301671). 3600s leaves headroom for growth.
+BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-3600}
 PULL_TIMEOUT_SECONDS=${PULL_TIMEOUT_SECONDS:-900}
 # 0124 builds a concurrent index and backfills search visibility on the live
 # opinion corpus. 300s can kill that mid-build and leave an INVALID index.
-# 1800s matches the pre-migration backup budget.
+# 1800s is the migration budget (the backup has its own, longer one).
 MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-1800}
 START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-180}
 
