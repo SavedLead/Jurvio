@@ -211,7 +211,7 @@ async function persistCoaItem(sql: Sql, provider: string, artifactId: string, it
       shortName: item.courtCode.toUpperCase(), jurisdiction: "Federal Appellate", artifactId });
     const match = await matchOrCreateDraftCase(tx, {
       providerId: provider, courtId, courtCode: item.courtCode, docketNumber: item.docketNumber, caption: item.caption,
-      filedOn: null, artifactId, identifierType: "official_appellate_docket",
+      filedOn: null, decidedOn: item.kind === "order" ? null : item.releasedOn, artifactId, identifierType: "official_appellate_docket",
       identifierValue: `${item.courtCode}:${item.docketNumber}`,
     });
     if (match.kind === "restricted") { result.skippedRestricted += 1; return; }

@@ -73,6 +73,11 @@ describe.skipIf(!databaseUrl)("live feeds against Postgres", () => {
       WHERE identifier.identifier_type = 'official_appellate_docket' AND identifier.identifier_value LIKE 'cadc:%'
         AND legal_case.id <> ${existingCaseId}`;
     expect(drafts).toEqual([{ publication: "draft", verification: "not_verified" }]);
+    const [decided] = await sql<{ decided_on: string }[]>`
+      SELECT legal_case.decided_on::text AS decided_on FROM legal_case
+      JOIN case_identifier identifier ON identifier.case_id = legal_case.id
+      WHERE identifier.identifier_type = 'official_appellate_docket' AND identifier.identifier_value = 'cadc:25-5209'`;
+    expect(decided).toEqual({ decided_on: "2026-10-20" });
 
     const again = await runCoaCourt(sql, store, "cadc", { fetchImpl: fixtureFetch(routes), coa: fast });
     expect(again).toMatchObject({ ok: true, itemsFetched: 15, newCases: 0, newEntries: 0 });

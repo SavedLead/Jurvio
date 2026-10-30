@@ -78,6 +78,8 @@ export type CaseMatch =
 export async function matchOrCreateDraftCase(sql: Sql, input: {
   providerId: string; courtId: string; courtCode: string; docketNumber: string; caption: string;
   filedOn: string | null; artifactId: string; identifierType: string; identifierValue: string;
+  /** Decision date, for a case first seen through an opinion release. */
+  decidedOn?: string | null;
 }): Promise<CaseMatch> {
   const [byIdentifier] = await sql<{ case_id: string }[]>`
     SELECT case_id FROM case_identifier
@@ -99,10 +101,10 @@ export async function matchOrCreateDraftCase(sql: Sql, input: {
   } else {
     if (isRestrictedDocketText(input.caption)) return { kind: "restricted" };
     const [created] = await sql<{ id: string; inserted: boolean }[]>`
-      INSERT INTO legal_case (public_id, court_id, docket_number, caption, filed_on,
+      INSERT INTO legal_case (public_id, court_id, docket_number, caption, filed_on, decided_on,
         verification, publication, source_artifact_id, source_updated_at)
       VALUES (${createPublicId("case")}, ${input.courtId}, ${input.docketNumber}, ${input.caption}, ${input.filedOn},
-        'not_verified', 'draft', ${input.artifactId}, now())
+        ${input.decidedOn ?? null}, 'not_verified', 'draft', ${input.artifactId}, now())
       ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
       DO UPDATE SET updated_at = legal_case.updated_at
       RETURNING id, (xmax = 0) AS inserted
