@@ -76,6 +76,18 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-public-directory-stats.mjs"],
   },
   {
+    // Fills public_case_search so /cases?q=, party= and firm= narrow to trigram
+    // candidates instead of walking every published case per request. Committed
+    // 1,000-case keyset batches with a pause, resumable cursor, own advisory
+    // lock. Readers wait for the first full sweep. ADR 0081.
+    lane: "citations",
+    name: "public-case-search",
+    initialDelayMs: 8 * minute,
+    intervalMs: 15 * minute,
+    budgetMs: 12 * minute,
+    command: ["jobs/refresh-public-case-search.mjs", "--max-batches=150"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,

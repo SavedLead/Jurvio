@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { publicCaseSearchReady } from "./public-case-search";
 import type { CaseListingSort } from "@/modules/cases/domain/case-listing";
 
 type Sql = ReturnType<typeof postgres>;
@@ -188,6 +189,19 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
           )
       )
     )`);
+  }
+  // Free text: narrow to precomputed trigram candidates first (public_case_search,
+  // a superset of every text condition here), then apply the exact conditions
+  // below to those ids only. Until the first full sweep has completed, the live
+  // conditions run alone.
+  const textPatterns = [queryPattern, party ? containsPattern(party) : null, firm ? containsPattern(firm) : null]
+    .filter((pattern): pattern is string => pattern !== null);
+  if (textPatterns.length && await publicCaseSearchReady(sql)) {
+    for (const pattern of textPatterns) {
+      conditions.push(sql`legal_case.id = ANY(ARRAY(
+        SELECT search.case_id FROM public_case_search search WHERE search.search_text ILIKE ${pattern}
+      ))`);
+    }
   }
   if (courtFilter) conditions.push(sql`court.public_id = ${courtFilter}`);
   if (party) {
