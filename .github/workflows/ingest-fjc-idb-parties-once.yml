@@ -1,0 +1,182 @@
+name: Backfill parties from the FJC Integrated Database (once, resumable)
+
+# Writes party_appearance rows (plaintiff / defendant names as filed) for federal
+# district cases Jurvio already holds, from the FJC Integrated Database file in
+# CourtListener's free public bulk export (fjc-integrated-database-<date>.csv.bz2,
+# ~280 MB). No API key, no rate limit.
+#
+# Nothing is published. New party entities are 'not_verified' with no publication
+# decision; they appear only on cases that are already published AND displayable
+# (listPublicParties / directory queries gate on the case), so sealed, restricted
+# and draft cases never show a party. Entities are not indexable by default.
+#
+# One pass per filing year, newest first, recorded in fjc_idb_import_checkpoint;
+# years already completed for the snapshot are skipped, so re-dispatching resumes.
+# Every write is idempotent (ON CONFLICT). The file is cached under
+# /var/lib/jurvio/artifacts/bulk and deleted when every requested year is done.
+# A 30% free-disk floor is checked before the download and before every year.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts); every job fails
+  # closed unless confirm=INGEST_FJC_PARTIES.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type INGEST_FJC_PARTIES to run this workflow against production"
+        required: true
+        type: string
+      snapshot_date:
+        description: "auto (newest FJC file on S3) or YYYY-MM-DD"
+        required: true
+        default: "auto"
+        type: string
+      filing_years:
+        description: "Inclusive range NEWEST-OLDEST, e.g. 2026-2015 (processed newest first)"
+        required: true
+        default: "2026-2015"
+        type: string
+      budget_minutes:
+        description: "Stop starting new years after this many minutes (resume by re-dispatching)"
+        required: true
+        default: "300"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-fjc-idb-parties
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 420
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      FILING_YEARS: ${{ inputs.filing_years }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes }}
+    steps:
+      - name: Require confirm=INGEST_FJC_PARTIES and validate inputs
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "INGEST_FJC_PARTIES" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=INGEST_FJC_PARTIES."
+            exit 1
+          fi
+          case "$SNAPSHOT_DATE" in
+            auto|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be auto or YYYY-MM-DD"; exit 1;;
+          esac
+          if ! [[ "$FILING_YEARS" =~ ^(19|20)[0-9]{2}-(19|20)[0-9]{2}$ ]]; then
+            echo "::error::filing_years must look like 2026-2015"; exit 1
+          fi
+          newest="${FILING_YEARS%-*}"; oldest="${FILING_YEARS#*-}"
+          if [ "$newest" -lt "$oldest" ]; then echo "::error::filing_years is NEWEST-OLDEST"; exit 1; fi
+          case "$BUDGET_MINUTES" in ''|*[!0-9]*) echo "::error::budget_minutes must be a positive integer"; exit 1;; esac
+          if [ "$BUDGET_MINUTES" -lt 1 ] || [ "$BUDGET_MINUTES" -gt 400 ]; then
+            echo "::error::budget_minutes must be 1-400"; exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+
+      - name: Backfill parties year by year
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' FILING_YEARS='$FILING_YEARS' BUDGET_MINUTES='$BUDGET_MINUTES' bash -s" <<'REMOTE'
+          set -euo pipefail
+          find_svc() {
+            sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1
+          }
+          app="$(find_svc app)"
+          pg="$(find_svc postgres)"
+          [ -n "$app" ] && [ -n "$pg" ] || { echo "::error::app or postgres container missing"; exit 1; }
+          if ! sudo -n docker exec "$app" test -f jobs/ingest-fjc-idb-parties.mjs; then
+            echo "::error::jobs/ingest-fjc-idb-parties.mjs is not in the running image. Release it with deploy-production.yml first."
+            exit 1
+          fi
+          psql_value() { sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "$1"; }
+          psql_value "SELECT 1 FROM fjc_idb_import_checkpoint LIMIT 1" >/dev/null \
+            || { echo "::error::fjc_idb_import_checkpoint missing; migration 0141_fjc_idb_party_backfill not applied"; exit 1; }
+
+          disk_ok() {
+            read -r total avail < <(df -B1 --output=size,avail / | tail -1)
+            local need="${1:-0}"
+            python3 - "$total" "$avail" "$need" <<'PY'
+          import sys
+          total, avail, need = (int(x) for x in sys.argv[1:4])
+          ratio = (avail - need) / total
+          print(f"disk_total={total} disk_avail={avail} need={need} ratio_after={ratio:.3f}")
+          raise SystemExit(0 if ratio >= 0.30 else 2)
+          PY
+          }
+
+          bucket="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          snap="$SNAPSHOT_DATE"
+          if [ "$snap" = "auto" ]; then
+            snap="$(curl -fsS "${bucket}/?list-type=2&prefix=bulk-data/fjc-integrated-database-" \
+              | grep -oE 'fjc-integrated-database-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' | sort | tail -1 \
+              | sed -E 's/fjc-integrated-database-([0-9-]+)\.csv\.bz2/\1/')"
+          fi
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::could not resolve snapshot date ($snap)"; exit 1;;
+          esac
+          url="${bucket}/bulk-data/fjc-integrated-database-${snap}.csv.bz2"
+          bytes="$(curl -fsSI "$url" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -1)"
+          [ -n "$bytes" ] || { echo "::error::FJC file has no Content-Length ($url)"; exit 1; }
+          # Some older CourtListener FJC files are empty placeholders (14 bytes).
+          if [ "$bytes" -lt 1000000 ]; then echo "::error::FJC file for ${snap} is only ${bytes} bytes; pick another snapshot"; exit 1; fi
+          echo "snapshot=${snap} bytes=${bytes}"
+
+          cache_dir=/var/lib/jurvio/artifacts/bulk
+          file="$cache_dir/fjc-integrated-database-${snap}.csv.bz2"
+          sudo -n docker exec "$app" mkdir -p "$cache_dir"
+          have="$(sudo -n docker exec "$app" sh -c "stat -c %s '$file' 2>/dev/null || echo 0")"
+          if [ "$have" = "$bytes" ]; then
+            echo "cache=hit"
+          else
+            echo "cache=miss; downloading"
+            disk_ok "$bytes" || { echo "::error::free disk would fall under 30%"; exit 2; }
+            tmp="/tmp/jurvio-fjc-${snap}.csv.bz2"
+            trap 'rm -f "$tmp"' EXIT
+            curl -fL --retry 3 --retry-delay 2 -sS -o "$tmp" "$url"
+            [ "$(stat -c %s "$tmp")" = "$bytes" ] || { echo "::error::download size mismatch"; exit 1; }
+            sudo -n docker cp "$tmp" "$app:$file.partial"
+            rm -f "$tmp"
+            sudo -n docker exec "$app" mv "$file.partial" "$file"
+          fi
+
+          count_appearances() { psql_value "SELECT count(*) FROM party_appearance"; }
+          echo "::notice title=party_appearance BEFORE::$(count_appearances)"
+          newest="${FILING_YEARS%-*}"; oldest="${FILING_YEARS#*-}"
+          deadline=$(( $(date +%s) + BUDGET_MINUTES * 60 ))
+          remaining=0
+          for year in $(seq "$newest" -1 "$oldest"); do
+            done_at="$(psql_value "SELECT completed_at FROM fjc_idb_import_checkpoint WHERE snapshot_date = '${snap}' AND filing_year = ${year}")"
+            if [ -n "$done_at" ]; then echo "year ${year}: already complete (${done_at})"; continue; fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "::notice::budget reached before year ${year}; re-dispatch to resume"; remaining=1; break; fi
+            disk_ok 0 || { echo "::error::free disk under 30%; stopping"; exit 2; }
+            echo "=== filing year ${year} ==="
+            start=$(date +%s)
+            out="$(sudo -n docker exec -e NODE_OPTIONS=--max-old-space-size=2048 "$app" \
+              node jobs/ingest-fjc-idb-parties.mjs "--file=$file" "--snapshot-date=$snap" "--filing-year=$year")"
+            summary="$(printf '%s' "$out" | python3 -c 'import json,sys; r=json.load(sys.stdin); r.pop("errors",None); print(json.dumps(r,separators=(",",":")))')"
+            echo "::notice title=FJC parties ${year} ($(( $(date +%s) - start ))s)::${summary}"
+          done
+          echo "::notice title=party_appearance AFTER::$(count_appearances)"
+          if [ "$remaining" = "0" ]; then
+            echo "all requested years complete; deleting cached FJC file"
+            sudo -n docker exec "$app" rm -f "$file"
+          fi
+          df -h / | tail -1
+          REMOTE
