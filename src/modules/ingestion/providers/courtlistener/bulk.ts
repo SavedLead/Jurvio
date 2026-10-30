@@ -31,12 +31,19 @@ export function bulkCsvProcessCompleted(
 export function openBulkCsv(filePath: string): BulkCsvSource {
   if (!filePath.endsWith(".bz2")) {
     const stream: ReadStream = createReadStream(filePath);
+    let closedByConsumer = false;
     return {
       stream,
-      close: () => stream.destroy(),
+      close: () => {
+        closedByConsumer = true;
+        stream.destroy();
+      },
+      // A consumer that stops early (row limit, budget) destroys the stream, which
+      // emits AbortError; that is a normal close, not an unhandled failure.
       completion: new Promise((resolve, reject) => {
         stream.once("end", resolve);
-        stream.once("error", reject);
+        stream.once("close", () => { if (closedByConsumer) resolve(); });
+        stream.once("error", (error) => (closedByConsumer ? resolve() : reject(error)));
       }),
     };
   }

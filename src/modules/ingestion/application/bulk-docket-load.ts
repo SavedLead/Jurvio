@@ -172,6 +172,7 @@ export function stageCsv(rows: readonly StageDocket[]): string {
 export interface BulkDocketLoadOptions {
   filePath: string;
   snapshotDate: string;
+  /** Rows to merge in this run (not cumulative across the checkpoint). */
   rowLimit: number;
   chunkSize?: number;
   budgetMs: number;
@@ -180,10 +181,17 @@ export interface BulkDocketLoadOptions {
   resetCheckpoint?: boolean;
   diskPath?: string;
   sleep?: (ms: number) => Promise<void>;
+  /** Clock for budget checks; tests inject one. */
+  now?: () => number;
 }
 
 export interface BulkDocketLoadResult extends BulkDocketCheckpoint {
   rowsSeen: number;
+  /** Checkpoint row this run resumed from, and what this run alone did. */
+  resumedFromRow: number;
+  rowsReadThisRun: number;
+  mergedThisRun: number;
+  insertedThisRun: number;
   skippedNonFederal: number;
   skippedIdentity: number;
   elapsedMs: number;
@@ -203,12 +211,13 @@ export async function loadCourtListenerBulkDockets(
     throw new Error("--row-limit must be a positive integer");
   }
   const chunkSize = options.chunkSize ?? BULK_DOCKET_CHUNK_SIZE;
-  const started = Date.now();
+  const now = options.now ?? Date.now;
+  const started = now();
   const deadline = started + options.budgetMs;
   const diskPath = options.diskPath ?? options.filePath;
   const base = emptyBulkDocketCheckpoint(options.snapshotDate);
   if (!options.allowAnytime && !isEasternQuietWindow(new Date())) {
-    return finish(base, { rowsSeen: 0, skippedNonFederal: 0, skippedIdentity: 0, started, pauses: 0, freeDiskRatio: null, stopped: "outside-quiet-window" });
+    return finish(base, base, { rowsSeen: 0, skippedNonFederal: 0, skippedIdentity: 0, started, ended: now(), pauses: 0, freeDiskRatio: null, stopped: "outside-quiet-window" });
   }
 
   const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'courtlistener'`;
@@ -227,6 +236,10 @@ export async function loadCourtListenerBulkDockets(
   let checkpoint = options.resetCheckpoint
     ? emptyBulkDocketCheckpoint(options.snapshotDate)
     : decodeBulkDocketCheckpoint(stored?.cursor_value ?? null, options.snapshotDate);
+  // `stopped` describes the previous run. Clear it so this run's tail chunk is
+  // flushed and a finished file is marked complete.
+  checkpoint = { ...checkpoint, stopped: null };
+  const initial = checkpoint;
   let rowsSeen = 0;
   let skippedNonFederal = 0;
   let skippedIdentity = 0;
@@ -252,7 +265,7 @@ export async function loadCourtListenerBulkDockets(
       batch.length = 0;
       return true;
     }
-    if (Date.now() >= deadline) {
+    if (now() >= deadline) {
       checkpoint = { ...checkpoint, stopped: "budget" };
       await writeCheckpoint(sql, provider.id, streamName, checkpoint);
       batch.length = 0;
@@ -270,21 +283,23 @@ export async function loadCourtListenerBulkDockets(
       stopped: null,
     };
     await writeCheckpoint(sql, provider.id, streamName, checkpoint);
-    console.log(JSON.stringify({ bulkDockets: "chunk", ...checkpoint, elapsedMs: Date.now() - started }));
+    console.log(JSON.stringify({ bulkDockets: "chunk", ...checkpoint, elapsedMs: now() - started }));
     batch.length = 0;
     seenInBatch.clear();
     return false;
   };
 
   for await (const docket of readBulkDockets(options.filePath)) {
-    if (Date.now() >= deadline) {
-      checkpoint = { ...checkpoint, rowsConsumed: rowsSeen, stopped: "budget" };
+    if (now() >= deadline) {
+      // Keep rowsConsumed at the last merged chunk: rows still in `batch` were
+      // read but never merged, and the next run must read them again.
+      checkpoint = { ...checkpoint, stopped: "budget" };
       await writeCheckpoint(sql, provider.id, streamName, checkpoint);
       break;
     }
     rowsSeen += 1;
     if (rowsSeen <= checkpoint.rowsConsumed) continue;
-    if (checkpoint.merged >= options.rowLimit) {
+    if (checkpoint.merged - initial.merged >= options.rowLimit) {
       checkpoint = { ...checkpoint, rowsConsumed: rowsSeen - 1, stopped: "row-limit" };
       await writeCheckpoint(sql, provider.id, streamName, checkpoint);
       break;
@@ -303,7 +318,7 @@ export async function loadCourtListenerBulkDockets(
     if (seenInBatch.has(staged.docketId)) continue;
     seenInBatch.add(staged.docketId);
     batch.push(staged);
-    const reachedLimit = checkpoint.merged + batch.length >= options.rowLimit;
+    const reachedLimit = checkpoint.merged - initial.merged + batch.length >= options.rowLimit;
     if (batch.length >= chunkSize || reachedLimit) {
       if (await flush()) break;
       if (checkpoint.stopped === null && reachedLimit) {
@@ -315,7 +330,7 @@ export async function loadCourtListenerBulkDockets(
   }
   if (batch.length && checkpoint.stopped === null) {
     await flush();
-    if (checkpoint.stopped === null && checkpoint.merged >= options.rowLimit) {
+    if (checkpoint.stopped === null && checkpoint.merged - initial.merged >= options.rowLimit) {
       checkpoint = { ...checkpoint, stopped: "row-limit" };
       await writeCheckpoint(sql, provider.id, streamName, checkpoint);
     }
@@ -324,8 +339,9 @@ export async function loadCourtListenerBulkDockets(
     checkpoint = { ...checkpoint, rowsConsumed: rowsSeen, stopped: "complete" };
     await writeCheckpoint(sql, provider.id, streamName, checkpoint);
   }
-  return finish(checkpoint, {
+  return finish(checkpoint, initial, {
     rowsSeen,
+    ended: now(),
     skippedNonFederal,
     skippedIdentity,
     started,
@@ -337,8 +353,10 @@ export async function loadCourtListenerBulkDockets(
 
 function finish(
   checkpoint: BulkDocketCheckpoint,
+  initial: BulkDocketCheckpoint,
   extra: {
     rowsSeen: number;
+    ended: number;
     skippedNonFederal: number;
     skippedIdentity: number;
     started: number;
@@ -347,15 +365,20 @@ function finish(
     stopped: string | null;
   },
 ): BulkDocketLoadResult {
-  const elapsedMs = Date.now() - extra.started;
+  const elapsedMs = extra.ended - extra.started;
+  const mergedThisRun = checkpoint.merged - initial.merged;
   return {
     ...checkpoint,
     stopped: extra.stopped,
     rowsSeen: extra.rowsSeen,
+    resumedFromRow: initial.rowsConsumed,
+    rowsReadThisRun: Math.max(0, extra.rowsSeen - initial.rowsConsumed),
+    mergedThisRun,
+    insertedThisRun: checkpoint.inserted - initial.inserted,
     skippedNonFederal: extra.skippedNonFederal,
     skippedIdentity: extra.skippedIdentity,
     elapsedMs,
-    rowsPerHour: rowsPerHour(checkpoint.merged, elapsedMs),
+    rowsPerHour: rowsPerHour(mergedThisRun, elapsedMs),
     freeDiskRatio: extra.freeDiskRatio,
     pauses: extra.pauses,
   };

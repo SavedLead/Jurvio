@@ -30,3 +30,18 @@ pnpm ingest:bulk:courts /data/courts-2026-03-31.csv.bz2 2026-03-31
 ```
 
 The docket importer must apply court/date/value filters while streaming because the current docket snapshot is too large to expand permanently on the initial server.
+
+## Nightly bulk docket load (`load-courtlistener-bulk-dockets-nightly.yml`)
+
+Dispatch-only, `confirm=LOAD_DOCKETS`, on builder-01; a routine dispatches it at about 01:20 America/New_York.
+It runs `jobs/load-courtlistener-bulk-dockets.mjs` from its checkpoint (`courtlistener:bulk-dockets:v1:<date>`)
+with no low row cap, inside the 1–7am ET window, with the loader's load/latency pauses, the 30% free-disk floor
+and a 90-minute budget. The snapshot file stays cached in the `jurvio_artifacts` volume on web-01
+(`/var/lib/jurvio/artifacts/bulk/dockets-<date>.csv.bz2`); it is downloaded only if missing or the snapshot
+date changes, and deleted once the checkpoint reports `stopped=complete`. `snapshot_date=auto` (default)
+keeps loading the cached or unfinished snapshot so a new monthly export never restarts an in-progress load.
+
+Loader semantics (since this workflow): `--row-limit` counts rows merged in this run, not cumulatively; a
+budget stop keeps the checkpoint at the last merged chunk, so rows read but not yet merged are read again
+next run; and a resumed run clears the previous run's `stopped` flag so the file's tail is merged and
+marked complete.
