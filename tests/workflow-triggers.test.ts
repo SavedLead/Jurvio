@@ -60,6 +60,7 @@ const READ_ONLY = new Set([
   "google-search-console-sync.yml",
   "citation-link-report-once.yml",
   "diagnose-db-load-once.yml",
+  "diagnose-backlog-once.yml",
   "diagnose-federal-chunk-progress-once.yml",
   "diagnose-federal-court-universe-once.yml",
   "diagnose-federal-eligibility-once.yml",
