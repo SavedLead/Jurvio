@@ -344,10 +344,10 @@ jobs:
           # The SSH wrapper timeout MUST exceed the sum of release-production.sh's own
           # inner deadlines, or a legitimately-slow release is killed before it can
           # finish. Worst case with a pending migration: image pull (<=900s) + pre-release
-          # DB backup (<=1800s) + migration (<=1800s) + app/worker startup (<=180s) +
-          # readiness (<=60s) = 4740s. 5400s covers that chain; the inner per-step
+          # DB backup (<=3600s) + migration (<=1800s) + app/worker startup (<=180s) +
+          # readiness (<=60s) = 6540s. 7200s covers that chain; the inner per-step
           # timeouts still bound each phase.
-          timeout --signal=TERM --kill-after=30s 5400s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
+          timeout --signal=TERM --kill-after=30s 7200s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
       - name: Verify hosted command-center login externally
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
