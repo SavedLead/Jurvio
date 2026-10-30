@@ -16,6 +16,7 @@ import {
   opinionTextIsPending,
 } from "@/modules/cases/domain/opinion-availability";
 import { robotsFor } from "@/lib/seo/indexing";
+import { casePageIndexable } from "@/modules/cases/application/get-public-case";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseNav } from "@/modules/cases/ui/case-nav";
@@ -61,7 +62,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
     openGraph: { title, description, type: "article" },
-    robots: robotsFor(loaded.legalCase.hasReadableOpinion),
+    robots: robotsFor(casePageIndexable(loaded.legalCase)),
   };
 }
 
