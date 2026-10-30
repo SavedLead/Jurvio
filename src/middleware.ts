@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { NOINDEX_HEADER_VALUE, sitePubliclyLaunched } from "@/lib/seo/indexing";
+import { publicEdgeCacheControl } from "@/lib/http/edge-cache";
 
 const COMMAND_CENTER_HOST = "z.jurvio.com";
 const PUBLIC_HOSTS = new Set(["jurvio.com", "www.jurvio.com"]);
@@ -82,6 +83,17 @@ export function middleware(request: NextRequest) {
       headers: { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow, noarchive" },
     });
   }
-  return withLockdownHeaders(NextResponse.next());
+  const response = NextResponse.next();
+  // Anonymous visitors on allowlisted public pages get a shared-cache header so
+  // Cloudflare can serve them; everything else keeps Next's private default.
+  const edgeCacheControl = publicEdgeCacheControl({
+    method: request.method,
+    hosts,
+    pathname,
+    searchParams: request.nextUrl.searchParams,
+    headers: request.headers,
+  });
+  if (edgeCacheControl) response.headers.set("Cache-Control", edgeCacheControl);
+  return withLockdownHeaders(response);
 }
 export const config = { matcher: ["/((?!_next/static|_next/image).*)"] };
