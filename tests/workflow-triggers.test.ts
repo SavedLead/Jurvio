@@ -63,6 +63,7 @@ const READ_ONLY = new Set([
   "diagnose-public-traffic-once.yml",
   "diagnose-publication-and-citation-once.yml",
   "diagnose-publication-gate-once.yml",
+  "diagnose-publication-tiers-once.yml",
   "diagnose-recent-publications-once.yml",
   "fleet-status.yml",
   "ingestion-status.yml",
