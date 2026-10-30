@@ -243,14 +243,35 @@ describe("workflow trigger policy", () => {
     }
   });
 
-  it("deploy and diagnostic workflows do not call the gh CLI (builder-01 does not have it)", () => {
-    // Since #543 these run on jurvio-builder-01, which has curl and jq but no gh.
-    // The first post-#544 public deploy failed at its CI gate with "gh: command not found".
-    for (const file of ["deploy-public-web-hosted.yml", "deploy-production.yml", "diagnose-federal-refetch-once.yml"]) {
-      for (const [name, job] of Object.entries(parsed.get(file)!.jobs ?? {})) {
-        for (const step of job.steps ?? []) {
-          expect(step.run ?? "", `${file} job ${name} step ${step.name ?? "(unnamed)"}`).not.toMatch(/(^|[\s;|&($])gh\s+(api|issue|pr|run|workflow|release)\b/m);
-        }
+  const GH_CLI = /(^|[\s;|&($])gh\s+(api|issue|pr|run|workflow|release|repo|secret|auth)\b/m;
+  const GH_HELPER = /\bgh_(api|api_post|api_paginate|patch_body|comment|issue_create|dispatch)\b/;
+
+  it.each(files)("%s never calls the gh CLI on builder-01 (it has curl and jq, not gh)", (file) => {
+    // The first post-#544 public deploy failed with "gh: command not found", and the
+    // nightly backup would have failed the same way. Only the builder-recovery
+    // workflows on GitHub-hosted runners may use gh.
+    for (const [name, job] of Object.entries(parsed.get(file)!.jobs ?? {})) {
+      if (HOSTED_RUNNER_ALLOWED.has(file) && /ubuntu-/.test(runnerLabels(job))) continue;
+      for (const step of job.steps ?? []) {
+        expect(step.run ?? "", `${file} job ${name} step ${step.name ?? "(unnamed)"}`).not.toMatch(GH_CLI);
+      }
+    }
+  });
+
+  // deploy-public-web-hosted.yml keeps its own gh-api.sh helper from #545.
+  it.each(files.filter((file) => file !== "deploy-public-web-hosted.yml"))("%s installs the REST helpers before any step that uses them", (file) => {
+    for (const [name, job] of Object.entries(parsed.get(file)!.jobs ?? {})) {
+      const steps = job.steps ?? [];
+      const users = steps.flatMap((step, index) =>
+        GH_HELPER.test(step.run ?? "") && !/\bgh_\w+\(\)\s*\{/.test(step.run ?? "") ? [index] : [],
+      );
+      if (users.length === 0) continue;
+      const install = steps.findIndex((step) => /cat > "\$RUNNER_TEMP\/gh-rest\.sh"/.test(step.run ?? ""));
+      expect(install, `${file} job ${name} needs the gh-rest helper step`).toBeGreaterThanOrEqual(0);
+      expect(String(steps[install]?.if ?? ""), `${file}: helper step must run even after a failure`).toContain("always()");
+      for (const index of users) {
+        expect(index, `${file} job ${name}: helper installed after step ${index}`).toBeGreaterThan(install);
+        expect(steps[index]?.run, `${file} job ${name} step ${index} must source the helpers`).toContain('source "$RUNNER_TEMP/gh-rest.sh"');
       }
     }
   });
