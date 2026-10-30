@@ -60,7 +60,51 @@ const displayableCase = `
   ), false)
 `;
 
+/**
+ * Party / law-firm directory from the published entity_public_stats generation
+ * (refreshed off the request path by `public-directory-stats`). The entity's
+ * type and publication decision are checked live. Falls back to the live
+ * aggregate until a generation has been published.
+ */
 export async function listPublicEntities(
+  sql: Sql,
+  entityType: "party" | "law_firm",
+  limit = 50,
+): Promise<DirectoryEntitySummary[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 100);
+  const typeClause = entityType === "party"
+    ? sql`entity.entity_type IN ('unknown', 'person', 'organization', 'agency')`
+    : sql`entity.entity_type = 'law_firm'`;
+  try {
+    const [state] = await sql<{ generation: number | null }[]>`
+      SELECT published_generation AS generation FROM public_stats_generation WHERE name = 'entity'
+    `;
+    if (state?.generation != null) {
+      return await sql<DirectoryEntitySummary[]>`
+        SELECT entity.public_id AS "publicId", entity.display_name AS "displayName",
+          entity.entity_type AS "entityType", stats.case_count AS "caseCount",
+          stats.latest_case_date::text AS "latestCaseDate"
+        FROM entity_public_stats stats
+        JOIN entity ON entity.id = stats.entity_id
+        WHERE stats.generation = ${state.generation}
+          AND stats.case_count > 0
+          AND ${typeClause}
+          AND COALESCE((
+            SELECT decision.displayable FROM publication_decision decision
+            WHERE decision.object_type = 'entity' AND decision.object_id = entity.id
+            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+          ), true)
+        ORDER BY stats.case_count DESC, entity.display_name, entity.public_id
+        LIMIT ${safeLimit}
+      `;
+    }
+  } catch (error) {
+    if (!isMissingTable(error)) throw error;
+  }
+  return listPublicEntitiesLive(sql, entityType, safeLimit);
+}
+
+export async function listPublicEntitiesLive(
   sql: Sql,
   entityType: "party" | "law_firm",
   limit = 50,
