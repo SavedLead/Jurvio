@@ -1,0 +1,178 @@
+name: Diagnose publication tiers (once, read-only)
+
+# Read-only sizing report for the tiered publishing plan (richest cases first):
+#   Tier 1  opinion cluster, or case-to-case citations (case_citation_count)
+#   Tier 2  filed in the last 90 days
+#   Tier 3  filed 2000+ with a named party or meaningful caption, plus court,
+#           plus >= 2 of judge / nature of suit / cause / terminated date / docket entries
+#   Tier 4  everything else (thin, or pre-2000)
+# Each case gets the FIRST tier it matches. Separately, each case gets a gate:
+#   hard  restricted/suppressed state, sealed/sensitive caption text or a
+#         restricted_or_sensitive hold  -> never published
+#   soft  case conflict/needs_review, court not registry-verified (non-SCOTUS),
+#         or a federal hold with any reason other than missing_readable_content
+#   ok    passes the existing safety checks
+# Reports counts by tier x status, court type, decade, gate, and how many NEW
+# published cases each tier would add. Changes nothing:
+#   * every query runs with default_transaction_read_only=on;
+#   * the helper refuses any statement that does not start with SELECT/WITH;
+#   * no container, service, flag or file on the box is touched.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-publication-tiers
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 60
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Publication tier report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          # Read-only at the server. Low priority work_mem so the site stays fast.
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=1500s -c lock_timeout=5s -c work_mem=64MB -c max_parallel_workers_per_gather=1' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+
+          # Per-case tier + gate. Shared by the queries below.
+          BASE="WITH de AS (SELECT DISTINCT case_id FROM docket_entry),
+            oc AS (SELECT DISTINCT case_id FROM opinion_cluster),
+            cc AS (SELECT case_id FROM case_citation_count WHERE cited > 0 OR cited_by > 0 OR cited_on_jurvio > 0),
+            pa AS (SELECT DISTINCT case_id FROM party_appearance),
+            jd AS (SELECT DISTINCT case_id FROM judge_case_assignment),
+            fh AS (SELECT case_id,
+                          bool_or(r = 'restricted_or_sensitive') AS sensitive,
+                          bool_or(r <> 'missing_readable_content') AS other
+                     FROM federal_publication_hold, unnest(reasons) r GROUP BY case_id),
+            f AS (
+              SELECT lc.publication::text AS status, lc.filed_on,
+                CASE WHEN lower(coalesce(ct.provider_court_id, '')) = 'scotus' THEN '1_scotus'
+                     WHEN upper(btrim(coalesce(ct.jurisdiction, ''))) = 'F' OR ct.jurisdiction ILIKE '%appellate%' THEN '2_appeals'
+                     WHEN upper(btrim(coalesce(ct.jurisdiction, ''))) = 'FD' OR ct.jurisdiction ILIKE '%district%' THEN '3_district'
+                     ELSE '4_other' END AS court_type,
+                (oc.case_id IS NOT NULL) AS has_cluster, (cc.case_id IS NOT NULL) AS has_cites,
+                (pa.case_id IS NOT NULL) AS has_party, (jd.case_id IS NOT NULL) AS has_judge,
+                (de.case_id IS NOT NULL) AS has_entries,
+                (nullif(btrim(coalesce(lc.nature_of_suit_code, '')), '') IS NOT NULL) AS has_nos,
+                (nullif(btrim(coalesce(lc.cause_of_action, '')), '') IS NOT NULL) AS has_cause,
+                (lc.terminated_on IS NOT NULL) AS has_term,
+                (length(btrim(lc.caption)) >= 5 AND lc.caption ~ '[A-Za-z]{2}'
+                  AND lower(btrim(lc.caption)) <> lower(btrim(lc.docket_number))
+                  AND lc.caption !~* '^[[:space:]]*(unknown|unavailable|untitled|sealed|none|n/?a|no caption|caption unavailable|in re:?|case)[[:space:]]*[.]?[[:space:]]*\Z') AS has_name,
+                CASE WHEN lc.publication IN ('restricted', 'suppressed') THEN 'hard_restricted_state'
+                     WHEN lc.caption ~* '\y(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\y' OR coalesce(fh.sensitive, false) THEN 'hard_sealed_or_sensitive'
+                     WHEN lc.verification IN ('conflict', 'needs_review') THEN 'soft_case_conflict_or_review'
+                     WHEN lower(coalesce(ct.provider_court_id, '')) <> 'scotus' AND ct.verification IS DISTINCT FROM 'verified' THEN 'soft_court_unverified'
+                     WHEN coalesce(fh.other, false) THEN 'soft_other_federal_hold'
+                     ELSE 'ok' END AS gate
+              FROM legal_case lc
+              JOIN court ct ON ct.id = lc.court_id
+              LEFT JOIN de ON de.case_id = lc.id
+              LEFT JOIN oc ON oc.case_id = lc.id
+              LEFT JOIN cc ON cc.case_id = lc.id
+              LEFT JOIN pa ON pa.case_id = lc.id
+              LEFT JOIN jd ON jd.case_id = lc.id
+              LEFT JOIN fh ON fh.case_id = lc.id),
+            t AS (
+              SELECT f.*,
+                (has_judge::int + has_nos::int + has_cause::int + has_term::int + has_entries::int) AS signals,
+                CASE WHEN filed_on IS NULL THEN 'unknown' ELSE ((extract(year FROM filed_on)::int / 10) * 10)::text || 's' END AS decade,
+                CASE WHEN has_cluster OR has_cites THEN 1
+                     WHEN filed_on >= current_date - 90 AND filed_on <= current_date + 1 THEN 2
+                     WHEN filed_on >= date '2000-01-01' AND (has_party OR has_name)
+                          AND (has_judge::int + has_nos::int + has_cause::int + has_term::int + has_entries::int) >= 2 THEN 3
+                     ELSE 4 END AS tier
+              FROM f)"
+
+          echo "=============================================================="
+          echo " PUBLICATION TIERS @ $(date -u +'%Y-%m-%dT%H:%M:%SZ') (read-only)"
+          echo "=============================================================="
+          echo "session_read_only=$(q "SELECT current_setting('default_transaction_read_only')")"
+
+          echo "--- A. one-pass breakdown (section | tier | status | key | cases | gate_ok | soft_blocked | hard_blocked) ---"
+          echo "    sections: 1=tier x status, 2=+court type, 3=+decade, 4=+gate, 5=tier4 split (pre2000_solid / post2000_thin / undated)"
+          q "$BASE
+             SELECT CASE WHEN GROUPING(court_type) = 0 THEN 2 WHEN GROUPING(decade) = 0 THEN 3 WHEN GROUPING(gate) = 0 THEN 4 WHEN GROUPING(t4) = 0 THEN 5 ELSE 1 END AS section,
+                    tier, status, coalesce(court_type, decade, gate, t4, '-') AS key,
+                    count(*),
+                    count(*) FILTER (WHERE gate = 'ok'),
+                    count(*) FILTER (WHERE gate LIKE 'soft%'),
+                    count(*) FILTER (WHERE gate LIKE 'hard%')
+               FROM (SELECT t.*, CASE WHEN tier <> 4 THEN NULL
+                                      WHEN filed_on IS NULL THEN 'undated'
+                                      WHEN filed_on < date '2000-01-01' AND (has_party OR has_name) AND signals >= 2 THEN 'pre2000_solid'
+                                      WHEN filed_on < date '2000-01-01' THEN 'pre2000_thin'
+                                      ELSE 'post2000_thin' END AS t4 FROM t) t
+              GROUP BY GROUPING SETS ((tier, status), (tier, status, court_type), (tier, status, decade), (tier, status, gate), (tier, status, t4))
+             HAVING NOT (GROUPING(t4) = 0 AND t4 IS NULL)
+              ORDER BY 1, 2, 3, 4"
+
+          echo "--- B. field population by court type and status (court_type | status | cases | name | party | judge | nos | cause | filed | terminated | entries | cluster | cites | filed_2000plus | filed_90d) ---"
+          q "$BASE
+             SELECT court_type, status, count(*),
+                    count(*) FILTER (WHERE has_name), count(*) FILTER (WHERE has_party), count(*) FILTER (WHERE has_judge),
+                    count(*) FILTER (WHERE has_nos), count(*) FILTER (WHERE has_cause), count(*) FILTER (WHERE filed_on IS NOT NULL),
+                    count(*) FILTER (WHERE has_term), count(*) FILTER (WHERE has_entries), count(*) FILTER (WHERE has_cluster),
+                    count(*) FILTER (WHERE has_cites), count(*) FILTER (WHERE filed_on >= date '2000-01-01'),
+                    count(*) FILTER (WHERE filed_on >= current_date - 90 AND filed_on <= current_date + 1)
+               FROM t GROUP BY 1, 2 ORDER BY 1, 2"
+
+          echo "--- C. drafts filed 2000+ not in tier 1/2: signal count (judge+nos+cause+terminated+entries) x named (signals | named | cases | gate_ok) ---"
+          q "$BASE
+             SELECT signals, (has_party OR has_name), count(*), count(*) FILTER (WHERE gate = 'ok')
+               FROM t WHERE status = 'draft' AND tier IN (3, 4) AND filed_on >= date '2000-01-01'
+              GROUP BY 1, 2 ORDER BY 1, 2"
+          echo "=============================================================="
+          REMOTE
+          rc=${PIPESTATUS[0]}
+          {
+            echo '### Publication tiers (read-only)'
+            echo ''
+            echo '```'
+            cat "$RUNNER_TEMP/report.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
