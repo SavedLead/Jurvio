@@ -292,8 +292,10 @@ describe("workflow trigger policy", () => {
     const workflow = parsed.get(file)!;
     expect(Object.keys(triggers(workflow))).toEqual(["workflow_dispatch"]);
     const inputs = dispatchInputs(workflow) as Record<string, Input & { default?: string }>;
-    expect(Object.keys(inputs).sort()).toEqual(["allow_anytime", "confirm", "row_limit", "snapshot_date", "stages"]);
+    expect(Object.keys(inputs).sort()).toEqual(["allow_anytime", "confirm", "reset_checkpoint", "row_limit", "snapshot_date", "stages"]);
     expect(inputs.stages?.default).toBe("dockets,clusters,opinions");
+    // A reset is a deliberate one-time repair re-read; the default resumes.
+    expect(inputs.reset_checkpoint?.default).toBe("false");
     expect(inputs.allow_anytime?.default).toBe("false");
     expect(Number(inputs.row_limit?.default)).toBeGreaterThanOrEqual(5_000_000);
     const job = workflow.jobs!.load!;
@@ -301,7 +303,8 @@ describe("workflow trigger policy", () => {
     expect(job.steps?.[0]?.run).toContain('"$CONFIRM" != "LOAD_DOCKETS"');
     const script = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
     expect(script).toContain("--budget-minutes=90");
-    expect(script).toContain("--reset-checkpoint=false");
+    expect(script).toContain('"--reset-checkpoint=${RESET_CHECKPOINT}"');
+    expect(script).toContain('case "$RESET_CHECKPOINT" in true|false)');
     expect(script).toContain("--include-bankruptcy=false");
     expect(script).toContain("remain / total < 0.30");
     // Cached between runs; deleted only when the checkpoint says complete.

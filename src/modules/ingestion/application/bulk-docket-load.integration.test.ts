@@ -37,8 +37,9 @@ describe.skipIf(!databaseUrl)("bulk docket merge", () => {
         VALUES (${`jc-${courtCode}`}, ${provider!.id}, ${courtCode}, ${courtCode}, 'FD', 'not_verified')
         RETURNING id
       `;
+      const docketId = String(9_000_000_000 + Math.floor(Math.random() * 1_000_000));
       const staged = stageDocket({
-        id: String(9_000_000_000 + Math.floor(Math.random() * 1_000_000)),
+        id: docketId,
         court_id: courtCode,
         docket_number: docketNumber,
         case_name: "Bulk Measurement v. Example",
@@ -63,7 +64,26 @@ describe.skipIf(!databaseUrl)("bulk docket merge", () => {
       expect(row?.publication).toBe("draft");
       expect(row?.decisions).toBe(0);
       expect(row?.indexed).toBe(0);
+
+      // The new case carries its CourtListener docket id, so clusters can resolve to it.
+      const linked = await sql<{ case_id: string }[]>`
+        SELECT identifier.case_id FROM case_identifier identifier
+        JOIN legal_case ON legal_case.id = identifier.case_id
+        WHERE identifier.provider_id = ${provider!.id}
+          AND identifier.identifier_type = 'courtlistener_docket_id'
+          AND identifier.identifier_value = ${docketId}
+          AND legal_case.court_id = ${court!.id}
+      `;
+      expect(linked).toHaveLength(1);
+
+      // A re-read of the same row (the repair after a checkpoint reset) matches by id.
+      const again = await mergeDocketStage(sql, provider!.id, stageCsv([staged!]));
+      expect(again.inserted).toBe(0);
+      expect(again.matchedByDocketId).toBe(1);
     } finally {
+      await sql`
+        DELETE FROM case_identifier WHERE case_id IN (
+          SELECT id FROM legal_case WHERE court_id IN (SELECT id FROM court WHERE provider_court_id = ${courtCode}))`;
       await sql`
         DELETE FROM legal_case
         WHERE court_id IN (SELECT id FROM court WHERE provider_court_id = ${courtCode})
@@ -121,6 +141,11 @@ describe.skipIf(!databaseUrl)("bulk docket merge", () => {
       expect(third.insertedThisRun).toBe(2);
       expect(third.rowsConsumed).toBe(12);
       expect(await count()).toBe(12);
+      const [ids] = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM case_identifier
+        WHERE provider_id = ${provider!.id} AND identifier_type = 'courtlistener_docket_id'
+          AND case_id IN (SELECT id FROM legal_case WHERE court_id IN (SELECT id FROM court WHERE provider_court_id = ${courtCode}))`;
+      expect(ids!.n).toBe(12);
     } finally {
       rmSync(dir, { recursive: true, force: true });
       await sql`DELETE FROM ingestion_checkpoint WHERE provider_id = ${provider!.id} AND stream_name = ${stream}`;
