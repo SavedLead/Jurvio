@@ -26,11 +26,20 @@ jobs:
     # Runs on the builder pool (jurvio-builder-01 plus -02/-03 from
     # add-ci-runners-once.yml, the extras at low CPU/IO priority with a memory
     # cap), so CI no longer queues behind deploys, backups and bulk loads.
+    # All three runners share builder-01's 2 vCPUs, and two CI jobs at once
+    # make the bulk-load integration tests time out (2026-10-30), so this job
+    # runs one at a time across every branch: the ci-tests-builder group
+    # queues pending runs (queue: max) instead of cancelling them. Deploy and
+    # ops workflows keep their own groups and use the other runners.
     # Postgres is a service container on a random host port, so two CI jobs on
     # one host never collide. Lint, typecheck, and tests stay under a 1 GB heap.
     # The Next.js build is the peak and gets a separate 1.7 GB heap so it
     # does not sit on top of a still-running lint process.
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    concurrency:
+      group: ci-tests-builder
+      cancel-in-progress: false
+      queue: max
     timeout-minutes: 45
     env:
       NODE_OPTIONS: --max-old-space-size=1024
