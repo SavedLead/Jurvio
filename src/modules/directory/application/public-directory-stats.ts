@@ -29,6 +29,7 @@ export interface RefreshOptions {
 export interface RefreshResult {
   courts: { upserted: number; skipped: number };
   judges: { upserted: number; skipped: number; removed: number };
+  entities: EntityRefreshResult;
 }
 
 const displayableCase = latestPublicationColumnSql("displayable", "legal_case", "c.id");
@@ -207,6 +208,120 @@ async function removeUnverifiedJudges(sql: Sql): Promise<number> {
   return row?.n ?? 0;
 }
 
+export const ENTITY_CASE_BATCH = 2000;
+export const ENTITY_MAX_BATCHES = 250;
+/** A completed entity pass is reused for this long before the next one starts. */
+export const ENTITY_REFRESH_EVERY_MS = 2 * 60 * 60_000;
+
+export interface EntityRefreshResult {
+  ran: boolean;
+  generation: number | null;
+  cases: number;
+  published: boolean;
+}
+
+/**
+ * Party / law-firm counts (migration 0137). Walks published cases in public_id
+ * order and adds each batch's per-entity count(DISTINCT case) into the building
+ * generation; the cursor moves in the same transaction, so a killed run resumes
+ * without double counting. At the end the generation is published and older
+ * generations are deleted in chunks.
+ */
+export async function refreshEntityPublicStats(
+  sql: Sql,
+  options: { batchSize?: number; maxBatches?: number; pauseMs?: number; force?: boolean; now?: Date; log?: RefreshOptions["log"] } = {},
+): Promise<EntityRefreshResult> {
+  const batchSize = options.batchSize ?? ENTITY_CASE_BATCH;
+  const maxBatches = options.maxBatches ?? ENTITY_MAX_BATCHES;
+  const pauseMs = options.pauseMs ?? 250;
+  const log = options.log ?? ((event) => console.log(JSON.stringify(event)));
+  const now = options.now ?? new Date();
+  const [state] = await sql<{ published: number | null; publishedAt: Date | null; building: number | null; cursor: string | null }[]>`
+    SELECT published_generation AS published, published_at AS "publishedAt",
+      building_generation AS building, building_cursor AS cursor
+    FROM public_stats_generation WHERE name = 'entity'
+  `;
+  if (!state) return { ran: false, generation: null, cases: 0, published: false };
+  const fresh = state.publishedAt && now.getTime() - new Date(state.publishedAt).getTime() < ENTITY_REFRESH_EVERY_MS;
+  if (state.building === null && fresh && !options.force) {
+    log({ directoryStats: "entity-skip", reason: "fresh", publishedAt: state.publishedAt });
+    return { ran: false, generation: state.published, cases: 0, published: false };
+  }
+  let generation = state.building;
+  let cursor = state.cursor;
+  if (generation === null) {
+    generation = (state.published ?? 0) + 1;
+    cursor = null;
+    await sql`DELETE FROM entity_public_stats WHERE generation = ${generation}`;
+    await sql`
+      UPDATE public_stats_generation
+      SET building_generation = ${generation}, building_cursor = NULL, building_started_at = now()
+      WHERE name = 'entity'
+    `;
+  }
+  log({ directoryStats: "entity-start", generation, cursor, batchSize, maxBatches });
+  let cases = 0;
+  for (let i = 0; i < maxBatches; i += 1) {
+    const batch = await batchTransaction(sql, async (tx) => {
+      await tx`SELECT set_config('statement_timeout', ${BATCH_TIMEOUT}, true)`;
+      const [row] = await tx<{ seen: number; last: string | null }[]>`
+        WITH batch AS (
+          SELECT c.id, c.public_id, c.filed_on
+          FROM legal_case c
+          WHERE c.publication = 'published'
+            AND (${cursor}::text IS NULL OR c.public_id > ${cursor}::text)
+          ORDER BY c.public_id
+          LIMIT ${batchSize}
+        ), visible AS (
+          SELECT c.id, c.filed_on FROM batch c WHERE ${tx.unsafe(displayableCase)}
+        ), added AS (
+          INSERT INTO entity_public_stats (generation, entity_id, case_count, latest_case_date)
+          SELECT ${generation}::int, appearance.entity_id, count(DISTINCT visible.id)::int, max(visible.filed_on)
+          FROM visible
+          JOIN party_appearance appearance ON appearance.case_id = visible.id
+          GROUP BY appearance.entity_id
+          ON CONFLICT (generation, entity_id) DO UPDATE SET
+            case_count = entity_public_stats.case_count + EXCLUDED.case_count,
+            latest_case_date = GREATEST(entity_public_stats.latest_case_date, EXCLUDED.latest_case_date)
+          RETURNING 1
+        )
+        SELECT (SELECT count(*) FROM batch)::int AS seen,
+          (SELECT max(public_id) FROM batch) AS last,
+          (SELECT count(*) FROM added)::int AS entities
+      `;
+      const seen = row?.seen ?? 0;
+      const last = row?.last ?? cursor;
+      await tx`UPDATE public_stats_generation SET building_cursor = ${last} WHERE name = 'entity'`;
+      return { seen, last };
+    });
+    cases += batch.seen;
+    cursor = batch.last;
+    if (batch.seen < batchSize) {
+      await sql`
+        UPDATE public_stats_generation
+        SET published_generation = ${generation}, published_at = now(),
+          building_generation = NULL, building_cursor = NULL, building_started_at = NULL
+        WHERE name = 'entity'
+      `;
+      for (;;) {
+        const removed = await sql`
+          DELETE FROM entity_public_stats WHERE ctid IN (
+            SELECT ctid FROM entity_public_stats WHERE generation < ${generation} LIMIT 20000
+          )
+        `;
+        if (removed.count === 0) break;
+        if (pauseMs > 0) await sleep(pauseMs);
+      }
+      log({ directoryStats: "entity-published", generation, cases });
+      return { ran: true, generation, cases, published: true };
+    }
+    if (i % 25 === 0) log({ directoryStats: "entity-batch", generation, cursor, cases });
+    if (pauseMs > 0) await sleep(pauseMs);
+  }
+  log({ directoryStats: "entity-paused", generation, cursor, cases });
+  return { ran: true, generation, cases, published: false };
+}
+
 export async function refreshPublicDirectoryStats(sql: Sql, options: RefreshOptions = {}): Promise<RefreshResult> {
   const pauseMs = options.pauseMs ?? 250;
   const log = options.log ?? ((event) => console.log(JSON.stringify(event)));
@@ -222,7 +337,14 @@ export async function refreshPublicDirectoryStats(sql: Sql, options: RefreshOpti
     (ids) => upsertJudgeBatch(sql, ids),
   );
   const removed = await removeUnverifiedJudges(sql);
-  const result = { courts, judges: { ...judgeWalk, removed } };
+  let entities: EntityRefreshResult = { ran: false, generation: null, cases: 0, published: false };
+  try {
+    entities = await refreshEntityPublicStats(sql, { pauseMs, log });
+  } catch (error) {
+    // Not migrated yet: courts and judges still refresh.
+    if (!isMissingTable(error)) throw error;
+  }
+  const result = { courts, judges: { ...judgeWalk, removed }, entities };
   log({ directoryStats: "done", ...result });
   return result;
 }

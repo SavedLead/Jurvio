@@ -30,3 +30,12 @@ describe("public directory stats refresher", () => {
     expect(isMissingTable({ code: "57014" })).toBe(false);
   });
 });
+
+describe("entity directory stats", () => {
+  it("moves the cursor in the same transaction as the counts and reuses a fresh generation", async () => {
+    const source = await readFile("src/modules/directory/application/public-directory-stats.ts", "utf8");
+    expect(source).toContain("case_count = entity_public_stats.case_count + EXCLUDED.case_count");
+    expect(source).toContain("UPDATE public_stats_generation SET building_cursor = ${last}");
+    expect(source).toContain("ENTITY_REFRESH_EVERY_MS");
+  });
+});
