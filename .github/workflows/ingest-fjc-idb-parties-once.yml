@@ -15,6 +15,10 @@ name: Backfill parties from the FJC Integrated Database (once, resumable)
 # Every write is idempotent (ON CONFLICT). The file is cached under
 # /var/lib/jurvio/artifacts/bulk and deleted when every requested year is done.
 # A 30% free-disk floor is checked before the download and before every year.
+#
+# Coverage: CourtListener stopped refreshing its IDB copy; the 2026-09-30 file
+# has 10.3M rows but usable filings only through 2021 (~200-490k per year for
+# 1987-2020, 156k for 2021). One year pass is ~2 min of parsing plus writes.
 
 on:
   # Dispatch-only, by policy (tests/workflow-triggers.test.ts); every job fails
@@ -31,9 +35,9 @@ on:
         default: "auto"
         type: string
       filing_years:
-        description: "Inclusive range NEWEST-OLDEST, e.g. 2026-2015 (processed newest first)"
+        description: "Inclusive range NEWEST-OLDEST, e.g. 2021-1990 (processed newest first)"
         required: true
-        default: "2026-2015"
+        default: "2021-1990"
         type: string
       budget_minutes:
         description: "Stop starting new years after this many minutes (resume by re-dispatching)"
@@ -73,7 +77,7 @@ jobs:
             *) echo "::error::snapshot_date must be auto or YYYY-MM-DD"; exit 1;;
           esac
           if ! [[ "$FILING_YEARS" =~ ^(19|20)[0-9]{2}-(19|20)[0-9]{2}$ ]]; then
-            echo "::error::filing_years must look like 2026-2015"; exit 1
+            echo "::error::filing_years must look like 2021-1990"; exit 1
           fi
           newest="${FILING_YEARS%-*}"; oldest="${FILING_YEARS#*-}"
           if [ "$newest" -lt "$oldest" ]; then echo "::error::filing_years is NEWEST-OLDEST"; exit 1; fi
