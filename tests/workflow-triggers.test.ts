@@ -365,6 +365,16 @@ describe("workflow trigger policy", () => {
     expect(opinions).toMatch(/\[ "\$dockets_done" != "complete" \] \|\| \[ "\$clusters_done" != "complete" \]/);
   });
 
+  it("CI tests run one at a time across all branches (builder-01 has 2 vCPUs)", () => {
+    const job = parsed.get("ci.yml")!.jobs!.verify as Job & {
+      concurrency?: { group?: string; "cancel-in-progress"?: boolean; queue?: string };
+    };
+    expect(job.concurrency?.group).toBe("ci-tests-builder");
+    expect(job.concurrency?.["cancel-in-progress"]).toBe(false);
+    // queue: max keeps every pending run instead of cancelling all but one.
+    expect(job.concurrency?.queue).toBe("max");
+  });
+
   it("the builder disk guard never prunes volumes or containers and never touches builder-01's work dir", () => {
     const script = (parsed.get("builder-disk-guard.yml")!.jobs!.reclaim!.steps ?? []).map((step) => step.run ?? "").join("\n");
     expect(script).not.toMatch(/volume prune|system prune|container prune|docker rm\b|--volumes/);
