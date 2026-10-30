@@ -1,0 +1,126 @@
+name: Diagnose federal docket-entry coverage (once, read-only)
+
+# Read-only report: how many legal_case rows have at least one docket_entry, by
+# publication state and court jurisdiction, how many drafts have entries and how
+# recent they are, and how many drafts created by the 2026-10-30 bulk docket load
+# (run 41006547889, 05:06-07:45 UTC) have any entries. Changes nothing:
+#   * every query runs with default_transaction_read_only=on, so Postgres
+#     itself rejects any write;
+#   * the helper refuses any statement that does not start with SELECT/WITH;
+#   * no container, service, or file on the box is touched.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-federal-docket-entries
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 45
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Docket-entry coverage report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          # Read-only at the server: any INSERT/UPDATE/DELETE/DDL fails with
+          # "cannot execute ... in a read-only transaction". No -i on docker exec:
+          # it would drain this heredoc.
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=900s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+
+          echo "=============================================================="
+          echo " FEDERAL DOCKET-ENTRY COVERAGE @ $(date -u +'%Y-%m-%dT%H:%M:%SZ') (read-only)"
+          echo "=============================================================="
+          echo "session_read_only=$(q "SELECT current_setting('default_transaction_read_only')")"
+
+          echo "--- 1. legal_case by publication (publication | cases | with_entries | pct) ---"
+          q "WITH de AS (SELECT DISTINCT case_id FROM docket_entry)
+             SELECT lc.publication::text, count(*), count(de.case_id),
+                    round(100.0 * count(de.case_id) / nullif(count(*), 0), 2)
+               FROM legal_case lc LEFT JOIN de ON de.case_id = lc.id
+              GROUP BY 1 ORDER BY 2 DESC"
+
+          echo "--- 2. cases with entries by jurisdiction and publication (jurisdiction | publication | cases | with_entries | entries) ---"
+          q "WITH de AS (SELECT case_id, count(*) AS n FROM docket_entry GROUP BY case_id)
+             SELECT coalesce(c.jurisdiction, '?'), lc.publication::text, count(*), count(de.case_id), coalesce(sum(de.n), 0)
+               FROM legal_case lc JOIN court c ON c.id = lc.court_id LEFT JOIN de ON de.case_id = lc.id
+              GROUP BY 1, 2 ORDER BY 1, 2"
+
+          echo "--- 3. drafts with entries: case filed_on recency (drafts_with_entries | filed_30d | filed_90d | filed_365d | filed_on_null) ---"
+          q "WITH de AS (SELECT DISTINCT case_id FROM docket_entry)
+             SELECT count(*),
+                    count(*) FILTER (WHERE lc.filed_on >= current_date - 30),
+                    count(*) FILTER (WHERE lc.filed_on >= current_date - 90),
+                    count(*) FILTER (WHERE lc.filed_on >= current_date - 365),
+                    count(*) FILTER (WHERE lc.filed_on IS NULL)
+               FROM de JOIN legal_case lc ON lc.id = de.case_id
+              WHERE lc.publication = 'draft'"
+
+          echo "--- 4. drafts with an ENTRY filed in the window (entry_30d | entry_90d | entry_365d) ---"
+          q "WITH latest AS (SELECT case_id, max(filed_on) AS last_entry FROM docket_entry GROUP BY case_id)
+             SELECT count(*) FILTER (WHERE l.last_entry >= current_date - 30),
+                    count(*) FILTER (WHERE l.last_entry >= current_date - 90),
+                    count(*) FILTER (WHERE l.last_entry >= current_date - 365)
+               FROM latest l JOIN legal_case lc ON lc.id = l.case_id
+              WHERE lc.publication = 'draft'"
+
+          echo "--- 5. drafts created by the 2026-10-30 bulk docket load window (created_drafts | with_entries) ---"
+          q "SELECT count(*),
+                    count(*) FILTER (WHERE EXISTS (SELECT 1 FROM docket_entry d WHERE d.case_id = lc.id))
+               FROM legal_case lc
+              WHERE lc.publication = 'draft'
+                AND lc.created_at >= timestamptz '2026-10-30 05:00:00+00'
+                AND lc.created_at <  timestamptz '2026-10-30 08:00:00+00'"
+          echo "=============================================================="
+          REMOTE
+          rc=${PIPESTATUS[0]}
+          {
+            echo '### Federal docket-entry coverage (read-only)'
+            echo ''
+            echo '```'
+            cat "$RUNNER_TEMP/report.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
