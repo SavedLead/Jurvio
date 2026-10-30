@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
 import { openBulkCsv } from "../providers/courtlistener/bulk";
 import { readBulkOpinionClusters, readBulkOpinions } from "../providers/courtlistener/bulk-opinions";
@@ -20,6 +20,13 @@ function csv(header: string[], rows: string[][]): string {
 }
 
 describe.skipIf(!databaseUrl)("bulk cluster load", () => {
+  // The load gate pauses 30s whenever the host's 1-minute load average is high.
+  // On the shared CI runner, other test files raise it, so this test timed out
+  // without testing anything. The gate itself has its own unit tests. Here the
+  // load average is pinned low so the test covers the merge logic only.
+  beforeAll(() => { vi.spyOn(os, "loadavg").mockReturnValue([0, 0, 0]); });
+  afterAll(() => { vi.restoreAllMocks(); });
+
   it("resolves opinion -> cluster -> docket -> case, keeps unmatched clusters pending, and only re-passes new clusters", async () => {
     const sql = postgres(databaseUrl!, { max: 1, onnotice: () => {} });
     const tag = randomUUID().slice(0, 8);
