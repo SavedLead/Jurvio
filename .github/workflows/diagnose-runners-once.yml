@@ -35,6 +35,8 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       WEB_HOST: 10.116.0.2
       PUBLIC_HOST: 10.116.0.5
+      # public-01 has no DO_USER account; deploy-public-web-hosted.yml uses root.
+      PUBLIC_USER: root
     steps:
       - name: Require confirm=DIAGNOSE
         env:
@@ -121,9 +123,10 @@ jobs:
           set -uo pipefail
           # shellcheck disable=SC1090
           source "$HOME/vpc-ssh.sh"
-          for host in "$WEB_HOST" "$PUBLIC_HOST"; do
+          for target in "$INGESTION_USER@$WEB_HOST" "$PUBLIC_USER@$PUBLIC_HOST"; do
+            host="${target#*@}"
             echo "##### $host #####"
-            vpc_ssh "$INGESTION_USER@$host" "bash -s" < "$RUNNER_TEMP/runner-inventory.sh" 2>&1 | tee "$RUNNER_TEMP/$host.txt" \
+            vpc_ssh "$target" "bash -s" < "$RUNNER_TEMP/runner-inventory.sh" 2>&1 | tee "$RUNNER_TEMP/$host.txt" \
               || echo "(ssh to $host failed)"
           done
       - name: Runners registered with GitHub (GET only, names/labels/status)
