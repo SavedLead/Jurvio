@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  bulkOpinionStreamName,
+  ClusterIdSet,
   decodeBulkOpinionCheckpoint,
   isFederalOpinionCourt,
   opinionStageCsv,
@@ -54,9 +56,24 @@ describe("bulk opinion load", () => {
     expect(csv).toContain('"ab, ""c""\nd"');
   });
 
-  it("clears a previous run's stop flag and ignores other snapshots", () => {
-    const stored = JSON.stringify({ version: 1, snapshotDate: "2026-09-30", rowsConsumed: 10, merged: 4, stopped: "budget" });
-    expect(decodeBulkOpinionCheckpoint(stored, "2026-09-30")).toMatchObject({ rowsConsumed: 10, merged: 4, stopped: null });
-    expect(decodeBulkOpinionCheckpoint(stored, "2026-10-31").rowsConsumed).toBe(0);
+  it("ignores version-1 checkpoints (written before clusters were loaded) and other snapshots", () => {
+    const v1 = JSON.stringify({ version: 1, snapshotDate: "2026-09-30", rowsConsumed: 1_783_737, merged: 0, stopped: "budget" });
+    expect(decodeBulkOpinionCheckpoint(v1, "2026-09-30")).toMatchObject({ version: 2, pass: 1, rowsConsumed: 0 });
+    const v2 = JSON.stringify({ version: 2, snapshotDate: "2026-09-30", pass: 2, passStartedAt: "2026-10-30 08:00:00+00",
+      clustersSince: "2026-10-29 08:00:00+00", rowsConsumed: 10, merged: 4, stopped: "complete" });
+    expect(decodeBulkOpinionCheckpoint(v2, "2026-09-30")).toMatchObject({ pass: 2, rowsConsumed: 10, merged: 4, stopped: "complete" });
+    expect(decodeBulkOpinionCheckpoint(v2, "2026-10-31").rowsConsumed).toBe(0);
+    expect(bulkOpinionStreamName("2026-09-30")).toBe("courtlistener:bulk-opinions:v2:2026-09-30");
+  });
+
+  it("tests cluster membership against a sorted numeric set", () => {
+    const set = new ClusterIdSet(["9", "123456789012", "5", "not-a-number", "5"]);
+    expect(set.size).toBe(4);
+    for (const id of ["5", "9", "123456789012"]) expect(set.has(id)).toBe(true);
+    for (const id of ["0", "6", "10", "123456789011", "", "abc"]) expect(set.has(id)).toBe(false);
+    expect(new ClusterIdSet([]).has("1")).toBe(false);
+    const big = new ClusterIdSet(Array.from({ length: 10_000 }, (_, n) => String(n * 3)));
+    expect(big.has("29997")).toBe(true);
+    expect(big.has("29998")).toBe(false);
   });
 });

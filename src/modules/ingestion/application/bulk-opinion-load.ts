@@ -1,21 +1,11 @@
-import { statfs } from "node:fs/promises";
-import os from "node:os";
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import { CITED_OPINION_RULE_VERSION } from "@/modules/citations/application/publish-cited-federal-opinions";
 import { evaluatePublicationCandidate } from "@/modules/publication/domain/publication-policy";
 import { FEDERAL_PUBLICATION_RULE_VERSION } from "../domain/federal-stream";
 import { matchesBulkFederalJurisdiction } from "./ingest-courtlistener-bulk-federal-dockets";
-import {
-  BULK_DOCKET_DISK_FLOOR,
-  BULK_DOCKET_LOAD_PAUSE_MS,
-  BULK_DOCKET_MAX_PAUSES,
-  csvField,
-  freeDiskRatio,
-  isEasternQuietWindow,
-  rowsPerHour,
-  shouldPauseForLoad,
-} from "./bulk-docket-load";
+import { csvField, isEasternQuietWindow, rowsPerHour } from "./bulk-docket-load";
+import { federalOpinionCourtIds, gateBulkChunk } from "./bulk-load-gate";
 import { CASE_PUBLICATION_CANDIDATE } from "./write-bulk-opinion-graph";
 import {
   bulkContentHash,
@@ -38,9 +28,26 @@ export const BULK_OPINION_LANE = "federal-bulk-opinions";
 /** Text columns are stored in document_content; keep them out of provider_metadata. */
 const TEXT_COLUMNS = ["html_with_citations", "html_columbia", "html_lawbox", "html", "xml_harvard", "plain_text"];
 
+/** Unmatched rows skipped between checkpoint saves when nothing is being merged. */
+export const BULK_OPINION_SKIP_SAVE_ROWS = 50_000;
+
+/**
+ * Version 2 (this PR). A version-1 checkpoint was written before clusters were
+ * loaded, so the rows it "consumed" were mostly unmatched; it is ignored and the
+ * snapshot is read again under a new stream name.
+ *
+ * A pass reads the whole file once, merging opinions whose cluster is in the
+ * in-memory federal cluster set. When a pass completes and clusters were created
+ * after it started (a later docket or cluster load resolved them), the next run
+ * starts pass + 1, which only stages opinions of clusters created since the previous
+ * pass started (`clustersSince`), so every other row is a fast skip.
+ */
 export interface BulkOpinionCheckpoint {
-  version: 1;
+  version: 2;
   snapshotDate: string;
+  pass: number;
+  passStartedAt: string | null;
+  clustersSince: string | null;
   rowsConsumed: number;
   merged: number;
   alreadyPresent: number;
@@ -51,31 +58,97 @@ export interface BulkOpinionCheckpoint {
 }
 
 export function emptyBulkOpinionCheckpoint(snapshotDate: string): BulkOpinionCheckpoint {
-  return { version: 1, snapshotDate, rowsConsumed: 0, merged: 0, alreadyPresent: 0, unmatched: 0, nonFederal: 0, empty: 0, stopped: null };
+  return {
+    version: 2, snapshotDate, pass: 1, passStartedAt: null, clustersSince: null,
+    rowsConsumed: 0, merged: 0, alreadyPresent: 0, unmatched: 0, nonFederal: 0, empty: 0, stopped: null,
+  };
 }
 
+/** Decodes the stored checkpoint, keeping `stopped` so a completed pass is recognized. */
 export function decodeBulkOpinionCheckpoint(value: string | null, snapshotDate: string): BulkOpinionCheckpoint {
   if (!value) return emptyBulkOpinionCheckpoint(snapshotDate);
-  const parsed = JSON.parse(value) as Partial<BulkOpinionCheckpoint>;
-  if (parsed.version !== 1 || parsed.snapshotDate !== snapshotDate || typeof parsed.rowsConsumed !== "number") {
+  const parsed = JSON.parse(value) as Partial<BulkOpinionCheckpoint> & { version?: number };
+  if (parsed.version !== 2 || parsed.snapshotDate !== snapshotDate || typeof parsed.rowsConsumed !== "number") {
     return emptyBulkOpinionCheckpoint(snapshotDate);
   }
   const base = emptyBulkOpinionCheckpoint(snapshotDate);
   return {
     ...base,
+    pass: parsed.pass ?? 1,
+    passStartedAt: parsed.passStartedAt ?? null,
+    clustersSince: parsed.clustersSince ?? null,
     rowsConsumed: parsed.rowsConsumed,
     merged: parsed.merged ?? 0,
     alreadyPresent: parsed.alreadyPresent ?? 0,
     unmatched: parsed.unmatched ?? 0,
     nonFederal: parsed.nonFederal ?? 0,
     empty: parsed.empty ?? 0,
-    // `stopped` describes the previous run; a new run starts clear.
-    stopped: null,
+    stopped: parsed.stopped ?? null,
   };
 }
 
 export function bulkOpinionStreamName(snapshotDate: string): string {
-  return `courtlistener:bulk-opinions:v1:${snapshotDate}`;
+  return `courtlistener:bulk-opinions:v2:${snapshotDate}`;
+}
+
+/**
+ * Sorted provider cluster ids, for an O(log n) membership test per opinion row.
+ * A Float64Array of a few million ids is tens of MB; a Set of strings would be
+ * several times that.
+ */
+export class ClusterIdSet {
+  private readonly ids: Float64Array;
+
+  constructor(values: Iterable<string>) {
+    const numbers: number[] = [];
+    for (const value of values) {
+      if (/^\d{1,15}$/.test(value)) numbers.push(Number(value));
+    }
+    this.ids = Float64Array.from(numbers).sort();
+  }
+
+  get size(): number {
+    return this.ids.length;
+  }
+
+  has(value: string): boolean {
+    if (!/^\d{1,15}$/.test(value)) return false;
+    const target = Number(value);
+    let low = 0;
+    let high = this.ids.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >>> 1;
+      const current = this.ids[mid]!;
+      if (current === target) return true;
+      if (current < target) low = mid + 1;
+      else high = mid - 1;
+    }
+    return false;
+  }
+}
+
+/**
+ * CourtListener cluster ids this snapshot can attach opinions to: clusters on a
+ * federal (non-SCOTUS, non-bankruptcy) court whose case is draft or published
+ * (restricted and suppressed cases get no text). With `since`, only clusters created
+ * at or after it.
+ */
+export async function loadFederalClusterIds(
+  sql: Sql,
+  providerId: string,
+  federalCourtIds: string[],
+  since: string | null,
+): Promise<ClusterIdSet> {
+  const rows = await sql<{ id: string }[]>`
+    SELECT opinion_cluster.provider_cluster_id AS id
+    FROM opinion_cluster
+    JOIN legal_case ON legal_case.id = opinion_cluster.case_id
+    WHERE opinion_cluster.provider_id = ${providerId}
+      AND legal_case.court_id = ANY(${federalCourtIds}::uuid[])
+      AND legal_case.publication IN ('draft', 'published')
+      AND (${since}::timestamptz IS NULL OR opinion_cluster.created_at >= ${since}::timestamptz)
+  `;
+  return new ClusterIdSet(rows.map((row) => row.id));
 }
 
 /** The facts of an existing cluster -> legal_case -> court an opinion attaches to. */
@@ -205,24 +278,25 @@ export async function mergeOpinionStage(
   snapshotDate: string,
   rows: readonly StagedOpinion[],
 ): Promise<OpinionMergeCounts> {
-  await sql`TRUNCATE courtlistener_opinion_stage`;
-  if (!rows.length) return { inserted: 0, documentsHeld: 0, casesHeld: 0 };
-  const copy = sql.unsafe(
-    "COPY courtlistener_opinion_stage (opinion_id, provider_cluster_id, cluster_id, case_id, court_id, court_name, case_name, case_is_draft, date_filed, precedential_status, citation_count, opinion_type, title, author_name, per_curiam, download_url, content_html, content_text, content_hash, extraction_method, word_count, document_public_id, source_uri, provider_metadata) FROM STDIN WITH (FORMAT csv, NULL '\\N')",
-  );
-  const stream = await copy.writable();
-  await new Promise<void>((resolve, reject) => {
-    stream.on("error", reject);
-    stream.on("finish", () => resolve());
-    stream.end(opinionStageCsv(rows));
-  });
-  const preflight = evaluatePublicationCandidate(CASE_PUBLICATION_CANDIDATE);
-  const reviewStatus = preflight.recommendation === "reject" ? "rejected" : "pending";
-  const objectPrefix = `courtlistener/bulk/opinions-${snapshotDate}.csv.bz2#`;
-  const artifactMeta = { source: "courtlistener_bulk", snapshotDate, lane: BULK_OPINION_LANE, objectStored: false };
-
+  // TRUNCATE, COPY and merge share one transaction: TRUNCATE holds the stage's
+  // ACCESS EXCLUSIVE lock until commit, so two loaders can never interleave on it.
   return sql.begin(async (tx) => {
     await tx`SELECT set_config('statement_timeout', '170s', true)`;
+    await tx`TRUNCATE courtlistener_opinion_stage`;
+    if (!rows.length) return { inserted: 0, documentsHeld: 0, casesHeld: 0 };
+    const copy = tx.unsafe(
+      "COPY courtlistener_opinion_stage (opinion_id, provider_cluster_id, cluster_id, case_id, court_id, court_name, case_name, case_is_draft, date_filed, precedential_status, citation_count, opinion_type, title, author_name, per_curiam, download_url, content_html, content_text, content_hash, extraction_method, word_count, document_public_id, source_uri, provider_metadata) FROM STDIN WITH (FORMAT csv, NULL '\\N')",
+    );
+    const stream = await copy.writable();
+    await new Promise<void>((resolve, reject) => {
+      stream.on("error", reject);
+      stream.on("finish", () => resolve());
+      stream.end(opinionStageCsv(rows));
+    });
+    const preflight = evaluatePublicationCandidate(CASE_PUBLICATION_CANDIDATE);
+    const reviewStatus = preflight.recommendation === "reject" ? "rejected" : "pending";
+    const objectPrefix = `courtlistener/bulk/opinions-${snapshotDate}.csv.bz2#`;
+    const artifactMeta = { source: "courtlistener_bulk", snapshotDate, lane: BULK_OPINION_LANE, objectStored: false };
     // Rows whose opinion already exists (written by another path since the prefilter) are dropped here.
     await tx`
       DELETE FROM courtlistener_opinion_stage stage
@@ -310,7 +384,8 @@ export async function mergeOpinionStage(
 }
 
 export interface BulkOpinionLoadOptions {
-  opinions: AsyncIterable<CourtListenerBulkOpinion>;
+  /** Opened only when this run has rows to read (not for a finished snapshot). */
+  openOpinions: () => AsyncIterable<CourtListenerBulkOpinion>;
   snapshotDate: string;
   /** Opinions to merge in this run. */
   rowLimit: number;
@@ -330,8 +405,10 @@ export interface BulkOpinionLoadResult extends BulkOpinionCheckpoint {
   resumedFromRow: number;
   rowsReadThisRun: number;
   mergedThisRun: number;
+  unmatchedThisRun: number;
   documentsHeld: number;
   casesHeld: number;
+  clusterSetSize: number;
   elapsedMs: number;
   rowsReadPerSecond: number;
   mergedPerHour: number;
@@ -368,12 +445,18 @@ export async function loadCourtListenerBulkOpinions(sql: Sql, options: BulkOpini
   let checkpoint = options.resetCheckpoint
     ? emptyBulkOpinionCheckpoint(options.snapshotDate)
     : decodeBulkOpinionCheckpoint(stored?.cursor_value ?? null, options.snapshotDate);
-  const initial = checkpoint;
+  const previousStop = checkpoint.stopped;
+  checkpoint = { ...checkpoint, stopped: null };
+  let initial = checkpoint;
   let rowsSeen = 0;
   let pauses = 0;
   let freeRatio: number | null = null;
   let documentsHeld = 0;
   let casesHeld = 0;
+  let clusterSetSize = 0;
+  /** Rows skipped since the last checkpoint save (not yet counted in the checkpoint). */
+  let skippedSinceSave = 0;
+  let unmatchedThisRun = 0;
   const batch: Pending[] = [];
   let batchBytes = 0;
 
@@ -394,8 +477,10 @@ export async function loadCourtListenerBulkOpinions(sql: Sql, options: BulkOpini
       resumedFromRow: initial.rowsConsumed,
       rowsReadThisRun,
       mergedThisRun,
+      unmatchedThisRun,
       documentsHeld,
       casesHeld,
+      clusterSetSize,
       elapsedMs,
       rowsReadPerSecond: elapsedMs > 0 ? Math.round((rowsReadThisRun * 1000) / elapsedMs) : 0,
       mergedPerHour: rowsPerHour(mergedThisRun, elapsedMs),
@@ -405,13 +490,49 @@ export async function loadCourtListenerBulkOpinions(sql: Sql, options: BulkOpini
   };
 
   if (!options.allowAnytime && !isEasternQuietWindow(new Date())) {
-    await save({ ...checkpoint, stopped: "outside-quiet-window" });
+    await save({ ...checkpoint, stopped: previousStop === "complete" ? "complete" : "outside-quiet-window" });
     return finish();
   }
 
+  const federalCourtIds = await federalOpinionCourtIds(sql, provider.id, isFederalOpinionCourt);
+  const [{ dbNow } = { dbNow: new Date().toISOString() }] = await sql<{ dbNow: string }[]>`SELECT now()::text AS "dbNow"`;
+
+  if (previousStop === "complete") {
+    // Start another pass only for clusters created after the finished pass began.
+    const since = checkpoint.passStartedAt;
+    const newer = since ? await loadFederalClusterIds(sql, provider.id, federalCourtIds, since) : new ClusterIdSet([]);
+    if (newer.size === 0) {
+      await save({ ...checkpoint, stopped: "complete" });
+      return finish();
+    }
+    checkpoint = {
+      ...checkpoint, pass: checkpoint.pass + 1, passStartedAt: null, clustersSince: since, rowsConsumed: 0, stopped: null,
+    };
+    initial = checkpoint;
+    log({ bulkOpinions: "new-pass", pass: checkpoint.pass, clustersSince: since, newClusters: newer.size });
+  }
+  if (!checkpoint.passStartedAt) {
+    checkpoint = { ...checkpoint, passStartedAt: dbNow };
+    initial = { ...initial, passStartedAt: dbNow };
+  }
+
+  const clusterIds = await loadFederalClusterIds(sql, provider.id, federalCourtIds, checkpoint.clustersSince);
+  clusterSetSize = clusterIds.size;
+  log({ bulkOpinions: "cluster-set", pass: checkpoint.pass, clustersSince: checkpoint.clustersSince, clusters: clusterSetSize });
+  if (clusterSetSize === 0) {
+    // Nothing can match: reading the file would only burn the budget.
+    await save({ ...checkpoint, stopped: "no-clusters" });
+    return finish();
+  }
+
+  const saveSkips = async () => {
+    await save({ ...checkpoint, rowsConsumed: rowsSeen, unmatched: checkpoint.unmatched + skippedSinceSave, stopped: null });
+    skippedSinceSave = 0;
+  };
+
   /** Gate, then merge the pending batch. Returns a stop reason, or null to continue. */
   const flush = async (): Promise<string | null> => {
-    const gate = await gateChunk(sql, options.diskPath, options.sleep);
+    const gate = await gateBulkChunk(sql, options.diskPath, "bulkOpinions", options.sleep);
     pauses += gate.pauses;
     freeRatio = gate.freeDiskRatio;
     if (gate.stop) return gate.stop;
@@ -444,16 +565,18 @@ export async function loadCourtListenerBulkOpinions(sql: Sql, options: BulkOpini
     const merged = await mergeOpinionStage(sql, provider.id, options.snapshotDate, staged);
     documentsHeld += merged.documentsHeld;
     casesHeld += merged.casesHeld;
+    unmatchedThisRun += skippedSinceSave + unmatched;
     await save({
       ...checkpoint,
       rowsConsumed: rowsSeen,
       merged: checkpoint.merged + merged.inserted,
       alreadyPresent: checkpoint.alreadyPresent + alreadyPresent + (staged.length - merged.inserted),
-      unmatched: checkpoint.unmatched + unmatched,
+      unmatched: checkpoint.unmatched + skippedSinceSave + unmatched,
       nonFederal: checkpoint.nonFederal + nonFederal,
       empty: checkpoint.empty + empty,
       stopped: null,
     });
+    skippedSinceSave = 0;
     log({ bulkOpinions: "chunk", ...checkpoint, mergedThisRun: checkpoint.merged - initial.merged, elapsedMs: now() - started });
     batch.length = 0;
     batchBytes = 0;
@@ -461,10 +584,26 @@ export async function loadCourtListenerBulkOpinions(sql: Sql, options: BulkOpini
   };
 
   let stop: string | null = null;
-  for await (const opinion of options.opinions) {
+  let lastProgressLog = 0;
+  for await (const opinion of options.openOpinions()) {
     if (now() >= deadline) { stop = "budget"; break; }
     rowsSeen += 1;
     if (rowsSeen <= initial.rowsConsumed) continue;
+    if (!clusterIds.has(opinion.cluster_id)) {
+      // Fast skip: no lookup, no staging. Saved periodically while nothing is batched,
+      // so a stop never makes the next run re-read a long unmatched stretch.
+      skippedSinceSave += 1;
+      if (!batch.length && skippedSinceSave >= BULK_OPINION_SKIP_SAVE_ROWS) {
+        if (!options.allowAnytime && !isEasternQuietWindow(new Date())) { stop = "outside-quiet-window"; break; }
+        unmatchedThisRun += skippedSinceSave;
+        await saveSkips();
+        if (rowsSeen - lastProgressLog >= 500_000) {
+          lastProgressLog = rowsSeen;
+          log({ bulkOpinions: "skip", ...checkpoint, mergedThisRun: checkpoint.merged - initial.merged, elapsedMs: now() - started });
+        }
+      }
+      continue;
+    }
     const bytes = opinionBytes(opinion);
     batch.push({ opinion, bytes });
     batchBytes += bytes;
@@ -478,7 +617,12 @@ export async function loadCourtListenerBulkOpinions(sql: Sql, options: BulkOpini
     stop = await flush();
     if (!stop && checkpoint.merged - initial.merged >= options.rowLimit) stop = "row-limit";
   }
-  // A stop keeps rowsConsumed at the last merged chunk, so unmerged rows are read again.
+  if (!stop && skippedSinceSave) {
+    unmatchedThisRun += skippedSinceSave;
+    checkpoint = { ...checkpoint, unmatched: checkpoint.unmatched + skippedSinceSave };
+    skippedSinceSave = 0;
+  }
+  // A stop keeps rowsConsumed at the last saved row, so unmerged rows are read again.
   await save({ ...checkpoint, stopped: stop ?? "complete", rowsConsumed: stop ? checkpoint.rowsConsumed : rowsSeen });
   return finish();
 }
@@ -503,34 +647,7 @@ async function lookupClusters(sql: Sql, providerId: string, clusterIds: string[]
     JOIN court ON court.id = legal_case.court_id
     WHERE opinion_cluster.provider_id = ${providerId}
       AND opinion_cluster.provider_cluster_id = ANY(${clusterIds}::text[])
+      AND legal_case.publication IN ('draft', 'published')
   `;
   return new Map(rows.map((row) => [row.providerClusterId, row]));
-}
-
-async function gateChunk(
-  sql: Sql,
-  diskPath: string,
-  sleep: ((ms: number) => Promise<void>) | undefined,
-): Promise<{ stop: string | null; pauses: number; freeDiskRatio: number | null }> {
-  let pauses = 0;
-  for (;;) {
-    const disk = await statfs(diskPath).catch(() => null);
-    const ratio = disk ? freeDiskRatio(disk.blocks, disk.bavail) : null;
-    if (ratio === null || ratio < BULK_DOCKET_DISK_FLOOR) return { stop: "disk", pauses, freeDiskRatio: ratio };
-    const [load] = await sql<{ slow: number }[]>`
-      SELECT count(*)::int AS slow
-      FROM pg_stat_activity
-      WHERE datname = current_database()
-        AND state = 'active'
-        AND application_name IN ('jurvio-web', 'jurvio-search')
-        AND now() - query_start > interval '2 seconds'
-        AND pid <> pg_backend_pid()
-    `;
-    const pause = shouldPauseForLoad({ loadAverage: os.loadavg()[0] ?? 0, cpuCount: os.cpus().length, slowPublicQueries: load?.slow ?? 0 });
-    if (!pause) return { stop: null, pauses, freeDiskRatio: ratio };
-    pauses += 1;
-    if (pauses > BULK_DOCKET_MAX_PAUSES) return { stop: "paused", pauses, freeDiskRatio: ratio };
-    console.log(JSON.stringify({ bulkOpinions: "pause", pauses, slowPublicQueries: load?.slow ?? 0 }));
-    await (sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(BULK_DOCKET_LOAD_PAUSE_MS);
-  }
 }

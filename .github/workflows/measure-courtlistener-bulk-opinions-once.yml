@@ -2,7 +2,9 @@ name: Measure CourtListener bulk opinion-text load (once)
 
 # Manual only. Step C of the top-down federal ingestion: streams the CourtListener
 # bulk opinions export straight from S3 (bzip2 on the fly; nothing lands on disk),
-# matches each opinion through its existing opinion_cluster to the legal_case,
+# matches each opinion through its opinion_cluster (load clusters first with
+# measure-courtlistener-bulk-clusters-once.yml) to the legal_case, fast-skips rows
+# whose cluster is not a loaded federal cluster (in-memory id set, no DB lookup),
 # keeps federal courts only (no bankruptcy, no SCOTUS), and merges new opinions
 # set-based in chunks through the unlogged courtlistener_opinion_stage table.
 # Everything written stays draft and is held from both automatic publishers.
@@ -10,7 +12,7 @@ name: Measure CourtListener bulk opinion-text load (once)
 # allow_anytime=true), load/latency pauses, the 30% disk floor and a 90-min budget.
 # Prints rows/sec, rows merged, DB growth by table and public latency samples.
 # Dispatch only after deploy-production.yml has released an image that contains
-# jobs/load-courtlistener-bulk-opinions.mjs and migration 0132.
+# jobs/load-courtlistener-bulk-opinions.mjs and migrations 0132-0133.
 
 on:
   workflow_dispatch:
