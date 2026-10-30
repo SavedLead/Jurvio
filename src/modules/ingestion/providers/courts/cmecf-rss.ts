@@ -82,6 +82,9 @@ export async function fetchCmecfRss(
       ...conditionalRequestHeaders(validators),
     },
     redirect: "error",
+    // A court server that accepts the connection and then stalls must not hold
+    // the lane: fail this court and let the job move on to the next one.
+    signal: AbortSignal.timeout(45_000),
   });
   const etag = response.headers.get("etag");
   const lastModified = response.headers.get("last-modified");

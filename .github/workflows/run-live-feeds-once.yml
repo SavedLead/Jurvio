@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       source:
-        description: "scotus, coa or all"
+        description: "scotus, coa, courtlistener or all"
         required: false
         default: all
         type: string
@@ -48,7 +48,7 @@ jobs:
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RUN_LIVE_FEEDS."
             exit 1
           fi
-          case "$SOURCE" in scotus|coa|all) ;; *) echo "::error::source must be scotus, coa or all"; exit 1 ;; esac
+          case "$SOURCE" in scotus|coa|courtlistener|all) ;; *) echo "::error::source must be scotus, coa, courtlistener or all"; exit 1 ;; esac
 
       - name: Configure SSH
         run: |

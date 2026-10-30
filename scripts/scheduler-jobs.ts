@@ -110,6 +110,18 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/run-live-feeds.mjs", "--source=scotus"],
   },
   {
+    // CourtListener dockets modified since the stored watermark (federal
+    // courts only), oldest change first, from listing pages alone: at most 5
+    // requests per run. Stops on the first 429 and stays quiet until the
+    // stored Retry-After time. Draft cases only.
+    lane: "core",
+    name: "courtlistener-tail",
+    initialDelayMs: 6 * minute,
+    intervalMs: 60 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-live-feeds.mjs", "--source=courtlistener"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
@@ -168,11 +180,13 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   },
   {
     lane: "coa",
+    // District CM/ECF RSS (79 courts): 16 courts per run, each court at most
+    // every 2 h (feeds cover 24 h), one isolated try/catch per court.
     name: "direct-court",
     initialDelayMs: 0,
-    intervalMs: 5 * minute,
+    intervalMs: 10 * minute,
     budgetMs: 8 * minute,
-    command: ["jobs/ingest-direct-court-feeds.mjs", "--court=all"],
+    command: ["jobs/ingest-direct-court-feeds.mjs", "--court=all", "--max-courts=16", "--budget-ms=360000", "--min-interval-minutes=120"],
   },
   {
     lane: "coa",

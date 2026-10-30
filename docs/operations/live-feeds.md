@@ -1,4 +1,4 @@
-# Live feeds: SCOTUS and courts of appeals
+# Live feeds: SCOTUS, courts of appeals, district RSS, CourtListener tail
 
 New cases and docket entries, captured from the courts' own public sites,
 newest first. Code: `src/modules/ingestion/live-feeds/`, job
@@ -78,6 +78,27 @@ enrichment first) and adds documents and the question presented.
 180 entries; cursor 26-572 / 26-5993 / 26A611. Courts of appeals: ca3 85,
 ca5 59, ca9 49, ca10 0, ca11 40, cadc 15, cafc 67 items. A second run 10
 minutes later created only the 5 cafc items posted in between.
+
+## District courts (CM/ECF public RSS)
+
+`jobs/ingest-direct-court-feeds.mjs` (coa lane `direct-court`, every 10 min).
+
+- **Coverage.** Migration 0140 enables 67 more districts, which brings the total to 79 of 94. All 94 registered `rss_outside.pl` URLs were requested once on 2026-10-30. The 67 enabled ones answered with XML entries. The remaining 15 answered with an empty body and stay disabled: alnd, flnd, gand, gasd, kyed, mdd, msnd, ndd, nyed, nywd, oked, oknd, pamd, vaed and wvsd.
+- **Rotation.** Each run takes at most 16 due courts, least recently retrieved first, within a 6-minute budget. A court is due when it hasn't been visited for 2 hours; feeds cover 24 hours, so nothing is missed. A failing court backs off: 5 min × 2^failures, capped at 6 h.
+- **Isolation.** Each court has its own try/catch, and the RSS fetch has a 45 s timeout. Any failure, including the fetch itself, marks only that court degraded. Before this change, one court's ECONNRESET ended the whole run, because the fetch sat outside the try and the loop had no per-court catch.
+- **Cheap re-polls.** Items already stored, linked to a case or restricted, are found with one indexed `ANY()` query and skipped. Only new or still-unlinked items cost a transaction.
+- **Watermarks.** `district_rss` watermarks are recorded per court, and the touched courts' freshness rows are recomputed.
+- **Load.** About 79 × 12 fetches a day, fewer than the old schedule of 12 courts every 5 minutes. Expected database growth is roughly 50k `direct_court_event` rows plus matching `docket_entry` rows a day, about 80–100 MB/day. Watch it for the first days.
+- **Rollback.** `UPDATE direct_court_registry SET rss_available = false WHERE court_code IN (...)` with the list from 0140.
+
+## CourtListener tail
+
+`jobs/run-live-feeds.mjs --source=courtlistener` (core lane `courtlistener-tail`, hourly).
+
+- **What it reads.** Dockets with `date_modified` in [watermark, now − 5 min), restricted to `court__jurisdiction__in=F,FD,FS` and ordered `date_modified,id`. It uses listing pages only, at most 5 per run, with no per-docket fetches.
+- **Cursor.** Stored as JSON (`modifiedAfter`, `modifiedBefore`, `next`) in the `courtlistener`/`_all` watermark. It only moves past a page after every record on that page is stored.
+- **New cases.** Matched by `courtlistener_docket_id`, then by court + normalized docket number. Unmatched dockets become draft cases.
+- **429 handling.** The first 429 stops the run and stores Retry-After (15 min when absent). Runs before that time make no requests; the admin page shows the pause. This uses the same stop-on-rate-limit request policy as `federal-active-cases`.
 
 ## Known follow-up
 

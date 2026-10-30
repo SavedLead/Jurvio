@@ -8,7 +8,30 @@ import type { FederalCourtSource } from "../providers/courts/registry";
 
 type Sql = ReturnType<typeof postgres>;
 
+/**
+ * One court's feed. Any failure, including the fetch itself (ECONNRESET,
+ * timeout, HTTP error), marks that court degraded once and is rethrown for the
+ * caller to record; callers handle courts one at a time so one failure never
+ * stops the others.
+ */
 export async function ingestDirectCourtFeed(
+  sql: Sql,
+  artifactStore: ArtifactStore,
+  court: FederalCourtSource,
+) {
+  try {
+    return await ingestOneDirectCourtFeed(sql, artifactStore, court);
+  } catch (error) {
+    await sql`
+      UPDATE direct_court_registry SET health_state = 'degraded',
+        consecutive_failures = consecutive_failures + 1, updated_at = now()
+      WHERE court_code = ${court.officialCourtCode}
+    `;
+    throw error;
+  }
+}
+
+async function ingestOneDirectCourtFeed(
   sql: Sql,
   artifactStore: ArtifactStore,
   court: FederalCourtSource,
@@ -59,7 +82,7 @@ export async function ingestDirectCourtFeed(
   let created = 0;
   let published = 0;
   let held = 0;
-  try {
+  {
     const [artifact] = await sql<{ id: string }[]>`
       INSERT INTO raw_artifact (
         provider_id, source_uri, source_record_id, content_hash, object_key,
@@ -76,7 +99,24 @@ export async function ingestDirectCourtFeed(
     `;
     if (!artifact) throw new Error("Official feed artifact was not persisted");
 
+    // A feed repeats its whole coverage window (up to thousands of items) on
+    // every poll. Look up which items are already stored in one indexed query
+    // so only new (or still unlinked) items cost a transaction.
+    const keys = retrieved.events.map((event) => event.deduplicationKey);
+    const knownRows = keys.length === 0 ? [] : await sql<{ deduplication_key: string }[]>`
+      SELECT deduplication_key FROM direct_court_event
+      WHERE court_code = ${court.officialCourtCode} AND deduplication_key = ANY(${keys}::text[])
+        -- Unlinked events still go through the full path so a case created
+        -- since the last poll gets linked, exactly as before.
+        AND (case_id IS NOT NULL OR restricted)
+    `;
+    const known = new Set(knownRows.map((row) => row.deduplication_key));
     for (const event of retrieved.events) {
+      if (known.has(event.deduplicationKey)) {
+        duplicated += 1;
+        continue;
+      }
+      known.add(event.deduplicationKey);
       await sql.begin(async (tx) => {
         const cases = await tx<{ id: string; public_id: string; publication: string }[]>`
           SELECT legal_case.id, legal_case.public_id, legal_case.publication::text
@@ -199,13 +239,6 @@ export async function ingestDirectCourtFeed(
         health_state = 'healthy', consecutive_failures = 0, updated_at = now()
       WHERE court_code = ${court.officialCourtCode}
     `;
-  } catch (error) {
-    await sql`
-      UPDATE direct_court_registry SET health_state = 'degraded',
-        consecutive_failures = consecutive_failures + 1, updated_at = now()
-      WHERE court_code = ${court.officialCourtCode}
-    `;
-    throw error;
   }
   return {
     court: court.officialCourtCode,

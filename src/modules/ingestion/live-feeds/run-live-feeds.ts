@@ -244,6 +244,6 @@ export async function runCoaLiveFeeds(sql: Sql, store: ArtifactStore, options: L
 }
 
 export async function refreshTouchedCourts(sql: Sql, results: readonly SourceRunResult[]) {
-  const courts = [...new Set(results.map((result) => result.court))];
+  const courts = [...new Set(results.map((result) => result.court).filter((court) => court !== "_all"))];
   return refreshCourtFreshness(sql, { courtCodes: courts });
 }
