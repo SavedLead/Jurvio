@@ -35,7 +35,14 @@ const AUTO_TRIGGERS: Record<string, readonly string[]> = {
   "nightly-db-backup.yml": ["schedule"],
   // Google Search Console API only; never touches the droplets or the database.
   "google-search-console-sync.yml": ["schedule"],
+  // Approved maintenance exceptions (David Rosenberg). They change production
+  // on their original schedules; manual runs still need confirm.
+  "outbox-maintenance.yml": ["schedule"],
+  "verify-backup-restore.yml": ["schedule"],
 };
+
+/** Scheduled workflows whose confirm gate must skip schedule events (and only those). */
+const SCHEDULED_WITH_CONFIRM = new Set(["lane-watchdog.yml", "outbox-maintenance.yml", "verify-backup-restore.yml"]);
 
 /** Workflows checked to only read. Everything else must have a confirm gate. */
 const READ_ONLY = new Set([
@@ -203,6 +210,17 @@ describe("workflow trigger policy", () => {
       if (job.uses) continue;
       expect(labels, `${file} job ${name} must run on builder-01`).toContain('"self-hosted"');
       expect(labels).toContain('"builder"');
+    }
+  });
+
+  it.each([...SCHEDULED_WITH_CONFIRM])("%s gates manual runs and lets only schedule events skip", (file) => {
+    const workflow = parsed.get(file)!;
+    expect(Object.keys(triggers(workflow)).sort()).toEqual(["schedule", "workflow_dispatch"]);
+    for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+      const first = job.steps?.[0];
+      expect(isConfirmGate(first, job.env), `${file} job ${name}`).toBe(true);
+      expect(first?.run).toMatch(/\$EVENT_NAME" != "schedule" \] && \[ "\$CONFIRM" != "/);
+      expect(JSON.stringify(first?.env)).toContain("github.event_name");
     }
   });
 

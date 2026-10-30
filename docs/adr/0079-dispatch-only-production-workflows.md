@@ -13,7 +13,7 @@ Separately, the scheduler job `federal-active-cases` kept being SIGTERM'd at its
 1. Every workflow in `.github/workflows` is `workflow_dispatch`-only, except this allowlist:
    - `ci.yml` (push and pull_request: tests, lint, typecheck, build);
    - `deploy-public-web-hosted.yml` (`workflow_run` after CI on `main`: builds the image and replaces the public web container on `jurvio-public-01`, running migrations first; nothing else);
-   - schedules on `disk-alarm.yml`, `lane-watchdog.yml`, `nightly-db-backup.yml` and `google-search-console-sync.yml`.
+   - schedules on `disk-alarm.yml`, `lane-watchdog.yml`, `nightly-db-backup.yml` and `google-search-console-sync.yml`, plus the approved maintenance schedules on `outbox-maintenance.yml` and `verify-backup-restore.yml`.
 2. Every workflow that is not on the explicit read-only list has a required `confirm` input. The first step of every job compares it with the workflow's keyword (the file name in capitals, without `-once`, for example `REBOOT_INGESTION` or `DEPLOY_PRODUCTION`) and exits 1 on a mismatch. A run without the keyword fails closed. Older gates (`RESTRICT`, `INSTALL`, `MEASURE`, `DEPLOY`) are unchanged.
 3. `tests/workflow-triggers.test.ts` runs in CI. It parses every workflow and fails on an automatic trigger outside the allowlist, a missing or unchecked confirm gate, or a GitHub-hosted runner outside the three builder-recovery workflows.
 4. `lane-watchdog.yml` keeps its 30-minute schedule. A scheduled run only recreates worker containers Docker already reports unhealthy, now with `--no-deps` so Postgres and app are never recreated with them. A manual run needs `confirm=WATCHDOG`.
@@ -29,7 +29,7 @@ Separately, the scheduler job `federal-active-cases` kept being SIGTERM'd at its
 
 ## Costs and risks
 
-- `outbox-maintenance.yml` (daily outbox drain and retention) and `verify-backup-restore.yml` (weekly restore rehearsal) lost their schedules because they write to the database or run on the production box. Someone now has to dispatch them by hand, or they need a reviewed exception.
+- `outbox-maintenance.yml` (daily outbox drain and retention) and `verify-backup-restore.yml` (weekly restore rehearsal) write to the database or run on the production box. David approved them as maintenance exceptions: they keep their original schedules, manual runs need confirm, and scheduled runs skip the gate.
 - `.trigger` files under `.github/workflows/` and `ops/` no longer start anything.
 - A docket whose fetch fails with a transient error is stamped and waits a full rotation.
 - Reconsider if an allowlisted schedule needs to change production, or if the confirm keyword turns out too easy to paste by reflex.

@@ -14,9 +14,12 @@ name: Verify backup restore (weekly rehearsal)
 # runs — including on cancellation.
 
 on:
-  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
-  # pull_request, workflow_run or schedule trigger may start this workflow;
-  # every job fails closed unless confirm=VERIFY_BACKUP_RESTORE.
+  # Approved maintenance exception (tests/workflow-triggers.test.ts): the
+  # weekly backup restore rehearsal keeps its original schedule. No push, pull_request or
+  # workflow_run trigger. Manual runs fail closed unless confirm=VERIFY_BACKUP_RESTORE;
+  # scheduled runs skip that check.
+  schedule:
+    - cron: "0 9 * * 0" # Sundays 09:00 UTC, after the nightly backup
   workflow_dispatch:
     inputs:
       confirm:
@@ -48,11 +51,12 @@ jobs:
       OBJECT_KEY: ${{ inputs.object_key }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Require confirm=VERIFY_BACKUP_RESTORE
+      - name: Require confirm=VERIFY_BACKUP_RESTORE on manual runs
         env:
+          EVENT_NAME: ${{ github.event_name }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
-          if [ "$CONFIRM" != "VERIFY_BACKUP_RESTORE" ]; then
+          if [ "$EVENT_NAME" != "schedule" ] && [ "$CONFIRM" != "VERIFY_BACKUP_RESTORE" ]; then
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=VERIFY_BACKUP_RESTORE."
             exit 1
           fi
