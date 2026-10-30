@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" ?><rss version="2.0" xml:base="https://www.ca10.uscourts.gov/opinions-page" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Tenth Circuit Daily Decisions</title>
+    <link>https://www.ca10.uscourts.gov/opinions-page</link>
+    <description>A feed of decisions posted by the United States Court of Appeals for the 10th Circuit</description>
+    <language>en</language>
+     <atom:link href="https://www.ca10.uscourts.gov/opinions/new/daily_decisions.rss" rel="self" type="application/rss+xml" />
+      </channel>
+</rss>
