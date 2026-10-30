@@ -1,0 +1,189 @@
+name: Diagnose ingestion backlog (once, read-only)
+
+# Read-only backlog report for the 2026-10-30 backlog review: bulk docket /
+# cluster / opinion checkpoints, where the 9.79M pending clusters sit relative to
+# the loaded docket ids, opinion coverage of the federal cluster set, table and
+# disk sizes, the CourtListener live tail, district RSS event growth, the cited-
+# case import backlog and publication pause flags, and sitemap coverage.
+# Changes nothing:
+#   * every query runs with default_transaction_read_only=on, so Postgres
+#     itself rejects any write;
+#   * the helper refuses any statement that does not start with SELECT/WITH;
+#   * no container, service, or file on the box is touched (it only reads
+#     df, docker logs and three non-secret env flags).
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-backlog
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 60
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Backlog report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          # Read-only at the server: any INSERT/UPDATE/DELETE/DDL fails with
+          # "cannot execute ... in a read-only transaction". No -i on docker exec:
+          # it would drain this heredoc.
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=900s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+
+          echo "=============================================================="
+          echo " INGESTION BACKLOG @ $(date -u +'%Y-%m-%dT%H:%M:%SZ') (read-only)"
+          echo "=============================================================="
+          echo "session_read_only=$(q "SELECT current_setting('default_transaction_read_only')")"
+          echo "--- 0. disk and database ---"
+          df -h / /var/lib/docker 2>/dev/null | sort -u
+          q "SELECT pg_size_pretty(pg_database_size('jurvio')), pg_database_size('jurvio')"
+          echo "--- 0b. 20 largest tables (table | total | heap | rows_est) ---"
+          q "SELECT c.relname, pg_size_pretty(pg_total_relation_size(c.oid)), pg_size_pretty(pg_relation_size(c.oid)), c.reltuples::bigint
+               FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE c.relkind = 'r' AND n.nspname = 'public'
+              ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 20"
+          echo "--- 0c. latest migrations ---"
+          q "SELECT name, applied_at FROM schema_migration ORDER BY name DESC LIMIT 6"
+
+          echo "--- 1. bulk checkpoints (stream | updated_at | cursor) ---"
+          q "SELECT stream_name, updated_at, left(cursor_value, 600) FROM ingestion_checkpoint
+              WHERE stream_name LIKE 'courtlistener:bulk-%' ORDER BY stream_name"
+
+          echo "--- 2. pending clusters (count | min docket | max docket | snapshot dates) ---"
+          q "SELECT count(*), min(docket_id::bigint), max(docket_id::bigint), string_agg(DISTINCT snapshot_date::text, ',')
+               FROM courtlistener_pending_cluster WHERE docket_id ~ '^[0-9]{1,18}\$'"
+          echo "--- 2b. loaded CourtListener docket ids (count | min | max) ---"
+          q "SELECT count(*), min(identifier_value::bigint), max(identifier_value::bigint) FROM case_identifier
+              WHERE identifier_type = 'courtlistener_docket_id' AND identifier_value ~ '^[0-9]{1,18}\$'"
+          echo "--- 2c. by docket-id bucket of 2M (bucket_start | loaded_dockets | pending_clusters) ---"
+          q "WITH l AS (SELECT (identifier_value::bigint / 2000000) b, count(*) n FROM case_identifier
+                         WHERE identifier_type = 'courtlistener_docket_id' AND identifier_value ~ '^[0-9]{1,18}\$' GROUP BY 1),
+                  p AS (SELECT (docket_id::bigint / 2000000) b, count(*) n FROM courtlistener_pending_cluster
+                         WHERE docket_id ~ '^[0-9]{1,18}\$' GROUP BY 1)
+             SELECT coalesce(l.b, p.b) * 2000000, coalesce(l.n, 0), coalesce(p.n, 0)
+               FROM l FULL JOIN p ON p.b = l.b ORDER BY 1"
+          echo "--- 2d. pending clusters by date_filed decade (decade | n) ---"
+          q "SELECT (extract(year FROM date_filed)::int / 10) * 10, count(*) FROM courtlistener_pending_cluster GROUP BY 1 ORDER BY 1"
+
+          echo "--- 3. opinion_cluster by court jurisdiction (jurisdiction | clusters | with_opinion | draft_or_published) ---"
+          q "WITH o AS (SELECT DISTINCT d.case_id FROM judicial_opinion jo JOIN document d ON d.id = jo.document_id)
+             SELECT coalesce(c.jurisdiction, '?'), count(*), count(o.case_id), count(*) FILTER (WHERE lc.publication IN ('draft','published'))
+               FROM opinion_cluster oc JOIN legal_case lc ON lc.id = oc.case_id JOIN court c ON c.id = lc.court_id
+               LEFT JOIN o ON o.case_id = lc.id
+              GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 3b. cases with any judicial_opinion, by publication (publication | cases) ---"
+          q "SELECT lc.publication::text, count(DISTINCT lc.id) FROM judicial_opinion jo JOIN document d ON d.id = jo.document_id
+               JOIN legal_case lc ON lc.id = d.case_id GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 3c. legal_case by publication and jurisdiction (publication | jurisdiction | cases) ---"
+          q "SELECT lc.publication::text, coalesce(c.jurisdiction, '?'), count(*) FROM legal_case lc JOIN court c ON c.id = lc.court_id GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 30"
+
+          echo "--- 4. CourtListener live tail: watermarks (court | last_attempt | last_success | last_new_item | newest_item | fetched_last | new_cases_last | new_entries_last | fetched_total | failures | retry_after_until | last_error) ---"
+          q "SELECT court_code, last_attempt_at, last_success_at, last_new_item_at, newest_item_at, items_fetched_last, new_cases_last,
+                    new_entries_last, items_fetched_total, consecutive_failures, retry_after_until, left(coalesce(last_error, ''), 200)
+               FROM court_source_watermark WHERE source = 'courtlistener' ORDER BY court_code"
+          echo "--- 4b. courtlistener-tail scheduler runs, last 12 (started | duration_ms | exit | ok | error_tail) ---"
+          q "SELECT started_at, duration_ms, exit_code, ok, left(coalesce(error_tail, ''), 300) FROM scheduler_lane_run
+              WHERE lane = 'courtlistener-tail' ORDER BY started_at DESC LIMIT 12"
+          echo "--- 4c. all source watermarks summary (source | courts | last_success | last_new_item | fetched_total | failing) ---"
+          q "SELECT source, count(*), max(last_success_at), max(last_new_item_at), sum(items_fetched_total), count(*) FILTER (WHERE consecutive_failures > 0)
+               FROM court_source_watermark GROUP BY 1 ORDER BY 1"
+          echo "--- 4d. worker logs mentioning courtlistener (last 6h, worker-core) ---"
+          wc="$(find_svc worker-core)"
+          if [ -n "$wc" ]; then sudo -n docker logs --since 6h "$wc" 2>&1 | grep -iE '"(source|lane)":"courtlistener|courtlistener-tail|live-feeds' | tail -15 | cut -c1-700; fi
+
+          echo "--- 5. district RSS events (state | linked | events | oldest_seen | newest_seen) ---"
+          q "SELECT publication_state, case_id IS NOT NULL, count(*), min(first_seen_at), max(first_seen_at) FROM direct_court_event GROUP BY 1, 2 ORDER BY 3 DESC"
+          echo "--- 5b. events first seen per day, last 10 days (day | events) ---"
+          q "SELECT first_seen_at::date, count(*) FROM direct_court_event WHERE first_seen_at > now() - interval '10 days' GROUP BY 1 ORDER BY 1"
+          echo "--- 5c. sizes (direct_court_event | alert | rss raw_artifact rows | alert rows) ---"
+          q "SELECT pg_size_pretty(pg_total_relation_size('direct_court_event')), pg_size_pretty(pg_total_relation_size('direct_court_alert_event')),
+                    (SELECT count(*) FROM raw_artifact WHERE source_record_id LIKE '%:rss'), (SELECT count(*) FROM direct_court_alert_event)"
+          echo "--- 5d. enabled district feeds (enabled | healthy | degraded) ---"
+          q "SELECT count(*) FILTER (WHERE rss_available), count(*) FILTER (WHERE rss_available AND health_state = 'healthy'), count(*) FILTER (WHERE rss_available AND health_state <> 'healthy')
+               FROM direct_court_registry WHERE court_type = 'district'"
+
+          echo "--- 6. missing_case_citation by state (state | n) ---"
+          q "SELECT state, count(*) FROM missing_case_citation GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 6b. resolved: distinct clusters | already in opinion_cluster | not yet ---"
+          q "WITH r AS (SELECT DISTINCT resolved_cluster_id::text id FROM missing_case_citation WHERE state = 'resolved' AND resolved_cluster_id IS NOT NULL)
+             SELECT count(*), count(oc.provider_cluster_id), count(*) - count(oc.provider_cluster_id)
+               FROM r LEFT JOIN (SELECT DISTINCT provider_cluster_id FROM opinion_cluster) oc ON oc.provider_cluster_id = r.id"
+          echo "--- 6c. resolved clusters still in the pending-cluster table (n) ---"
+          q "SELECT count(*) FROM (SELECT DISTINCT resolved_cluster_id::text id FROM missing_case_citation WHERE state = 'resolved' AND resolved_cluster_id IS NOT NULL) r
+              JOIN courtlistener_pending_cluster p ON p.cluster_id = r.id"
+          echo "--- 6d. cited-case-bulk-resolution scheduler runs, last 5 (started | duration_ms | exit | ok) ---"
+          q "SELECT started_at, duration_ms, exit_code, ok FROM scheduler_lane_run WHERE lane = 'cited-case-bulk-resolution' ORDER BY started_at DESC LIMIT 5"
+          echo "--- 6e. publication pause flags in worker containers (non-secret) ---"
+          for s in worker-core worker-coa; do
+            id="$(find_svc "$s")"; [ -n "$id" ] || continue
+            for v in JURVIO_PAUSE_CITATION_PUBLISH JURVIO_PAUSE_FEDERAL_PUBLICATION JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT; do
+              echo "$s $v=$(sudo -n docker exec "$id" printenv "$v" 2>/dev/null || echo '<unset>')"
+            done
+          done
+
+          echo "--- 7. sitemap_document (kind | pages | newest refresh | oldest refresh) ---"
+          q "SELECT kind, count(*), max(refreshed_at), min(refreshed_at) FROM sitemap_document GROUP BY 1 ORDER BY 1"
+          echo "--- 7b. sitemap-snapshot scheduler runs, last 5 (started | duration_ms | exit | ok | error_tail) ---"
+          q "SELECT started_at, duration_ms, exit_code, ok, left(coalesce(error_tail, ''), 300) FROM scheduler_lane_run WHERE lane = 'sitemap-snapshot' ORDER BY started_at DESC LIMIT 5"
+          echo "--- 7c. published + indexable cases (n) | published cases (n) | published in last 2 days ---"
+          q "SELECT count(*) FILTER (WHERE d.indexable), count(*), count(*) FILTER (WHERE c.updated_at > now() - interval '2 days')
+               FROM legal_case c JOIN publication_current cr ON cr.object_type = 'legal_case' AND cr.object_id = c.id
+               JOIN publication_decision d ON d.id = cr.decision_id WHERE c.publication = 'published'"
+          echo "--- 7d. verified courts | verified entities (parties) | published judges ---"
+          q "SELECT (SELECT count(*) FROM court WHERE verification = 'verified'),
+                    (SELECT count(*) FROM entity WHERE verification = 'verified' AND entity_type IN ('unknown','person','organization','agency')),
+                    (SELECT count(*) FROM party_appearance)"
+          echo "=============================================================="
+          REMOTE
+          rc=${PIPESTATUS[0]}
+          {
+            echo '### Ingestion backlog (read-only)'
+            echo ''
+            echo '```'
+            cat "$RUNNER_TEMP/report.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
