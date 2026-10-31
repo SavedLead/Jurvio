@@ -1,7 +1,7 @@
-import { statfs } from "node:fs/promises";
 import os from "node:os";
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
+import { checkBulkDiskFloor } from "./bulk-disk-floor";
 import { isRestrictedDocketText } from "../domain/federal-stream";
 import { matchesBulkFederalJurisdiction } from "./ingest-courtlistener-bulk-federal-dockets";
 import {
@@ -392,9 +392,9 @@ async function gateChunk(
   let pauses = 0;
   let ratio: number | null = null;
   for (;;) {
-    const disk = await statfs(diskPath).catch(() => null);
-    ratio = disk ? freeDiskRatio(disk.blocks, disk.bavail) : null;
-    if (ratio === null || ratio < BULK_DOCKET_DISK_FLOOR) {
+    const floor = await checkBulkDiskFloor(diskPath);
+    ratio = floor.freeDiskRatio;
+    if (!floor.ok) {
       return { stop: "disk", pauses, freeDiskRatio: ratio };
     }
     const [load] = await sql<{ slow: number }[]>`
