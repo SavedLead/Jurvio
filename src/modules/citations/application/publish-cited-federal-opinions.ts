@@ -1,5 +1,6 @@
 import type postgres from 'postgres';
 import { evaluateFederalPublicationCandidate, type FederalPublicationCandidate } from '@/modules/ingestion/domain/federal-stream';
+import { publicCitationSourceExistsSql } from './public-citation-source';
 import { parseBulkOpinionSourceUri } from '@/modules/ingestion/providers/courtlistener/bulk-opinions';
 type Sql=ReturnType<typeof postgres>;
 interface Candidate extends FederalPublicationCandidate {
@@ -92,38 +93,6 @@ export function citedOpinionPublicationReasons(candidate: Candidate): string[] {
 }
 export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
   const candidates=await sql<Candidate[]>`
-    WITH visible_sources AS MATERIALIZED (
-      -- Prefer publication_current (one primary-key lookup, maintained by 0124).
-      -- Fall back to the latest publication_decision when that mirror row is
-      -- absent, so a displayable source is not dropped before backfill or in a
-      -- schema that only writes publication_decision. COALESCE stops after the
-      -- first non-null, so a filled mirror does not sort publication_decision.
-      SELECT d.id,d.case_id,content.content_hash FROM document d
-      JOIN legal_case c ON c.id=d.case_id
-      JOIN document_content content ON content.document_id=d.id
-      WHERE d.publication='published' AND c.publication='published'
-        AND COALESCE(
-          (SELECT case_pub.displayable FROM publication_current case_pub
-            WHERE case_pub.object_type='legal_case' AND case_pub.object_id=c.id),
-          (SELECT decision.displayable FROM publication_decision decision
-            WHERE decision.object_type='legal_case' AND decision.object_id=c.id
-            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1),
-          false)
-        AND COALESCE(
-          (SELECT doc_pub.displayable FROM publication_current doc_pub
-            WHERE doc_pub.object_type='document' AND doc_pub.object_id=d.id),
-          (SELECT decision.displayable FROM publication_decision decision
-            WHERE decision.object_type='document' AND decision.object_id=d.id
-            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1),
-          false)
-    ), public_citations AS MATERIALIZED (
-      SELECT DISTINCT ref.citation_key,source.case_id FROM visible_sources source
-      JOIN document_case_citation ref ON ref.document_id=source.id AND ref.source_content_hash=source.content_hash
-    ), cited_targets AS MATERIALIZED (
-      SELECT DISTINCT i.case_id FROM case_citation_identity i
-      JOIN public_citations ref ON ref.citation_key=i.citation_key AND ref.case_id<>i.case_id
-      WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=i.citation_key AND other.case_id<>i.case_id)
-    )
     SELECT c.id AS "caseId", d.id AS "documentId", c.publication, d.publication AS "documentPublication",
       c.caption, c.docket_number AS "docketNumber", court.jurisdiction AS "courtJurisdiction",
       court.provider_court_id AS "courtProviderId", court.verification AS "courtVerification",
@@ -147,12 +116,17 @@ export async function publishCitedFederalOpinions(sql: Sql, limit:number) {
         OR EXISTS(SELECT 1 FROM publication_review pr WHERE pr.object_id IN(c.id,d.id) AND (pr.status IN('rejected','needs_changes') OR (pr.reviewer_id IS NOT NULL AND pr.status<>'approved')))
       ) AS blocked
     FROM document d JOIN legal_case c ON c.id=d.case_id JOIN court ON court.id=c.court_id
-    JOIN cited_targets cited ON cited.case_id=c.id
     JOIN document_content content ON content.document_id=d.id
     JOIN judicial_opinion judicial ON judicial.document_id=d.id
     JOIN raw_artifact a ON a.id=c.source_artifact_id JOIN provider p ON p.id=a.provider_id
     JOIN raw_artifact da ON da.id=content.source_artifact_id JOIN provider dp ON dp.id=da.provider_id
     WHERE NOT EXISTS(SELECT 1 FROM citation_publication_hold h WHERE h.document_id=d.id AND h.content_hash=content.content_hash AND h.rule_version=${CITED_OPINION_RULE_VERSION})
+      -- Cited: one of the case's unique citation keys is cited by another
+      -- case's public opinion (index probes, no full-corpus materialization).
+      AND EXISTS(SELECT 1 FROM case_citation_identity i
+        WHERE i.case_id=c.id
+          AND NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=i.citation_key AND other.case_id<>i.case_id)
+          AND ${sql.unsafe(publicCitationSourceExistsSql('i.citation_key', 'i.case_id'))})
       AND d.publication='draft' AND c.publication IN('draft','published')
       AND court.provider_court_id<>'scotus'
     ORDER BY d.created_at,d.id LIMIT ${limit}

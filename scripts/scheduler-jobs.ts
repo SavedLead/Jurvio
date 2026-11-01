@@ -30,8 +30,10 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // Live work (new/changed opinions, priority 10) first, looping 500-row
     // batches for up to 6 minutes, then at most 4 backfill batches. The bulk
     // backfill drains on builder-01 (citation-backfill-builder.yml), so this
-    // lane stops well inside its 12-minute kill budget (ADR 0090).
-    command: ["jobs/run-case-citations.mjs", "--limit=500", "--discover=10", "--budget-seconds=360", "--pause-ms=500", "--backfill-batches=4", "--publish-limit=200"],
+    // lane stops well inside its 12-minute kill budget (ADR 0090). Discovery,
+    // publication and backlog stats are skipped, not killed, past the 600s
+    // deadline (they overran the budget under load on Nov 1, 2026).
+    command: ["jobs/run-case-citations.mjs", "--limit=500", "--discover=10", "--budget-seconds=360", "--pause-ms=500", "--backfill-batches=4", "--publish-limit=200", "--deadline-seconds=600"],
   },
   {
     // Daily offline resolution of new missing citations against the newest

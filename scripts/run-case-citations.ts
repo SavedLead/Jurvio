@@ -20,6 +20,27 @@ const limit=int('limit',1000,1,5000), discover=int('discover',10,0,20);
 const budgetSeconds=int('budget-seconds',0,0,6*3600), pauseMs=int('pause-ms',0,0,60_000);
 const backfillBatchesArg=int('backfill-batches',-1,-1,100_000), maxActive=int('max-active',0,0,200);
 const publishLimit=int('publish-limit',Math.min(limit,200),1,5000);
+// --deadline-seconds: wall-clock limit for the whole run (0 = none). The
+// resident lane passes one well inside the scheduler's kill budget so
+// discovery/publication are skipped, not killed, when sync ran long or the
+// database is slow; each phase also gets a statement timeout.
+const deadlineSeconds=int('deadline-seconds',0,0,6*3600);
+const startedAt=Date.now();
+const elapsedS=()=>Math.round((Date.now()-startedAt)/1000);
+const leftS=()=>deadlineSeconds ? deadlineSeconds-elapsedS() : Number.POSITIVE_INFINITY;
+// Per-phase JSON lines: the scheduler keeps the output tail of a failed run
+// (scheduler_lane_run.error_tail), so a kill shows which phase was running.
+const phase=(name:string,extra:Record<string,unknown>={})=>console.log(JSON.stringify({phase:name,elapsed_s:elapsedS(),...extra}));
+const isStatementTimeout=(error:unknown)=>(error as {code?:string})?.code==='57014';
+/** Runs a phase only if `needS` seconds remain; a statement timeout skips it instead of failing the lane. */
+async function boundedPhase<T>(name:string,needS:number,timeoutS:number,run:()=>Promise<T>):Promise<T|{skipped:string}>{
+  if(leftS()<needS){ phase(name,{skipped:'deadline'}); return {skipped:'deadline'}; }
+  phase(name,{start:true});
+  await sql`SELECT set_config('statement_timeout', ${`${Math.max(5,Math.min(timeoutS,Math.floor(leftS())))}s`}, false)`;
+  try { const result=await run(); phase(name,{done:true}); return result; }
+  catch(error){ if(!isStatementTimeout(error)) throw error; phase(name,{skipped:'statement_timeout'}); return {skipped:'statement_timeout'}; }
+  finally { await sql`SELECT set_config('statement_timeout', '0', false)`; }
+}
 const mode=args.get('mode')??'resident';
 if(mode!=='resident'&&mode!=='backfill') throw new Error('--mode must be resident or backfill');
 // Publishing can be paused independently of citation sync/discovery so a deploy can land
@@ -40,8 +61,9 @@ try {
   const [lock]=await sql<{locked:boolean}[]>`SELECT pg_try_advisory_lock(hashtext(${lockName})) AS locked`;
   if (!lock?.locked) console.log(JSON.stringify({skipped:`citation worker already running (${lockName})`}));
   else {
-    // Never let one batch statement run away on the shared database. Only the
-    // lane; discovery and publication keep their previous (unlimited) setting.
+    // Never let one batch statement run away on the shared database.
+    // Discovery, publication and backlog get their own bounded phases below.
+    phase('sync',{start:true});
     await sql`SELECT set_config('statement_timeout', '120s', false)`;
     const synced=await runCitationLane(sql,{
       batch:limit,
@@ -53,9 +75,10 @@ try {
       maxActiveSessions: maxActive,
     });
     await sql`SELECT set_config('statement_timeout', '0', false)`;
-    const found=mode==='resident'&&discover ? await discoverMissingCases(sql,createArtifactStore({localRoot:process.env.JURVIO_ARTIFACT_ROOT??'.data/artifacts'}),discover) : null;
-    const publication=doPublish ? await publishCitedFederalOpinions(sql,publishLimit) : {published:0,held:0,paused:true};
-    const backlog=await citationBacklog(sql);
+    phase('sync',{done:true});
+    const found=mode==='resident'&&discover ? await boundedPhase('discovery',180,120,()=>discoverMissingCases(sql,createArtifactStore({localRoot:process.env.JURVIO_ARTIFACT_ROOT??'.data/artifacts'}),discover)) : null;
+    const publication=doPublish ? await boundedPhase('publication',150,120,()=>publishCitedFederalOpinions(sql,publishLimit)) : {published:0,held:0,paused:true};
+    const backlog=await boundedPhase('backlog',30,30,()=>citationBacklog(sql));
     console.log(JSON.stringify({mode,synced,found,publication,backlog}));
   }
 } finally { await sql.end(); }

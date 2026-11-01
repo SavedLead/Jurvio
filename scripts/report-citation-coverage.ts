@@ -73,10 +73,20 @@ try {
     FROM scheduler_lane_run
     WHERE lane IN ('case-citation-graph','citation-edges','cited-case-bulk-resolution','live-opinion-text','citation-nightly')
     ORDER BY lane, started_at DESC`.catch(() => []);
+  // Recent history (failures keep their output tail) so a lane timeout can be
+  // diagnosed from this read-only report.
+  const laneHistory = await sql`
+    SELECT lane, to_char(started_at AT TIME ZONE 'America/New_York', 'MM-DD HH24:MI') AS started_et,
+      round(duration_ms / 1000.0) AS seconds, exit_code, signal, ok,
+      CASE WHEN ok THEN NULL ELSE right(coalesce(error_tail, ''), 800) END AS error_tail
+    FROM scheduler_lane_run
+    WHERE lane IN ('case-citation-graph','citation-edges','live-opinion-text','citation-nightly')
+      AND started_at > now() - interval '6 hours'
+    ORDER BY started_at DESC LIMIT 40`.catch(() => []);
   console.log(JSON.stringify({
     coverage: "quick", database_bytes: Number(db?.bytes ?? 0),
     table_bytes: Object.fromEntries(sizes.map((s) => [s.name, Number(s.bytes)])),
-    backlog, precomputed_lists_ready: ready, edges, counts, published, courtlistener, live_text: liveText, lanes,
+    backlog, precomputed_lists_ready: ready, edges, counts, published, courtlistener, live_text: liveText, lanes, lane_history: laneHistory,
   }));
 
   if (args.has("full")) {
