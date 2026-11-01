@@ -90,18 +90,24 @@ jobs:
       - name: Configure SSH
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          cat > ~/.ssh/config <<'CFG'
+          # Per-run key + config (never ~/.ssh): deploy workflows share this
+          # runner's home and rewrite/remove ~/.ssh/config, which broke a
+          # concurrent public-web deploy (run 41322460589).
+          d="$RUNNER_TEMP/jv-ssh-$GITHUB_RUN_ID"
+          install -m 700 -d "$d"
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > "$d/id_ed25519"
+          chmod 600 "$d/id_ed25519"
+          cat > "$d/config" <<CFG
           Host *
-            IdentityFile ~/.ssh/id_ed25519
+            IdentityFile $d/id_ed25519
+            UserKnownHostsFile $d/known_hosts
             BatchMode yes
             ConnectTimeout 15
             ServerAliveInterval 30
             StrictHostKeyChecking accept-new
           CFG
-          chmod 600 ~/.ssh/config
+          chmod 600 "$d/config"
+          echo "SSH_CONFIG_FILE=$d/config" >> "$GITHUB_ENV"
       - name: Fetch and extract opinion text
         run: |
           set -euo pipefail
@@ -115,4 +121,4 @@ jobs:
           done || true
       - name: Remove ephemeral SSH key
         if: always()
-        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/config
+        run: rm -rf "$RUNNER_TEMP/jv-ssh-$GITHUB_RUN_ID"
