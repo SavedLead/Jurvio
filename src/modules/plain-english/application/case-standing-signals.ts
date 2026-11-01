@@ -10,13 +10,15 @@ export interface CaseStandingSignals {
   clusterDisposition: string | null;
   precedentialStatus: string | null;
   opinionTail: string | null;
+  /** Supreme Court Database vote counts carried on the CourtListener cluster. */
+  votes: { majority: number; minority: number } | null;
   overruled: { text: string; citingCaption: string | null; citingPath: string | null } | null;
 }
 
 // Passed as a bind parameter: backslashes in a template literal would be eaten.
 const OVERRULED_PATTERN = String.raw`^\s*((expressly|implicitly|partially)\s+)?(overruled|abrogated)\M`;
 
-const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, overruled: null };
+const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, votes: null, overruled: null };
 
 /**
  * One indexed round trip for the "Where this case stands" summary:
@@ -31,6 +33,7 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       clusterDisposition: string | null;
       precedentialStatus: string | null;
       opinionTail: string | null;
+      votes: { majority: string | null; minority: string | null } | null;
       overruled: Array<{ text: string; citingCaption: string | null; citingPublicId: string | null }> | null;
     }>>`
       SELECT
@@ -40,6 +43,10 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
         (SELECT oc.precedential_status FROM opinion_cluster oc
           WHERE oc.case_id = c.id AND oc.precedential_status IS NOT NULL
           ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1) AS "precedentialStatus",
+        (SELECT jsonb_build_object('majority', oc.provider_metadata->>'scdb_votes_majority', 'minority', oc.provider_metadata->>'scdb_votes_minority')
+           FROM opinion_cluster oc
+          WHERE oc.case_id = c.id AND coalesce(oc.provider_metadata->>'scdb_votes_majority', '') ~ '^[0-9]$'
+          ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1) AS votes,
         ${opinionDocumentPublicId
           ? sql`(SELECT right(dc.content_text, 1600) FROM document d JOIN document_content dc ON dc.document_id = d.id
                   WHERE d.case_id = c.id AND d.public_id = ${opinionDocumentPublicId} AND d.publication = 'published')`
@@ -62,6 +69,7 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       clusterDisposition: row.clusterDisposition,
       precedentialStatus: row.precedentialStatus,
       opinionTail: row.opinionTail,
+      votes: parseVotes(row.votes),
       overruled: hit?.text
         ? { text: hit.text, citingCaption: hit.citingCaption ? cleanCaseCaption(hit.citingCaption) : null, citingPath: hit.citingPublicId ? `/case/${hit.citingPublicId}` : null }
         : null,
@@ -69,4 +77,11 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
   } catch {
     return EMPTY;
   }
+}
+
+function parseVotes(value: { majority: string | null; minority: string | null } | null) {
+  const majority = Number(value?.majority);
+  const minority = Number(value?.minority ?? 0);
+  if (!Number.isInteger(majority) || !Number.isInteger(minority) || majority < 1 || majority > 9 || minority < 0 || majority + minority > 9 || minority > majority) return null;
+  return { majority, minority };
 }

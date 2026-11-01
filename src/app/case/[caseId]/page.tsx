@@ -282,6 +282,7 @@ export default async function CasePage({ params }: CasePageProps) {
     opinionPath: majorityOpinion ? `/case/${caseId}/documents/${majorityOpinion.publicId}` : opinionPath,
     opinionIsMajority: Boolean(majorityOpinion),
     overruled: standingSignals.overruled,
+    votes: standingSignals.votes,
     citedByCount: citationCounts.citedBy,
     docketEntries,
     docketPath: `/case/${caseId}/docket`,

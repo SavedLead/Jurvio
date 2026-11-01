@@ -162,6 +162,8 @@ export interface CaseStandingInput {
   opinionIsMajority: boolean;
   overruled: { text: string; citingCaption: string | null; citingPath: string | null } | null;
   citedByCount: number;
+  /** Supreme Court Database vote counts, when known. */
+  votes?: { majority: number; minority: number } | null;
   /** Public docket entries (already filtered for sealed/restricted), any order. */
   docketEntries?: Array<{ filedOn: string | null; description: string }>;
   docketPath?: string | null;
@@ -275,6 +277,10 @@ function meaning(input: CaseStandingInput, outcome: OutcomeReading): string {
   }
 }
 
+function voteText(votes: { majority: number; minority: number }) {
+  return votes.minority === 0 ? `${votes.majority}–0 (unanimous)` : `${votes.majority}–${votes.minority}`;
+}
+
 function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
@@ -350,13 +356,15 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
         id: "decided",
         label: "What did the court decide?",
         text: "Jurvio does not have the court's judgment line for this case yet, so we cannot say who won."
+          + (input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "")
           + (input.opinionPath ? " The opinion is linked below." : ""),
       });
       const law = goodLaw(input);
       if (law) points.push(law);
       return { headline: `${COURT_NAME[input.courtKind]} has decided this case.`, points };
     }
-    points.push({ id: "who-won", label: "Who won?", text: whoWon(input, outcome) });
+    const vote = input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "";
+    points.push({ id: "who-won", label: "Who won?", text: `${whoWon(input, outcome)}${vote}` });
     points.push({
       id: "decided",
       label: "What did the court decide?",

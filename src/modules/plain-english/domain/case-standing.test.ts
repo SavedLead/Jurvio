@@ -108,6 +108,13 @@ describe("buildCaseStanding", () => {
     expect(standing?.points[0]?.text).toContain("cannot say who won");
   });
 
+  it("adds the Supreme Court Database vote when known", () => {
+    const standing = buildCaseStanding({ ...base, votes: { majority: 5, minority: 4 } });
+    expect(standing?.points[0]?.text).toContain("The Justices voted 5–4, according to the Supreme Court Database.");
+    const unanimous = buildCaseStanding({ ...base, exactDisposition: "Affirmed.", votes: { majority: 9, minority: 0 } });
+    expect(unanimous?.points[0]?.text).toContain("9–0 (unanimous)");
+  });
+
   it("hides when there is nothing to say", () => {
     expect(buildCaseStanding({ ...base, decidedOn: null })).toBeNull();
     expect(buildCaseStanding({ ...base, courtKind: "district", decidedOn: null })).toBeNull();
