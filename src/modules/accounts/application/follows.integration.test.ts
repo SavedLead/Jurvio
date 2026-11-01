@@ -14,7 +14,7 @@ describe.skipIf(!databaseUrl)("case follows", () => {
 
   it("never allows sealed, restricted or hidden cases", async () => {
     const open = await fx.createCase();
-    const sealed = await fx.createCase({ caption: "IN RE SEALED CASE" });
+    const sealed = await fx.createCase({ caption: "IN RE GRAND JURY SUBPOENA" });
     const restricted = await fx.createCase({ restrictedEvent: true });
     const hidden = await fx.createCase({ displayable: false });
     const warrant = await fx.createCase({ docketNumber: "1:26-mj-00012" });
