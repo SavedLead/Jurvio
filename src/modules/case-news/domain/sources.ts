@@ -3,7 +3,7 @@
 // Display rule for every source: headline, outlet, date, link and at most a short
 // snippet the source itself provides. Article text is never fetched or stored.
 
-export type CaseNewsSourceId = "gdelt" | "courthousenews_rss";
+export type CaseNewsSourceId = "gdelt" | "courthousenews_rss" | "google_news_rss";
 
 export interface CaseNewsSourceInfo {
   id: CaseNewsSourceId | string;
@@ -31,8 +31,8 @@ export const CASE_NEWS_SOURCES: readonly CaseNewsSourceInfo[] = [
   {
     id: "google_news_rss",
     name: "Google News RSS",
-    enabled: false,
-    terms: "Not used: each feed is licensed solely for rendering in a personal feed reader for personal, non-commercial use; other uses are expressly prohibited.",
+    enabled: true,
+    terms: "Enabled 2026-11-01 at the owner's request as a keyless second matcher for SCOTUS and appeals cases (one search per case, 8 s apart, ~30 per run). Google's feed terms describe personal, non-commercial feed-reader use; we store and show only the headline, the feed's own short description (truncated), outlet name, link and date, and never fetch article text. Disable with --no-google-news if Google objects.",
     termsUrl: "https://news.google.com/rss",
   },
   {
