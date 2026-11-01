@@ -33,6 +33,15 @@ export interface CaseNewsTerms {
 const ORG_SUFFIX = /[,\s]+(?:INC|INCORPORATED|LLC|L\.L\.C|LLP|L\.P|LP|LTD|LIMITED|CORP|CORPORATION|CO|COMPANY|N\.A|PLC|P\.C|PLLC|S\.A|AG|GMBH|HOLDINGS?|GROUP)\.?$/i;
 const ORG_WORDS = /\b(?:INC|LLC|CORP|CORPORATION|COMPANY|BANK|BANCORP|UNION|ASSOCIATION|ASS'N|UNIVERSITY|COLLEGE|CENTER|FOUNDATION|COUNCIL|TRUST|GROUP|HOLDINGS|TECHNOLOGIES|TECHNOLOGY|SYSTEMS|INDUSTRIES|PARTNERS|CAPITAL|INSURANCE|PHARMACEUTICALS?|LABORATORIES|LABS|ENTERPRISES|INTERNATIONAL|NETWORK|MEDIA|AIRLINES|MOTORS|ENERGY|HOSPITAL|HEALTH|CHURCH|COALITION|INSTITUTE|PLATFORMS|LTD|PLC|LP|LLP|N\.A)\b/i;
 const AGENCY = /\b(?:COMMISSION|DEPARTMENT|DEP'T|BUREAU|AGENCY|ADMINISTRATION|BOARD|SERVICE|OFFICE|AUTHORITY|SECRETARY|COMMISSIONER|ATTORNEY GENERAL|DIRECTOR)\b/i;
+// Headline acronyms for agencies that sue and get sued most.
+const AGENCY_ACRONYMS: Record<string, string> = {
+  "securities and exchange commission": "SEC", "federal trade commission": "FTC", "consumer financial protection bureau": "CFPB",
+  "commodity futures trading commission": "CFTC", "environmental protection agency": "EPA", "food and drug administration": "FDA",
+  "federal communications commission": "FCC", "national labor relations board": "NLRB", "equal employment opportunity commission": "EEOC",
+  "department of homeland security": "DHS", "immigration and customs enforcement": "ICE", "department of health and human services": "HHS",
+  "internal revenue service": "IRS", "department of justice": "Justice Department", "department of education": "Education Department",
+  "office of personnel management": "OPM", "department of government efficiency": "DOGE",
+};
 const UNITED_STATES = /^(?:THE\s+)?(?:USA|U\.S\.A\.?|U\.S\.|UNITED STATES(?: OF AMERICA)?)$/i;
 const STATE_LIKE = /^(?:THE\s+)?(?:PEOPLE OF THE STATE OF|PEOPLE OF|STATE OF|COMMONWEALTH OF|CITY OF|COUNTY OF|CITY AND COUNTY OF|TOWN OF|VILLAGE OF|DISTRICT OF|TERRITORY OF)\s+(.+)$/i;
 const COUNTY_SUFFIX = /^(.+?)\s+(?:COUNTY|PARISH|CITY|TOWNSHIP)$/i;
@@ -168,7 +177,8 @@ export function describeParty(side: string): PartyTerm {
   }
   if (AGENCY.test(upper) && !ORG_WORDS.test(upper.replace(/\bUNION\b/, ""))) {
     const agency = titleCase(stripOrgSuffix(raw.replace(/^(?:UNITED STATES|U\.S\.)\s+/i, "")));
-    return { raw, key: agency.length >= 6 ? agency : null, aliases: [], kind: "agency", distinctiveness: 0.5 };
+    const aliases = Object.entries(AGENCY_ACRONYMS).filter(([pattern]) => new RegExp(pattern, "i").test(raw)).map(([, acronym]) => acronym);
+    return { raw, key: agency.length >= 6 ? agency : null, aliases, kind: "agency", distinctiveness: 0.5 };
   }
   if (ORG_WORDS.test(upper) || ORG_SUFFIX.test(raw)) {
     const core = titleCase(stripOrgSuffix(raw));

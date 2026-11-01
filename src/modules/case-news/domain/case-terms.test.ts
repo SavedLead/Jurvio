@@ -20,7 +20,7 @@ describe("describeParty", () => {
     expect(describeParty("John Doe").key).toBeNull();
   });
   it("recognizes agencies", () => {
-    expect(describeParty("SECURITIES AND EXCHANGE COMMISSION")).toMatchObject({ kind: "agency", key: "Securities and Exchange Commission" });
+    expect(describeParty("SECURITIES AND EXCHANGE COMMISSION")).toMatchObject({ kind: "agency", key: "Securities and Exchange Commission", aliases: ["SEC"] });
     expect(describeParty("UNITED STATES BUREAU OF RECLAMATION, ET AL.")).toMatchObject({ kind: "agency", key: "Bureau of Reclamation" });
   });
 });

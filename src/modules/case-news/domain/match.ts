@@ -61,7 +61,9 @@ export function mentionsParty(text: string, party: PartyTerm): PartyMention | nu
   for (const phrase of partyPhrases(party)) {
     // Single-word names must be capitalized as a name ("Rice", not "rice").
     const single = !/\s/.test(phrase);
-    if (!phrasePattern(phrase, single).test(text)) continue;
+    const found = phrasePattern(phrase, false).exec(text);
+    if (!found) continue;
+    if (single && !/^\p{Lu}/u.test(found[0])) continue;
     const viaAnchor = phrase === party.anchor && phrase !== party.key;
     return { phrase, distinctiveness: viaAnchor ? party.anchorDistinctiveness ?? 0.6 : party.distinctiveness };
   }
