@@ -1,11 +1,9 @@
-import { statfs } from "node:fs/promises";
 import os from "node:os";
 import type postgres from "postgres";
+import { checkBulkDiskFloor } from "./bulk-disk-floor";
 import {
-  BULK_DOCKET_DISK_FLOOR,
   BULK_DOCKET_LOAD_PAUSE_MS,
   BULK_DOCKET_MAX_PAUSES,
-  freeDiskRatio,
   shouldPauseForLoad,
 } from "./bulk-docket-load";
 
@@ -19,7 +17,8 @@ export interface BulkGateResult {
 
 /**
  * The per-chunk gate shared by the bulk cluster and opinion loaders (the docket
- * loader keeps its own copy): stop under the 30% disk floor, pause while the box is
+ * loader keeps its own copy): stop under the disk floor (30% of root, or of root +
+ * the bulk tablespace volume when it is mounted; see bulk-disk-floor.ts), pause while the box is
  * loaded or a public query has run over 2s, and stop after too many pauses.
  */
 export async function gateBulkChunk(
@@ -30,9 +29,9 @@ export async function gateBulkChunk(
 ): Promise<BulkGateResult> {
   let pauses = 0;
   for (;;) {
-    const disk = await statfs(diskPath).catch(() => null);
-    const ratio = disk ? freeDiskRatio(disk.blocks, disk.bavail) : null;
-    if (ratio === null || ratio < BULK_DOCKET_DISK_FLOOR) return { stop: "disk", pauses, freeDiskRatio: ratio };
+    const floor = await checkBulkDiskFloor(diskPath);
+    const ratio = floor.freeDiskRatio;
+    if (!floor.ok) return { stop: "disk", pauses, freeDiskRatio: ratio };
     const [load] = await sql<{ slow: number }[]>`
       SELECT count(*)::int AS slow
       FROM pg_stat_activity

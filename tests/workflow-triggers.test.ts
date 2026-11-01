@@ -60,6 +60,10 @@ const READ_ONLY = new Set([
   "google-search-console-sync.yml",
   "citation-link-report-once.yml",
   "diagnose-db-load-once.yml",
+  "diagnose-backlog-once.yml",
+  "diagnose-case-sections-once.yml",
+  "diagnose-case-sections-after-once.yml",
+  "diagnose-court-feeds-once.yml",
   "diagnose-federal-chunk-progress-once.yml",
   "diagnose-federal-court-universe-once.yml",
   "diagnose-federal-eligibility-once.yml",
@@ -291,8 +295,10 @@ describe("workflow trigger policy", () => {
     const workflow = parsed.get(file)!;
     expect(Object.keys(triggers(workflow))).toEqual(["workflow_dispatch"]);
     const inputs = dispatchInputs(workflow) as Record<string, Input & { default?: string }>;
-    expect(Object.keys(inputs).sort()).toEqual(["allow_anytime", "confirm", "row_limit", "snapshot_date", "stages"]);
+    expect(Object.keys(inputs).sort()).toEqual(["allow_anytime", "confirm", "reset_checkpoint", "row_limit", "snapshot_date", "stages"]);
     expect(inputs.stages?.default).toBe("dockets,clusters,opinions");
+    // A reset is a deliberate one-time repair re-read; the default resumes.
+    expect(inputs.reset_checkpoint?.default).toBe("false");
     expect(inputs.allow_anytime?.default).toBe("false");
     expect(Number(inputs.row_limit?.default)).toBeGreaterThanOrEqual(5_000_000);
     const job = workflow.jobs!.load!;
@@ -300,9 +306,12 @@ describe("workflow trigger policy", () => {
     expect(job.steps?.[0]?.run).toContain('"$CONFIRM" != "LOAD_DOCKETS"');
     const script = (job.steps ?? []).map((step) => step.run ?? "").join("\n");
     expect(script).toContain("--budget-minutes=90");
-    expect(script).toContain("--reset-checkpoint=false");
+    expect(script).toContain('"--reset-checkpoint=${RESET_CHECKPOINT}"');
+    expect(script).toContain('case "$RESET_CHECKPOINT" in true|false)');
     expect(script).toContain("--include-bankruptcy=false");
-    expect(script).toContain("remain / total < 0.30");
+    // Root-only 30% floor, or root+volume 30% with per-disk minimums (bulk-disk-floor.ts).
+    expect(script).toContain("remain / total >= 0.30 if vt == 0");
+    expect(script).toContain("combined >= 0.30 and remain / total >= 0.15 and va / vt >= 0.10");
     // Cached between runs; deleted only when the checkpoint says complete.
     expect(script).toMatch(/cache=hit/);
     expect(script).toMatch(/"stopped":"complete"'; then\s+done_flag=true[\s\S]*rm -f "\$file"/);
@@ -358,7 +367,8 @@ describe("workflow trigger policy", () => {
       expect(body).toContain(`jobs/${script}.mjs`);
       expect(body).toContain("--budget-minutes=90");
       expect(body).toContain("--reset-checkpoint=false");
-      expect(body).toContain("avail / total < 0.30");
+      expect(body).toContain("avail / total >= 0.30 if vt == 0");
+      expect(body).toContain("combined >= 0.30 and avail / total >= 0.15 and va / vt >= 0.10");
     }
     const opinions = (jobs.opinions!.steps ?? []).map((step) => step.run ?? "").join("\n");
     // Opinion text waits for complete docket and cluster checkpoints.

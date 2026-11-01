@@ -65,7 +65,7 @@ trap 'rm -f "$PARTIAL"' EXIT
 # backup step after this line: the dump succeeded, but the commands that recorded
 # its path and listed the directory never ran, and the step still exited 0.
 docker exec "$PG_CONTAINER" \
-  pg_dump --username jurvio --dbname jurvio --no-owner --no-acl \
+  pg_dump --username jurvio --dbname jurvio --no-owner --no-acl --no-tablespaces \
   < /dev/null | gzip -1 > "$PARTIAL"
 
 test -s "$PARTIAL"

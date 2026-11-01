@@ -78,6 +78,18 @@ describe.skipIf(!databaseUrl)("public case listing database integration", () => 
         await tx`INSERT INTO judicial_opinion(cluster_id, document_id, provider_id, provider_opinion_id, opinion_type, author_name, source_artifact_id)
           VALUES (${cluster!.id}, ${document!.id}, ${provider!.id}, 'listfix-opinion', 'majority', 'Roberts', ${artifact!.id})`;
 
+        // Opinion-author assignments: only verified, displayable judges are returned.
+        async function addJudge(publicId: string, name: string, displayable: boolean) {
+          const [judge] = await tx<{ id: string }[]>`
+            INSERT INTO judge(public_id, display_name, normalized_name, verification)
+            VALUES (${publicId}, ${name}, ${name.toLowerCase()}, 'verified') RETURNING id`;
+          await decide("judge", judge!.id, displayable);
+          await tx`INSERT INTO judge_case_assignment(judge_id, case_id, assignment_role, source_artifact_id, extraction_method, extractor_version, confidence)
+            VALUES (${judge!.id}, ${decided}, 'opinion_author', ${artifact!.id}, 'deterministic_rule', 'fixture', 1)`;
+        }
+        await addJudge("jj-listfix01", "John G Roberts", true);
+        await addJudge("jj-listfix02", "Hidden Roberts", false);
+
         const list = (options: Partial<Parameters<typeof listPublicCases>[1]>) =>
           listPublicCases(sql, { page: 1, pageSize: 50, court: "jc-listfix1", ...options });
 
@@ -87,6 +99,7 @@ describe.skipIf(!databaseUrl)("public case listing database integration", () => 
 
         const [first, second] = browse.cases;
         expect(first).toMatchObject({ verification: "verified", opinionAuthor: "Roberts", hasPublicDocument: true, decidedOn: "2024-06-28" });
+        expect(first?.authorJudges).toEqual([{ publicId: "jj-listfix01", displayName: "John G Roberts", normalizedName: "john g roberts" }]);
         expect(second).toMatchObject({ latestEntryOn: "2025-09-02", latestEntryDescription: "MEMORANDUM OPINION", opinionAuthor: null });
 
         expect((await list({ sort: "az" })).cases.map((row) => row.publicId)).toEqual(["jv-listfix02", "jv-listfix01"]);

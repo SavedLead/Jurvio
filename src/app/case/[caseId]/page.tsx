@@ -9,6 +9,8 @@ import {
   listPublicDocuments,
   listPublicParties,
 } from "@/modules/cases/application/list-public-case-sections";
+import { buildCaseMetaDescription, buildRecordAnswers } from "@/modules/cases/domain/record-answers";
+import { buildCaseTitle } from "@/modules/cases/domain/case-title";
 import { formatPublicCaseDate, formatVerifiedOutcome, visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
 import {
   OPINION_TEXT_PENDING_BODY,
@@ -16,6 +18,7 @@ import {
   opinionTextIsPending,
 } from "@/modules/cases/domain/opinion-availability";
 import { robotsFor } from "@/lib/seo/indexing";
+import { casePageIndexable } from "@/modules/cases/application/get-public-case";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseNav } from "@/modules/cases/ui/case-nav";
@@ -43,25 +46,36 @@ async function loadCase(params: CasePageProps["params"]) {
 export async function generateMetadata({ params }: CasePageProps): Promise<Metadata> {
   const loaded = await loadCase(params);
   if (!loaded) return { title: "Case not found" };
-  const caption = cleanCaseCaption(loaded.legalCase.caption);
-  const title = [caption, "Case", loaded.legalCase.docketNumber, loaded.legalCase.courtName]
-    .filter(Boolean)
-    .join(" | ");
-  const description = [
+  const legalCase = loaded.legalCase;
+  const caption = cleanCaseCaption(legalCase.caption);
+  // "United States v. Olsen, No. 1:26-cr-00123 (E.D. Cal. 2026)"; judge, type and status go in the description.
+  const title = buildCaseTitle({
     caption,
-    loaded.legalCase.courtName,
-    `Docket ${loaded.legalCase.docketNumber}`,
-    loaded.legalCase.filedOn ? `filed ${loaded.legalCase.filedOn}` : null,
-    loaded.legalCase.decidedOn ? `decided ${loaded.legalCase.decidedOn}` : null,
-    loaded.legalCase.supremeCourtTerm ? `Supreme Court term ${loaded.legalCase.supremeCourtTerm}` : null,
-    loaded.legalCase.officialCitation,
-  ].filter(Boolean).join(". ");
+    docketNumber: legalCase.docketNumber,
+    courtName: legalCase.courtName,
+    providerCourtId: legalCase.courtCode,
+    filedOn: legalCase.filedOn,
+    decidedOn: legalCase.decidedOn,
+  });
+  const description = buildCaseMetaDescription({
+    caption,
+    docketNumber: legalCase.docketNumber,
+    courtName: legalCase.courtName,
+    courtKind: legalCase.courtKind ?? "other",
+    natureOfSuit: legalCase.natureOfSuit ?? null,
+    judgeName: legalCase.judgeName ?? null,
+    filedOn: legalCase.filedOn,
+    terminatedOn: legalCase.terminatedOn ?? null,
+    decidedOn: legalCase.decidedOn,
+    officialCitation: legalCase.officialCitation,
+    captionCategory: legalCase.captionCategory ?? null,
+  });
   return {
-    title,
+    title: { absolute: title },
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
     openGraph: { title, description, type: "article" },
-    robots: robotsFor(loaded.legalCase.hasReadableOpinion),
+    robots: robotsFor(casePageIndexable(loaded.legalCase)),
   };
 }
 
@@ -122,23 +136,46 @@ export default async function CasePage({ params }: CasePageProps) {
   const canonicalPath = `/case/${caseId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
   const latestEvent = timelineEvents.at(-1) ?? null;
+  // Template answers built only from structured record fields (see record-answers.ts);
+  // used when no verified editorial summary exists.
+  const recordAnswers = buildRecordAnswers({
+    caption,
+    docketNumber: legalCase.docketNumber,
+    courtName: legalCase.courtName,
+    courtKind: legalCase.courtKind ?? "other",
+    filedOn: legalCase.filedOn,
+    terminatedOn: legalCase.terminatedOn ?? null,
+    decidedOn: legalCase.decidedOn,
+    natureOfSuit: legalCase.natureOfSuit ?? null,
+    causeOfAction: legalCase.causeOfAction ?? null,
+    docketEntryCount: docketEntries.length,
+    citedByCount: citationCounts.citedBy,
+    hasReadableOpinion: legalCase.hasReadableOpinion,
+    opinionFiledOn: primaryOpinion?.filedOn ?? null,
+    captionCategory: legalCase.captionCategory ?? null,
+  });
+  const verifiedHappened = legalCase.backgroundSummary ?? (verified ? legalCase.statusExplanation : null);
+  const verifiedOutcome = legalCase.exactHolding ?? (outcome ? `${outcome}.` : null);
   const caseAnswers = [
     {
       id: "what-happened",
       question: "What happened in this case?",
-      answer: legalCase.backgroundSummary
-        ?? (verified ? legalCase.statusExplanation : null)
+      answer: verifiedHappened
+        ?? recordAnswers.happened
         ?? `The public record currently confirms this case as ${legalCase.courtName} docket ${legalCase.docketNumber}. A source-backed plain-English summary is not yet available.`,
-      sourceUrl: legalCase.backgroundSourceUrl,
-      available: Boolean(legalCase.backgroundSummary || (verified && legalCase.statusExplanation)),
+      sourceUrl: verifiedHappened ? legalCase.backgroundSourceUrl : null,
+      available: Boolean(verifiedHappened || recordAnswers.happened),
+      fromRecord: !verifiedHappened && Boolean(recordAnswers.happened),
     },
     {
       id: "case-about",
       question: "What is this case about?",
       answer: legalCase.questionPresented
+        ?? recordAnswers.about
         ?? "Jurvio has not yet verified a plain-English description of the legal question in this case.",
-      sourceUrl: legalCase.questionSourceUrl,
-      available: Boolean(legalCase.questionPresented),
+      sourceUrl: legalCase.questionPresented ? legalCase.questionSourceUrl : null,
+      available: Boolean(legalCase.questionPresented || recordAnswers.about),
+      fromRecord: !legalCase.questionPresented && Boolean(recordAnswers.about),
     },
     {
       id: "current-status",
@@ -147,22 +184,27 @@ export default async function CasePage({ params }: CasePageProps) {
         ?? (latestEvent ? `The latest dated event currently available is “${latestEvent.label}” on ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}.` : "Jurvio has not yet verified the current procedural posture."),
       sourceUrl: null,
       available: Boolean((verified && legalCase.statusExplanation) || latestEvent),
+      fromRecord: false,
     },
     {
       id: "why-it-matters",
       question: "Why does this case matter?",
       answer: legalCase.significanceSummary
+        ?? recordAnswers.matters
         ?? "A source-backed explanation of this case’s broader significance is not yet available.",
-      sourceUrl: legalCase.significanceSourceUrl,
-      available: Boolean(legalCase.significanceSummary),
+      sourceUrl: legalCase.significanceSummary ? legalCase.significanceSourceUrl : null,
+      available: Boolean(legalCase.significanceSummary || recordAnswers.matters),
+      fromRecord: !legalCase.significanceSummary && Boolean(recordAnswers.matters),
     },
     {
       id: "ruling-outcome",
       question: "What was the ruling or outcome?",
-      answer: legalCase.exactHolding
-        ?? (outcome ? `${outcome}.` : legalCase.decidedOn ? "Jurvio has a decision date but has not yet verified a plain-English holding." : "No verified final ruling is currently available on Jurvio."),
-      sourceUrl: legalCase.holdingSourceUrl ?? legalCase.dispositionSourceUrl,
-      available: Boolean(legalCase.exactHolding || outcome),
+      answer: verifiedOutcome
+        ?? recordAnswers.outcome
+        ?? "No final ruling or closing date appears in the court record Jurvio holds.",
+      sourceUrl: verifiedOutcome ? legalCase.holdingSourceUrl ?? legalCase.dispositionSourceUrl : null,
+      available: Boolean(verifiedOutcome || recordAnswers.outcome),
+      fromRecord: !verifiedOutcome && Boolean(recordAnswers.outcome),
     },
     {
       id: "latest-update",
@@ -172,6 +214,7 @@ export default async function CasePage({ params }: CasePageProps) {
         : "No dated docket event is currently available on Jurvio.",
       sourceUrl: null,
       available: Boolean(latestEvent),
+      fromRecord: false,
     },
   ] as const;
   const filedAt = legalCase.filedOn ? Date.parse(`${legalCase.filedOn}T00:00:00Z`) : Number.NaN;
@@ -222,6 +265,7 @@ export default async function CasePage({ params }: CasePageProps) {
         decidedOn={legalCase.decidedOn}
         supremeCourtTerm={legalCase.supremeCourtTerm}
         officialCitation={legalCase.officialCitation}
+        courtCode={legalCase.courtCode}
         showNavigation={false}
       />
 
@@ -274,7 +318,7 @@ export default async function CasePage({ params }: CasePageProps) {
                   <h3>{item.question}</h3>
                   <p>{linkedText(item.answer)}</p>
                   <footer>
-                    <span>{item.available ? "Source-backed answer" : "Not yet available"}</span>
+                    <span>{!item.available ? "Not yet available" : item.fromRecord ? "From the court record" : "Source-backed answer"}</span>
                     {item.sourceUrl ? <a href={item.sourceUrl} rel="nofollow noopener">View source</a> : null}
                   </footer>
                 </article>

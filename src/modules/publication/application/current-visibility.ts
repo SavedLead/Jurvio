@@ -21,7 +21,13 @@ export type PublicationFlag = "displayable" | "indexable" | "machine_accessible"
  * decisions — including the citation integration fixture — keeps the same answer.
  * COALESCE stops after the first non-null value.
  */
-export function latestPublicationColumnSql(column: PublicationFlag, objectType: string, objectIdExpr: string): string {
+export function latestPublicationColumnSql(
+  column: PublicationFlag,
+  objectType: string,
+  objectIdExpr: string,
+  /** Answer when the object has no decision at all (default false: hidden). */
+  whenUndecided = false,
+): string {
   if (!OBJECT_TYPES.has(objectType)) throw new Error(`unsupported publication object type: ${objectType}`);
   if (!OBJECT_ID.test(objectIdExpr)) throw new Error(`unsupported publication id expression: ${objectIdExpr}`);
   const selected = column === "displayable_and_indexable" ? "decision.displayable AND decision.indexable" : `decision.${column}`;
@@ -34,5 +40,5 @@ export function latestPublicationColumnSql(column: PublicationFlag, objectType: 
     : `(SELECT ${selected} FROM publication_current current_row
         JOIN publication_decision decision ON decision.id = current_row.decision_id
         WHERE current_row.object_type = '${objectType}' AND current_row.object_id = ${objectIdExpr})`;
-  return `COALESCE(${mirrored}, ${fallback}, false)`;
+  return `COALESCE(${mirrored}, ${fallback}, ${whenUndecided ? "true" : "false"})`;
 }

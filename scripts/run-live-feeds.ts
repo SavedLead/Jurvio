@@ -6,18 +6,25 @@ import {
   refreshTouchedCourts, runCoaLiveFeeds, runScotusLiveDockets, type SourceRunResult,
 } from "@/modules/ingestion/live-feeds/run-live-feeds";
 
-// Live feeds: new SCOTUS dockets (supremecourt.gov), new court of appeals
-// opinions/orders (each circuit's own feed) and the CourtListener
-// date_modified tail. New cases are drafts. Each source and each court has its
-// own small budget; one failure never stops the rest.
-//   node jobs/run-live-feeds.mjs --source=scotus|coa|courtlistener|all [--courts=ca5,ca9]
+// Live feeds: new SCOTUS dockets (supremecourt.gov) and new court of appeals
+// opinions/orders (each circuit's own feed). New cases are drafts. Each source
+// and each court has its own small budget; one failure never stops the rest.
+//   node jobs/run-live-feeds.mjs --source=scotus|coa|all [--courts=ca5,ca9]
+// The CourtListener API date_modified tail is disabled (2026-10-31, David
+// Rosenberg). `--source=courtlistener` exits without any request; `all` skips it.
+// The CourtListener bulk-file loaders are separate jobs and are unaffected.
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
   return [key, raw] as const;
 }));
 const source = args.get("source") ?? "all";
 if (!["scotus", "coa", "courtlistener", "all"].includes(source)) {
-  throw new Error("--source must be scotus, coa, courtlistener or all");
+  throw new Error("--source must be scotus, coa or all");
+}
+const COURTLISTENER_API_LIVE_FEED_ENABLED = false;
+if (source === "courtlistener" && !COURTLISTENER_API_LIVE_FEED_ENABLED) {
+  console.log(JSON.stringify({ liveFeeds: "skipped", source, reason: "CourtListener API live feed is disabled" }));
+  process.exit(0);
 }
 const courts = args.get("courts")?.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
 const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT ?? process.env.RAW_ARTIFACT_DIR ?? ".data/artifacts";
@@ -43,7 +50,7 @@ try {
     if (source === "coa" || source === "all") {
       results.push(...await runCoaLiveFeeds(sql, store, courts?.length ? { coa: { maxRequestsPerCourt: 4, maxMsPerCourt: 90_000, minIntervalMs: 1_500, courts } } : {}));
     }
-    if (source === "courtlistener" || source === "all") {
+    if (COURTLISTENER_API_LIVE_FEED_ENABLED && (source === "courtlistener" || source === "all")) {
       const universe = await sql<{ court_code: string }[]>`
         SELECT 'scotus' AS court_code
         UNION SELECT court_code FROM appellate_source_registry

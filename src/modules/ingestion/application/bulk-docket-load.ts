@@ -1,7 +1,7 @@
-import { statfs } from "node:fs/promises";
 import os from "node:os";
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
+import { checkBulkDiskFloor } from "./bulk-disk-floor";
 import { isRestrictedDocketText } from "../domain/federal-stream";
 import { matchesBulkFederalJurisdiction } from "./ingest-courtlistener-bulk-federal-dockets";
 import {
@@ -392,9 +392,9 @@ async function gateChunk(
   let pauses = 0;
   let ratio: number | null = null;
   for (;;) {
-    const disk = await statfs(diskPath).catch(() => null);
-    ratio = disk ? freeDiskRatio(disk.blocks, disk.bavail) : null;
-    if (ratio === null || ratio < BULK_DOCKET_DISK_FLOOR) {
+    const floor = await checkBulkDiskFloor(diskPath);
+    ratio = floor.freeDiskRatio;
+    if (!floor.ok) {
       return { stop: "disk", pauses, freeDiskRatio: ratio };
     }
     const [load] = await sql<{ slow: number }[]>`
@@ -553,12 +553,16 @@ export async function mergeDocketStage(sql: Sql, providerId: string, csv: string
         ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL DO NOTHING
         RETURNING id, public_id
       ), linked AS (
+        -- Join the stage through created.public_id (RETURNING output), never through
+        -- legal_case: sibling data-modifying CTEs share one snapshot, so the rows
+        -- just inserted into legal_case are invisible here. Joining legal_case wrote
+        -- no identifier for any newly inserted case (only ~1.15M of 8.6M bulk cases
+        -- had one on 2026-10-30), which left every pending cluster unresolvable.
         INSERT INTO case_identifier (case_id, provider_id, identifier_type, identifier_value)
         SELECT created.id, ${providerId}, 'courtlistener_docket_id', stage.docket_id
         FROM created
-        JOIN legal_case ON legal_case.id = created.id
         JOIN courtlistener_docket_stage stage
-          ON stage.public_id = legal_case.public_id
+          ON stage.public_id = created.public_id
         ON CONFLICT (provider_id, identifier_type, identifier_value) DO NOTHING
         RETURNING case_id
       )

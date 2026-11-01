@@ -46,7 +46,8 @@ export default async function DocketPage({ params }: {
   return (
     <main className="shell caseShell">
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
-        docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn} />
+        docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn}
+        decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode} />
       {records.length > 0 ? (
         <section className="contentSection">
           <p className="sectionKicker">Official activity</p>

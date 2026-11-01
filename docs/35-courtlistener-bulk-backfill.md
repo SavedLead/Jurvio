@@ -126,3 +126,42 @@ default `dockets,clusters,opinions`) runs three jobs in order: dockets → clust
 90-minute budget, the 1–7am ET window, pauses and the 30% disk floor. Clusters and opinions use the docket
 load's snapshot. The opinions job waits until both the docket and the cluster checkpoints for that snapshot are
 `complete`, so a full 55 GB pass is not spent while most clusters cannot resolve yet.
+
+## Party backfill (FJC Integrated Database)
+
+The CourtListener bulk export contains **no party or attorney table**. The only
+free bulk file carrying party names with roles is the Federal Judicial Center
+Integrated Database, redistributed in the same bucket. Every civil row has
+`plaintiff` and `defendant` columns populated by the FJC, so roles come from the
+source rather than from parsing captions.
+
+```bash
+base=https://com-courtlistener-storage.s3-us-west-2.amazonaws.com/bulk-data
+wget -c -O /data/fjc-integrated-database-2026-06-30.csv.bz2 \
+  "$base/fjc-integrated-database-2026-06-30.csv.bz2"
+
+pnpm ingest:fjc:parties \
+  --file /data/fjc-integrated-database-2026-06-30.csv.bz2 \
+  --snapshot-date 2026-06-30 \
+  --filing-year 2019
+```
+
+The export is a single ~280MB compressed CSV covering every federal civil case
+since the 1970s, so run it one filing year at a time — `--filing-year` is what
+chunks the work and what `fjc_idb_import_checkpoint` records. Every write is
+idempotent (`ON CONFLICT` on the raw artifact, the entity identifier, and the
+appearance), so re-running a year is safe and writes nothing new.
+
+Rows are matched to our cases on district, docket core, office, and filing year;
+see ADR 0006 for the matching rules and the per-case identity decision. Delete
+the transport file after verification, as with every other bulk input.
+
+To check what the public parties surfaces can currently see, and why:
+
+```bash
+pnpm diagnose:parties
+```
+
+It runs the predicates behind `listPublicEntities` and `listPublicParties` one
+clause at a time, so the first count that drops to zero names the responsible
+clause. It only reads.

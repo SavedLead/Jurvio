@@ -59,7 +59,14 @@ export async function listPublicParties(sql: Sql, casePublicId: string) {
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
       AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      AND ${visible(sql, "displayable", "entity", "entity.id")}
+      -- A party with no entity-level decision of its own is displayable, because
+      -- the gate that matters has already been applied above: the case it appears
+      -- in is published AND carries a displayable publication decision. Nothing
+      -- writes an entity decision outside the manual publication-review workflow,
+      -- so requiring one here (the previous default of false) hid EVERY party on
+      -- EVERY case. The directory queries in modules/directory already default this
+      -- to true; an explicit entity decision still suppresses a party on both.
+      AND ${sql.unsafe(latestPublicationColumnSql("displayable", "entity", "entity.id", true))}
     ORDER BY appearance.role, entity.normalized_name
   `;
 }
