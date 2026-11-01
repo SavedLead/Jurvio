@@ -1,0 +1,82 @@
+name: Diagnose with a read-only SQL file (once)
+
+# Runs one reviewed SQL file from scripts/diag/ against production Postgres in
+# a read-only session (default_transaction_read_only=on, statement timeout) and
+# prints the result to the log and run summary. Nothing is written: the file is
+# refused if it tries to change the session's read-only setting, and every
+# statement runs inside a READ ONLY transaction.
+#
+# Dispatch by hand with confirm=DIAGNOSE and sql_file=scripts/diag/<name>.sql.
+# The SQL file is read from the dispatched ref, so a reviewed branch can carry
+# a new report without a merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+      sql_file:
+        description: "Path of the SQL file, e.g. scripts/diag/case-stands-v2.sql"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-sql
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 45
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - name: Check the SQL file
+        env:
+          SQL_FILE: ${{ inputs.sql_file }}
+        run: |
+          set -euo pipefail
+          [[ "$SQL_FILE" =~ ^scripts/diag/[a-z0-9][a-z0-9-]*\.sql$ ]] || { echo "::error::sql_file must be scripts/diag/<name>.sql"; exit 1; }
+          [ -f "$SQL_FILE" ] || { echo "::error::$SQL_FILE not found on this ref"; exit 1; }
+          if grep -Eiq 'transaction_read_only|transaction_isolation|read[[:space:]]+write|\b(insert|update|delete|truncate|alter|drop|create|grant|revoke|vacuum|copy|call|do)\b[[:space:]]' <(sed 's/--.*$//' "$SQL_FILE"); then
+            echo "::error::$SQL_FILE contains a statement that is not read-only"; exit 1
+          fi
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run it over private VPC (read-only session)
+        env:
+          SQL_FILE: ${{ inputs.sql_file }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          { printf 'BEGIN TRANSACTION READ ONLY;\n'; cat "$SQL_FILE"; printf '\nROLLBACK;\n'; } > "$RUNNER_TEMP/report.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" > "$RUNNER_TEMP/report.txt" <<REMOTE
+          set -euo pipefail
+          pg="\$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "\$pg" ] || { echo "postgres missing" >&2; exit 1; }
+          sudo -n docker exec -i \
+            -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=900s -c lock_timeout=5s' \
+            "\$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
+          $(cat "$RUNNER_TEMP/report.sql")
+          SQL
+          REMOTE
+          cat "$RUNNER_TEMP/report.txt"
+          { echo '```'; head -c 900000 "$RUNNER_TEMP/report.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
