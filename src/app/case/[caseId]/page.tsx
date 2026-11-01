@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { db } from "@/db/client";
-import { loadRequestPublicCase } from "@/app/case/load-public-case";
+import { loadCaseForViewer } from "@/app/case/load-public-case";
+import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import {
   listPublicDocketEntries,
   listPublicDocuments,
@@ -45,13 +46,16 @@ interface CasePageProps {
 
 async function loadCase(params: CasePageProps["params"]) {
   const { caseId } = await params;
-  const legalCase = await loadRequestPublicCase(caseId);
-  return legalCase ? { caseId, legalCase } : null;
+  const access = await loadCaseForViewer(caseId);
+  if (access.status === "missing") return null;
+  if (access.status === "gated") return { caseId, gated: true as const };
+  return { caseId, gated: false as const, legalCase: access.legalCase };
 }
 
 export async function generateMetadata({ params }: CasePageProps): Promise<Metadata> {
   const loaded = await loadCase(params);
   if (!loaded) return { title: "Case not found" };
+  if (loaded.gated) return subscriberGateMetadata();
   const legalCase = loaded.legalCase;
   const caption = cleanCaseCaption(legalCase.caption);
   // "United States v. Olsen, No. 1:26-cr-00123 (E.D. Cal. 2026)"; judge, type and status go in the description.
@@ -104,6 +108,7 @@ function formatJusticePosition(value: string) {
 export default async function CasePage({ params }: CasePageProps) {
   const loaded = await loadCase(params);
   if (!loaded) notFound();
+  if (loaded.gated) return <SubscriberCaseGate path={`/case/${loaded.caseId}`} />;
   const { caseId, legalCase } = loaded;
   const sql = db();
   const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible] = await Promise.all([

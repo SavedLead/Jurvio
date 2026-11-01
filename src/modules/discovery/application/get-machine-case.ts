@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
 type Sql = ReturnType<typeof postgres>;
@@ -37,6 +38,8 @@ export async function getMachineCase(sql: Sql, publicId: string): Promise<Machin
       legal_case.status_rule_version AS "statusRuleVersion"
     FROM legal_case JOIN court ON court.id = legal_case.court_id
     WHERE legal_case.public_id = ${publicId} AND legal_case.publication = 'published'
+      -- Subscriber-only (search-excluded) records are never in the public, edge-cached machine JSON.
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
       AND COALESCE((
         SELECT decision.machine_accessible FROM publication_decision decision
         WHERE decision.object_type = 'legal_case' AND decision.object_id = legal_case.id

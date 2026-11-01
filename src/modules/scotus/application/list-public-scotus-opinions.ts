@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
 type Sql = ReturnType<typeof postgres>;
@@ -120,6 +121,7 @@ export async function listPublicScotusOpinions(
           WHERE decision.object_type = 'document' AND decision.object_id = document.id
           ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
         ), false)
+        AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
       ORDER BY cluster.date_filed DESC NULLS LAST, cluster.citation_count DESC,
         legal_case.caption, judicial.opinion_type
       LIMIT ${boundedLimit}
