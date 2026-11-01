@@ -1,6 +1,7 @@
 import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
+import { casePageIndexableSql, readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
 
 type Sql = ReturnType<typeof postgres>;
 /** One URL per row. Sitemap files stay under the 50,000 URL protocol limit. */
@@ -43,13 +44,10 @@ export async function listCaseSitemapRecords(sql: Sql, startId: string, endId: s
     CROSS JOIN LATERAL (
       SELECT value
       FROM (VALUES
-        ('', true),
+        ('', ${sql.unsafe(casePageIndexableSql("eligible"))}),
         ('/docket', EXISTS (SELECT 1 FROM docket_entry WHERE docket_entry.case_id = eligible.id)),
         ('/timeline', EXISTS (SELECT 1 FROM docket_entry WHERE docket_entry.case_id = eligible.id)),
-        ('/documents', EXISTS (
-          SELECT 1 FROM document
-          WHERE document.case_id = eligible.id AND document.publication = 'published'
-        )),
+        ('/documents', ${sql.unsafe(readableOpinionExistsSql("eligible"))}),
         ('/parties', EXISTS (SELECT 1 FROM party_appearance WHERE party_appearance.case_id = eligible.id))
       ) AS candidate(value, has_content)
       WHERE has_content
@@ -68,6 +66,7 @@ export async function listOpinionSitemapRecords(sql: Sql, startId: string, endId
     WHERE document.publication = 'published'
       AND ${sql.unsafe(indexableCase)}
       AND ${sql.unsafe(indexableDocument)}
+      AND EXISTS (SELECT 1 FROM document_content content WHERE content.document_id = document.id)
       AND document.public_id >= ${startId}
       AND (${endId}::text IS NULL OR document.public_id < ${endId})
     ORDER BY document.public_id

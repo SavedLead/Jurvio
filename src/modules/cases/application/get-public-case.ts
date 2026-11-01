@@ -3,7 +3,7 @@ import { latestPublicationColumnSql } from "@/modules/publication/application/cu
 import { captionTag, cleanCourtName, courtKindFromJurisdiction, type CourtKind } from "@/modules/cases/domain/record-answers";
 import { displayCaption } from "@/modules/cases/domain/case-title";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
-import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
+import { readableOpinionExistsSql, tierReleaseIndexableSql } from "@/modules/cases/domain/readable-opinion";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -77,8 +77,7 @@ export interface PublicCase {
   searchExcluded?: boolean;
 }
 
-export const TIER_RELEASE_RULE_VERSION = "publication-tiers-v1";
-export const INDEXABLE_TIER_RELEASE_REASONS = ["tier1_release", "tier2_release"] as const;
+export { TIER_RELEASE_RULE_VERSION, INDEXABLE_TIER_RELEASE_REASONS } from "@/modules/cases/domain/readable-opinion";
 
 /** Robots decision for a case page: readable opinion text, or an indexable Tier 1/2 release. */
 export function casePageIndexable(legalCase: Pick<PublicCase, "hasReadableOpinion" | "tierReleaseIndexable" | "searchExcluded">): boolean {
@@ -117,15 +116,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
       enrichment.decision_lineup AS "decisionLineup", enrichment.official_docket_url AS "officialDocketUrl",
       enrichment.lower_court_name AS "lowerCourtName", enrichment.lower_court_decided_on::text AS "lowerCourtDecidedOn",
       ${sql.unsafe(readableOpinionExistsSql("c"))} AS "hasReadableOpinion",
-      EXISTS (
-        SELECT 1 FROM publication_current current_row
-        JOIN publication_decision decision ON decision.id = current_row.decision_id
-        WHERE current_row.object_type = 'legal_case'
-          AND current_row.object_id = c.id
-          AND decision.indexable
-          AND decision.rule_version = ${TIER_RELEASE_RULE_VERSION}
-          AND decision.reason_code = ANY(${[...INDEXABLE_TIER_RELEASE_REASONS]}::text[])
-      ) AS "tierReleaseIndexable",
+      ${sql.unsafe(tierReleaseIndexableSql("c"))} AS "tierReleaseIndexable",
       ${sql.unsafe(searchExcludedCaseSql("c"))} AS "searchExcluded"
     FROM legal_case c
     JOIN court ON court.id = c.court_id
