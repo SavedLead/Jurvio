@@ -17,6 +17,11 @@ export async function POST(request: NextRequest) {
   if (!isSameOriginRequest(request)) return noStore(NextResponse.json({ error: "forbidden" }, { status: 403 }));
   const body = await readBody(request);
   const plan = body.plan;
+  // The shared /pricing#join form posts every plan here; "free" means sign up,
+  // so re-post it (307 keeps method and body) to the sign-in request route.
+  if (plan === "free" && body.email !== undefined) {
+    return noStore(NextResponse.redirect(absoluteUrl("/api/auth/request", request.nextUrl.origin), 307));
+  }
   if (!isPlanId(plan) || plan === "free") return noStore(NextResponse.json({ error: "invalid_plan" }, { status: 400 }));
   const sql = db();
   const user = await getSessionUser(sql, request.cookies.get(SESSION_COOKIE)?.value);

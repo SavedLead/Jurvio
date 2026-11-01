@@ -3,6 +3,7 @@
 import type { Route } from "next";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PLANS } from "../domain/plans";
 import { EmailCaptureForm, WAITLIST_SUCCESS } from "./email-capture-form";
 import "./follow-case-box.css";
 
@@ -17,6 +18,7 @@ interface FollowApiState {
 }
 
 const HINT = "jurvio_signed_in=1";
+const FREE_FOLLOW_LIMIT = PLANS.free.followLimit;
 
 /**
  * "Follow this case". The page only renders this for cases that may be
@@ -75,7 +77,7 @@ export function FollowCaseBox({ caseId }: { caseId: string }) {
   return <section id="follow" className="followCaseBox" aria-labelledby="follow-case-title">
     <h2 id="follow-case-title">Follow this case</h2>
     {!state.signedIn ? <>
-      <p>Get an email when new docket entries are filed. Free for up to 3 cases.</p>
+      <p>Get an email when new docket entries are filed. Free for up to {FREE_FOLLOW_LIMIT} cases. <Link className="followPlansLink" href={"/pricing" as Route}>See plans</Link></p>
       <EmailCaptureForm
         action="/api/auth/request"
         hidden={{ next: `/case/${caseId}`, follow: caseId }}
@@ -88,7 +90,7 @@ export function FollowCaseBox({ caseId }: { caseId: string }) {
       <button type="button" className={state.following ? "following" : undefined} disabled={busy} onClick={toggle} aria-pressed={Boolean(state.following)}>
         {state.following ? "Following ✓ (unfollow)" : "Follow this case"}
       </button>
-      {typeof state.followCount === "number" ? <small>{state.followCount} of {state.followLimit} follows used · <Link href="/account">Manage</Link></small> : null}
+      {typeof state.followCount === "number" ? <small>{state.followCount} of {state.followLimit} follows used · <Link href="/account">Manage</Link>{state.error === "limit_reached" ? null : <> · <Link href={"/pricing" as Route}>See plans</Link></>}</small> : null}
       {state.error === "limit_reached" ? <p className="followUpgrade" role="alert">
         You are following {state.followCount} of {state.followLimit} cases on your plan.
         {state.upgrade ? <> {state.upgrade.name} (${state.upgrade.monthlyPriceUsd}/mo) follows up to {state.upgrade.followLimit}. </> : " "}
