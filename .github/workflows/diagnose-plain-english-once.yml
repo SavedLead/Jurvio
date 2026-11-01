@@ -1,0 +1,143 @@
+name: Diagnose plain-English summary data (once, read-only)
+
+# Read-only feasibility report for the "Where this case stands" plain-English
+# summary: which structured fields (disposition, judgment, lower court, CourtListener
+# cluster disposition/posture, opinion closing lines, citation treatment signals)
+# exist per court type and tier, plus opinion word counts for an LLM cost
+# estimate. Opinion-text checks run on a ~1% TABLESAMPLE only. Changes nothing:
+# default_transaction_read_only=on, SELECT/WITH only.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-plain-english
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 60
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Plain-English data report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=1500s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+          echo "=== PLAIN ENGLISH DATA @ $(date -u +%FT%TZ) (read-only) session_read_only=$(q "SELECT current_setting('default_transaction_read_only')") ==="
+          base="WITH pc AS (
+              SELECT c.id, c.verification::text AS verification, c.disposition_scope, c.judgment_state, c.appeal_state, c.activity_state,
+                     c.procedural_phase, c.status_explanation, c.terminated_on, c.decided_on,
+                     coalesce(t.tier::text, 'none') AS tier,
+                     CASE WHEN ct.provider_court_id = 'scotus' OR c.supreme_court_term IS NOT NULL THEN 'scotus'
+                          ELSE coalesce(ct.jurisdiction, '?') END AS ctype
+                FROM legal_case c JOIN court ct ON ct.id = c.court_id
+                LEFT JOIN publication_tier_release t ON t.case_id = c.id AND t.state = 'published'
+               WHERE c.publication = 'published')"
+          echo "--- 1. published cases (tier | ctype | cases | terminated | decided | verified) ---"
+          q "$base SELECT tier, ctype, count(*), count(*) FILTER (WHERE terminated_on IS NOT NULL), count(*) FILTER (WHERE decided_on IS NOT NULL),
+                count(*) FILTER (WHERE verification = 'verified') FROM pc GROUP BY ROLLUP (1, 2) ORDER BY 1, 2"
+          echo "--- 2. status enums (ctype | verification | activity | disposition | judgment | appeal | cases) ---"
+          q "$base SELECT ctype, verification, activity_state, disposition_scope, judgment_state, appeal_state, count(*) FROM pc GROUP BY 1,2,3,4,5,6 ORDER BY 7 DESC LIMIT 40"
+          echo "--- 3. opinion words per case, cases with readable text (tier | ctype | cases | total_words | avg | p50 | p90 | p99) ---"
+          q "$base, w AS (SELECT pc.tier, pc.ctype, pc.id, sum(dc.word_count)::bigint AS words FROM pc JOIN document d ON d.case_id = pc.id AND d.publication = 'published'
+                JOIN document_content dc ON dc.document_id = d.id WHERE dc.word_count > 0 GROUP BY 1, 2, 3)
+              SELECT tier, ctype, count(*), sum(words), round(avg(words)), percentile_disc(0.5) WITHIN GROUP (ORDER BY words),
+                percentile_disc(0.9) WITHIN GROUP (ORDER BY words), percentile_disc(0.99) WITHIN GROUP (ORDER BY words)
+              FROM w GROUP BY ROLLUP (1, 2) ORDER BY 1, 2"
+          echo "--- 4. scotus enrichment (verified | rows | exact_disposition | lower_court_name | lower_court_decided | exact_holding | background | significance | question | lineup) ---"
+          q "SELECT verification, count(*), count(exact_disposition), count(lower_court_name), count(lower_court_decided_on), count(exact_holding), count(background_summary),
+                count(significance_summary), count(question_presented), count(decision_lineup) FROM scotus_case_enrichment GROUP BY 1"
+          echo "--- 4b. sample exact_disposition / lower_court_name ---"
+          q "SELECT left(exact_disposition, 220), lower_court_name FROM scotus_case_enrichment WHERE verification = 'verified' AND exact_disposition IS NOT NULL ORDER BY random() LIMIT 20"
+          echo "--- 5. opinion_cluster provider_metadata keys (1% sample: key | rows | non-empty) ---"
+          q "WITH s AS (SELECT provider_metadata m FROM opinion_cluster TABLESAMPLE SYSTEM (1) WHERE provider_metadata IS NOT NULL)
+              SELECT k, count(*), count(*) FILTER (WHERE m->>k IS NOT NULL AND m->>k NOT IN ('', '[]', '{}', 'null')) FROM s, jsonb_object_keys(m) k GROUP BY 1 ORDER BY 3 DESC LIMIT 80"
+          echo "--- 5b. cluster disposition/posture/history coverage by ctype (all clusters: ctype | clusters | with_meta | disposition | posture | history | summary | syllabus | procedural_history col | scdb_id | scdb_direction) ---"
+          q "SELECT CASE WHEN ct.provider_court_id = 'scotus' THEN 'scotus' ELSE coalesce(ct.jurisdiction, '?') END, count(*), count(oc.provider_metadata),
+                count(*) FILTER (WHERE coalesce(oc.provider_metadata->>'disposition', '') <> ''),
+                count(*) FILTER (WHERE coalesce(oc.provider_metadata->>'posture', '') <> ''),
+                count(*) FILTER (WHERE coalesce(oc.provider_metadata->>'history', '') <> ''),
+                count(*) FILTER (WHERE coalesce(oc.provider_metadata->>'summary', '') <> ''),
+                count(*) FILTER (WHERE coalesce(oc.syllabus, oc.provider_metadata->>'syllabus', '') <> ''),
+                count(*) FILTER (WHERE coalesce(oc.procedural_history, '') <> ''),
+                count(*) FILTER (WHERE coalesce(oc.provider_metadata->>'scdb_id', '') <> ''),
+                count(*) FILTER (WHERE coalesce(oc.provider_metadata->>'scdb_decision_direction', '') <> '')
+              FROM opinion_cluster oc JOIN legal_case c ON c.id = oc.case_id AND c.publication = 'published' JOIN court ct ON ct.id = c.court_id GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 5c. top cluster disposition values (value | clusters) ---"
+          q "SELECT left(provider_metadata->>'disposition', 90), count(*) FROM opinion_cluster WHERE coalesce(provider_metadata->>'disposition', '') <> '' GROUP BY 1 ORDER BY 2 DESC LIMIT 40"
+          echo "--- 5d. sample cluster posture / history / scdb_decision_direction ---"
+          q "SELECT left(provider_metadata->>'posture', 160), left(provider_metadata->>'history', 120), provider_metadata->>'scdb_decision_direction', provider_metadata->>'scdb_votes_majority'
+               FROM opinion_cluster TABLESAMPLE SYSTEM (2) WHERE coalesce(provider_metadata->>'posture', provider_metadata->>'history', provider_metadata->>'scdb_decision_direction', '') <> '' LIMIT 15"
+          echo "--- 6. opinion closing-line outcome words (~1% sample of opinion text: ctype | docs | affirm | revers | vacat | remand | dismiss | 'so ordered' | any) ---"
+          q "WITH s AS (SELECT dc.document_id, lower(right(dc.content_text, 900)) AS tail FROM document_content dc TABLESAMPLE SYSTEM (1) WHERE dc.word_count > 0),
+                j AS (SELECT CASE WHEN ct.provider_court_id = 'scotus' OR c.supreme_court_term IS NOT NULL THEN 'scotus' ELSE coalesce(ct.jurisdiction, '?') END AS ctype, s.tail
+                  FROM s JOIN document d ON d.id = s.document_id JOIN legal_case c ON c.id = d.case_id AND c.publication = 'published' JOIN court ct ON ct.id = c.court_id)
+              SELECT ctype, count(*), count(*) FILTER (WHERE tail ~ '\maffirm'), count(*) FILTER (WHERE tail ~ '\mrevers'), count(*) FILTER (WHERE tail ~ '\mvacat'),
+                count(*) FILTER (WHERE tail ~ '\mremand'), count(*) FILTER (WHERE tail ~ '\mdismiss'), count(*) FILTER (WHERE tail ~ 'so ordered'),
+                count(*) FILTER (WHERE tail ~ '\m(affirm|revers|vacat|remand|dismiss|granted|denied)') FROM j GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 6b. sample closing lines (ctype | last 260 chars) ---"
+          q "WITH s AS (SELECT dc.document_id, right(regexp_replace(dc.content_text, '\s+', ' ', 'g'), 260) AS tail FROM document_content dc TABLESAMPLE SYSTEM (0.05) WHERE dc.word_count > 0)
+              SELECT CASE WHEN ct.provider_court_id = 'scotus' OR c.supreme_court_term IS NOT NULL THEN 'scotus' ELSE coalesce(ct.jurisdiction, '?') END, s.tail
+                FROM s JOIN document d ON d.id = s.document_id JOIN legal_case c ON c.id = d.case_id AND c.publication = 'published' JOIN court ct ON ct.id = c.court_id LIMIT 30"
+          echo "--- 7. party roles (role | appearances, top 30) ---"
+          q "SELECT role, count(*) FROM party_appearance GROUP BY 1 ORDER BY 2 DESC LIMIT 30"
+          echo "--- 8. citation treatment signals in CourtListener parentheticals (rows | overrul | abrogat | revers | superseded | 'no longer good law') ---"
+          q "SELECT count(*), count(*) FILTER (WHERE text ~* 'overrul'), count(*) FILTER (WHERE text ~* 'abrogat'), count(*) FILTER (WHERE text ~* 'revers'),
+                count(*) FILTER (WHERE text ~* 'supersed'), count(*) FILTER (WHERE text ~* 'no longer good law') FROM courtlistener_parenthetical WHERE cited_case_id IS NOT NULL"
+          echo "--- 8b. sample 'overruled' parentheticals (cited case | text) ---"
+          q "SELECT c.public_id, left(c.caption, 50), left(p.text, 200) FROM courtlistener_parenthetical p JOIN legal_case c ON c.id = p.cited_case_id
+               WHERE p.text ~* '\moverruled\M' ORDER BY p.score DESC NULLS LAST LIMIT 12"
+          echo "--- 9. docket entry types and importance for published cases (entry_type | importance | rows, top 25) ---"
+          q "SELECT coalesce(entry_type, '-'), importance, count(*) FROM docket_entry TABLESAMPLE SYSTEM (2) GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25"
+          echo "--- 10. document_type / opinion_type values (type | rows) ---"
+          q "SELECT document_type, count(*) FROM document GROUP BY 1 ORDER BY 2 DESC LIMIT 25"
+          q "SELECT opinion_type, count(*) FROM judicial_opinion GROUP BY 1 ORDER BY 2 DESC LIMIT 25"
+          echo "--- 11. status_explanation samples by ctype ---"
+          q "$base SELECT DISTINCT ON (ctype, left(status_explanation, 30)) ctype, left(status_explanation, 220) FROM pc WHERE status_explanation IS NOT NULL ORDER BY ctype, left(status_explanation, 30) LIMIT 30"
+          echo "=== done ==="
+          REMOTE
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat "$RUNNER_TEMP/report.txt" 2>/dev/null | head -n 600; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
