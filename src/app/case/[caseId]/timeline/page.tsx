@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { robotsFor } from "@/lib/seo/indexing";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
@@ -21,6 +22,7 @@ export async function generateMetadata({ params }: SectionPageProps): Promise<Me
     title: [caption, "Timeline", legalCase.docketNumber, legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified case timeline events currently available for ${caption}, docket ${legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${caseId}/timeline` },
+    robots: robotsFor(!legalCase.searchExcluded),
   };
 }
 

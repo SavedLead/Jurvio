@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { describe, expect, it } from "vitest";
 import { casePageIndexable, getPublicCase } from "./get-public-case";
+import { listCaseSitemapRecords } from "@/modules/discovery/application/sitemaps";
 
 describe("casePageIndexable", () => {
   it("indexes readable opinions and flagged tier 1/2 releases only", () => {
@@ -10,6 +11,8 @@ describe("casePageIndexable", () => {
     expect(casePageIndexable({ hasReadableOpinion: false, tierReleaseIndexable: true })).toBe(true);
     expect(casePageIndexable({ hasReadableOpinion: false, tierReleaseIndexable: false })).toBe(false);
     expect(casePageIndexable({ hasReadableOpinion: false })).toBe(false);
+    expect(casePageIndexable({ hasReadableOpinion: true, searchExcluded: true })).toBe(false);
+    expect(casePageIndexable({ hasReadableOpinion: false, tierReleaseIndexable: true, searchExcluded: true })).toBe(false);
   });
 });
 
@@ -33,11 +36,12 @@ describe.skipIf(!databaseUrl)("getPublicCase tierReleaseIndexable", () => {
         ["jv-idxtier04", "publication-tiers-v1", "tier4_release", true],
         ["jv-idxnoflag", "publication-tiers-v1", "tier2_release", false],
         ["jv-idxlegacy", "federal-metadata-v1", "verified_federal_case", true],
+        ["jv-idxsealed", "publication-tiers-v1", "tier1_release", true],
       ];
       for (const [publicId, rule, reason, indexable] of decisions) {
         const [row] = await sql<{ id: string }[]>`
           INSERT INTO legal_case (public_id, court_id, docket_number, caption, publication, verification)
-          VALUES (${publicId}, ${court!.id}, ${publicId}, 'Alpha v. Beta', 'published', 'not_verified') RETURNING id`;
+          VALUES (${publicId}, ${court!.id}, ${publicId}, ${publicId === "jv-idxsealed" ? "In re: Sealed Case" : "Alpha v. Beta"}, 'published', 'not_verified') RETURNING id`;
         await sql`
           INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version)
           VALUES ('legal_case', ${row!.id}, true, ${indexable}, true, false, false, ${reason}, ${rule})`;
@@ -55,7 +59,15 @@ describe.skipIf(!databaseUrl)("getPublicCase tierReleaseIndexable", () => {
         "jv-idxtier04": false,
         "jv-idxnoflag": false,
         "jv-idxlegacy": false,
+        "jv-idxsealed": true,
       });
+      const sealed = await getPublicCase(sql, "jv-idxsealed");
+      expect(sealed!.searchExcluded).toBe(true);
+      expect(casePageIndexable(sealed!)).toBe(false);
+      expect((await getPublicCase(sql, "jv-idxtier01"))!.searchExcluded).toBe(false);
+      const sitemapPaths = (await listCaseSitemapRecords(sql, "jv-", null)).map((record) => record.path);
+      expect(sitemapPaths).toContain("/case/jv-idxtier01");
+      expect(sitemapPaths).not.toContain("/case/jv-idxsealed");
     } finally {
       await sql.end();
       await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
