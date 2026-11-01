@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import { siteOrigin } from "@/lib/config/site-url";
 import { xmlEscape } from "@/modules/discovery/http/xml";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import {
   SITEMAP_CASE_PAGE_SIZE,
   SITEMAP_PAGE_SIZE,
@@ -85,6 +86,7 @@ async function caseIds(sql: Sql, after: string | null): Promise<string[]> {
       ON current_row.object_type = 'legal_case' AND current_row.object_id = c.id
     JOIN publication_decision decision ON decision.id = current_row.decision_id AND decision.indexable
     WHERE c.publication = 'published'
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("c"))}
       AND (${after}::text IS NULL OR c.public_id > ${after})
     ORDER BY c.public_id
     LIMIT ${SITEMAP_CASE_PAGE_SIZE}
@@ -105,6 +107,7 @@ async function opinionIds(sql: Sql, after: string | null): Promise<string[]> {
       ON doc_row.object_type = 'document' AND doc_row.object_id = document.id
     JOIN publication_decision doc_decision ON doc_decision.id = doc_row.decision_id AND doc_decision.indexable
     WHERE document.publication = 'published'
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
       AND (${after}::text IS NULL OR document.public_id > ${after})
     ORDER BY document.public_id
     LIMIT ${SITEMAP_PAGE_SIZE}
