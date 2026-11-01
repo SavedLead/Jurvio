@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 import "./email-capture-form.css";
 
 interface CaptureResponse { status?: string; message?: string; error?: string }
@@ -20,7 +20,7 @@ export const WAITLIST_SUCCESS = "You're on the list; we'll email you when alerts
  * honeypot.
  */
 export function EmailCaptureForm({
-  action, hidden, buttonLabel, className, inputLabel = "Email address", footnote, initialMessage,
+  action, hidden, buttonLabel, className, inputLabel = "Email address", footnote, initialMessage, children, inputRef,
 }: {
   action: string;
   hidden: Record<string, string>;
@@ -29,6 +29,9 @@ export function EmailCaptureForm({
   inputLabel?: string;
   footnote?: ReactNode;
   initialMessage?: string;
+  /** Extra fields rendered before the email box (e.g. a plan picker); submitted with the form. */
+  children?: ReactNode;
+  inputRef?: Ref<HTMLInputElement>;
 }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(initialMessage ?? "");
@@ -62,7 +65,8 @@ export function EmailCaptureForm({
       setBusy(false);
     }
   }}>
-    <input type="email" name="email" required maxLength={254} autoComplete="email" placeholder="you@example.com" aria-label={inputLabel} />
+    {children}
+    <input ref={inputRef} type="email" name="email" required maxLength={254} autoComplete="email" placeholder="you@example.com" aria-label={inputLabel} />
     <span className="emailCaptureTrap" aria-hidden="true">
       <label>Company <input type="text" name="company" tabIndex={-1} autoComplete="off" defaultValue="" /></label>
     </span>

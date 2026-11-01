@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
-import { PLAN_IDS, PLANS, formatMonthlyPrice } from "@/modules/accounts/domain/plans";
+import { PLAN_IDS, PLANS, formatMonthlyPrice, isPlanId } from "@/modules/accounts/domain/plans";
+import { FEATURED_BADGE, FEATURED_PLAN, PRICING_FAQ, priceNote } from "@/modules/accounts/ui/pricing-content";
 import { billingConfig, checkoutEnabled } from "@/modules/accounts/infrastructure/stripe";
 import { PlanAction } from "@/modules/accounts/ui/plan-action";
+import { PricingJoinForm, type PricingJoinOption } from "@/modules/accounts/ui/pricing-join-form";
 import { signInAvailable } from "@/modules/accounts/http/config";
 import { robotsFor } from "@/lib/seo/indexing";
 import "../account-pages.css";
@@ -24,7 +26,15 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
   const config = billingConfig();
   const canSignIn = signInAvailable();
   const waitlistError = params.waitlist_error ? WAITLIST_ERRORS[params.waitlist_error] ?? null : null;
-  return <main className="accountShell wide">
+  // Plans that collect an email from signed-out visitors (waitlist mode): they share one form on small screens.
+  const joinOptions: PricingJoinOption[] = PLAN_IDS
+    .filter((id) => id === "free" ? !canSignIn : !checkoutEnabled(config, id))
+    .map((id) => ({ id, name: PLANS[id].name, price: formatMonthlyPrice(PLANS[id]) }));
+  const requested = isPlanId(params.plan) ? params.plan : null;
+  const initialPlan = joinOptions.find((option) => option.id === requested)?.id
+    ?? joinOptions.find((option) => option.id === FEATURED_PLAN)?.id
+    ?? joinOptions[0]?.id ?? "free";
+  return <main className="accountShell pricingShell">
     <header className="pricingHeader">
       <p className="accountEyebrow">Pricing</p>
       <h1>Every case page is free. Pay only for monitoring.</h1>
@@ -34,16 +44,32 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
     <div className="pricingGrid">
       {PLAN_IDS.map((id) => {
         const plan = PLANS[id];
-        return <section className={`accountCard pricingCard${id === "pro" ? " featured" : ""}`} key={id} aria-labelledby={`plan-${id}`}>
-          <h2 id={`plan-${id}`}>{plan.name}</h2>
-          <p className="pricingPrice">{plan.monthlyPriceUsd === 0 ? "$0" : `$${plan.monthlyPriceUsd}`}<span>{plan.monthlyPriceUsd === 0 ? " forever" : id === "team" ? "/mo for 5 seats" : "/mo"}</span></p>
+        const featured = id === FEATURED_PLAN;
+        return <section className={`accountCard pricingCard${featured ? " featured" : ""}`} key={id} id={`plan-${id}`} aria-labelledby={`plan-${id}-name`}>
+          {featured ? <p className="pricingBadge">{FEATURED_BADGE}</p> : null}
+          <div className="pricingCardHead">
+            <h2 id={`plan-${id}-name`}>{plan.name}</h2>
+            <div className="pricingPriceBlock">
+              <p className="pricingPrice" aria-hidden="true">${plan.monthlyPriceUsd}<span className="pricingUnit">/mo</span></p>
+              <p className={`pricingNote${plan.seats > 1 ? " seats" : ""}`} aria-hidden="true">{priceNote(id)}</p>
+              <span className="pricingSr">{formatMonthlyPrice(plan)}, {priceNote(id)}</span>
+            </div>
+          </div>
           <p className="pricingTagline">{plan.tagline}</p>
-          <ul>{plan.features.map((feature) => <li key={feature}>{feature}</li>)}</ul>
-          <PlanAction plan={id} planName={plan.name} checkout={checkoutEnabled(config, id)} signInAvailable={canSignIn} />
-          <span className="pricingSr">{plan.name}: {formatMonthlyPrice(plan)}</span>
+          <ul className="pricingFeatures">{plan.features.map((feature) => <li key={feature}>{feature}</li>)}</ul>
+          <div className="pricingAction">
+            <PlanAction plan={id} planName={plan.name} checkout={checkoutEnabled(config, id)} signInAvailable={canSignIn} />
+          </div>
         </section>;
       })}
     </div>
-    <p className="accountFinePrint">Prices in US dollars. Paid plans are not open yet; join a waitlist with just your email and we will email you when they launch. Payment never changes case facts, rankings or explanations.</p>
+    <PricingJoinForm options={joinOptions} initialPlan={initialPlan} joinedPlan={params.joined ?? null} />
+    <p className="pricingFinePrint">Prices in US dollars. Paid plans are not open yet; join a waitlist with just your email and we will email you when they launch. Payment never changes case facts, rankings or explanations.</p>
+    <section className="pricingFaq" aria-labelledby="pricing-faq-title">
+      <h2 id="pricing-faq-title">Good to know</h2>
+      <dl>
+        {PRICING_FAQ.map((item) => <div key={item.q}><dt>{item.q}</dt><dd>{item.a}</dd></div>)}
+      </dl>
+    </section>
   </main>;
 }

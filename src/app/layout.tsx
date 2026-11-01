@@ -8,6 +8,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { PrivacySafeAnalytics } from "./privacy-safe-analytics";
 import { MobileNavigation } from "./mobile-navigation";
 import { AccountNavLink } from "./account-nav-link";
+import { NavLinks } from "./nav-links";
 
 const primaryNavigation = [
   ["Research", "/search"], ["Cases", "/cases"], ["Parties", "/parties"],
@@ -42,7 +43,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           <Image className="brandWordmark" src="/brand/jurvio-wordmark-light.svg" width={333} height={112} priority alt="Jurvio" />
         </Link>
         <nav className="desktopNavigation" aria-label="Primary">
-          {primaryNavigation.map(([label, href]) => <Link href={href} key={href}>{label}</Link>)}
+          <NavLinks items={primaryNavigation} />
           <AccountNavLink className="headerAccount" />
           <Link className="headerSearch" href="/search">Search Jurvio</Link>
         </nav>
