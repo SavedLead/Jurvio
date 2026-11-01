@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import postgres from "postgres";
+import { applyMigrations, CITATION_WEB_MIGRATIONS } from "./test-migrations";
 import type { BulkCsvSource } from "@/modules/ingestion/providers/courtlistener/bulk";
 import {
   bulkCitationKey,
@@ -39,6 +40,7 @@ describe.skipIf(!databaseUrl)("bulk citation resolution database integration", (
       for (const name of ["0114_case_citation_graph.sql", "0115_citation_reporter_refresh.sql", "0122_missing_citation_bulk_resolution.sql"]) {
         await sql.unsafe(await readFile(`db/migrations/${name}`, "utf8"));
       }
+      await applyMigrations(sql, CITATION_WEB_MIGRATIONS);
       const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code='courtlistener'`;
       const [artifact] = await sql<{ id: string }[]>`INSERT INTO raw_artifact(provider_id,source_uri,content_hash,object_key,media_type,retrieved_at) VALUES(${provider!.id},'https://example.test/fixture',${"a".repeat(64)},'fixture','application/json',now()) RETURNING id`;
       const [court] = await sql<{ id: string }[]>`INSERT INTO court(public_id,name,verification) VALUES('jc-bulk1234','Test Court','verified') RETURNING id`;

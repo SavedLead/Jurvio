@@ -1,0 +1,108 @@
+name: Citation backfill on builder (throttled)
+
+# Drains the citation work queues (document_citation_work / case_citation_work,
+# ~1.7M rows on 2026-11-01) by parsing on THIS builder runner, not on
+# jurvio-web-01: the bundled worker image runs here with a CPU/memory cap and
+# talks to Postgres over the private VPC (or an SSH tunnel through web-01).
+# Each batch commits on its own; the job pauses between batches and backs off
+# while the database is busy. Live (priority 10) rows are left to the resident
+# case-citation-graph lane. Safe to stop at any time; rerun to continue.
+# See ADR 0090 and scripts/ops/builder-job.sh.
+
+on:
+  # Dispatch-only, by policy (tests/workflow-triggers.test.ts); fails closed
+  # unless confirm=CITATION_BACKFILL.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CITATION_BACKFILL to run against production"
+        required: true
+        type: string
+      minutes:
+        description: Stop starting batches after this many minutes (max 330)
+        required: false
+        default: '300'
+        type: string
+      batch:
+        description: Rows per queue per batch (100-2000)
+        required: false
+        default: '500'
+        type: string
+      pause_ms:
+        description: Pause between batches in ms
+        required: false
+        default: '1500'
+        type: string
+      max_active:
+        description: Back off while more than this many other DB sessions are active
+        required: false
+        default: '12'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: jurvio-citation-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 350
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MINUTES: ${{ inputs.minutes }}
+      BATCH: ${{ inputs.batch }}
+      PAUSE_MS: ${{ inputs.pause_ms }}
+      MAX_ACTIVE: ${{ inputs.max_active }}
+    steps:
+      - name: Require confirm=CITATION_BACKFILL
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CITATION_BACKFILL" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CITATION_BACKFILL."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 330 ] || { echo "::error::minutes 1-330"; exit 1; }
+          [[ "$BATCH" =~ ^[0-9]+$ ]] && [ "$BATCH" -ge 100 ] && [ "$BATCH" -le 2000 ] || { echo "::error::batch 100-2000"; exit 1; }
+          [[ "$PAUSE_MS" =~ ^[0-9]+$ ]] && [ "$PAUSE_MS" -le 60000 ] || { echo "::error::pause_ms 0-60000"; exit 1; }
+          [[ "$MAX_ACTIVE" =~ ^[0-9]+$ ]] && [ "$MAX_ACTIVE" -le 200 ] || { echo "::error::max_active 0-200"; exit 1; }
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            ServerAliveInterval 30
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Drain citation queues from the builder
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          bash scripts/ops/builder-job.sh jobs/run-case-citations.mjs --mode=backfill \
+            --limit="$BATCH" --budget-seconds="$((MINUTES * 60))" --pause-ms="$PAUSE_MS" \
+            --max-active="$MAX_ACTIVE" --discover=0 --publish=0 2>&1 | tee "$out"
+          grep -E '^\{"mode":"backfill"' "$out" | tail -n1 | while IFS= read -r line; do
+            echo "::notice title=Citation backfill result::${line}"
+          done || true
+      - name: Remove ephemeral SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/config

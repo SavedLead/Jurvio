@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import postgres from "postgres";
+import { applyMigrations, CITATION_WEB_MIGRATIONS } from "./test-migrations";
 import { chunkRows, syncCitationGraph } from "./sync-citation-graph";
 import { identityCitations } from "../domain/citations";
 
@@ -37,6 +38,7 @@ describe.skipIf(!databaseUrl)("citation graph batching (database)", () => {
       ]) {
         await sql.unsafe(await readFile(`db/migrations/${name}`, "utf8"));
       }
+      await applyMigrations(sql, CITATION_WEB_MIGRATIONS);
       const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code='courtlistener'`;
       const [artifact] = await sql<{ id: string }[]>`INSERT INTO raw_artifact(provider_id,source_uri,content_hash,object_key,media_type,retrieved_at) VALUES(${provider!.id},'https://www.courtlistener.com/api/rest/v4/opinions/9/',${"b".repeat(64)},'fixture','application/json',now()) RETURNING id`;
       const [court] = await sql<{ id: string }[]>`INSERT INTO court(public_id,name,verification) VALUES('jc-batch123','Batch Court','verified') RETURNING id`;
