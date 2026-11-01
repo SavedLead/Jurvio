@@ -130,6 +130,18 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/import-fjc-judges.mjs", "--limit=50000"],
   },
   {
+    // Official agency sources of federal case filings: DOJ (OPA + 94 USAOs), SEC
+    // litigation releases and administrative proceedings, FTC cases, state AGs and
+    // settlement administrators. Each source has its own polite budget; a run is a
+    // few dozen requests. See docs/operations/agency-sources.md.
+    lane: "core",
+    name: "agency-sources",
+    initialDelayMs: 9 * minute,
+    intervalMs: 60 * minute,
+    budgetMs: 20 * minute,
+    command: ["jobs/run-agency-sources.mjs", "--source=all"],
+  },
+  {
     lane: "core",
     name: "usao-case-attribution",
     initialDelayMs: 6 * minute,
