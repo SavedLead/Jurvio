@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: jurvio-phase-1-3-backup
@@ -79,15 +78,21 @@ jobs:
               | _gh_curl PATCH "$1" -H "Content-Type: application/json" --data-binary @- \
               || { echo "::warning::GitHub update of $1 failed (non-fatal)" >&2; return 0; }
           }
-          gh_comment() {
-            jq -n --arg body "$2" '{body: $body}' \
-              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues/$1/comments" -H "Content-Type: application/json" --data-binary @- >/dev/null \
-              || echo "::warning::comment on issue #$1 failed (non-fatal)" >&2
+          # Run status goes to the job summary and a run annotation, never to an issue
+          # comment or a new issue: GitHub emails the issue author for every one.
+          status_note() {
+            local body="$1" level=notice line
+            case "$body" in *failure*|*cancelled*|*FAIL*) level=warning ;; esac
+            printf '%s\n\n' "$body" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            line="${body%%$'\n'*}"; line="${line//'%'/%25}"
+            echo "::${level}::${line}"
           }
-          gh_issue_create() {
-            jq -n --arg title "$1" --arg body "$2" '{title: $title, body: $body}' \
-              | _gh_curl POST "repos/$GITHUB_REPOSITORY/issues" -H "Content-Type: application/json" --data-binary @- >/dev/null \
-              || echo "::warning::issue creation failed (non-fatal)" >&2
+          # status_report TITLE BODY (BODY may contain literal \n sequences)
+          status_report() {
+            local level=notice title="${1//'%'/%25}"
+            case "$1" in *failure*|*cancelled*|*FAIL*) level=warning ;; esac
+            printf '### %s\n\n%b\n\n' "$1" "$2" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            echo "::${level} title=Run status::${title}"
           }
           # gh_dispatch WORKFLOW REF key=value ...
           gh_dispatch() {
@@ -97,7 +102,7 @@ jobs:
             jq -n --arg ref "$ref" --argjson inputs "$inputs" '{ref: $ref, inputs: $inputs}' \
               | _gh_curl POST "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/dispatches" -H "Content-Type: application/json" --data-binary @- >/dev/null
           }
-          export -f _gh_curl gh_api gh_api_post gh_api_paginate gh_patch_body gh_comment gh_issue_create gh_dispatch
+          export -f _gh_curl gh_api gh_api_post gh_api_paginate gh_patch_body status_note status_report gh_dispatch
           GHREST
       - name: Require protected off-site backup configuration
         run: |
@@ -148,7 +153,7 @@ jobs:
           curl -fsS -X POST "${auth[@]}" "$api/firewalls/$firewall_id/rules" -d "$rule" >/dev/null
           private_rule="$(jq -n --arg src "$public_private_cidr" --argjson id "$public_id" '{inbound_rules:[{protocol:"tcp",ports:"22",sources:{addresses:[$src],droplet_ids:[$id]}}]}')"
           curl -fsS -X POST "${auth[@]}" "$api/firewalls/$ingestion_firewall_id/rules" -d "$private_rule" >/dev/null
-          gh_comment 426 '1.3 alternate path: `██░░░░░░░░ 20%` Temporary /32 SSH access opened to jurvio-public-01; database remains private.'
+          status_note '1.3 alternate path: `██░░░░░░░░ 20%` Temporary /32 SSH access opened to jurvio-public-01; database remains private.'
 
       - name: Configure ephemeral SSH
         run: |
@@ -243,7 +248,7 @@ jobs:
           docker run --rm             --user "$(id -u):$(id -g)"             --env-file .env.production             "$image"             node jobs/verify-database-backup.mjs --head-only --max-age-hours 36 </dev/null
           printf 'BACKUP_VERIFIED=%s\n' "$backup_path"
           REMOTE
-          gh_comment 426 '1.3 alternate path: `██████████ 100%` Compressed database dump created, encrypted off-site upload completed, and recovery-point freshness verified.'
+          status_note '1.3 alternate path: `██████████ 100%` Compressed database dump created, encrypted off-site upload completed, and recovery-point freshness verified.'
 
       - name: Remove temporary SSH access
         if: always()
@@ -263,4 +268,4 @@ jobs:
               "$api/firewalls/$INGESTION_FIREWALL_ID/rules" -d "$private_rule"
           fi
           rm -f ~/.ssh/id_ed25519 ~/.ssh/config
-          gh_comment 426 "1.3 alternate path finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          status_note "1.3 alternate path finished with status: **${{ job.status }}**. Temporary SSH rule removal attempted. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

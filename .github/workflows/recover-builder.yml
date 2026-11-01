@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: jurvio-recover-builder
@@ -64,7 +63,17 @@ jobs:
       - name: Record builder reboot receipt
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REBOOT_STATUS: ${{ job.status }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "Builder reboot [$REBOOT_STATUS]" --body "Status: **$REBOOT_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Job summary + annotation only. This used to open a new issue per run,
+          # which emailed the repo owner every time.
+          {
+            echo "### Builder reboot [$REBOOT_STATUS]"
+            echo
+            echo "Status: **$REBOOT_STATUS**"
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "Recorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REBOOT_STATUS" = "success" ]; then echo "::notice title=Run status::Builder reboot [$REBOOT_STATUS]"; else echo "::warning title=Run status::Builder reboot [$REBOOT_STATUS]"; fi

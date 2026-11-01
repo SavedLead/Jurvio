@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: jurvio-repair-builder-runner-once
@@ -108,7 +107,17 @@ jobs:
       - name: Record runner repair receipt
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPAIR_STATUS: ${{ job.status }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "Builder runner repair [$REPAIR_STATUS]" --body "Status: **$REPAIR_STATUS**\n\nRun: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\n\nRecorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Job summary + annotation only. This used to open a new issue per run,
+          # which emailed the repo owner every time.
+          {
+            echo "### Builder runner repair [$REPAIR_STATUS]"
+            echo
+            echo "Status: **$REPAIR_STATUS**"
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "Recorded: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REPAIR_STATUS" = "success" ]; then echo "::notice title=Run status::Builder runner repair [$REPAIR_STATUS]"; else echo "::warning title=Run status::Builder runner repair [$REPAIR_STATUS]"; fi
