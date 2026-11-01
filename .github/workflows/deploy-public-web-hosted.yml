@@ -240,7 +240,47 @@ jobs:
           set -euo pipefail
           printf '%s' "$GH_TOKEN" | ssh public-web 'docker login ghcr.io -u SavedLead --password-stdin'
 
+      - id: migrations
+        name: Hold the release if database migrations are pending
+        run: |
+          set -euo pipefail
+          # This workflow NEVER runs migrations. Deploy production applies them
+          # after its pre-release database backup (release-production.sh backs up
+          # only when migrations are pending); when this job used to run
+          # the migration script first, Deploy production then saw "No pending
+          # migrations" and skipped the backup (0173/0174, Nov 1, 2026).
+          # Code-only releases (0 pending) continue exactly as before. Anything
+          # else - a count, or "unknown" when the check itself fails - holds the
+          # release before the container is switched; Deploy production applies
+          # the migrations with its backup, then dispatches this workflow again.
+          pending="$(ssh public-web bash -s -- "${IMAGE,,}" <<'REMOTE' | tail -n1
+          set -uo pipefail
+          cd /opt/jurvio
+          docker pull -q "$1" >/dev/null 2>&1 || { echo unknown; exit 0; }
+          docker run --rm --env-file .env.production "$1" node jobs/list-pending-migrations.mjs 2>/dev/null | tail -n1 || echo unknown
+          REMOTE
+          )" || pending=unknown
+          case "$pending" in unknown) ;; ''|*[!0-9]*) pending=unknown;; esac
+          echo "pending=$pending" >> "$GITHUB_OUTPUT"
+          if [ "$pending" = "0" ]; then
+            echo "No pending migrations; releasing the public app."
+            echo "held=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "held=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Public release held: pending migrations::$pending pending migration(s) for $TARGET_SHA. The public app was NOT switched. Run Deploy production (confirm=DEPLOY_PRODUCTION): it backs up the database, applies the migrations, then dispatches this workflow to release the public app."
+            {
+              echo '### Public release held'
+              echo ''
+              echo "Pending migrations: **$pending** for \`$TARGET_SHA\`. The public app keeps its current image."
+              echo ''
+              echo 'Next: run **Deploy production** (confirm=DEPLOY_PRODUCTION). It backs up, migrates, then dispatches this deploy.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            source "$RUNNER_TEMP/gh-api.sh"
+            gh_comment "Public deploy held for $TARGET_SHA: $pending pending migration(s). Deploy production applies them after its backup, then re-dispatches the public deploy."
+          fi
+
       - name: Replace public app container
+        if: ${{ steps.migrations.outputs.held == 'false' }}
         run: |
           set -euo pipefail
           scp docker-compose.public.yml public-web:/opt/jurvio/docker-compose.public.yml
@@ -269,7 +309,7 @@ jobs:
           echo "Rollback target recorded: $previous_image"
 
           docker pull "$1"
-          docker run --rm --env-file .env.production "$1" node scripts/migrate.mjs
+          # No migrations here: see "Hold the release if database migrations are pending".
           JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml up -d --no-deps app
           app_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app)"
           for _ in $(seq 1 60); do
@@ -293,6 +333,7 @@ jobs:
           gh_comment '1.5 rollback readiness: previous public image recorded and retained locally; new container health and noindex verified.'
 
       - name: Verify public and private boundaries externally
+        if: ${{ steps.migrations.outputs.held == 'false' }}
         run: |
           set -euo pipefail
           robots_body="$(curl -fsS --retry 12 --retry-delay 5 --max-time 30 https://jurvio.com/robots.txt)"
@@ -317,6 +358,7 @@ jobs:
           gh_comment "2.6 deploy fallback: current main deployed to jurvio.com; indexing $indexing_status and public/private route boundaries verified."
 
       - name: Verify launch routes and performance
+        if: ${{ steps.migrations.outputs.held == 'false' }}
         run: |
           set -euo pipefail
           results="$(mktemp)"

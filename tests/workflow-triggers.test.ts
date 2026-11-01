@@ -26,7 +26,8 @@ const AUTOMATIC_EVENTS = ["push", "pull_request", "pull_request_target", "workfl
 const AUTO_TRIGGERS: Record<string, readonly string[]> = {
   // Tests and lint.
   "ci.yml": ["pull_request", "push"],
-  // Merge-to-main deploy of the public web app (plus its migrations), after CI passes.
+  // Merge-to-main deploy of the public web app after CI passes. It never runs
+  // migrations (Deploy production does, after its backup).
   "deploy-public-web-hosted.yml": ["workflow_run"],
   // Read-only monitors.
   "disk-alarm.yml": ["schedule"],
@@ -405,5 +406,54 @@ describe("workflow trigger policy", () => {
         run: 'if [ "$CONFIRM" != "X" ]; then\n  exit 1\nfi',
       }),
     ).toBe(true);
+  });
+
+  describe("migrations only run behind Deploy production's backup", () => {
+    const publicSteps = parsed.get("deploy-public-web-hosted.yml")!.jobs!.deploy!.steps ?? [];
+    const prodSteps = parsed.get("deploy-production.yml")!.jobs!.deploy!.steps ?? [];
+    const index = (steps: Step[], name: string) => steps.findIndex((step) => step.name === name);
+
+    it("the public web deploy never runs migrations", () => {
+      const script = publicSteps.map((step) => step.run ?? "").join("\n");
+      expect(script).not.toMatch(/node\s+\S*migrate\.mjs|run-migrations|db:migrate/);
+    });
+
+    it("the public web deploy checks pending migrations before it switches containers", () => {
+      const check = index(publicSteps, "Hold the release if database migrations are pending");
+      const replace = index(publicSteps, "Replace public app container");
+      expect(check).toBeGreaterThanOrEqual(0);
+      expect(check).toBeLessThan(replace);
+      const run = publicSteps[check]!.run ?? "";
+      expect(run).toContain("jobs/list-pending-migrations.mjs");
+      // Only an exact "0" releases; a count or "unknown" holds (fail-safe).
+      expect(run).toContain('if [ "$pending" = "0" ]; then');
+      expect(run).toMatch(/held=false[\s\S]*held=true/);
+      expect(run).toContain("Deploy production");
+    });
+
+    it("gates the container switch and live checks on a code-only release", () => {
+      for (const name of ["Replace public app container", "Verify public and private boundaries externally", "Verify launch routes and performance"]) {
+        expect(String(publicSteps[index(publicSteps, name)]?.if ?? ""), name).toContain("steps.migrations.outputs.held == 'false'");
+      }
+    });
+
+    it("Deploy production re-dispatches the public deploy only after applying migrations", () => {
+      const workflow = parsed.get("deploy-production.yml")! as unknown as { permissions?: Record<string, string> };
+      expect(workflow.permissions?.actions).toBe("write");
+      const release = index(prodSteps, "Release and verify");
+      const dispatch = index(prodSteps, "Release the public web app after migrations");
+      expect(dispatch).toBeGreaterThan(release);
+      expect(prodSteps[release]!.run).toContain('tee "$RUNNER_TEMP/release-production.log"');
+      const run = prodSteps[dispatch]!.run ?? "";
+      expect(String(prodSteps[dispatch]!.if)).toContain("steps.guard.outputs.fresh == 'true'");
+      expect(run).toContain("grep -q '^Pending migrations (' \"$RUNNER_TEMP/release-production.log\"");
+      expect(run).toContain("deploy-public-web-hosted.yml/dispatches");
+      expect(run).toContain('"confirm":"DEPLOY"');
+    });
+
+    it("matches the marker release-production.sh prints before its backup", () => {
+      const release = readFileSync(join(process.cwd(), "scripts", "release-production.sh"), "utf8");
+      expect(release).toContain("printf 'Pending migrations (%s)");
+    });
   });
 });

@@ -16,6 +16,9 @@ on:
         type: string
 
 permissions:
+  # actions: write only to dispatch "Deploy public web via hosted runner" after
+  # this release applied migrations (that workflow no longer migrates).
+  actions: write
   checks: read
   contents: read
   packages: write
@@ -394,7 +397,8 @@ jobs:
           # DB backup (<=3600s) + migration (<=1800s) + app/worker startup (<=180s) +
           # readiness (<=60s) = 6540s. 7200s covers that chain; the inner per-step
           # timeouts still bound each phase.
-          timeout --signal=TERM --kill-after=30s 7200s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh"
+          # Output kept so the next step knows whether migrations were applied.
+          timeout --signal=TERM --kill-after=30s 7200s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh" 2>&1 | tee "$RUNNER_TEMP/release-production.log"
       - name: Verify hosted command-center login externally
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
@@ -414,3 +418,23 @@ jobs:
             exit 1
           }
           echo "Hosted login is live and the public-domain admin boundary remains closed."
+      - name: Release the public web app after migrations
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The public web deploy never migrates: with pending migrations it holds
+          # its release (before switching containers) until this workflow has
+          # backed up and migrated. When this release applied migrations, start
+          # that held public release now. Code-only releases change nothing here.
+          if ! grep -q '^Pending migrations (' "$RUNNER_TEMP/release-production.log"; then
+            echo "No migrations applied by this release; the public web deploy is not re-dispatched."
+            exit 0
+          fi
+          curl -fsS --retry 3 --retry-delay 2 -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/deploy-public-web-hosted.yml/dispatches" \
+            -d '{"ref":"main","inputs":{"confirm":"DEPLOY"}}'
+          echo "::notice title=Public web deploy dispatched::Migrations were applied after the pre-release backup; dispatched Deploy public web via hosted runner for current main."
