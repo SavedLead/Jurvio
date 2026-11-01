@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { publicCaseSearchReady } from "./public-case-search";
+import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
 import type { CaseListingSort } from "@/modules/cases/domain/case-listing";
 
 type Sql = ReturnType<typeof postgres>;
@@ -147,22 +148,7 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
     ), true)
   `;
 
-  const publicDocumentExists = sql`
-    EXISTS (
-      SELECT 1
-      FROM document
-      WHERE document.case_id = legal_case.id
-        AND document.publication = 'published'
-        AND COALESCE((
-          SELECT decision.displayable
-          FROM publication_decision decision
-          WHERE decision.object_type = 'document'
-            AND decision.object_id = document.id
-          ORDER BY decision.decided_at DESC, decision.id DESC
-          LIMIT 1
-        ), false)
-    )
-  `;
+  const publicDocumentExists = sql`${sql.unsafe(readableOpinionExistsSql("legal_case"))}`;
 
   const conditions = [
     sql`legal_case.publication = 'published'`,

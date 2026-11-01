@@ -3,6 +3,7 @@ import { latestPublicationColumnSql } from "@/modules/publication/application/cu
 import { captionTag, cleanCourtName, courtKindFromJurisdiction, type CourtKind } from "@/modules/cases/domain/record-answers";
 import { displayCaption } from "@/modules/cases/domain/case-title";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
+import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -63,7 +64,7 @@ export interface PublicCase {
   officialDocketUrl: string | null;
   lowerCourtName: string | null;
   lowerCourtDecidedOn: string | null;
-  /** True when a published document on this case has non-empty extracted text. */
+  /** True when a published, displayable document on this case has non-empty extracted text (readableOpinionExistsSql). */
   hasReadableOpinion: boolean;
   /**
    * True when the case's current publication decision is a Tier 1 / Tier 2 release
@@ -115,13 +116,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
       enrichment.exact_disposition AS "exactDisposition", enrichment.disposition_source_url AS "dispositionSourceUrl",
       enrichment.decision_lineup AS "decisionLineup", enrichment.official_docket_url AS "officialDocketUrl",
       enrichment.lower_court_name AS "lowerCourtName", enrichment.lower_court_decided_on::text AS "lowerCourtDecidedOn",
-      EXISTS (
-        SELECT 1 FROM document d
-        JOIN document_content content ON content.document_id = d.id
-        WHERE d.case_id = c.id
-          AND d.publication = 'published'
-          AND length(btrim(content.content_text)) > 0
-      ) AS "hasReadableOpinion",
+      ${sql.unsafe(readableOpinionExistsSql("c"))} AS "hasReadableOpinion",
       EXISTS (
         SELECT 1 FROM publication_current current_row
         JOIN publication_decision decision ON decision.id = current_row.decision_id
