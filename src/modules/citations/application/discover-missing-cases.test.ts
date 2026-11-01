@@ -15,7 +15,7 @@ function database(local: string[], label='123 F.3d 456') {
     if(text.includes('INSERT INTO raw_artifact'))return [{id:'artifact'}];
     if(text.includes('SELECT DISTINCT cl.case_id'))return local.map(case_id=>({case_id}));
     return [];
-  },{json:(value:unknown)=>value});
+  },{json:(value:unknown)=>value,unsafe:(text:string)=>text});
   return {sql:sql as unknown as Parameters<typeof discoverMissingCases>[0],writes};
 }
 const store={putIfAbsent:vi.fn(async()=>({objectKey:'source-artifact'}))};
