@@ -155,7 +155,7 @@ function truncateWords(text: string, budget: number) {
     if (next.length + 1 > budget) break;
     out = next;
   }
-  return `${(out || text.slice(0, Math.max(3, budget - 1))).replace(/[,\s]+$/, "")}…`;
+  return `${(out || words[0] || text).replace(/[,\s]+$/, "")}…`;
 }
 
 function shortenName(name: string, budget: number): string {
@@ -192,5 +192,5 @@ export function buildCaseTitle(input: CaseTitleInput, target = CASE_TITLE_TARGET
   const tail = caseCitationSuffix(input);
   const full = `${name}${tail}`;
   if (full.length <= target) return full;
-  return `${shortenName(name, Math.max(32, target - tail.length))}${tail}`;
+  return `${shortenName(name, Math.max(40, target - tail.length))}${tail}`;
 }
