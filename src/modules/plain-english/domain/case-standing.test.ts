@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCaseStanding, readDispositionLine, readDocketOutcome, readOpinionClosing, readOverruledParenthetical, readTrialDismissal, type CaseStandingInput } from "./case-standing";
+import { buildCaseStanding, readDispositionLine, readSyllabusDisposition, readDocketOutcome, readOpinionClosing, readOverruledParenthetical, readTrialDismissal, type CaseStandingInput } from "./case-standing";
 
 const base: CaseStandingInput = {
   courtKind: "supreme", courtName: "Supreme Court of the United States", caption: "Miranda v. Arizona",
@@ -87,6 +87,29 @@ describe("readTrialDismissal", () => {
 const ZHAO_HEAD = "Case: 19-3071 Document: 40 Filed: 06/29/2020 Pages: 15 In the United States Court of Appeals For the Seventh Circuit ____________________ No. 19‐3071 YONG JUAN ZHAO, on behalf of her minor son, Plaintiff‐Appellee, v. UNITED STATES OF AMERICA, Defendant‐Appellant. ____________________ Appeal from the United States District Court for the Southern District of Illinois. No. 3:17‐cv‐00454‐NJR‐GCS — Nancy J. Rosenstengel, Chief Judge. ____________________ ARGUED JUNE 5, 2020 — DECIDED JUNE 29, 2020 ____________________ Before EASTERBROOK, HAMILTON, and SCUDDER, Circuit Judges. HAMILTON, Circuit Judge. This is an appeal from a Federal Tort Claims Act judgment in favor of the plaintiff. When plaintiff Yong Juan Zhao gave birth to her son, he suffered an avoidable injury.";
 
 const CELOTEX_HEAD = "477 U.S. 317 (1986) CELOTEX CORP. v. CATRETT, ADMINISTRATRIX OF THE ESTATE OF CATRETT No. 85-198. Supreme Court of United States. Argued April 1, 1986 Decided June 25, 1986 CERTIORARI TO THE UNITED STATES COURT OF APPEALS FOR THE DISTRICT OF COLUMBIA CIRCUIT Leland S. Van Koten argued the cause for petitioner. JUSTICE REHNQUIST delivered the opinion of the Court. The United States District Court for the District of Columbia granted the motion of petitioner Celotex Corporation for summary judgment against respondent Catrett because the latter was unable to produce evidence in support of her allegation. The Court of Appeals for the District of Columbia Circuit reversed, however, holding that petitioner's failure to support its motion with evidence tending to negate such exposure precluded the entry of summary judgment in its favor.";
+
+const CELOTEX_REAL = "CELOTEX CORP. v. CATRETT Syllabus CELOTEX CORP. v. CATRETT, ADMINISTRATRIX OF THE ESTATE OF CATRETT CERTIORARI TO THE UNITED STATES COURT OF APPEALS FOR THE DISTRICT OF COLUMBIA CIRCUIT No. 85-198. Argued April 1, 1986-Decided June 25, 1986 In September 1980, respondent administratrix filed this wrongful-death action in Federal District Court. In July 1982, the court granted the motion because there was no showing of exposure to petitioner's products, but the Court of Appeals reversed, holding that summary judgment in peti- tioner's favor was precluded. Held: 1. The Court of Appeals' position is inconsistent with the standard for summary judgment. Pp. 322-326. 2. The question should be determined by the Court of Appeals in the first instance. Pp. 326- 327. 244 U. S. App. D. C. 160 , 756 F. 2d 181 , reversed and remanded. REHNQUIST, J., delivered the opinion of the Court, in which WHITE, MARSHALL, POWELL, and O'CONNOR, JJ., joined.";
+
+describe("readSyllabusDisposition", () => {
+  it("reads the judgment words that end a U.S. Reports syllabus", () => {
+    expect(readSyllabusDisposition(CELOTEX_REAL)).toMatchObject({ kind: "reversed", remanded: true, quote: "Reversed and remanded.", source: "syllabus" });
+    expect(readSyllabusDisposition("Held: the statute applies. Pp. 3-9. 500 F. 3d 1, affirmed. SCALIA, J., delivered the opinion of the Court.")).toMatchObject({ kind: "affirmed" });
+    expect(readSyllabusDisposition("Certiorari granted. SCALIA, J., delivered the opinion of the Court.")).toBeNull();
+  });
+
+  it("feeds a Supreme Court summary when the closing line is missing, with the lower court's ruling", () => {
+    const standing = buildCaseStanding({ ...base, verified: false, caption: "Celotex Corp. v. Catrett", decidedOn: "1986-06-25", opinionHead: CELOTEX_REAL, opinionPath: "/o" });
+    expect(standing?.headline).toBe("The Supreme Court overturned the lower court's decision — a win for Celotex Corp., at least for now.");
+    expect(standing?.points.find((point) => point.id === "decided")?.sourceLabel).toBe("From the official syllabus (U.S. Reports)");
+    expect(standing?.points.find((point) => point.id === "lower")?.quote).toContain("but the Court of Appeals reversed, holding that summary judgment in petitioner's favor was precluded");
+  });
+});
+
+describe("readOpinionClosing (reporter hyphenation)", () => {
+  it("joins words split across lines", () => {
+    expect(readOpinionClosing("The judgment of the Court of Appeals is accordingly re- versed, and the case is remanded for further proceedings consistent with this opinion. It is so ordered.")).toMatchObject({ kind: "reversed", remanded: true });
+  });
+});
 
 describe("buildCaseStanding", () => {
   it("summarizes a reversed Supreme Court case from the verified record, naming who won", () => {

@@ -10,7 +10,7 @@ export interface CaseStandingSignals {
   clusterDisposition: string | null;
   precedentialStatus: string | null;
   opinionTail: string | null;
-  /** First ~6,000 characters of the same opinion: its caption block (party roles) and how the case came up. */
+  /** First ~20,000 characters of the same opinion: its caption block (party roles) and how the case came up. */
   opinionHead: string | null;
   /** Supreme Court Database vote counts carried on the CourtListener cluster. */
   votes: { majority: number; minority: number } | null;
@@ -20,6 +20,11 @@ export interface CaseStandingSignals {
 
 // Passed as a bind parameter: backslashes in a template literal would be eaten.
 const OVERRULED_PATTERN = String.raw`^\s*((expressly|implicitly|partially)\s+)?(overruled|abrogated)\M`;
+
+// The court's own opinion ends where the first separate opinion begins ("JUSTICE WHITE, concurring.",
+// "EASTERBROOK, Circuit Judge, dissenting."). CourtListener's combined text carries them all, so the
+// judgment line is read from the text before that point (the earliest marker; ~10 ms on a 150 KB opinion).
+const SEPARATE_OPINION_PATTERN = String.raw`(?:(?:MR\. )?JUSTICE [A-Z][A-Z'’]+(?: [A-Z][A-Z'’]+)?,(?: with whom [^.]{0,250}?)? (?:concurring|dissenting)|[A-Z][A-Za-z'’-]+, (?:Chief |Senior )?(?:Circuit|District) Judge, (?:concurring|dissenting))`;
 
 const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, opinionHead: null, votes: null, overruled: [] };
 
@@ -52,11 +57,11 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
           WHERE oc.case_id = c.id AND coalesce(oc.provider_metadata->>'scdb_votes_majority', '') ~ '^[0-9]$'
           ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1) AS votes,
         ${opinionDocumentPublicId
-          ? sql`(SELECT right(dc.content_text, 1600) FROM document d JOIN document_content dc ON dc.document_id = d.id
+          ? sql`(SELECT right(coalesce(left(dc.content_text, strpos(dc.content_text, substring(dc.content_text FROM ${SEPARATE_OPINION_PATTERN})) - 1), dc.content_text), 1600) FROM document d JOIN document_content dc ON dc.document_id = d.id
                   WHERE d.case_id = c.id AND d.public_id = ${opinionDocumentPublicId} AND d.publication = 'published')`
           : sql`NULL::text`} AS "opinionTail",
         ${opinionDocumentPublicId
-          ? sql`(SELECT left(dc.content_text, 6000) FROM document d JOIN document_content dc ON dc.document_id = d.id
+          ? sql`(SELECT left(dc.content_text, 20000) FROM document d JOIN document_content dc ON dc.document_id = d.id
                   WHERE d.case_id = c.id AND d.public_id = ${opinionDocumentPublicId} AND d.publication = 'published')`
           : sql`NULL::text`} AS "opinionHead",
         (SELECT jsonb_agg(jsonb_build_object('text', p.text, 'citingCaption', citing.caption, 'citingPublicId', citing.public_id))

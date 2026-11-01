@@ -16,7 +16,7 @@ export interface OutcomeReading {
   remanded: boolean;
   /** The exact words the reading came from, quoted on the page. */
   quote: string;
-  source: "court-record" | "opinion" | "case-data";
+  source: "court-record" | "opinion" | "case-data" | "syllabus";
 }
 
 const VERBS = "affirm|reverse|vacate|remand|dismiss";
@@ -94,6 +94,8 @@ const SHOUTED = /(?:^|[\s.;:])(AFFIRMED|REVERSED|VACATED|DISMISSED)(?:\s+(?:AND|
 /** Split the end of an opinion into sentences, dropping page furniture. */
 function closingSentences(tail: string) {
   const text = clean(tail)
+    // Line-break hyphenation in reporter text: "re- versed" -> "reversed".
+    .replace(/([a-z])- ([a-z])/g, "$1$2")
     .replace(/USCA Case #\S+ Document #\S+ Filed: \S+ Page \d+ of \d+/g, " ")
     .replace(/\bPage \d+ of \d+\b/g, " ")
     .replace(/\s+\d{1,3}\s*$/, "");
@@ -131,6 +133,24 @@ export function readOpinionClosing(tail: string | null | undefined): OutcomeRead
     return { ...reading, quote, source: "opinion" };
   }
   return null;
+}
+
+/**
+ * The disposition line that ends a U.S. Reports syllabus, just before the
+ * author line: "… 756 F. 2d 181, reversed and remanded. REHNQUIST, J.,
+ * delivered the opinion of the Court …".
+ */
+export function readSyllabusDisposition(head: string | null | undefined): OutcomeReading | null {
+  if (!head) return null;
+  const text = clean(head.slice(0, 20000)).replace(/([a-z])- ([a-z])/g, "$1$2");
+  const author = /(?:^|[.;]\s)([^.;]{0,220}?)\.\s+(?:(?:MR\.\s+)?(?:CHIEF\s+)?JUSTICE\s+)?[A-Z][A-Z'’-]+,\s+(?:C\.\s*)?J\.,?\s+delivered\s+the\s+opinion\b/.exec(text);
+  const line = author?.[1]?.replace(/^(?:Pp?\.\s*[\d\s,–-]+\.\s*)+/, "").trim();
+  if (!line) return null;
+  // Only the trailing judgment words after the lower-court citation(s).
+  const judgment = /(?:^|,\s*)((?:affirmed|reversed|vacated|remanded|dismissed)[^.]*?)$/i.exec(line)?.[1] ?? null;
+  if (!judgment) return null;
+  const reading = readDispositionLine(capitalize(judgment), "court-record");
+  return reading ? { ...reading, quote: `${capitalize(judgment)}.`, source: "syllabus" } : null;
 }
 
 /** Strict "overruled by …" parenthetical: the leading words describe the cited case itself. */
@@ -219,6 +239,7 @@ function outcomeFor(input: CaseStandingInput): OutcomeReading | null {
     const fromOpinion = readOpinionClosing(input.opinionTail);
     if (fromOpinion && input.courtKind !== "district") return fromOpinion;
   }
+  if (input.courtKind === "supreme") return readSyllabusDisposition(input.opinionHead);
   return null;
 }
 
@@ -241,6 +262,7 @@ const SOURCE_LABEL: Record<OutcomeReading["source"], string> = {
   "court-record": "From the Supreme Court's record",
   opinion: "From the court's opinion",
   "case-data": "From the court's published disposition",
+  syllabus: "From the official syllabus (U.S. Reports)",
 };
 
 const COURT_NAME: Record<CourtKind, string> = {
@@ -387,7 +409,7 @@ export function readLowerRuling(head: string | null | undefined, courtKind: Cour
   if (!head) return null;
   const sentences = closingSentences(head.slice(0, 9000));
   const patterns = courtKind === "supreme"
-    ? [/^(?:The|the)\s+(?:United\s+States\s+)?(?:Court\s+of\s+Appeals|District\s+Court|[A-Z][a-z]+\s+Supreme\s+Court|Supreme\s+Court\s+of\s+[A-Z][a-z]+|state\s+court|trial\s+court)\b[^.]{0,40}?\b(?:affirmed|reversed|held|vacated|granted|denied|dismissed|upheld|ruled|convicted|sentenced|entered)\b/]
+    ? [/(?:^|\b(?:but|and|then|however,?)\s+)(?:The|the)\s+(?:United\s+States\s+)?(?:Court\s+of\s+Appeals|District\s+Court|[A-Z][a-z]+\s+Supreme\s+Court|Supreme\s+Court\s+of\s+[A-Z][a-z]+|state\s+court|trial\s+court)\b[^.]{0,60}?\b(?:affirmed|reversed|held|vacated|granted|denied|dismissed|upheld|ruled|convicted|sentenced|entered)\b/]
     : [
       /^This\s+is\s+an?\s+appeal\s+from\s+(?:an?|the)\s+[^.]{0,160}?\b(?:judgment|order|decision|conviction|sentence|dismissal)\b/i,
       /^(?:The|the)\s+district\s+court\s+(?:then\s+|ultimately\s+|eventually\s+)?(?:granted|entered|denied|dismissed|convicted|sentenced|ruled|held|found|concluded|rejected|awarded)\b/,
@@ -401,9 +423,9 @@ export function readLowerRuling(head: string | null | undefined, courtKind: Cour
   let fallback: string | null = null;
   for (const sentence of sentences.slice(0, 80)) {
     if (sentence.length < 25 || sentence.length > 360) continue;
-    if (MODAL.test(sentence) || NEGATED.test(sentence) || FIRST_PERSON.test(sentence) || /\?$/.test(sentence)) continue;
+    if (MODAL.test(sentence) || NEGATED.test(sentence) || FIRST_PERSON.test(sentence) || /\?$/.test(sentence) || /^Held\b/.test(sentence)) continue;
     if (!patterns.some((pattern) => pattern.test(sentence))) continue;
-    if (!lowerKind || lowerKind.test(sentence.slice(0, 80))) return sentence;
+    if (!lowerKind || lowerKind.test(sentence)) return sentence;
     fallback ??= sentence;
   }
   return lowerKind ? null : fallback;
@@ -512,7 +534,7 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
       text: "In the court's words:",
       quote: outcome.quote,
       sourceLabel: SOURCE_LABEL[outcome.source],
-      sourceHref: outcome.source === "court-record" ? input.dispositionSourceUrl : outcome.source === "opinion" ? input.opinionPath : null,
+      sourceHref: outcome.source === "court-record" ? input.dispositionSourceUrl : outcome.source === "opinion" || outcome.source === "syllabus" ? input.opinionPath : null,
     });
     const precedent = input.courtKind === "appellate" ? precedentLine(input.precedentialStatus) : null;
     points.push({ id: "means", label: "What does it mean?", text: [meaning(input, outcome), precedent].filter(Boolean).join(" ") });
