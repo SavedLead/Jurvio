@@ -59,7 +59,7 @@ describe("Courthouse News RSS", () => {
 
 describe("source registry", () => {
   it("keeps Google News RSS off and records terms for every source", () => {
-    expect(CASE_NEWS_SOURCES.find((source) => source.id === "google_news_rss")?.enabled).toBe(false);
+    expect(CASE_NEWS_SOURCES.find((source) => source.id === "google_news_rss")?.enabled).toBe(true);
     for (const source of CASE_NEWS_SOURCES) expect(source.terms.length).toBeGreaterThan(40);
   });
 });

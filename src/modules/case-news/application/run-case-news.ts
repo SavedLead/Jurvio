@@ -5,7 +5,8 @@ import {
   CASE_NEWS_MATCH_RULE_VERSION, matchNewsItem, mentionsParty, reviewStatusFor, type MatchContext, type MatchResult, type NewsItem,
 } from "../domain/match";
 import { isEstablishedOutlet, outletDomain, outletName } from "../domain/outlets";
-import { buildDocketQuery, buildPartiesQuery, GDELT_MIN_INTERVAL_MS, searchGdelt } from "../infrastructure/gdelt";
+import { buildDocketQuery, buildPartiesQuery, buildPriorityQuery, buildPriorityQueryCore, GDELT_MIN_INTERVAL_MS, searchGdelt } from "../infrastructure/gdelt";
+import { GOOGLE_NEWS_MIN_INTERVAL_MS, searchGoogleNews } from "../infrastructure/google-news";
 import { COURTHOUSE_NEWS_FEEDS, fetchRssFeeds } from "../infrastructure/rss";
 import { captionLooksRestricted, caseNewsEligibleSql } from "./eligibility";
 import { RECHECK_HOURS, selectCaseNewsCandidates, type CaseNewsCandidate, type PriorityTier } from "./select-candidates";
@@ -19,6 +20,8 @@ export interface CaseNewsRunOptions {
   candidateLimit: number;
   rss: boolean;
   gdelt: boolean;
+  googleNews?: boolean;
+  googleNewsMaxRequests?: number;
   tiers?: PriorityTier[];
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -105,8 +108,8 @@ async function upsertLink(sql: Sql, input: UpsertInput): Promise<"auto_published
   return (row?.review_status as "auto_published" | "pending_review" | undefined) ?? null;
 }
 
-async function scoreAndStore(sql: Sql, summary: SourceRunSummary, caseId: string, item: NewsItem, source: string, context: MatchContext, samples: unknown[], publicId: string) {
-  const domain = outletDomain(item.url);
+async function scoreAndStore(sql: Sql, summary: SourceRunSummary, caseId: string, item: NewsItem, source: string, context: MatchContext, samples: unknown[], publicId: string, domainOverride?: string | null) {
+  const domain = domainOverride || outletDomain(item.url);
   const raw = matchNewsItem(item, context);
   if (!raw) { summary.rejectedLowScore += 1; return; }
   const match = isEstablishedOutlet(domain) ? raw : { ...raw, score: Math.min(raw.score, UNKNOWN_OUTLET_CAP), evidence: { ...raw.evidence, unknownOutlet: true } };
@@ -147,9 +150,20 @@ export async function gdeltCooldownUntil(sql: Sql): Promise<Date | null> {
   return new Date(new Date(rows[0]!.finished_at).getTime() + wait);
 }
 
+/** Marker for cases with no usable query; versioned so a query-builder change re-checks old markers. */
+export const NOT_SEARCHABLE = "not searchable (v2)";
+
+/** Re-queue SCOTUS and appeals cases marked unsearchable by the old query builder. */
+async function requeueOldUnsearchable(sql: Sql) {
+  await sql`
+    UPDATE case_news_query_state SET next_due_at = now()
+    WHERE last_error = 'not searchable' AND priority_tier IN ('scotus', 'appeals') AND next_due_at > now()`;
+}
+
 async function runGdelt(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRunSummary> {
   const summary = emptySummary("gdelt");
   const now = options.now ?? (() => new Date());
+  await requeueOldUnsearchable(sql);
   const cooldown = await gdeltCooldownUntil(sql);
   if (cooldown && cooldown.getTime() > now().getTime()) {
     summary.detail = { skipped: "rate-limit cooldown", until: cooldown.toISOString() };
@@ -169,11 +183,13 @@ async function runGdelt(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRu
     if (!budget.canFetch) break;
     if (captionLooksRestricted(candidate.caption, candidate.docketNumber)) { summary.skippedRestricted += 1; continue; }
     const terms = caseNewsTerms(candidate);
-    const partiesQuery = searchable(terms) ? buildPartiesQuery(terms) : null;
-    const docketQuery = candidate.tier !== "scotus" && candidate.tier !== "appeals" ? buildDocketQuery(candidate.docketNumber, terms) : null;
+    const priority = candidate.tier === "scotus" || candidate.tier === "appeals";
+    const priorityQuery = priority ? buildPriorityQuery(terms, candidate.docketNumber) : null;
+    const partiesQuery = priority ? (priorityQuery?.kind === "parties" ? priorityQuery.query : null) : searchable(terms) ? buildPartiesQuery(terms) : null;
+    const docketQuery = priority ? (priorityQuery?.kind === "docket" ? priorityQuery.query : null) : buildDocketQuery(candidate.docketNumber, terms);
     if (!partiesQuery && !docketQuery) {
       unsearchable += 1;
-      await markQueried(sql, candidate, now(), 0, "not searchable", 24 * 14);
+      await markQueried(sql, candidate, now(), 0, NOT_SEARCHABLE, 24 * 14);
       continue;
     }
     tierCounts[candidate.tier] = (tierCounts[candidate.tier] ?? 0) + 1;
@@ -194,7 +210,7 @@ async function runGdelt(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRu
           if (article.language && article.language !== "English") continue;
           await scoreAndStore(sql, summary, candidate.caseId, { url: article.url, title: article.title, snippet: null, publishedAt: article.publishedAt }, "gdelt", {
             terms, filedOn: candidate.filedOn, decidedOn: candidate.decidedOn, ambiguity: ambiguity ?? "none",
-            courtInFullText: kind === "parties", docketInFullText: kind === "docket", now: now(),
+            courtInFullText: kind === "parties" || priority, docketInFullText: kind === "docket", now: now(),
           }, samples, candidate.publicId);
         }
       }
@@ -229,6 +245,61 @@ async function searchGdeltWithBackoff(budget: FetchBudget, query: string, start:
       await (sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))))(30_000 * state.retries);
     }
   }
+}
+
+/**
+ * Google News RSS search: a second, keyless matcher for SCOTUS and appeals cases.
+ * Walks the recent SCOTUS-then-appeals pool a slice per run (cursor kept in the
+ * run's detail), one search per case, paced politely. Stores headline, short
+ * feed snippet, outlet, link and date only; same scoring and thresholds as GDELT.
+ */
+async function runGoogleNews(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRunSummary> {
+  const summary = emptySummary("google_news_rss");
+  const now = options.now ?? (() => new Date());
+  const samples: unknown[] = [];
+  const budget = new FetchBudget({
+    source: "google_news_rss", maxRequests: options.googleNewsMaxRequests ?? 30, maxMs: 5 * 60_000,
+    minIntervalMs: GOOGLE_NEWS_MIN_INTERVAL_MS, timeoutMs: 20_000, fetchImpl: options.fetchImpl, sleep: options.sleep,
+  });
+  const pool = await selectCaseNewsCandidates(sql, { limit: 2000, tiers: ["scotus", "appeals"], ignoreSchedule: true });
+  const [last] = await sql<{ cursor: number | null }[]>`
+    SELECT (detail->>'cursor')::int AS cursor FROM case_news_run WHERE source = 'google_news_rss' ORDER BY id DESC LIMIT 1`;
+  const cursor = last?.cursor && last.cursor < pool.length ? last.cursor : 0;
+  let unsearchable = 0;
+  let processed = 0;
+  const errors: string[] = [];
+  for (let i = 0; i < pool.length && budget.canFetch; i += 1) {
+    const index = (cursor + i) % pool.length;
+    const candidate = pool[index]!;
+    processed = i + 1;
+    if (captionLooksRestricted(candidate.caption, candidate.docketNumber)) { summary.skippedRestricted += 1; continue; }
+    const terms = caseNewsTerms(candidate);
+    const built = buildPriorityQueryCore(terms, candidate.docketNumber);
+    if (!built) { unsearchable += 1; continue; }
+    let items;
+    try {
+      items = await searchGoogleNews(budget, built.query);
+    } catch (caught) {
+      if (caught instanceof RateLimitedError) { summary.rateLimited = true; processed = i; break; }
+      errors.push(String(caught).slice(0, 200));
+      continue;
+    }
+    summary.casesQueried += 1;
+    summary.itemsSeen += items.length;
+    if (!items.length) continue;
+    const ambiguity = await nameAmbiguity(sql, candidate.caseId, candidate.courtCode, terms);
+    for (const item of items) {
+      await scoreAndStore(sql, summary, candidate.caseId, { url: item.url, title: item.title, snippet: item.snippet, publishedAt: item.publishedAt }, "google_news_rss", {
+        terms, filedOn: candidate.filedOn, decidedOn: candidate.decidedOn, ambiguity,
+        courtInFullText: false, docketInFullText: false, now: now(),
+      }, samples, candidate.publicId, item.sourceDomain);
+    }
+  }
+  summary.requests = budget.requests;
+  if (errors.length) { summary.detail.errors = errors.slice(0, 10); summary.detail.errorCount = errors.length; }
+  if (summary.casesQueried === 0 && errors.length) { summary.ok = false; summary.error = errors[0] ?? null; }
+  summary.detail = { ...summary.detail, pool: pool.length, cursor: pool.length ? (cursor + processed) % pool.length : 0, unsearchable, samples };
+  return summary;
 }
 
 /** Cases named in a news item ("X v. Y" in the headline or description), found through the caption trigram index. */
@@ -312,7 +383,7 @@ async function selectQueriedForRss(sql: Sql): Promise<CaseNewsCandidate[]> {
     FROM case_news_query_state s
     JOIN legal_case c ON c.id = s.case_id
     JOIN court ct ON ct.id = c.court_id
-    WHERE s.last_error IS DISTINCT FROM 'not searchable' AND ${caseNewsEligibleSql("c")}
+    WHERE COALESCE(s.last_error, '') NOT LIKE 'not searchable%' AND ${caseNewsEligibleSql("c")}
     ORDER BY s.last_queried_at DESC NULLS LAST
     LIMIT 5000`);
 }
@@ -330,6 +401,7 @@ export async function runCaseNews(sql: Sql, options: CaseNewsRunOptions): Promis
   const summaries: SourceRunSummary[] = [];
   const steps: Array<[string, boolean, () => Promise<SourceRunSummary>]> = [
     ["gdelt", options.gdelt, () => runGdelt(sql, options)],
+    ["google_news_rss", options.googleNews ?? false, () => runGoogleNews(sql, options)],
     ["courthousenews_rss", options.rss, () => runCourthouseNews(sql, options)],
   ];
   for (const [source, enabled, step] of steps) {

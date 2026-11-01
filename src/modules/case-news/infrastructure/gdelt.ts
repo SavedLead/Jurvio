@@ -2,8 +2,8 @@ import { RateLimitedError, type FetchBudget } from "@/modules/ingestion/live-fee
 import type { CaseNewsTerms, PartyTerm } from "../domain/case-terms";
 
 export const GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc";
-/** GDELT asks for at most one request every 5 seconds; in practice it throttles well below that, so pace at 10 s. */
-export const GDELT_MIN_INTERVAL_MS = 10_000;
+/** GDELT asks for at most one request every 5 seconds; it throttles well below that (2026-11-01), so pace at 20 s. */
+export const GDELT_MIN_INTERVAL_MS = 20_000;
 
 export interface GdeltArticle {
   url: string;
@@ -46,6 +46,52 @@ export function buildPartiesQuery(terms: CaseNewsTerms): string | null {
   // One side only (e.g. "United States v. Acme Corp"): the other side cannot be searched by name.
   if (parts.length === 1 && Math.max(terms.left.distinctiveness, terms.right?.distinctiveness ?? 0) < 1) return null;
   return `${parts.join(" ")} ${court} sourcelang:english`;
+}
+
+/** Sides a headline would name: drops generic government parties ("United States", "State of X", "City of Y") and agencies/officials ("the Commissioner") when the other side is a person or organization. */
+export function distinctiveSides(terms: CaseNewsTerms): PartyTerm[] {
+  const sides = [terms.left, terms.right].filter((side): side is PartyTerm => Boolean(side && side.key));
+  const generic = (side: PartyTerm) => side.kind === "government" || side.kind === "agency";
+  const specific = sides.filter((side) => !generic(side));
+  return specific.length ? specific : sides.filter((side) => side.kind === "agency");
+}
+
+/** "No. 25-228" style docket query term for SCOTUS and appeals, used only with the court name. */
+function shortDocketTerm(docketNumber: string): string | null {
+  const match = docketNumber.trim().match(/^(\d{2,4})-(\d{1,6})$/);
+  return match ? `"${match[1]}-${match[2]}"` : null;
+}
+
+/**
+ * Query for Supreme Court and courts-of-appeals cases, whose captions are often
+ * one-sided for search purposes ("Barrett v. United States", "Smith v. Commissioner").
+ * Uses the distinctive party name(s) plus the court; when no side is distinctive
+ * enough, falls back to the docket number with the court. Returns the query
+ * without the GDELT-specific sourcelang suffix so other sources can reuse it.
+ */
+export function buildPriorityQueryCore(terms: CaseNewsTerms, docketNumber: string): { query: string; kind: "parties" | "docket" } | null {
+  const court = orGroup(terms.courtTerms);
+  if (!court) return null;
+  const sides = distinctiveSides(terms);
+  const strong = sides.filter((side) => Math.max(side.distinctiveness, side.anchorDistinctiveness === 1 ? 1 : 0) >= 0.6);
+  // Two named sides (e.g. "Trump v. Cook") are specific together even when each is weak.
+  const chosen = strong.length ? strong : sides.length >= 2 ? sides : [];
+  const parts = chosen.map((side) => partyQueryTerm(side)).filter((part): part is string => Boolean(part));
+  if (parts.length) return { query: `${parts.join(" ")} ${court}`, kind: "parties" };
+  const docket = shortDocketTerm(docketNumber);
+  return docket ? { query: `${docket} ${court}`, kind: "docket" } : null;
+}
+
+export function buildPriorityQuery(terms: CaseNewsTerms, docketNumber: string): { query: string; kind: "parties" | "docket" } | null {
+  const core = buildPriorityQueryCore(terms, docketNumber);
+  return core ? { ...core, query: `${core.query} sourcelang:english` } : null;
+}
+
+/** Network failures and timeouts from an overloaded or throttling API: back off like a 429. */
+export function isTransientNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const text = `${error.name} ${error.message} ${String((error as { cause?: unknown }).cause ?? "")}`;
+  return /fetch failed|TimeoutError|AbortError|timed? ?out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|UND_ERR/i.test(text);
 }
 
 /** Docket query for district-style dockets ("24-cv-01234"), which are distinctive on their own. */
@@ -131,7 +177,16 @@ export function parseGdeltArtList(body: string): GdeltArticle[] {
 }
 
 export async function searchGdelt(budget: FetchBudget, query: string, options: { start?: Date; end?: Date } = {}): Promise<GdeltArticle[]> {
-  const body = await budget.text(buildGdeltUrl(query, options), "application/json");
+  let body: string;
+  try {
+    body = await budget.text(buildGdeltUrl(query, options), "application/json");
+  } catch (error) {
+    if (isTransientNetworkError(error)) {
+      budget.rateLimited = new RateLimitedError("gdelt", new Date(Date.now() + 10 * 60_000));
+      throw budget.rateLimited;
+    }
+    throw error;
+  }
   try {
     return parseGdeltArtList(body);
   } catch (error) {
