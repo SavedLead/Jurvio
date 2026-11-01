@@ -4,6 +4,8 @@ import { hashIdentifier } from "../domain/tokens";
 export const SIGNIN_LIMITS = {
   signin_email: { max: 5, windowMinutes: 15 },
   signin_ip: { max: 20, windowMinutes: 60 },
+  waitlist_email: { max: 10, windowMinutes: 15 },
+  waitlist_ip: { max: 30, windowMinutes: 60 },
 } as const;
 export type RateLimitBucket = keyof typeof SIGNIN_LIMITS;
 

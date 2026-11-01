@@ -1,14 +1,20 @@
 import type { Sql } from "postgres";
 import type { VerifiedSignIn } from "./sign-in";
 import { followCase } from "./follows";
+import { convertLeads } from "./waitlist";
 
 /**
  * Runs what the visitor was doing when they asked for the link and returns
  * where to send them. From the signed-out "Follow this case" box the case is
  * followed (within plan limits; an ineligible or over-limit case is simply
- * not followed and the case page shows why).
+ * not followed and the case page shows why). Waitlisted leads for the same
+ * address are converted first.
  */
 export async function completeSignInIntent(sql: Sql, verified: VerifiedSignIn): Promise<string> {
+  // Follows and plan interest left on the waitlist (before email sign-in existed) become real now.
+  await convertLeads(sql, verified.userId, verified.email).catch((error) => {
+    console.error(JSON.stringify({ signin: "lead_conversion_failed", error: error instanceof Error ? error.message : "error" }));
+  });
   if (!verified.followCasePublicId) return verified.redirectPath;
   const result = await followCase(sql, verified.userId, verified.followCasePublicId).catch(() => null);
   const casePath = `/case/${verified.followCasePublicId}`;

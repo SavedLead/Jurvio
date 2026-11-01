@@ -1,12 +1,14 @@
-.followCaseBox { margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.followCaseBox { box-sizing: border-box; max-width: 100%; min-width: 0; margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow-wrap: anywhere; }
 .followCaseBox h2 { margin: 0 0 6px; font-size: 15px; }
 .followCaseBox p { margin: 0 0 10px; color: var(--muted); font-size: 13px; line-height: 1.45; }
-.followCaseBox form { display: grid; gap: 8px; }
-.followCaseBox input[type="email"] { padding: 9px 11px; border: 1px solid #c8d0dc; border-radius: 7px; font: inherit; font-size: 14px; }
-.followCaseBox button { padding: 9px 12px; border: 0; border-radius: 7px; background: var(--ink); color: #fff; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.followCaseBox form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.followCaseBox input[type="email"] { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid #c8d0dc; border-radius: 7px; font: inherit; font-size: 14px; }
+.followCaseBox button { box-sizing: border-box; max-width: 100%; padding: 9px 12px; border: 0; border-radius: 7px; background: var(--ink); color: #fff; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.followCaseBox form button { width: 100%; }
 .followCaseBox button:hover { background: var(--brand); }
 .followCaseBox button.following { background: #e9f1ff; color: var(--brand-dark); border: 1px solid #b8cdf5; }
 .followCaseBox button[disabled] { opacity: .6; cursor: default; }
 .followCaseBox .followUpgrade { margin-top: 10px; padding: 10px; border-radius: 8px; background: #fff7e6; color: #5c3b00; }
 .followCaseBox .followUpgrade a { font-weight: 700; }
 .followCaseBox small { display: block; margin-top: 6px; color: var(--muted); }
+.followCaseBox .emailCaptureDone { margin: 0; padding: 10px 12px; border-radius: 8px; background: #eaf7ee; color: #14532d; font-weight: 600; }

@@ -1,0 +1,9 @@
+.emailCapture { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.emailCapture input[type="email"] { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #c8d0dc; border-radius: 8px; font: inherit; }
+.emailCapture button { box-sizing: border-box; width: 100%; padding: 10px 14px; border: 0; border-radius: 8px; background: var(--ink); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+.emailCapture button:hover { background: var(--brand); }
+.emailCapture button[disabled] { opacity: .6; cursor: default; }
+.emailCapture small { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.emailCaptureTrap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+.emailCapture .emailCaptureError { color: #7a1c17; }
+.emailCaptureDone { margin: 0; padding: 10px 12px; border-radius: 8px; background: #eaf7ee; color: #14532d; font-weight: 600; line-height: 1.45; }
