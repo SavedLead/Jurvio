@@ -93,6 +93,15 @@ describe.skipIf(!databaseUrl)("runCaseNews", () => {
       const after = await sql<{ outlet: string; review_status: string }[]>`SELECT outlet, review_status FROM case_news_link WHERE case_id = ${ids["jv-newsuber"]!}`;
       expect(after).toHaveLength(4);
       expect(after.find((row) => row.outlet === "The Seattle Times")?.review_status).toBe("rejected");
+
+      // After a rate-limited GDELT pass the next run skips GDELT (cooldown) but still reads RSS.
+      await sql`INSERT INTO case_news_run (source, started_at, finished_at, ok, rate_limited, detail) VALUES ('gdelt', now(), now(), false, true, '{}')`;
+      const gdeltCalls = requested.filter((target) => target.startsWith("https://api.gdeltproject.org/")).length;
+      await sql`UPDATE case_news_query_state SET next_due_at = now() - interval '1 minute'`;
+      const cooled = await runCaseNews(sql, options);
+      expect(cooled[0]!.detail.skipped).toBe("rate-limit cooldown");
+      expect(cooled[1]!.ok).toBe(true);
+      expect(requested.filter((target) => target.startsWith("https://api.gdeltproject.org/")).length).toBe(gdeltCalls);
     } finally {
       await sql.end();
       await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);

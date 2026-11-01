@@ -24,9 +24,9 @@ type Row = Omit<CaseNewsCandidate, "tier">;
 
 const columns = `c.id AS "caseId", c.public_id AS "publicId", c.caption, c.docket_number AS "docketNumber",
   c.filed_on::text AS "filedOn", c.decided_on::text AS "decidedOn", ct.provider_court_id AS "courtCode", ct.name AS "courtName"`;
-const notDue = `NOT EXISTS (SELECT 1 FROM case_news_query_state s WHERE s.case_id = c.id AND s.next_due_at > now())`;
+const NOT_DUE = `NOT EXISTS (SELECT 1 FROM case_news_query_state s WHERE s.case_id = c.id AND s.next_due_at > now())`;
 
-async function recentInCourts(sql: Sql, codes: string[], sinceDays: number, limit: number): Promise<Row[]> {
+async function recentInCourts(sql: Sql, codes: string[], sinceDays: number, limit: number, notDue: string): Promise<Row[]> {
   // Court-led browse index (court_id, COALESCE(decided_on, filed_on) DESC) WHERE published.
   return sql.unsafe<Row[]>(`
     SELECT ${columns}
@@ -43,7 +43,7 @@ async function recentInCourts(sql: Sql, codes: string[], sinceDays: number, limi
     LIMIT $3`, [codes, sinceDays, limit]);
 }
 
-async function recentlyUpdatedInCourts(sql: Sql, codes: string[], sinceDays: number, limit: number): Promise<Row[]> {
+async function recentlyUpdatedInCourts(sql: Sql, codes: string[], sinceDays: number, limit: number, notDue: string): Promise<Row[]> {
   // Appeals cases from the live feeds often carry no filed/decided date; their
   // updated_at moves when a new opinion or order arrives.
   return sql.unsafe<Row[]>(`
@@ -55,7 +55,7 @@ async function recentlyUpdatedInCourts(sql: Sql, codes: string[], sinceDays: num
     LIMIT $3`, [codes, sinceDays, limit]);
 }
 
-async function citedRecent(sql: Sql, sinceDays: number, limit: number): Promise<Row[]> {
+async function citedRecent(sql: Sql, sinceDays: number, limit: number, notDue: string): Promise<Row[]> {
   return sql.unsafe<Row[]>(`
     SELECT ${columns}
     FROM case_citation_count cc
@@ -67,7 +67,7 @@ async function citedRecent(sql: Sql, sinceDays: number, limit: number): Promise<
     LIMIT $2`, [sinceDays, limit]);
 }
 
-async function partyPattern(sql: Sql, pattern: string, sinceDays: number, limit: number): Promise<Row[]> {
+async function partyPattern(sql: Sql, pattern: string, sinceDays: number, limit: number, notDue: string): Promise<Row[]> {
   // Global recency index (COALESCE(decided_on, filed_on) DESC) WHERE published; stops at `limit`.
   return sql.unsafe<Row[]>(`
     SELECT ${columns}
@@ -92,11 +92,14 @@ export interface CandidateOptions {
   /** Look-back on activity. GDELT only searches about the last three months. */
   sinceDays?: number;
   tiers?: PriorityTier[];
+  /** Ignore the GDELT recheck schedule (the RSS matcher wants every active priority case). */
+  ignoreSchedule?: boolean;
 }
 
 /** Candidates in priority order: SCOTUS, then courts of appeals, then cited, agency and big-company cases. */
 export async function selectCaseNewsCandidates(sql: Sql, options: CandidateOptions): Promise<CaseNewsCandidate[]> {
   const since = options.sinceDays ?? 100;
+  const due = options.ignoreSchedule ? "TRUE" : NOT_DUE;
   const tiers = options.tiers ?? TIER_ORDER;
   const seen = new Set<string>();
   const out: CaseNewsCandidate[] = [];
@@ -113,17 +116,17 @@ export async function selectCaseNewsCandidates(sql: Sql, options: CandidateOptio
     const remaining = options.limit - out.length;
     if (tier === "scotus") {
       // The current term's docket: wider window, filings are old by decision time.
-      add(await recentInCourts(sql, ["scotus"], Math.max(since, 400), remaining), tier);
-      if (out.length < options.limit) add(await recentlyUpdatedInCourts(sql, ["scotus"], since, options.limit - out.length), tier);
+      add(await recentInCourts(sql, ["scotus"], Math.max(since, 400), remaining, due), tier);
+      if (out.length < options.limit) add(await recentlyUpdatedInCourts(sql, ["scotus"], since, options.limit - out.length, due), tier);
     } else if (tier === "appeals") {
-      add(await recentInCourts(sql, APPEALS_CODES, since, remaining), tier);
-      if (out.length < options.limit) add(await recentlyUpdatedInCourts(sql, APPEALS_CODES, Math.min(since, 30), options.limit - out.length), tier);
+      add(await recentInCourts(sql, APPEALS_CODES, since, remaining, due), tier);
+      if (out.length < options.limit) add(await recentlyUpdatedInCourts(sql, APPEALS_CODES, Math.min(since, 30), options.limit - out.length, due), tier);
     } else if (tier === "cited") {
-      add(await citedRecent(sql, since, remaining), tier);
+      add(await citedRecent(sql, since, remaining, due), tier);
     } else if (tier === "government") {
-      add(await partyPattern(sql, GOVERNMENT_PATTERN, since, remaining), tier);
+      add(await partyPattern(sql, GOVERNMENT_PATTERN, since, remaining, due), tier);
     } else {
-      add(await partyPattern(sql, BIG_COMPANY_PATTERN, since, remaining), tier);
+      add(await partyPattern(sql, BIG_COMPANY_PATTERN, since, remaining, due), tier);
     }
   }
   return out;
