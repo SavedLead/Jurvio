@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type postgres from "postgres";
-import { fetchOfficialAppellateListing } from "../providers/appellate/official-opinions";
+import { fetchOfficialAppellateListing, type ListingFetch } from "../providers/appellate/official-opinions";
 import type { AppellateCourtSource } from "../providers/appellate/registry";
 import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
 import { recordSourceWatermark } from "@/modules/operations/application/court-freshness";
@@ -23,7 +23,9 @@ export async function discoverOfficialAppellateOpinions(sql: Sql, court: Appella
   } catch (error) {
     // Before this, a 404 or timeout threw before the registry row was touched,
     // so ca6, ca11 and cadc stayed 'unknown' for months. Record it, then rethrow.
-    await recordCourtFetch(sql, {
+    const fetches = (error as { fetches?: ListingFetch[] }).fetches;
+    if (fetches?.length) await logFetches(sql, court.code, fetches, 0);
+    else await recordCourtFetch(sql, {
       source: "appellate_official", courtCode: court.code, url: court.opinionsUrl, startedAtMs,
       httpStatus: httpStatusOf(error), ok: false, error: errorText(error),
     });
@@ -106,12 +108,22 @@ export async function discoverOfficialAppellateOpinions(sql: Sql, court: Appella
     `;
     throw error;
   }
-  await recordCourtFetch(sql, {
-    source: "appellate_official", courtCode: court.code, url: court.opinionsUrl, startedAtMs, httpStatus: 200, ok: true,
-    bytes: Buffer.byteLength(listing.body), items: listing.candidates.length, newItems: discovered,
-  });
+  await logFetches(sql, court.code, listing.fetches, discovered);
   await recordSourceWatermark(sql, {
     source: "appellate_official", courtCode: court.code, ok: true, itemsFetched: listing.candidates.length, newEntries: discovered,
   }).catch(() => undefined);
   return { court: court.code, retrieved: listing.candidates.length, discovered, seen, costCents: 0 };
+}
+
+/** One court_fetch_log row per listing request; new items are credited to the first successful listing. */
+async function logFetches(sql: Sql, courtCode: string, fetches: readonly ListingFetch[], discovered: number) {
+  let credited = false;
+  for (const fetch of fetches) {
+    const newItems = fetch.ok && !credited ? discovered : fetch.ok ? 0 : null;
+    if (fetch.ok) credited = true;
+    await recordCourtFetch(sql, {
+      source: "appellate_official", courtCode, url: fetch.url, startedAtMs: fetch.startedAtMs, httpStatus: fetch.httpStatus,
+      ok: fetch.ok, bytes: fetch.bytes, items: fetch.ok ? fetch.items : null, newItems, error: fetch.error,
+    });
+  }
 }

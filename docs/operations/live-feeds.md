@@ -46,7 +46,19 @@ enrichment first) and adds documents and the question presented.
 | ca11 | published + unpublished opinion tables (media.ca11) |
 | cadc | opinions RSS |
 | cafc | site feed (opinions and orders) |
-| ca1, ca2, ca4, ca6, ca7, ca8 | no usable public listing (see `COA_WITHOUT_FEED`); still covered by the appellate-official pipeline and, later, the CourtListener tail |
+| ca1 | opinions page (www.ca1, last 20 releases) |
+| ca2 | dtSearch POST on the OPN and SUM indexes, last 7 days (ww3.ca2; the RSS is a placeholder) |
+| ca4 | recent-opinions page (the RSS is 404) |
+| ca6 | opinions.php?todo=week (www.opn.ca6) |
+| ca7 | media.ca7 opinions CGI, Time=week (no fixed date) |
+| ca8 | ecf.ca8 TodayOpn.pl (www pages only frame it) |
+
+Since 2026-10-31 all 13 circuits are read through per-court adapters in
+`src/modules/ingestion/providers/appellate/adapters.ts`, shared by the
+appellate-official (PDF + text) and coa-live-feeds (docket entry) pipelines.
+Adapter listings are fetched without conditional headers: ca3's server ignores
+them and stale validators made the old code skip changed pages.
+Every listing fetch is logged to `court_fetch_log` (see /internal/sources).
 
 ## Rules
 

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8" ?><rss version="2.0" xml:base="https://ca10.uscourts.gov/opinions-page" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:foaf="http://xmlns.com/foaf/0.1/" xmlns:og="http://ogp.me/ns#" xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#" xmlns:sioc="http://rdfs.org/sioc/ns#" xmlns:sioct="http://rdfs.org/sioc/types#" xmlns:skos="http://www.w3.org/2004/02/skos/core#" xmlns:xsd="http://www.w3.org/2001/XMLSchema#">
+  <channel>
+    <title>Tenth Circuit Daily Decisions</title>
+    <link>https://ca10.uscourts.gov/opinions-page</link>
+    <description>A feed of decisions posted by the United States Court of Appeals for the 10th Circuit</description>
+    <language>en</language>
+     <atom:link href="https://ca10.uscourts.gov/opinions/new/daily_decisions.rss" rel="self" type="application/rss+xml" />
+      <item>
+    <title>United States v. New Mexico Environment Department, et al.</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111452742.pdf</link>
+    <description>Docket#: 22-2132 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 09:20:01 -0600</pubDate>
+ <dc:creator>United States District Court for the District of New Mexico - Las Cruces</dc:creator>
+ <guid isPermaLink="false">11290586</guid>
+  </item>
+  <item>
+    <title>United States v. Gutierrez</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111452765.pdf</link>
+    <description>Docket#: 25-4104 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 09:20:01 -0600</pubDate>
+ <dc:creator>United States District Court for the District of Utah - Salt Lake City</dc:creator>
+ <guid isPermaLink="false">11290597</guid>
+  </item>
+  <item>
+    <title>United States v. Jackson</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111452774.pdf</link>
+    <description>Docket#: 25-6052 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 09:40:01 -0600</pubDate>
+ <dc:creator>United States District Court for the Western District of Oklahoma - Oklahoma City</dc:creator>
+ <guid isPermaLink="false">11290609</guid>
+  </item>
+  <item>
+    <title>Hamett v. City of Broken Arrow</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111452769.pdf</link>
+    <description>Docket#: 25-5165 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 09:40:01 -0600</pubDate>
+ <dc:creator>United States District Court for the Northern District of Oklahoma - Tulsa</dc:creator>
+ <guid isPermaLink="false">11290599</guid>
+  </item>
+  <item>
+    <title>Roe v. Colorado Judical Department, et al.</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111452798.pdf</link>
+    <description>Docket#: 25-1264 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 10:00:01 -0600</pubDate>
+ <dc:creator>United States District Court for the District of Colorado - Denver</dc:creator>
+ <guid isPermaLink="false">11290624</guid>
+  </item>
+  <item>
+    <title>United States v. Ortiz</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111452878.pdf</link>
+    <description>Docket#: 25-2166 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 10:40:01 -0600</pubDate>
+ <dc:creator>United States District Court for the District of New Mexico - Roswell</dc:creator>
+ <guid isPermaLink="false">11290660</guid>
+  </item>
+  <item>
+    <title>Byrd v. Pirrong, et al.</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111452923.pdf</link>
+    <description>Docket#: 25-6161 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 11:00:02 -0600</pubDate>
+ <dc:creator>United States District Court for the Western District of Oklahoma - Oklahoma City</dc:creator>
+ <guid isPermaLink="false">11290686</guid>
+  </item>
+  <item>
+    <title>Cato v. Bridges</title>
+    <link>https://ca10.uscourts.gov/sites/ca10/files/opinions/010111453139.pdf</link>
+    <description>Docket#: 24-5093 - Date Issued: Tue Jun 16 2026 - Unpublished Order and Judgment</description>
+     <pubDate>Tue, 16 Jun 2026 13:20:01 -0600</pubDate>
+ <dc:creator>United States District Court for the Northern District of Oklahoma - Tulsa</dc:creator>
+ <guid isPermaLink="false">11290799</guid>
+  </item>
+  </channel>
+</rss>
