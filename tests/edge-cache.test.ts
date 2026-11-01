@@ -43,6 +43,7 @@ describe("edge cache policy for anonymous public pages", () => {
     "/sitemap.xml",
     "/sitemaps/cases/40",
     "/sitemaps/static.xml",
+    "/pricing",
   ])("marks %s as publicly cacheable", (path) => {
     expect(cacheControl(path)).toBe(PUBLIC_EDGE_CACHE_CONTROL);
   });
@@ -54,6 +55,13 @@ describe("edge cache policy for anonymous public pages", () => {
     "/search",
     "/search?q=habeas",
     "/api/health",
+    "/signin",
+    "/signin/verify?token=x",
+    "/account",
+    "/alerts/unsubscribe?token=x",
+    "/api/auth/request",
+    "/api/follows/jv-1",
+    "/api/waitlist",
     "/api/ready",
     "/api/operations/appellate",
     "/admin",

@@ -24,3 +24,18 @@
 .accountFollowList li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--border); border-radius: 9px; }
 .accountFollowList small { display: block; color: var(--muted); }
 .accountFinePrint { margin-top: 16px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.pricingHeader { max-width: 760px; margin: 0 0 28px; }
+.pricingHeader h1 { margin: 0 0 10px; font-size: clamp(30px, 4.5vw, 44px); line-height: 1.08; }
+.pricingGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
+.pricingCard { display: flex; flex-direction: column; gap: 10px; }
+.pricingCard + .pricingCard { margin-top: 0; }
+.pricingCard.featured { border-color: var(--brand); box-shadow: 0 14px 36px rgba(8,76,200,.12); }
+.pricingCard h2 { margin: 0; }
+.pricingCard ul { margin: 0 0 8px; padding-left: 18px; color: #303a4e; line-height: 1.55; flex: 1; }
+.pricingPrice { margin: 0; font-size: 34px; font-weight: 800; }
+.pricingPrice span { font-size: 14px; font-weight: 600; color: var(--muted); }
+.pricingTagline { margin: 0; color: var(--muted); }
+.pricingSoon { display: grid; gap: 8px; }
+.pricingSoon > span { font-size: 12px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; color: #8a5a00; }
+.pricingJoined { margin: 0; padding: 10px 12px; border-radius: 8px; background: #eaf7ee; color: #14532d; }
+.pricingSr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
