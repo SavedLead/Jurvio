@@ -1,0 +1,11 @@
+.page { padding: 24px; font-size: 13px; }
+.matrix { border-collapse: collapse; width: 100%; }
+.matrix th, .matrix td { border: 1px solid #e3e3e3; padding: 4px 6px; text-align: left; vertical-align: top; }
+.matrix td small { display: block; color: #555; }
+.ok { background: #eef8ee; }
+.zero_vs_baseline { background: #fff4d6; }
+.stale { background: #fff9e8; }
+.failing { background: #fde8e8; }
+.never { background: #f3f3f3; }
+.off { background: #fafafa; color: #777; }
+.none { color: #aaa; }

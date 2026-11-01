@@ -3,7 +3,8 @@ import type { CourtFreshnessRow, CourtType } from "../domain/court-freshness";
 
 type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
 
-export type WatermarkSource = "bulk" | "scotus_official" | "coa_feed" | "district_rss" | "courtlistener";
+export type WatermarkSource = "bulk" | "scotus_official" | "coa_feed" | "district_rss" | "courtlistener"
+  | "appellate_official" | "govinfo" | "court_site" | "appellate_pacer_rss";
 
 /**
  * Recompute court_freshness rows. With `courtCodes`, only those courts are
@@ -50,8 +51,8 @@ export async function refreshCourtFreshness(
     ), marks AS (
       SELECT court_code,
         max(last_success_at) FILTER (WHERE source = 'bulk') AS bulk_at,
-        max(last_success_at) FILTER (WHERE source IN ('scotus_official', 'coa_feed', 'district_rss')) AS feed_at,
-        max(consecutive_failures) FILTER (WHERE source IN ('scotus_official', 'coa_feed', 'district_rss')) AS feed_failures,
+        max(last_success_at) FILTER (WHERE source IN ('scotus_official', 'coa_feed', 'district_rss', 'appellate_official', 'court_site', 'appellate_pacer_rss')) AS feed_at,
+        max(consecutive_failures) FILTER (WHERE source IN ('scotus_official', 'coa_feed', 'district_rss', 'appellate_official', 'court_site', 'appellate_pacer_rss')) AS feed_failures,
         max(last_success_at) FILTER (WHERE source = 'courtlistener') AS courtlistener_at,
         max(retry_after_until) FILTER (WHERE source = 'courtlistener' AND retry_after_until > now()) AS courtlistener_retry_after
       FROM court_source_watermark

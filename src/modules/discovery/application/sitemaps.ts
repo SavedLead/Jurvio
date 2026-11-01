@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 
 type Sql = ReturnType<typeof postgres>;
 /** One URL per row. Sitemap files stay under the 50,000 URL protocol limit. */
@@ -17,7 +18,7 @@ export interface SitemapRecord {
 
 export type DirectorySitemapKind = "parties" | "law-firms" | "courts" | "judges" | "government-litigation";
 
-const indexableCase = latestPublicationColumnSql("indexable", "legal_case", "legal_case.id");
+const indexableCase = `${latestPublicationColumnSql("indexable", "legal_case", "legal_case.id")} AND NOT ${searchExcludedCaseSql("legal_case")}`;
 const indexableDocument = latestPublicationColumnSql("indexable", "document", "document.id");
 
 export function sitemapPageBounds(starts: readonly string[], page: number): { start: string; end: string | null } | null {

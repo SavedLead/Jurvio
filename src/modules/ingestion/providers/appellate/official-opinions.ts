@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { conditionalRequestHeaders, type HttpValidators } from "../http-validators";
+import type { HttpValidators } from "../http-validators";
+import { circuitAdapter, dedupeAdapterItems, type AdapterRequest } from "./adapters";
 import type { AppellateCourtSource } from "./registry";
+import { CourtFetchHttpError } from "@/modules/operations/application/court-fetch-log";
 
 export interface OfficialAppellateCandidate {
   courtCode:string; docketNumber:string|null; caption:string; decidedOn:string|null;
@@ -44,31 +46,87 @@ export function parseOfficialAppellateListing(html:string,court:AppellateCourtSo
   return out;
 }
 
-export async function fetchOfficialAppellateListing(court: AppellateCourtSource, validators?: HttpValidators | null) {
-  const response = await fetch(court.opinionsUrl, {
+export interface ListingFetch {
+  url: string;
+  label: string;
+  httpStatus: number | null;
+  ok: boolean;
+  bytes: number;
+  items: number;
+  error: string | null;
+  startedAtMs: number;
+}
+
+async function fetchListingBody(request: AdapterRequest): Promise<{ status: number; body: string }> {
+  const response = await fetch(request.url, {
+    method: request.method,
     headers: {
       "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 appellate-ingestion",
-      ...conditionalRequestHeaders(validators),
+      ...(request.body ? { "content-type": "application/x-www-form-urlencoded" } : {}),
     },
+    body: request.body,
     redirect: "follow",
+    signal: AbortSignal.timeout(45_000),
   });
-  const retrievedAt = new Date().toISOString();
-  const etag = response.headers.get("etag");
-  const lastModified = response.headers.get("last-modified");
-  if (response.status === 304) {
-    return { notModified: true as const, body: "", retrievedAt, etag, lastModified, candidates: [] };
-  }
-  if (!response.ok) throw new Error(`${court.code} opinions listing returned HTTP ${response.status}`);
+  if (!response.ok) throw new CourtFetchHttpError(request.url, response.status, `${request.label} listing`);
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > MAX_LISTING_BYTES) throw new Error("appellate listing exceeds byte cap");
   const body = await response.text();
   if (Buffer.byteLength(body) > MAX_LISTING_BYTES) throw new Error("appellate listing exceeds byte cap");
-  return {
-    notModified: false as const,
-    body,
-    retrievedAt,
-    etag,
-    lastModified,
-    candidates: parseOfficialAppellateListing(body, court),
-  };
+  return { status: response.status, body };
+}
+
+/**
+ * Fetch every listing of a court's adapter and return the candidates. No
+ * conditional request headers: the ca3 server ignores them, and a stored
+ * ETag/Last-Modified from an earlier listing URL made the old code treat a
+ * changed page as unchanged and save nothing. Listings are small and items
+ * are upserted idempotently, so a full read each cycle costs little.
+ * One failing listing does not drop the others; the call throws only when
+ * every listing failed.
+ */
+export async function fetchOfficialAppellateListing(court: AppellateCourtSource, _validators?: HttpValidators | null, now = new Date()) {
+  const adapter = circuitAdapter(court.code);
+  const retrievedAt = new Date().toISOString();
+  const fetches: ListingFetch[] = [];
+  const bodies: string[] = [];
+  const candidates: OfficialAppellateCandidate[] = [];
+  if (!adapter) {
+    // No adapter: the old single-page generic parser.
+    const startedAtMs = Date.now();
+    const { status, body } = await fetchListingBody({ url: court.opinionsUrl, method: "GET", label: court.code, kind: "opinion", precedential: null });
+    const parsed = parseOfficialAppellateListing(body, court);
+    fetches.push({ url: court.opinionsUrl, label: "listing", httpStatus: status, ok: true, bytes: Buffer.byteLength(body), items: parsed.length, error: null, startedAtMs });
+    return { notModified: false as const, body, retrievedAt, etag: null, lastModified: null, candidates: parsed, fetches };
+  }
+  const errors: string[] = [];
+  for (const request of adapter.requests(now)) {
+    const startedAtMs = Date.now();
+    try {
+      const { status, body } = await fetchListingBody(request);
+      const items = dedupeAdapterItems(adapter.parse(body, request));
+      bodies.push(body);
+      for (const item of items) {
+        candidates.push({
+          courtCode: court.code, docketNumber: item.docketNumber, caption: item.caption.slice(0, 500), decidedOn: item.releasedOn,
+          documentUrl: item.documentUrl, sourceListingUrl: request.url,
+          documentHashHint: createHash("sha256").update(item.documentUrl).digest("hex"),
+        });
+      }
+      fetches.push({ url: request.url, label: request.label, httpStatus: status, ok: true, bytes: Buffer.byteLength(body), items: items.length, error: null, startedAtMs });
+    } catch (error) {
+      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      errors.push(message);
+      fetches.push({ url: request.url, label: request.label, httpStatus: error instanceof CourtFetchHttpError ? error.status : null,
+        ok: false, bytes: 0, items: 0, error: message.slice(0, 500), startedAtMs });
+    }
+  }
+  if (bodies.length === 0) {
+    const error = new Error(`${court.code}: every listing failed: ${errors.join("; ")}`);
+    (error as Error & { fetches?: ListingFetch[] }).fetches = fetches;
+    throw error;
+  }
+  const seen = new Set<string>();
+  const unique = candidates.filter((candidate) => !seen.has(candidate.documentUrl) && Boolean(seen.add(candidate.documentUrl)));
+  return { notModified: false as const, body: bodies.join("\n"), retrievedAt, etag: null, lastModified: null, candidates: unique, fetches };
 }
