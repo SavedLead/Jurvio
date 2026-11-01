@@ -55,6 +55,8 @@ const SCHEDULED_WITH_CONFIRM = new Set([
 /** Workflows checked to only read. Everything else must have a confirm gate. */
 const READ_ONLY = new Set([
   "ci.yml",
+  // Read-only session (SET default_transaction_read_only); ADR 0090.
+  "citation-coverage-report.yml",
   "disk-alarm.yml",
   "nightly-db-backup.yml",
   "google-search-console-sync.yml",

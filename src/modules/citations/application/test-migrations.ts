@@ -17,7 +17,7 @@ export async function applyMigrations(sql: Sql, names: readonly string[]): Promi
 }
 
 /** Citation migrations after 0122 that the worker code now depends on. */
-export const CITATION_WEB_MIGRATIONS = ["0170_citation_work_priority.sql"] as const;
+export const CITATION_WEB_MIGRATIONS = ["0170_citation_work_priority.sql", "0171_case_citation_edge.sql"] as const;
 
 /**
  * A throwaway schema with the citation tables and small builders, for

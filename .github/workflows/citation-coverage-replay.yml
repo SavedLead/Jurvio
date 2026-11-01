@@ -16,7 +16,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   replay:
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 15

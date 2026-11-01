@@ -21,6 +21,6 @@ export const loadCachedCaseCitations = unstable_cache(
     ]);
     return { cited, citing, counts };
   },
-  ["public-case-citations-v1"],
+  ["public-case-citations-v2"],
   { revalidate: CASE_CITATION_REVALIDATE_SECONDS },
 );
