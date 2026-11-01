@@ -23,6 +23,8 @@ export interface PublicOpinion {
   wordCount: number;
   sourceDownloadUrl: string | null;
   indexable: boolean;
+  /** Search-excluded (sealed-style) case: the opinion is shown only to paid subscribers. */
+  subscriberOnly: boolean;
 }
 
 export async function getPublicOpinion(
@@ -54,7 +56,8 @@ export async function getPublicOpinion(
         SELECT decision.indexable FROM publication_decision decision
         WHERE decision.object_type = 'document' AND decision.object_id = document.id
         ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false) AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))} AS indexable
+      ), false) AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))} AS indexable,
+      ${sql.unsafe(searchExcludedCaseSql("legal_case"))} AS "subscriberOnly"
     FROM document
     JOIN legal_case ON legal_case.id = document.case_id
     JOIN court ON court.id = legal_case.court_id

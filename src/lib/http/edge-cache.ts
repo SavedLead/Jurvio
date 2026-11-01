@@ -25,11 +25,14 @@
 
 export const PUBLIC_EDGE_CACHE_CONTROL = "public, s-maxage=300, stale-while-revalidate=600";
 
-// Customer sessions (jurvio_session) are deliberately NOT listed: public pages
-// render identically for signed-in customers (follow state, Account link and
-// pricing buttons load client-side), so they keep sharing the edge cache.
+// Customer sessions (jurvio_session) are listed too: subscriber-only case
+// records render their full content for paid customers, so no response to a
+// request carrying a customer session may be stored in the shared cache.
+// (Signed-in customers can still be served anonymous HITs; the subscriber gate
+// then reloads with ?subscriber=1, which is never cacheable.)
 // /account, /signin and /api/* are never on the allowlist below.
 export const AUTH_COOKIE_NAMES = [
+  "jurvio_session", // customer session (accounts SESSION_COOKIE)
   "jurvio_admin_session", // hosted internal session (INTERNAL_SESSION_COOKIE)
   "CF_Authorization", // Cloudflare Access session
   "__prerender_bypass", // Next draft mode
@@ -106,8 +109,12 @@ export function hasAuthCookie(cookieHeader: string | null): boolean {
   return names.some((name) => (AUTH_COOKIE_NAMES as readonly string[]).includes(name));
 }
 
+/** Query flag the subscriber gate adds so a paid customer's view is always rendered at the origin. */
+export const SUBSCRIBER_VIEW_PARAM = "subscriber";
+
 export function isPublicCacheablePath(pathname: string, searchParams: URLSearchParams): boolean {
   if (searchParams.has("_rsc")) return false;
+  if (searchParams.has(SUBSCRIBER_VIEW_PARAM)) return false;
   if (pathname === "/cases") {
     return CASES_FREE_TEXT_PARAMS.every((name) => !(searchParams.get(name) ?? "").trim());
   }

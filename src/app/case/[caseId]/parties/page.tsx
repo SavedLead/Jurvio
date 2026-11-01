@@ -3,7 +3,8 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
-import { loadRequestPublicCase } from "@/app/case/load-public-case";
+import { loadCaseForViewer } from "@/app/case/load-public-case";
+import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import { listPublicParties } from "@/modules/cases/application/list-public-case-sections";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
@@ -15,8 +16,10 @@ interface SectionPageProps { params: Promise<{ caseId: string }> }
 
 export async function generateMetadata({ params }: SectionPageProps): Promise<Metadata> {
   const { caseId } = await params;
-  const legalCase = await loadRequestPublicCase(caseId);
-  if (!legalCase) return { title: "Parties not found" };
+  const access = await loadCaseForViewer(caseId);
+  if (access.status === "missing") return { title: "Parties not found" };
+  if (access.status === "gated") return subscriberGateMetadata();
+  const legalCase = access.legalCase;
   const caption = cleanCaseCaption(legalCase.caption);
   return {
     title: [caption, "Parties", legalCase.docketNumber, legalCase.courtName].filter(Boolean).join(" | "),
@@ -31,8 +34,10 @@ export default async function PartiesPage({ params }: {
 }) {
   const { caseId } = await params;
   const sql = db();
-  const legalCase = await loadRequestPublicCase(caseId);
-  if (!legalCase) notFound();
+  const access = await loadCaseForViewer(caseId);
+  if (access.status === "missing") notFound();
+  if (access.status === "gated") return <SubscriberCaseGate path={`/case/${caseId}/parties`} />;
+  const legalCase = access.legalCase;
   const records = await listPublicParties(sql, caseId);
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {

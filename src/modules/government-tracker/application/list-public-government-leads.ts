@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
 type Sql = ReturnType<typeof postgres>;
@@ -25,6 +26,7 @@ const publicLeadSelect = `
   FROM government_litigation_lead lead
   JOIN government_source source ON source.id = lead.government_source_id
   LEFT JOIN legal_case ON legal_case.id = lead.linked_case_id AND legal_case.publication = 'published'
+    AND NOT ${searchExcludedCaseSql("legal_case")}
 `;
 
 export async function listPublicGovernmentLeads(sql: Sql, limit = 30): Promise<PublicGovernmentLead[]> {

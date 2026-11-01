@@ -1,6 +1,7 @@
 import type postgres from "postgres";
 import { publicCaseSearchReady } from "./public-case-search";
 import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type { CaseListingSort } from "@/modules/cases/domain/case-listing";
 
 type Sql = ReturnType<typeof postgres>;
@@ -74,6 +75,8 @@ export interface ListPublicCasesOptions {
   fromYear?: number | null;
   toYear?: number | null;
   sort?: CaseListingSort;
+  /** Paid subscribers only: include subscriber-only (search-excluded, sealed-style) cases. */
+  includeSubscriberOnly?: boolean;
 }
 
 /** Escapes LIKE wildcards so user text is matched literally. */
@@ -198,6 +201,9 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
       ))`);
     }
   }
+  // Subscriber-only records (sealed-style captions, court-restricted events) are
+  // listed only for paid subscribers; anonymous and Free views never include them.
+  if (!options.includeSubscriberOnly) conditions.push(sql`NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}`);
   if (courtFilter) conditions.push(sql`court.public_id = ${courtFilter}`);
   if (party) {
     const pattern = containsPattern(party);

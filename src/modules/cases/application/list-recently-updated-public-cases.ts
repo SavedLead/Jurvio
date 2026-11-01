@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -44,6 +45,7 @@ export async function listRecentlyUpdatedPublicCases(
           ORDER BY decision.decided_at DESC, decision.id DESC
           LIMIT 1
         ), false)
+        AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
       ORDER BY legal_case.updated_at DESC
       LIMIT ${RECENT_CANDIDATE_POOL}
     )

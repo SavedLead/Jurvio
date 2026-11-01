@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { isMissingTable } from "./public-directory-stats";
@@ -177,6 +178,7 @@ export async function getPublicEntity(
     JOIN legal_case ON legal_case.id = appearance.case_id
     JOIN court ON court.id = legal_case.court_id
     WHERE entity.public_id = ${publicId} AND ${sql.unsafe(displayableCase)}
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
     ORDER BY legal_case.filed_on DESC NULLS LAST, legal_case.caption, appearance.role
     LIMIT 100
   `;
@@ -277,6 +279,7 @@ export async function getPublicCourt(sql: Sql, publicId: string): Promise<CourtD
     JOIN legal_case ON legal_case.id = recent.id
     WHERE legal_case.publication = 'published'
       AND ${sql.unsafe(visibleCaseById)}
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
     ORDER BY recent.ord
   ` : [];
   return { ...profile, caseCount, cases };
@@ -303,6 +306,7 @@ export async function getPublicCourtLive(sql: Sql, publicId: string): Promise<Co
       legal_case.docket_number AS "docketNumber", legal_case.filed_on::text AS "filedOn"
     FROM legal_case JOIN court ON court.id = legal_case.court_id
     WHERE court.public_id = ${publicId} AND ${sql.unsafe(displayableCase)}
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
     ORDER BY legal_case.filed_on DESC NULLS LAST, legal_case.caption LIMIT 100
   `;
   return { ...court, cases };

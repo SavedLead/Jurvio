@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 import { isMissingTable } from "@/modules/directory/application/public-directory-stats";
 
@@ -207,6 +208,7 @@ export async function getPublicJudge(sql: Sql, publicId: string): Promise<JudgeA
     JOIN legal_case ON legal_case.id = assignment.case_id
     JOIN court ON court.id = legal_case.court_id
     WHERE judge.public_id = ${publicId} AND ${sql.unsafe(displayableCase)}
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
     ORDER BY legal_case.filed_on DESC NULLS LAST, legal_case.caption
     LIMIT 50
   `;
