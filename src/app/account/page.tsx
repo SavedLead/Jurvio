@@ -6,6 +6,7 @@ import { loadAccount } from "@/modules/accounts/application/account";
 import { formatMonthlyPrice } from "@/modules/accounts/domain/plans";
 import { currentUser } from "@/modules/accounts/http/session";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { UnfollowButton } from "@/modules/accounts/ui/unfollow-button";
 import "../account-pages.css";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +48,7 @@ export default async function AccountPage() {
               <Link href={`/case/${follow.casePublicId}` as Route}>{cleanCaseCaption(follow.caption)}</Link>
               <small>{[follow.courtName, follow.docketNumber].filter(Boolean).join(" · ")}</small>
             </span>
+            <UnfollowButton caseId={follow.casePublicId} />
           </li>)}
         </ul>}
     </section>
