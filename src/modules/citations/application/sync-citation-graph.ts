@@ -58,11 +58,27 @@ async function insertDocumentCitations(tx: postgres.TransactionSql, rows: readon
   }
 }
 
-export async function syncCitationGraph(sql: Sql, limit: number) {
+/** Queue rows at or above this priority are live work (migration 0170). */
+export const LIVE_CITATION_PRIORITY = 10;
+
+export interface SyncCitationGraphOptions {
+  /**
+   * Only take queue rows with priority >= this value. The resident worker
+   * passes LIVE_CITATION_PRIORITY for its live pass so new opinions never wait
+   * behind the backfill; omitted, every row is eligible (highest priority first).
+   */
+  minPriority?: number;
+  /** Only take rows with priority <= this value (builder backfill leaves live rows to the resident lane). */
+  maxPriority?: number;
+}
+
+export async function syncCitationGraph(sql: Sql, limit: number, options: SyncCitationGraphOptions = {}) {
+  const minPriority = options.minPriority ?? -32768;
+  const maxPriority = options.maxPriority ?? 32767;
   // Lock queue rows for each transaction. Content changes arriving concurrently
   // either queue after the delete or are read in the next cycle; work is durable.
   const identities = await sql.begin(async tx => {
-    const cases = await tx<{case_id: string}[]>`SELECT case_id FROM case_citation_work ORDER BY queued_at, case_id LIMIT ${limit} FOR UPDATE SKIP LOCKED`;
+    const cases = await tx<{case_id: string}[]>`SELECT case_id FROM case_citation_work WHERE priority BETWEEN ${minPriority} AND ${maxPriority} ORDER BY priority DESC, queued_at, case_id LIMIT ${limit} FOR UPDATE SKIP LOCKED`;
     if (!cases.length) return 0;
     const ids = cases.map(row => row.case_id);
     const records = await tx<{id: string; official_citation: string | null; citations: unknown; verified_labels:unknown; cluster_ids:string[]}[]>`
@@ -82,7 +98,7 @@ export async function syncCitationGraph(sql: Sql, limit: number) {
     return cases.length;
   });
   const documents = await sql.begin(async tx => {
-    const queue = await tx<{document_id: string}[]>`SELECT document_id FROM document_citation_work ORDER BY queued_at, document_id LIMIT ${limit} FOR UPDATE SKIP LOCKED`;
+    const queue = await tx<{document_id: string}[]>`SELECT document_id FROM document_citation_work WHERE priority BETWEEN ${minPriority} AND ${maxPriority} ORDER BY priority DESC, queued_at, document_id LIMIT ${limit} FOR UPDATE SKIP LOCKED`;
     if (!queue.length) return 0;
     const ids = queue.map(row => row.document_id);
     const records = await tx<{document_id: string; content_text: string; content_html:string; content_hash: string; source_artifact_id: string}[]>`

@@ -132,9 +132,9 @@ export async function resolveMissingCitationsFromBulk(
           source_artifact_id=EXCLUDED.source_artifact_id, verified_at=now()
       `;
       await tx`
-        INSERT INTO case_citation_work(case_id,queued_at)
-        SELECT DISTINCT r.case_id::uuid, 'epoch'::timestamptz FROM jsonb_to_recordset(${rows}) AS r(key text, cluster text, case_id text)
-        ON CONFLICT(case_id) DO UPDATE SET queued_at='epoch'::timestamptz
+        INSERT INTO case_citation_work(case_id,queued_at,priority)
+        SELECT DISTINCT r.case_id::uuid, 'epoch'::timestamptz, 10 FROM jsonb_to_recordset(${rows}) AS r(key text, cluster text, case_id text)
+        ON CONFLICT(case_id) DO UPDATE SET queued_at='epoch'::timestamptz, priority=GREATEST(case_citation_work.priority,10)
       `;
       await tx`
         UPDATE missing_case_citation m SET state='pending', resolved_cluster_id=r.cluster::bigint, resolved_snapshot=${snapshot},

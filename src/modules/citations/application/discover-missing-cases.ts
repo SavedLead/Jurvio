@@ -91,8 +91,8 @@ export async function discoverMissingCases(sql: Sql, store: ArtifactStore, limit
             source_artifact_id=EXCLUDED.source_artifact_id,verified_at=now()`;
         // Prioritize this exact known target for the next identity batch. Do not
         // reset privacy decisions or reingest a case already held locally.
-        await sql`INSERT INTO case_citation_work(case_id,queued_at) VALUES(${local[0]!.case_id},'epoch'::timestamptz)
-          ON CONFLICT(case_id) DO UPDATE SET queued_at='epoch'::timestamptz`;
+        await sql`INSERT INTO case_citation_work(case_id,queued_at,priority) VALUES(${local[0]!.case_id},'epoch'::timestamptz,10)
+          ON CONFLICT(case_id) DO UPDATE SET queued_at='epoch'::timestamptz,priority=GREATEST(case_citation_work.priority,10)`;
         await sql`UPDATE missing_case_citation SET state='pending',attempts=attempts+1,
           next_attempt_at=now()+interval '2 minutes',source_artifact_id=${artifact.id},
           detail='Exact local source cluster found; citation identity refresh prioritized',updated_at=now() WHERE citation_key=${cite.citation_key}`;

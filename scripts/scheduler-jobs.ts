@@ -27,7 +27,11 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // finished before the next pass and kept the disk busy under search.
     intervalMs: 15 * minute,
     budgetMs: 12 * minute,
-    command: ["jobs/run-case-citations.mjs", "--limit=200", "--discover=10"],
+    // Live work (new/changed opinions, priority 10) first, looping 500-row
+    // batches for up to 6 minutes, then at most 4 backfill batches. The bulk
+    // backfill drains on builder-01 (citation-backfill-builder.yml), so this
+    // lane stops well inside its 12-minute kill budget (ADR 0090).
+    command: ["jobs/run-case-citations.mjs", "--limit=500", "--discover=10", "--budget-seconds=360", "--pause-ms=500", "--backfill-batches=4", "--publish-limit=200"],
   },
   {
     // Daily offline resolution of new missing citations against the newest
