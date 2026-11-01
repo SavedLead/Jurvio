@@ -17,7 +17,11 @@ export async function applyMigrations(sql: Sql, names: readonly string[]): Promi
 }
 
 /** Citation migrations after 0122 that the worker code now depends on. */
-export const CITATION_WEB_MIGRATIONS = ["0170_citation_work_priority.sql", "0172_case_citation_edge.sql"] as const;
+export const CITATION_WEB_MIGRATIONS = [
+  "0170_citation_work_priority.sql",
+  "0172_case_citation_edge.sql",
+  "0173_courtlistener_citation_map.sql",
+] as const;
 
 /**
  * A throwaway schema with the citation tables and small builders, for
@@ -71,6 +75,21 @@ export async function citationTestSchema(sql: Sql, prefix: string, extra: readon
       await sql`INSERT INTO document_content(document_id,content_html,content_text,content_hash,extraction_method,word_count,source_artifact_id)
         VALUES(${doc!.id},'<p></p>',${text},${hash},'fixture',1,${artifact!.id})`;
       return doc!.id;
+    },
+    /** A CourtListener-sourced opinion: cluster + judicial_opinion rows over addOpinion. */
+    async addClOpinion(caseId: string, clusterId: number, opinionId: number, text: string, options: { publication?: string; displayable?: boolean } = {}) {
+      const documentId = await this.addOpinion(caseId, text, options);
+      const [cluster] = await sql<{ id: string }[]>`INSERT INTO opinion_cluster(public_id,case_id,provider_id,provider_cluster_id,case_name,source_artifact_id)
+        VALUES(${`jo-cl${clusterId}`},${caseId},${provider!.id},${String(clusterId)},'Fixture',${artifact!.id})
+        ON CONFLICT (provider_id, provider_cluster_id) DO UPDATE SET case_name = EXCLUDED.case_name RETURNING id`;
+      await sql`INSERT INTO judicial_opinion(cluster_id,document_id,provider_id,provider_opinion_id,opinion_type,source_artifact_id)
+        VALUES(${cluster!.id},${documentId},${provider!.id},${String(opinionId)},'lead',${artifact!.id})`;
+      return documentId;
+    },
+    /** A cluster Jurvio holds without any CourtListener opinion document. */
+    async addClCluster(caseId: string, clusterId: number) {
+      await sql`INSERT INTO opinion_cluster(public_id,case_id,provider_id,provider_cluster_id,case_name,source_artifact_id)
+        VALUES(${`jo-cl${clusterId}`},${caseId},${provider!.id},${String(clusterId)},'Fixture',${artifact!.id})`;
     },
     async drop() {
       await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined);
