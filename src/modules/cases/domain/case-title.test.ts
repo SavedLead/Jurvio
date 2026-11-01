@@ -60,10 +60,18 @@ describe("case titles", () => {
       decidedOn: "2025-12-01",
     });
     expect(title.endsWith(", No. 24-60471 (5th Cir. 2025)")).toBe(true);
-    expect(title.length).toBeLessThanOrEqual(64);
+    expect(title.length).toBeLessThanOrEqual(72);
     expect(title.startsWith("Nat'l Ass'n of")).toBe(true);
     expect(buildCaseTitle({ caption: "Securities and Exchange Commission v. Coinbase, Inc.", docketNumber: "1:23-cv-04738", courtName: "Southern District of New York", filedOn: "2023-06-06", decidedOn: null }))
       .toBe("Sec. & Exch. Comm'n v. Coinbase, No. 1:23-cv-04738 (S.D.N.Y. 2023)");
+  });
+
+  it("never cuts a defendant name mid-word", () => {
+    expect(buildCaseTitle({ caption: "United States v. Gardea-Gutierrez", docketNumber: "2:26-cr-04445", courtName: "", providerCourtId: "nmd", filedOn: "2026-09-01", decidedOn: null }))
+      .toBe("United States v. Gardea-Gutierrez, No. 2:26-cr-04445 (D.N.M. 2026)");
+    const long = buildCaseTitle({ caption: "Supercalifragilisticexpialidocious Holdings v. Antidisestablishmentarianism Partners", docketNumber: "1:26-cv-00001", courtName: "", providerCourtId: "nysd", filedOn: "2026-01-01", decidedOn: null });
+    expect(long).toMatch(/^Supercalifragilisticexpialidocious… v\. |^Supercalifragilisticexpialidocious Holdings v\. /);
+    expect(long.endsWith("(S.D.N.Y. 2026)")).toBe(true);
   });
 
   it("omits an unknown court rather than guessing", () => {
