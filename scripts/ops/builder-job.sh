@@ -17,16 +17,25 @@ job="$1"; shift
 : "${INGESTION_USER:?}" "${DB_HOST:?}" "${GH_TOKEN:?}"
 JOB_CPUS="${JOB_CPUS:-1.25}"; JOB_MEMORY="${JOB_MEMORY:-2500m}"
 work="$(mktemp -d)"; chmod 700 "$work"
-tunnel_pid=""
-cleanup() {
-  [ -n "$tunnel_pid" ] && kill "$tunnel_pid" 2>/dev/null || true
-  rm -rf "$work"
-}
-trap cleanup EXIT
-
 # SSH_CONFIG_FILE: per-run config written by the workflow (keeps ~/.ssh untouched).
 ssh_cfg=(); [ -n "${SSH_CONFIG_FILE:-}" ] && ssh_cfg=(-F "$SSH_CONFIG_FILE")
-remote() { ssh "${ssh_cfg[@]}" "$INGESTION_USER@$DB_HOST" "$@"; }
+# ONE multiplexed SSH connection for every remote call and the DB tunnel: web-01
+# rate-limits new SSH connections, and the 7th connection in a few seconds (the
+# tunnel) was refused (coverage report run 41326100876).
+cm="$(mktemp -u /tmp/jvcm.XXXXXXXX)"
+ssh_cfg+=(-o "ControlPath=$cm")
+target="$INGESTION_USER@$DB_HOST"
+cleanup() {
+  ssh "${ssh_cfg[@]}" -O exit "$target" >/dev/null 2>&1 || true
+  rm -rf "$work" "$cm"
+}
+trap cleanup EXIT
+for attempt in 1 2 3 4; do
+  ssh "${ssh_cfg[@]}" -o ControlMaster=yes -o ControlPersist=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -fN "$target" && break
+  [ "$attempt" = 4 ] && { echo "::error::cannot open SSH to web-01"; exit 1; }
+  sleep $((attempt * 20))
+done
+remote() { ssh "${ssh_cfg[@]}" "$target" "$@"; }
 worker="$(remote "sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=worker-citations --format '{{.ID}}' | head -n1")"
 [ -n "$worker" ] || worker="$(remote "sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=worker-core --format '{{.ID}}' | head -n1")"
 [ -n "$worker" ] || { echo "::error::no running jurvio worker container on web-01"; exit 1; }
@@ -44,11 +53,13 @@ grep -q '^DATABASE_URL=' "$work/raw.env" || { echo "::error::worker has no DATAB
 
 port=5432; host="$bind_host"
 if [ "$bind_host" = "127.0.0.1" ] || ! timeout 5 bash -c "</dev/tcp/$bind_host/5432" 2>/dev/null; then
-  port=15432; host=127.0.0.1
-  ssh "${ssh_cfg[@]}" -N -o ExitOnForwardFailure=yes -L "127.0.0.1:$port:$bind_host:5432" "$INGESTION_USER@$DB_HOST" &
-  tunnel_pid=$!
-  for _ in $(seq 1 20); do timeout 2 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null && break; sleep 1; done
-  echo "database route: ssh tunnel via web-01"
+  # Free local port per run (concurrent builder jobs must not share 15432).
+  port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"; host=127.0.0.1
+  ssh "${ssh_cfg[@]}" -O forward -L "127.0.0.1:$port:$bind_host:5432" "$target" >/dev/null
+  up=""
+  for _ in $(seq 1 20); do timeout 2 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null && { up=1; break; }; sleep 1; done
+  [ -n "$up" ] || { echo "::error::database tunnel via web-01 did not come up"; exit 1; }
+  echo "database route: ssh tunnel via web-01 (multiplexed, local port $port)"
 else
   echo "database route: direct over the private VPC"
 fi
