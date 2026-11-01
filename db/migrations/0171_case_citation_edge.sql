@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS case_citation_edge (
   sources smallint NOT NULL,
   citing_filed_on date,
   refreshed_at timestamptz NOT NULL DEFAULT now(),
+  -- When this citing-case -> cited-case pair first appeared (kept by upserts);
+  -- citation-follow alerts read it together with citing_filed_on.
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (citing_case_id, cited_case_id)
 );
 CREATE INDEX IF NOT EXISTS case_citation_edge_cited_idx
