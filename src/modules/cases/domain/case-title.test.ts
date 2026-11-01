@@ -79,3 +79,18 @@ describe("case titles", () => {
       .toBe("A v. B, No. 1 (2020)");
   });
 });
+
+describe("caption fixes (warrants, count prefixes, entities)", () => {
+  it("does not build United States v. for warrant / in rem magistrate captions", () => {
+    const raw = "1 One Electronic Device for Evidence of Violations of 18 U.S.C. &#x26;#167; 2252A";
+    expect(displayCaption(raw, "5:26-mj-70358", "district")).toBe("1 One Electronic Device for Evidence of Violations of 18 U.S.C. § 2252A");
+    expect(displayCaption("Black Apple iPhone", "2:26-mj-00001", "district")).toBe("Black Apple iPhone");
+    expect(displayCaption("123 Main Street Premises", "2:26-mj-00001", "district")).toBe("123 Main Street Premises");
+    expect(displayCaption("Google Account foo@example.com", "2:26-mj-00001", "district")).toBe("Google Account foo@example.com");
+  });
+
+  it("strips PACER defendant-number prefixes and normalizes USA", () => {
+    expect(displayCaption("1 USA v. Nino-Rojas", "3:26-mj-04918", "district")).toBe("United States v. Nino-Rojas");
+    expect(displayCaption("2 United States of America v. Doe", "1:26-cr-00001", "district")).toBe("United States v. Doe");
+  });
+});

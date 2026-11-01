@@ -1,4 +1,4 @@
-import { docketCaseType, type CourtKind } from "./record-answers";
+import { decodeHtmlEntities, docketCaseType, isInRemCaption, type CourtKind } from "./record-answers";
 
 /**
  * Bluebook-style page titles: "United States v. Olsen, No. 1:26-cr-00123 (E.D. Cal. 2026)".
@@ -96,7 +96,12 @@ const NOT_A_DEFENDANT_NAME = /\b(?:v|vs)\.?\s|\bin re\b|\bmatter of\b|\bex parte
  */
 export function displayCaption(caption: string, docketNumber: string, courtKind: CourtKind | undefined): string {
   // Drop PACER caption tags such as "(HC) " (E.D. Cal. habeas); record-answers reads them via captionTag().
-  const value = caption.replace(/\s+/g, " ").trim().replace(/^\([A-Z]{2}\)\s+/, "");
+  const value = decodeHtmlEntities(caption)
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\([A-Z]{2}\)\s+/, "")
+    // PACER RSS prefixes the defendant number: "1 USA v. Nino-Rojas".
+    .replace(/^\d+\s+(?=(?:the\s+)?(?:usa|u\.\s?s\.|united states)\b)/i, "");
   const adversarial = /^(.+?)\s+(?:v|vs)\.?\s+(.+)$/i.exec(value);
   if (adversarial?.[1] && adversarial[2] && GOVERNMENT_PARTY.test(adversarial[1].trim())) {
     return `United States v. ${adversarial[2].trim()}`;
@@ -107,6 +112,7 @@ export function displayCaption(caption: string, docketNumber: string, courtKind:
     && ["cr", "mj", "po"].includes(docketCaseType(docketNumber) ?? "")
     && !adversarial
     && !NOT_A_DEFENDANT_NAME.test(value)
+    && !isInRemCaption(value)
     && /[a-z]/i.test(value)
     && value.length <= 120
   ) {
