@@ -5,18 +5,19 @@ import {
   COA_FEED_SOURCES, COA_WITHOUT_FEED, cleanCaption, coaEntryDescription, dedupeCoaItems, feedDate,
   normalizeDocket, parseCoaFeed, precedentialFrom,
 } from "./coa-feeds";
+import { CIRCUIT_ADAPTERS } from "../providers/appellate/adapters";
 
 // Fixtures are real responses fetched on 2026-10-30 (cafc trimmed to 20 items).
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
 const parse = (court: string, index: number, file: string) => parseCoaFeed(fixture(file), court, COA_FEED_SOURCES[court]![index]!);
 
 describe("court of appeals feed registry", () => {
-  it("covers all 13 circuits, either with a feed or a documented reason", () => {
+  it("covers all 13 circuits with an adapter and no documented gaps", () => {
     const all = ["ca1", "ca2", "ca3", "ca4", "ca5", "ca6", "ca7", "ca8", "ca9", "ca10", "ca11", "cadc", "cafc"];
-    const covered = [...Object.keys(COA_FEED_SOURCES), ...Object.keys(COA_WITHOUT_FEED)].sort();
-    expect(covered).toEqual([...all].sort());
-    for (const sources of Object.values(COA_FEED_SOURCES)) {
-      for (const source of sources) expect(source.url).toMatch(/^https:\/\/[a-z0-9.]+\.uscourts\.gov\//);
+    expect(Object.keys(CIRCUIT_ADAPTERS).sort()).toEqual([...all].sort());
+    expect(COA_WITHOUT_FEED).toEqual({});
+    for (const adapter of Object.values(CIRCUIT_ADAPTERS)) {
+      for (const request of adapter.requests(new Date())) expect(request.url).toMatch(/^https:\/\/[a-z0-9.]+\.uscourts\.gov\//);
     }
   });
 });
