@@ -1,0 +1,113 @@
+name: Diagnose 'Where this case stands' coverage (once, read-only)
+
+# Read-only estimate of how many published cases get a meaningful
+# "Where this case stands" summary. Pulls a deterministic ~1.6% sample of
+# published, displayable cases (hash of public_id) with the same fields the
+# case page reads, then runs the page's own buildCaseStanding() on the runner.
+# Changes nothing: default_transaction_read_only=on, one SELECT.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-case-stands-coverage
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 60
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Export the sample over private VPC (read-only SQL)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' > "$RUNNER_TEMP/sample.jsonl"
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "postgres missing" >&2; exit 1; }
+          sudo -n docker exec -i \
+            -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=1500s -c lock_timeout=5s' \
+            "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At <<'SQL'
+          WITH sampled AS (
+            SELECT c.* FROM legal_case c
+             WHERE c.publication = 'published' AND (hashtext(c.public_id) & 1023) < 16
+               AND COALESCE(
+                 (SELECT cur.displayable FROM publication_current cur WHERE cur.object_type = 'legal_case' AND cur.object_id = c.id),
+                 (SELECT dec.displayable FROM publication_decision dec WHERE dec.object_type = 'legal_case' AND dec.object_id = c.id ORDER BY dec.decided_at DESC, dec.id DESC LIMIT 1),
+                 false)
+          )
+          SELECT json_build_object(
+            'tier', (SELECT t.tier::text FROM publication_tier_release t WHERE t.case_id = c.id AND t.state = 'published' LIMIT 1),
+            'jurisdiction', ct.jurisdiction, 'courtName', ct.name, 'courtCode', ct.provider_court_id, 'caption', c.caption,
+            'decidedOn', c.decided_on::text, 'filedOn', c.filed_on::text, 'terminatedOn', c.terminated_on::text,
+            'dispositionScope', c.disposition_scope::text, 'verification', c.verification::text,
+            'exactDisposition', e.exact_disposition, 'exactHolding', e.exact_holding, 'lowerCourtName', e.lower_court_name,
+            'clusterDisposition', (SELECT oc.provider_metadata->>'disposition' FROM opinion_cluster oc WHERE oc.case_id = c.id
+                AND coalesce(oc.provider_metadata->>'disposition', '') <> '' ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1),
+            'precedentialStatus', (SELECT oc.precedential_status FROM opinion_cluster oc WHERE oc.case_id = c.id
+                AND oc.precedential_status IS NOT NULL ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1),
+            'votesMajority', (SELECT oc.provider_metadata->>'scdb_votes_majority' FROM opinion_cluster oc WHERE oc.case_id = c.id
+                AND coalesce(oc.provider_metadata->>'scdb_votes_majority', '') ~ '^[0-9]$' ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1),
+            'votesMinority', (SELECT oc.provider_metadata->>'scdb_votes_minority' FROM opinion_cluster oc WHERE oc.case_id = c.id
+                AND coalesce(oc.provider_metadata->>'scdb_votes_majority', '') ~ '^[0-9]$' ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1),
+            'opinionTail', (SELECT right(dc.content_text, 1600) FROM document d
+                JOIN document_content dc ON dc.document_id = d.id
+                LEFT JOIN judicial_opinion j ON j.document_id = d.id
+               WHERE d.case_id = c.id AND d.publication = 'published' AND dc.content_text ~ '\S'
+                 AND COALESCE((SELECT cur.displayable FROM publication_current cur WHERE cur.object_type = 'document' AND cur.object_id = d.id), false)
+                 AND (COALESCE(j.per_curiam, false) OR coalesce(j.opinion_type, '') !~* 'dissent|concur|rehearing')
+               ORDER BY (COALESCE(j.per_curiam, false) OR coalesce(j.opinion_type, '') ~* 'majority|lead|combined') DESC, d.filed_on DESC NULLS LAST LIMIT 1),
+            'overruled', (SELECT json_agg(p.text) FROM (SELECT p.text FROM courtlistener_parenthetical p WHERE p.cited_case_id = c.id
+                AND p.text ~* '^\s*((expressly|implicitly|partially)\s+)?(overruled|abrogated)\M' ORDER BY p.score DESC NULLS LAST LIMIT 5) p),
+            'docket', (SELECT json_agg(json_build_object('filedOn', x.filed_on::text, 'description', x.description)) FROM (
+                SELECT entry.filed_on, entry.description FROM docket_entry entry WHERE entry.case_id = c.id
+                  AND COALESCE((SELECT cur.displayable FROM publication_current cur WHERE cur.object_type = 'docket_entry' AND cur.object_id = entry.id), false)
+                ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST LIMIT 250) x)
+          )
+          FROM sampled c
+          JOIN court ct ON ct.id = c.court_id
+          LEFT JOIN scotus_case_enrichment e ON e.case_id = c.id AND e.verification = 'verified';
+          SQL
+          REMOTE
+          echo "sample rows: $(wc -l < "$RUNNER_TEMP/sample.jsonl")"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Run the page's buildCaseStanding() over the sample
+        run: |
+          set -euo pipefail
+          pnpm exec tsx scripts/diagnose-case-stands-coverage.ts "$RUNNER_TEMP/sample.jsonl" 0.015625 | tee "$RUNNER_TEMP/report.txt"
+          { echo '```'; cat "$RUNNER_TEMP/report.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
