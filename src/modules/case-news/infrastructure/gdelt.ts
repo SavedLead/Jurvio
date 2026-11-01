@@ -2,8 +2,8 @@ import { RateLimitedError, type FetchBudget } from "@/modules/ingestion/live-fee
 import type { CaseNewsTerms, PartyTerm } from "../domain/case-terms";
 
 export const GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc";
-/** GDELT asks for at most one request every 5 seconds. */
-export const GDELT_MIN_INTERVAL_MS = 6_000;
+/** GDELT asks for at most one request every 5 seconds; in practice it throttles well below that, so pace at 10 s. */
+export const GDELT_MIN_INTERVAL_MS = 10_000;
 
 export interface GdeltArticle {
   url: string;

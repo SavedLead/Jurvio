@@ -126,9 +126,35 @@ async function markQueried(sql: Sql, candidate: CaseNewsCandidate, now: Date, re
       query_count = case_news_query_state.query_count + 1`;
 }
 
+/**
+ * GDELT's throttle lengthens with use: once an IP is throttled, steady retries keep
+ * it blocked (observed from the box and from production, 2026-11-01). After a
+ * rate-limited pass, skip GDELT for 1 h, then 2 h, 4 h ... up to 12 h per
+ * consecutive rate-limited pass, instead of asking again every 30 minutes.
+ */
+export const GDELT_COOLDOWN_BASE_MS = 60 * 60_000;
+export const GDELT_COOLDOWN_MAX_MS = 12 * 60 * 60_000;
+
+export async function gdeltCooldownUntil(sql: Sql): Promise<Date | null> {
+  const rows = await sql<{ rate_limited: boolean; finished_at: Date }[]>`
+    SELECT rate_limited, finished_at FROM case_news_run
+    WHERE source = 'gdelt' AND NOT (detail ? 'skipped')
+    ORDER BY id DESC LIMIT 8`;
+  let streak = 0;
+  for (const row of rows) { if (!row.rate_limited) break; streak += 1; }
+  if (streak === 0) return null;
+  const wait = Math.min(GDELT_COOLDOWN_BASE_MS * 2 ** (streak - 1), GDELT_COOLDOWN_MAX_MS);
+  return new Date(new Date(rows[0]!.finished_at).getTime() + wait);
+}
+
 async function runGdelt(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRunSummary> {
   const summary = emptySummary("gdelt");
   const now = options.now ?? (() => new Date());
+  const cooldown = await gdeltCooldownUntil(sql);
+  if (cooldown && cooldown.getTime() > now().getTime()) {
+    summary.detail = { skipped: "rate-limit cooldown", until: cooldown.toISOString() };
+    return summary;
+  }
   const samples: unknown[] = [];
   const tierCounts: Record<string, number> = {};
   const budget = new FetchBudget({
@@ -185,8 +211,8 @@ async function runGdelt(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRu
   return summary;
 }
 
-/** Max throttle notices tolerated per run, each followed by a growing pause. */
-export const GDELT_MAX_THROTTLE_RETRIES = 4;
+/** Max throttle notices tolerated per run; more retries only lengthen GDELT's block (see gdeltCooldownUntil). */
+export const GDELT_MAX_THROTTLE_RETRIES = 1;
 
 /**
  * GDELT answers bursts with a plain-text throttle notice. Pause (30 s, 60 s, ...)
@@ -263,7 +289,22 @@ async function runCourthouseNews(sql: Sql, options: CaseNewsRunOptions): Promise
   return summary;
 }
 
+/** Max cases the RSS matcher checks each item against. */
+const RSS_POOL_LIMIT = 5000;
+
+/**
+ * Cases the RSS items are matched against: every recent SCOTUS and courts-of-appeals
+ * case (whatever its GDELT schedule, so RSS coverage does not wait on GDELT), plus
+ * every case GDELT has already queried.
+ */
 async function selectActiveForRss(sql: Sql): Promise<CaseNewsCandidate[]> {
+  const priority = await selectCaseNewsCandidates(sql, { limit: 2000, tiers: ["scotus", "appeals"], ignoreSchedule: true });
+  const queried = await selectQueriedForRss(sql);
+  const seen = new Set(priority.map((candidate) => candidate.caseId));
+  return [...priority, ...queried.filter((candidate) => !seen.has(candidate.caseId))].slice(0, RSS_POOL_LIMIT);
+}
+
+async function selectQueriedForRss(sql: Sql): Promise<CaseNewsCandidate[]> {
   return sql.unsafe<CaseNewsCandidate[]>(`
     SELECT c.id AS "caseId", c.public_id AS "publicId", c.caption, c.docket_number AS "docketNumber",
       c.filed_on::text AS "filedOn", c.decided_on::text AS "decidedOn", ct.provider_court_id AS "courtCode", ct.name AS "courtName",
