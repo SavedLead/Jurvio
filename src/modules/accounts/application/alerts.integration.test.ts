@@ -82,7 +82,7 @@ describe.skipIf(!databaseUrl)("followed-case alert digests", () => {
     const legalCase = await fx.createCase();
     await followCase(sql, userId, legalCase.publicId);
     await sql`UPDATE case_follow SET last_alerted_entry_created_at = now() - interval '1 hour' WHERE user_id = ${userId}`;
-    await sql`UPDATE legal_case SET caption = 'IN RE SEALED MATTER' WHERE id = ${legalCase.id}`;
+    await sql`UPDATE legal_case SET caption = 'UNDER SEAL V. MATTER' WHERE id = ${legalCase.id}`;
     await fx.addDocketEntry(legalCase.id, "Sealed order", { createdAt: ago(20) });
     const run = capture();
     await runAlertDigests(sql, deps(run.provider));
