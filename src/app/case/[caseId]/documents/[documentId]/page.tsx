@@ -170,7 +170,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
               <section className="citationRail">
                 <h2>Cases cited <span className="citationCount">{citationSummary.cases.toLocaleString("en-US")}</span></h2>
                 <p>{citationCountLine(citationSummary.cases, citationSummary.onJurvio)}</p>
-                {outgoingTargets.length ? <ul>{[...new Map(outgoingTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{target.caption}</Link></li>)}</ul> : null}
+                {outgoingTargets.length ? <ul>{[...new Map(outgoingTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{cleanCaseCaption(target.caption)}</Link></li>)}</ul> : null}
                 {citationSummary.notYetOnJurvio.length ? (
                   <details className="citationPendingList">
                     <summary>Not yet on Jurvio ({citationSummary.notYetOnJurvio.length})</summary>

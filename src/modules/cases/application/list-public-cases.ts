@@ -93,18 +93,39 @@ function clean(value: string | null | undefined) {
 }
 
 /**
+ * Courts are stored once per provider (CourtListener, direct court feeds), so the
+ * same court can appear under two names: "Court of Appeals for the Ninth Circuit"
+ * and "United States Court of Appeals for the Ninth Circuit", or two rows both named
+ * "Supreme Court of the United States". The facet groups courts by this key, and a
+ * court filter matches every court with the same key.
+ */
+export function courtFacetKeySql(alias = "court") {
+  return `regexp_replace(lower(regexp_replace(${alias}.name, '^\\s*(the\\s+)?(united\\s+states|u\\.\\s?s\\.)\\s+', '', 'i')), '[^a-z0-9]+', ' ', 'g')`;
+}
+
+/** Same normalization as courtFacetKeySql, for tests and callers outside SQL. */
+export function courtFacetKey(name: string) {
+  return name.replace(/^\s*(the\s+)?(united\s+states|u\.\s?s\.)\s+/i, "").toLowerCase().replace(/[^a-z0-9]+/g, " ");
+}
+
+/**
  * Court facet for /cases from court_public_stats (refreshed off the request
  * path by `public-directory-stats`). Falls back to the live GROUP BY over every
- * published case when the table is missing or not refreshed yet.
+ * published case when the table is missing or not refreshed yet. Duplicate court
+ * rows (see courtFacetKeySql) are merged: the value is the busiest row's public id
+ * and the label the most formal (longest) name.
  */
 export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
   try {
     const rows = await sql<CourtFacet[]>`
-      SELECT court.public_id AS value, court.name AS label, stats.case_count AS count
+      SELECT (array_agg(court.public_id ORDER BY stats.case_count DESC, court.public_id))[1] AS value,
+        (array_agg(court.name ORDER BY length(court.name) DESC, stats.case_count DESC))[1] AS label,
+        sum(stats.case_count)::int AS count
       FROM court_public_stats stats
       JOIN court ON court.id = stats.court_id
       WHERE stats.case_count > 0
-      ORDER BY stats.case_count DESC, court.name
+      GROUP BY ${sql.unsafe(courtFacetKeySql())}
+      ORDER BY count DESC, label
     `;
     if (rows.length) return rows;
   } catch (error) {
@@ -115,20 +136,27 @@ export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
 
 export async function listPublicCaseCourtsLive(sql: Sql): Promise<CourtFacet[]> {
   return sql<CourtFacet[]>`
-    SELECT court.public_id AS value, court.name AS label, count(*)::int AS count
-    FROM legal_case
-    JOIN court ON court.id = legal_case.court_id
-    WHERE legal_case.publication = 'published'
-      AND COALESCE((
-        SELECT decision.displayable
-        FROM publication_decision decision
-        WHERE decision.object_type = 'legal_case'
-          AND decision.object_id = legal_case.id
-        ORDER BY decision.decided_at DESC, decision.id DESC
-        LIMIT 1
-      ), false)
-    GROUP BY court.id, court.public_id, court.name
-    ORDER BY count DESC, court.name
+    WITH per_court AS (
+      SELECT court.id, court.public_id, court.name, count(*)::int AS case_count
+      FROM legal_case
+      JOIN court ON court.id = legal_case.court_id
+      WHERE legal_case.publication = 'published'
+        AND COALESCE((
+          SELECT decision.displayable
+          FROM publication_decision decision
+          WHERE decision.object_type = 'legal_case'
+            AND decision.object_id = legal_case.id
+          ORDER BY decision.decided_at DESC, decision.id DESC
+          LIMIT 1
+        ), false)
+      GROUP BY court.id, court.public_id, court.name
+    )
+    SELECT (array_agg(court.public_id ORDER BY court.case_count DESC, court.public_id))[1] AS value,
+      (array_agg(court.name ORDER BY length(court.name) DESC, court.case_count DESC))[1] AS label,
+      sum(court.case_count)::int AS count
+    FROM per_court court
+    GROUP BY ${sql.unsafe(courtFacetKeySql())}
+    ORDER BY count DESC, label
   `;
 }
 
@@ -204,7 +232,15 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
   // Subscriber-only records (sealed-style captions, court-restricted events) are
   // listed only for paid subscribers; anonymous and Free views never include them.
   if (!options.includeSubscriberOnly) conditions.push(sql`NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}`);
-  if (courtFilter) conditions.push(sql`court.public_id = ${courtFilter}`);
+  // A court filter matches every stored row for the same court (see courtFacetKeySql).
+  if (courtFilter) {
+    conditions.push(sql`court.id IN (
+      SELECT sibling.id FROM court sibling
+      WHERE ${sql.unsafe(courtFacetKeySql("sibling"))} = (
+        SELECT ${sql.unsafe(courtFacetKeySql("selected"))} FROM court selected WHERE selected.public_id = ${courtFilter}
+      )
+    )`);
+  }
   if (party) {
     const pattern = containsPattern(party);
     conditions.push(sql`EXISTS (

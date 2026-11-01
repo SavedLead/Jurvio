@@ -6,6 +6,7 @@ import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicEntity } from "@/modules/directory/application/public-directory";
 import styles from "@/modules/directory/ui/directory.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ partyId: string }> }
@@ -40,7 +41,7 @@ export default async function PartyPage({ params }: Props) {
         <div><dt>Public cases</dt><dd>{party.caseCount.toLocaleString()}</dd></div><div><dt>Verification</dt><dd>{party.verification.replaceAll("_", " ")}</dd></div></dl>
     </header>
     <section className={styles.section}><h2>Cases involving this party</h2><ol className={styles.caseList}>{party.appearances.map((appearance, index) => <li key={`${appearance.casePublicId}-${appearance.role}-${index}`}>
-      <Link href={`/case/${appearance.casePublicId}` as Route}><div><h3>{appearance.caption}</h3><p>{appearance.courtName} · Docket {appearance.docketNumber} · {appearance.role}</p></div><time>{appearance.filedOn ?? "Date unavailable"}</time></Link>
+      <Link href={`/case/${appearance.casePublicId}` as Route}><div><h3>{cleanCaseCaption(appearance.caption)}</h3><p>{appearance.courtName} · Docket {appearance.docketNumber} · {appearance.role}</p></div><time>{appearance.filedOn ?? "Date unavailable"}</time></Link>
     </li>)}</ol></section>
     <aside className={styles.disclaimer}><strong>Important context:</strong> A court-record appearance does not establish wrongdoing, liability, or guilt. Names can be shared by different people or organizations. This page reports source-backed case relationships and should not be used as a background-check conclusion.</aside>
   </main>;

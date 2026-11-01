@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { highlightSegments } from "@/modules/cases/domain/case-listing";
+import { cleanCaptionText } from "@/modules/cases/domain/case-title";
 
 interface BrandedCaseCaptionProps {
   caption: string;
@@ -11,7 +12,7 @@ const revisionSuffix = /\s+(?:revisions?|revised)\s*:\s*\d{1,2}\/\d{1,2}\/\d{2,4
 const malformedGovernmentCaptionPrefix = /^\d+\s*(?=(?:USA|United States)\s+v\.\s+)/i;
 
 export function cleanCaseCaption(caption: string) {
-  let cleaned = caption.replace(/\s+/g, " ").trim();
+  let cleaned = cleanCaptionText(caption);
   cleaned = cleaned.replace(malformedGovernmentCaptionPrefix, "");
   while (revisionSuffix.test(cleaned)) cleaned = cleaned.replace(revisionSuffix, "").trim();
   return cleaned;
