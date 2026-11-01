@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { captionTag, cleanCourtName, courtKindFromJurisdiction, type CourtKind } from "@/modules/cases/domain/record-answers";
 import { displayCaption } from "@/modules/cases/domain/case-title";
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -71,13 +72,16 @@ export interface PublicCase {
    * the hasReadableOpinion rule.
    */
   tierReleaseIndexable?: boolean;
+  /** Sealed-related case (search-exclusion rule): displayable, but never indexed or listed in sitemaps. */
+  searchExcluded?: boolean;
 }
 
 export const TIER_RELEASE_RULE_VERSION = "publication-tiers-v1";
 export const INDEXABLE_TIER_RELEASE_REASONS = ["tier1_release", "tier2_release"] as const;
 
 /** Robots decision for a case page: readable opinion text, or an indexable Tier 1/2 release. */
-export function casePageIndexable(legalCase: Pick<PublicCase, "hasReadableOpinion" | "tierReleaseIndexable">): boolean {
+export function casePageIndexable(legalCase: Pick<PublicCase, "hasReadableOpinion" | "tierReleaseIndexable" | "searchExcluded">): boolean {
+  if (legalCase.searchExcluded) return false;
   return legalCase.hasReadableOpinion || legalCase.tierReleaseIndexable === true;
 }
 
@@ -126,7 +130,8 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
           AND decision.indexable
           AND decision.rule_version = ${TIER_RELEASE_RULE_VERSION}
           AND decision.reason_code = ANY(${[...INDEXABLE_TIER_RELEASE_REASONS]}::text[])
-      ) AS "tierReleaseIndexable"
+      ) AS "tierReleaseIndexable",
+      ${sql.unsafe(searchExcludedCaseSql("c"))} AS "searchExcluded"
     FROM legal_case c
     JOIN court ON court.id = c.court_id
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = c.id AND enrichment.verification = 'verified'

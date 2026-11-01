@@ -4,6 +4,7 @@ import {
 } from "../../domain/direct-court";
 import { conditionalRequestHeaders, type HttpValidators } from "../http-validators";
 import type { FederalCourtSource } from "./registry";
+import { CourtFetchHttpError } from "@/modules/operations/application/court-fetch-log";
 
 const MAX_FEED_BYTES = 5 * 1024 * 1024;
 
@@ -20,13 +21,35 @@ function href(xml: string): string | null {
   return /<link\b[^>]*href=["']([^"']+)["']/i.exec(xml)?.[1] ?? null;
 }
 
+const DOCKET_PATTERN = /\b(\d{1,2}:\d{2}-(?:cv|cr|mc|mj|md|bk|ap)-\d{1,7}(?:-[A-Za-z0-9-]+)?)\b/i;
+
 function docketFrom(value: string): string | null {
-  const match = /\b(\d{1,2}:\d{2}-(?:cv|cr|mc|mj|md|bk|ap)-\d{1,7}(?:-[A-Za-z0-9-]+)?)\b/i.exec(value);
+  const match = DOCKET_PATTERN.exec(value);
   return match ? normalizeDocketNumber(match[1] ?? "") : null;
 }
 
-function documentNumber(value: string): string | null {
-  return /(?:document|doc\.?|docket entry)\s*#?\s*(\d+)/i.exec(value)?.[1] ?? null;
+/**
+ * Document number: "Document #12" in the text, else the number a feed links to
+ * its document with: `(<a href=".../doc1/...">50</a>)` (rss_outside.pl) or
+ * `show_case_doc?25,535641` (EDNY readyDockets.pl).
+ */
+function documentNumber(value: string, rawItem = ""): string | null {
+  return /(?:document|doc\.?|docket entry)\s*#?\s*(\d+)/i.exec(value)?.[1]
+    ?? /show_case_doc\?(\d+),/i.exec(decodeXml(rawItem))?.[1]
+    ?? /<a\b[^>]*>\s*(\d{1,5})\s*<\/a>/i.exec(decodeXml(decodeXml(rawItem)))?.[1]
+    ?? null;
+}
+
+/**
+ * A guid is an event id only when it names one entry. EDNY's readyDockets.pl
+ * (and some other courts) use the case's docket-report URL as guid and link
+ * for every entry in that case, so it would collapse a day's entries into one.
+ */
+function entryGuid(guid: string | null, link: string | null): string | null {
+  if (!guid) return null;
+  if (link && guid === link) return null;
+  if (/DktRpt\.pl\?\d+$/i.test(guid)) return null;
+  return guid;
 }
 
 export function parseCmecfRss(xml: string, court: FederalCourtSource): DirectCourtEvent[] {
@@ -44,17 +67,19 @@ export function parseCmecfRss(xml: string, court: FederalCourtSource): DirectCou
     const filedTimestamp = Date.parse(filed);
     if (!docketNumber || !sourceUrl || !exactText || Number.isNaN(filedTimestamp)) continue;
     const filedAt = new Date(filedTimestamp).toISOString();
-    const officialEventId = tag(item, "guid") || tag(item, "id") || null;
+    const officialEventId = entryGuid(tag(item, "guid") || tag(item, "id") || null, href(item));
     const eventType = classifyDirectEvent(exactText);
+    const docNumber = documentNumber(exactText, item);
     const identity = stableDirectEventIdentity({
       courtCode: court.officialCourtCode, docketNumber, officialEventId,
-      filedAt, exactText, documentNumber: documentNumber(exactText),
+      filedAt, exactText, documentNumber: docNumber,
     });
-    const caption = title.replace(docketFrom(title) ?? docketNumber, "").replace(/^\s*[-:–—]\s*|\s*[-:–—]\s*$/g, "").trim() ||
+    const rawDocket = DOCKET_PATTERN.exec(title)?.[1];
+    const caption = title.replace(rawDocket ?? docketNumber, "").replace(/^\s*[-:–—]\s*|\s*[-:–—]\s*$/g, "").trim() ||
       description.split(/\s+(?:filed|entered|docketed)\b/i)[0]?.trim() || docketNumber;
     events.push({
       courtCode: court.officialCourtCode, docketNumber, caption, officialEventId,
-      documentNumber: documentNumber(exactText), filedAt, exactText, eventType,
+      documentNumber: docNumber, filedAt, exactText, eventType,
       visitorDescription: visitorFriendlyDescription(eventType), sourceUrl,
       documentUrl: /\/doc1\//i.test(sourceUrl) ? sourceUrl : null,
       contentHash: identity.contentHash, deduplicationKey: identity.deduplicationKey,
@@ -91,7 +116,7 @@ export async function fetchCmecfRss(
   if (response.status === 304) {
     return { rawBody: "", retrievedAt: new Date().toISOString(), events: [], notModified: true, etag, lastModified };
   }
-  if (!response.ok) throw new Error(`${court.officialCourtCode} RSS returned HTTP ${response.status}`);
+  if (!response.ok) throw new CourtFetchHttpError(court.rssUrl, response.status, `${court.officialCourtCode} RSS`);
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > MAX_FEED_BYTES) throw new Error("CM/ECF RSS response exceeds byte cap");
   const bytes = new Uint8Array(await response.arrayBuffer());

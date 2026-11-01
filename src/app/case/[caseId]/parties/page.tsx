@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { robotsFor } from "@/lib/seo/indexing";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
@@ -21,6 +22,7 @@ export async function generateMetadata({ params }: SectionPageProps): Promise<Me
     title: [caption, "Parties", legalCase.docketNumber, legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified parties currently available for ${caption}, docket ${legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${caseId}/parties` },
+    robots: robotsFor(!legalCase.searchExcluded),
   };
 }
 

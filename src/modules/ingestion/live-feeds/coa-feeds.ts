@@ -26,8 +26,8 @@ export const COA_FEED_SOURCES: Readonly<Record<string, readonly CoaFeedSource[]>
   ],
   ca5: [{ url: "https://www.ca5.uscourts.gov/rss.aspx?Feed=Opinions", format: "rss", kind: "opinion", precedential: null }],
   ca9: [
-    { url: "https://www.ca9.uscourts.gov/opinions/index.xml", format: "rss", kind: "opinion", precedential: true },
-    { url: "https://www.ca9.uscourts.gov/memoranda/index.xml", format: "rss", kind: "memorandum", precedential: false },
+    { url: "https://www.ca9.uscourts.gov/decisions/opinions/index.xml", format: "rss", kind: "opinion", precedential: true },
+    { url: "https://www.ca9.uscourts.gov/decisions/memoranda/index.xml", format: "rss", kind: "memorandum", precedential: false },
   ],
   ca10: [{ url: "https://www.ca10.uscourts.gov/opinions/new/daily_decisions.rss", format: "rss", kind: "opinion", precedential: null }],
   ca11: [
@@ -38,15 +38,13 @@ export const COA_FEED_SOURCES: Readonly<Record<string, readonly CoaFeedSource[]>
   cafc: [{ url: "https://www.cafc.uscourts.gov/feed/", format: "rss", kind: "opinion", precedential: null }],
 };
 
-/** Circuits with no usable public listing today, and why (see docs/operations/live-feeds.md). */
-export const COA_WITHOUT_FEED: Readonly<Record<string, string>> = {
-  ca1: "opinion search is a form; rss.xml is court news",
-  ca2: "decisions page returns 403 to automated clients; opinions RSS is a placeholder",
-  ca4: "daily opinions list is rendered by JavaScript",
-  ca6: "opinions.php lists no opinion links without a search; rss.xml is court news",
-  ca7: "opinion RSS endpoint returns an empty page",
-  ca8: "opinions-by-date needs a search; rss.xml is court news",
-};
+/**
+ * Circuits with no usable public listing. Empty since 2026-10-31: every
+ * circuit has a per-court adapter in providers/appellate/adapters.ts, which
+ * both appellate pipelines now use. COA_FEED_SOURCES above remains as the
+ * parser presets for the original seven feeds.
+ */
+export const COA_WITHOUT_FEED: Readonly<Record<string, string>> = {};
 
 export interface CoaFeedItem {
   courtCode: string;

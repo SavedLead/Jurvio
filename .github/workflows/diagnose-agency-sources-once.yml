@@ -1,0 +1,85 @@
+name: Diagnose agency sources (once, read-only)
+
+# Read-only report for the agency sources job (scripts/run-agency-sources.ts):
+# per-source health and runs, items, stated court references, exact case links,
+# review queue and restricted counts, and sample linked items with their case.
+# Changes nothing: default_transaction_read_only=on, SELECT/WITH only.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-agency-sources
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Agency sources report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=300s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+          echo "=== AGENCY SOURCES @ $(date -u +%FT%TZ) (read-only) session_read_only=$(q "SELECT current_setting('default_transaction_read_only')") ==="
+          echo "--- 1. sources (code | enabled | last_status | last_attempt | last_success | failures | last_error) ---"
+          q "SELECT code, enabled, coalesce(last_status, '-'), coalesce(last_attempt_at::text, '-'), coalesce(last_success_at::text, '-'), consecutive_failures, left(coalesce(last_error, ''), 200) FROM agency_source ORDER BY agency_kind, code"
+          echo "--- 2. runs, newest 60 (source | started | status | requests | seen | new | refs | matched | queued | restricted | error) ---"
+          q "SELECT source_code, started_at, status, requests, items_seen, items_new, refs_found, matched, queued, restricted, left(coalesce(error, ''), 160) FROM agency_source_run ORDER BY started_at DESC LIMIT 60"
+          echo "--- 3. items per source (source | items | with_refs | linked | queued | not_court | restricted | first_seen_min | first_seen_max) ---"
+          q "SELECT item.source_code, count(*), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM agency_item_case_ref r WHERE r.item_id = item.id)), count(*) FILTER (WHERE review_status = 'linked'), count(*) FILTER (WHERE review_status = 'queued'), count(*) FILTER (WHERE review_status = 'not_court'), count(*) FILTER (WHERE restricted), min(first_seen_at), max(first_seen_at) FROM agency_source_item item GROUP BY 1 ORDER BY 1"
+          echo "--- 4. references per source and match status (source | status | refs | distinct cases) ---"
+          q "SELECT item.source_code, ref.match_status, count(*), count(DISTINCT ref.case_id) FROM agency_item_case_ref ref JOIN agency_source_item item ON item.id = ref.item_id GROUP BY 1, 2 ORDER BY 1, 2"
+          echo "--- 5. linked items shown on a published case (source | linked items on published cases) ---"
+          q "SELECT item.source_code, count(DISTINCT item.id) FROM agency_source_item item JOIN agency_item_case_ref ref ON ref.item_id = item.id AND ref.match_status = 'matched' JOIN legal_case c ON c.id = ref.case_id AND c.publication = 'published' WHERE item.review_status = 'linked' AND NOT item.restricted GROUP BY 1 ORDER BY 1"
+          echo "--- 6. sample links (source | court | docket | case public_id | case docket | case caption | item title) ---"
+          q "SELECT * FROM (SELECT DISTINCT ON (item.source_code, ref.court_code) item.source_code, ref.court_code, ref.docket_number, c.public_id, c.docket_number, left(c.caption, 80), left(item.title, 100) FROM agency_item_case_ref ref JOIN agency_source_item item ON item.id = ref.item_id JOIN legal_case c ON c.id = ref.case_id WHERE ref.match_status = 'matched' ORDER BY item.source_code, ref.court_code, ref.matched_at DESC) s ORDER BY 1 LIMIT 40"
+          echo "--- 7. review notes (status | note | refs) ---"
+          q "SELECT match_status, coalesce(match_note, '-'), count(*) FROM agency_item_case_ref WHERE match_status <> 'matched' GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 20"
+          echo "=== done ==="
+          REMOTE
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat "$RUNNER_TEMP/report.txt" 2>/dev/null | head -n 500; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

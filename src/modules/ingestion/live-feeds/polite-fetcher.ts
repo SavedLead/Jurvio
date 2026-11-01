@@ -84,7 +84,7 @@ export class FetchBudget {
    * GET a URL inside the budget. Returns the Response for any status other
    * than 429 (callers decide what 404 means); throws on 429 or exhaustion.
    */
-  async get(url: string, accept = "*/*"): Promise<Response> {
+  async get(url: string, accept = "*/*", init: { method?: "GET" | "POST"; body?: string } = {}): Promise<Response> {
     if (this.rateLimited) throw this.rateLimited;
     if (this.remainingRequests <= 0) throw new BudgetExhaustedError(this.source, "max requests");
     if (this.now() - this.startedAt >= this.options.maxMs) throw new BudgetExhaustedError(this.source, "max time");
@@ -93,7 +93,12 @@ export class FetchBudget {
     this.requests += 1;
     this.lastRequestAt = this.now();
     const response = await this.fetchImpl(url, {
-      headers: { "User-Agent": this.userAgent, Accept: accept },
+      method: init.method ?? "GET",
+      body: init.body,
+      headers: {
+        "User-Agent": this.userAgent, Accept: accept,
+        ...(init.body ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
+      },
       redirect: "follow",
       signal: AbortSignal.timeout(this.options.timeoutMs),
     });
@@ -104,9 +109,9 @@ export class FetchBudget {
     return response;
   }
 
-  /** GET and return the body as text; non-2xx is an error. */
-  async text(url: string, accept?: string): Promise<string> {
-    const response = await this.get(url, accept);
+  /** GET (or POST a form) and return the body as text; non-2xx is an error. */
+  async text(url: string, accept?: string, init?: { method?: "GET" | "POST"; body?: string }): Promise<string> {
+    const response = await this.get(url, accept, init);
     if (!response.ok) throw new Error(`${this.source}: ${url} returned HTTP ${response.status}`);
     return response.text();
   }
