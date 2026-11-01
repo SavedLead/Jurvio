@@ -103,6 +103,10 @@ jobs:
              SELECT cs.court_code, coalesce(d.n,0), coalesce(nc.n,0), coalesce(a.n,0), coalesce(e.coa,0), coalesce(e.gov,0), coalesce(e.site,0)
                FROM (SELECT DISTINCT court_code FROM court_source) cs LEFT JOIN d USING (court_code) LEFT JOIN a USING (court_code)
                LEFT JOIN e USING (court_code) LEFT JOIN nc USING (court_code) ORDER BY 1"
+          echo "--- 6. GovInfo cross-check, last 7 days (court | packages | matched_other_source | new_entry | new_case | restricted | ambiguous) ---"
+          q "SELECT court_code, count(*), count(*) FILTER (WHERE outcome='matched'), count(*) FILTER (WHERE outcome='entry'), count(*) FILTER (WHERE outcome='new_case'), count(*) FILTER (WHERE outcome='restricted'), count(*) FILTER (WHERE outcome='ambiguous') FROM govinfo_crosscheck WHERE seen_at > now() - interval '7 days' GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 7. GovInfo sweep state (since | offset_mark set | sweeps_completed | updated_at) ---"
+          q "SELECT since, offset_mark IS NOT NULL, sweeps_completed, updated_at FROM govinfo_daily_state"
           echo "=== done ==="
           REMOTE
       - name: Summary
