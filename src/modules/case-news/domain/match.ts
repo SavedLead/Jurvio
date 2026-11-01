@@ -109,9 +109,12 @@ export function withoutJudgeMentions(text: string, phrase: string): string {
 
 const COURT_NAME_PREFIX = /(?<![\p{L}])(?:U\.\s?S\.|United\s+States)(?=\s+(?:Supreme\s+Court|Court\s+of|District\s+(?:Court|Judge)|Circuit|Courts?\s+of\s+Appeals|Magistrate|Bankruptcy\s+Court|Tax\s+Court|Court\s+of\s+Federal\s+Claims|Judge|Justice\b(?!\s+Department)))/gu;
 
-/** The text with "U.S." / "United States" removed where it only names a court or a judge. */
+// "Ninth Circuit", "9th Circuit", "D.C. Circuit", "Federal Circuit": court names whose words must not count as a party mention.
+const CIRCUIT_NAME = /(?<![\p{L}\p{N}])(?:First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth|Eleventh|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|10th|11th|D\.\s?C\.|Federal)[\s-]+Circuit(?![\p{L}])/giu;
+
+/** The text with "U.S." / "United States" removed where it only names a court or a judge, and circuit names removed. */
 export function withoutCourtNames(text: string): string {
-  return text.replace(COURT_NAME_PREFIX, " ");
+  return text.replace(COURT_NAME_PREFIX, " ").replace(CIRCUIT_NAME, " ");
 }
 
 /** A party mention that is not a judge's titled name. */
