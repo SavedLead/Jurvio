@@ -1,0 +1,100 @@
+name: Diagnose direct court feeds (once, read-only)
+
+# Read-only coverage report for the direct-court feeds: every district court in
+# direct_court_registry with its RSS flag, health, failures, last success and
+# event counts, plus the appellate sources (appellate_source_registry and the
+# appellate rows of direct_court_registry). Answers "which of the 94 districts are
+# on, which are off and why". Changes nothing: every query runs with
+# default_transaction_read_only=on and the helper refuses anything but SELECT/WITH.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-court-feeds
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Court feed report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=300s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+          echo "=== COURT FEEDS @ $(date -u +%FT%TZ) (read-only) session_read_only=$(q "SELECT current_setting('default_transaction_read_only')") ==="
+          echo "--- 1. registry by type (court_type | total | rss_available | healthy | failing | retrieved_24h) ---"
+          q "SELECT court_type, count(*), count(*) FILTER (WHERE rss_available), count(*) FILTER (WHERE rss_available AND consecutive_failures = 0),
+                    count(*) FILTER (WHERE rss_available AND consecutive_failures > 0),
+                    count(*) FILTER (WHERE last_successful_retrieval > now() - interval '24 hours')
+               FROM direct_court_registry GROUP BY 1 ORDER BY 1"
+          echo "--- 2. every district (code | rss | health | failures | last_success | adapter | categories | coverage_h | events_24h | events_7d | newest_event | rss_url) ---"
+          q "WITH e AS (SELECT court_code, count(*) FILTER (WHERE first_seen_at > now() - interval '24 hours') d1,
+                               count(*) FILTER (WHERE first_seen_at > now() - interval '7 days') d7, max(first_seen_at) newest
+                          FROM direct_court_event WHERE first_seen_at > now() - interval '14 days' GROUP BY 1)
+             SELECT r.court_code, r.rss_available, r.health_state, r.consecutive_failures, r.last_successful_retrieval,
+                    r.adapter_type, r.included_event_categories::text, r.rss_coverage_hours, coalesce(e.d1, 0), coalesce(e.d7, 0), e.newest, r.rss_url
+               FROM direct_court_registry r LEFT JOIN e ON e.court_code = r.court_code
+              WHERE r.court_type = 'district' ORDER BY r.rss_available DESC, r.court_code"
+          echo "--- 3. appellate rows of direct_court_registry (code | rss | health | failures | last_success | rss_url) ---"
+          q "SELECT court_code, rss_available, health_state, consecutive_failures, last_successful_retrieval, rss_url
+               FROM direct_court_registry WHERE court_type = 'appellate' ORDER BY 1"
+          echo "--- 4. appellate_source_registry (code | adapter | health | failures | last_success | next_poll | items_7d | items_total | rss_url) ---"
+          q "WITH i AS (SELECT court_code, count(*) total, count(*) FILTER (WHERE first_seen_at > now() - interval '7 days') d7 FROM appellate_ingestion_item GROUP BY 1)
+             SELECT s.court_code, s.adapter_type, s.health_state, s.consecutive_failures, s.last_successful_retrieval, s.next_poll_at,
+                    coalesce(i.d7, 0), coalesce(i.total, 0), s.rss_url
+               FROM appellate_source_registry s LEFT JOIN i ON i.court_code = s.court_code ORDER BY 1"
+          echo "--- 5. district events per day, last 8 days (day | courts | events) ---"
+          q "SELECT first_seen_at::date, count(DISTINCT court_code), count(*) FROM direct_court_event
+              WHERE first_seen_at > now() - interval '8 days' GROUP BY 1 ORDER BY 1"
+          echo "--- 6. scheduler env for the direct-court lane (non-secret) ---"
+          app="$(find_svc app)"
+          [ -n "$app" ] && sudo -n docker exec "$app" sh -c 'env | grep -E "^(DIRECT_COURT|DISTRICT_RSS|INGEST_DIRECT)[A-Z_]*=" | grep -viE "token|key|secret|pass" || true'
+          echo "=== done ==="
+          REMOTE
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat "$RUNNER_TEMP/report.txt" 2>/dev/null | head -n 400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
