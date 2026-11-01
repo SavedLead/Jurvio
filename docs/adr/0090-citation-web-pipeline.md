@@ -38,3 +38,24 @@ distinct cited reporter keys resolved to a Jurvio case.
   uses `--cpu-shares 256` and a 1.25-CPU cap. Revisit if CI times out.
 - If the live queue (priority 10) grows faster than the resident lane drains it,
   raise the resident budget or add a second live pass per interval.
+
+## C8: CourtListener bulk citation map (migration 0173)
+
+`citation-map-import-builder.yml` (confirm=CITATION_MAP_IMPORT, `dry_run=true` by
+default) streams `citation-map-<snapshot>.csv.bz2`, `parentheticals-<snapshot>.csv.bz2`
+and, for cluster mapping only, `opinions-<snapshot>.csv.bz2` from the free bulk-data
+bucket on a builder runner. Nothing touches the CourtListener REST API or either disk.
+
+* `edges`: rows whose citing opinion is a Jurvio CL document. Both ends held ->
+  `courtlistener_citation_edge` (depth = max over the cited case's opinions); cited
+  end not held -> `courtlistener_citation_unresolved` (uuid + int + smallint).
+  Opinions of the same case citing each other are skipped.
+* `parentheticals`: kept when written by a Jurvio document (text capped at 2,000 chars).
+* `clusters`: a byte-level scan of the opinions export keeps only `id` and
+  `cluster_id`, for just the still-unmapped cited opinion ids (`courtlistener_opinion_cluster_map`).
+* `finalize`: unresolved rows whose cluster Jurvio holds become edges; parentheticals
+  get their cited case; older snapshots are deleted; `citation_edge_build.sweep_requested_at`
+  asks the edge builder for an immediate full sweep (it re-applies visibility, so
+  hidden, restricted and sealed-caption cases never appear).
+
+Every phase checkpoints `rows_read` in `courtlistener_citation_import` and resumes.

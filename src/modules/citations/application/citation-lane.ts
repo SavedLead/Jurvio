@@ -34,7 +34,7 @@ export interface CitationLaneResult {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Other sessions currently running a statement (not idle), excluding this one. */
-async function activeSessions(sql: Sql): Promise<number> {
+export async function activeSessions(sql: Sql): Promise<number> {
   const [row] = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n FROM pg_stat_activity
     WHERE state = 'active' AND pid <> pg_backend_pid() AND backend_type = 'client backend'`;
