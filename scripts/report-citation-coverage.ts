@@ -18,8 +18,14 @@ const sql = postgres(env().DATABASE_URL, { max: 1, connection: { application_nam
 async function optionalCount(table: string, where = "true"): Promise<number | null> {
   const [exists] = await sql<{ ok: boolean }[]>`SELECT to_regclass(${table}) IS NOT NULL AS ok`;
   if (!exists?.ok) return null;
-  const [row] = await sql.unsafe<{ n: string }[]>(`SELECT count(*) AS n FROM ${table} WHERE ${where}`);
-  return Number(row?.n ?? 0);
+  try {
+    const [row] = await sql.unsafe<{ n: string }[]>(`SELECT count(*) AS n FROM ${table} WHERE ${where}`);
+    return Number(row?.n ?? 0);
+  } catch (error) {
+    // An optional section must never abort the whole read-only report (schema drift, e.g. a renamed column).
+    console.warn(`optionalCount(${table}) failed: ${(error as Error).message}`);
+    return null;
+  }
 }
 
 try {
@@ -58,7 +64,6 @@ try {
     unresolved_edges: await optionalCount("courtlistener_citation_unresolved"),
     parentheticals: await optionalCount("courtlistener_parenthetical"),
     stubs: await optionalCount("citation_stub_case"),
-    stubs_linkable: await optionalCount("citation_stub_case", "NOT restricted"),
     import_runs: await optionalCount("courtlistener_citation_import"),
   };
   const liveText = {
