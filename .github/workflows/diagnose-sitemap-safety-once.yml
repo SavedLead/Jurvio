@@ -1,0 +1,87 @@
+name: Diagnose sitemap safety (once, read-only)
+
+# Read-only pre-submission check for Google Search Console: counts the cases
+# the sitemap query emits (published + indexable) and checks none of them
+# carry a sealed / restricted / blocked signal anywhere we store one.
+# Changes nothing: default_transaction_read_only=on, SELECT/WITH only.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-sitemap-safety
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 45
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Sitemap safety report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=1500s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+          echo "=== SITEMAP SAFETY @ $(date -u +%FT%TZ) (read-only) session_read_only=$(q "SELECT current_setting('default_transaction_read_only')") ==="
+          echo "--- 0. sitemap-eligible cases (published + current decision indexable) | all published | restricted | suppressed ---"
+          q "SELECT count(*) FILTER (WHERE c.publication = 'published' AND coalesce((SELECT d.indexable FROM publication_current cr JOIN publication_decision d ON d.id = cr.decision_id WHERE cr.object_type = 'legal_case' AND cr.object_id = c.id), false)), count(*) FILTER (WHERE c.publication = 'published'), count(*) FILTER (WHERE c.publication = 'restricted'), count(*) FILTER (WHERE c.publication = 'suppressed') FROM legal_case c"
+          echo "--- 1. eligible cases whose current decision reason mentions seal/restrict/block (reason | cases) ---"
+          q "SELECT d.reason_code, count(*) FROM legal_case c JOIN publication_current cr ON cr.object_type = 'legal_case' AND cr.object_id = c.id JOIN publication_decision d ON d.id = cr.decision_id WHERE c.publication = 'published' AND d.indexable AND d.reason_code ~* '(seal|restrict|block|suppress)' GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 1b. current decision reasons among eligible cases (reason | cases) ---"
+          q "SELECT d.reason_code, count(*) FROM legal_case c JOIN publication_current cr ON cr.object_type = 'legal_case' AND cr.object_id = c.id JOIN publication_decision d ON d.id = cr.decision_id WHERE c.publication = 'published' AND d.indexable GROUP BY 1 ORDER BY 2 DESC LIMIT 20"
+          echo "--- 2. eligible cases with any restricted direct_court_event (cases) ---"
+          q "SELECT count(DISTINCT c.id) FROM legal_case c JOIN direct_court_event e ON e.case_id = c.id AND e.restricted WHERE c.publication = 'published' AND coalesce((SELECT d.indexable FROM publication_current cr JOIN publication_decision d ON d.id = cr.decision_id WHERE cr.object_type = 'legal_case' AND cr.object_id = c.id), false)"
+          echo "--- 3. eligible cases matching a restricted CourtListener cluster by public_id (stage | pending) ---"
+          q "SELECT (SELECT count(*) FROM legal_case c JOIN courtlistener_cluster_stage s ON s.public_id = c.public_id AND s.restricted WHERE c.publication = 'published' AND coalesce((SELECT d.indexable FROM publication_current cr JOIN publication_decision d ON d.id = cr.decision_id WHERE cr.object_type = 'legal_case' AND cr.object_id = c.id), false)), (SELECT count(*) FROM legal_case c JOIN courtlistener_pending_cluster p ON p.public_id = c.public_id AND p.restricted WHERE c.publication = 'published' AND coalesce((SELECT d.indexable FROM publication_current cr JOIN publication_decision d ON d.id = cr.decision_id WHERE cr.object_type = 'legal_case' AND cr.object_id = c.id), false))"
+          echo "--- 4. eligible cases with a sealed-looking caption (cases) ---"
+          q "SELECT count(*) FROM legal_case c WHERE c.publication = 'published' AND coalesce((SELECT d.indexable FROM publication_current cr JOIN publication_decision d ON d.id = cr.decision_id WHERE cr.object_type = 'legal_case' AND cr.object_id = c.id), false) AND c.caption ~* '\\m(sealed|under seal|redacted)\\M'"
+          echo "--- 4b. samples (public_id | court | docket | caption) ---"
+          q "SELECT c.public_id, ct.provider_court_id, c.docket_number, left(c.caption, 100) FROM legal_case c JOIN court ct ON ct.id = c.court_id WHERE c.publication = 'published' AND coalesce((SELECT d.indexable FROM publication_current cr JOIN publication_decision d ON d.id = cr.decision_id WHERE cr.object_type = 'legal_case' AND cr.object_id = c.id), false) AND c.caption ~* '\\m(sealed|under seal|redacted)\\M' LIMIT 20"
+          echo "--- 5. eligible documents whose own publication is not published (should be 0) ---"
+          q "SELECT count(*) FROM document d JOIN legal_case c ON c.id = d.case_id WHERE c.publication = 'published' AND d.publication <> 'published' AND coalesce((SELECT dd.indexable FROM publication_current cr JOIN publication_decision dd ON dd.id = cr.decision_id WHERE cr.object_type = 'document' AND cr.object_id = d.id), false)"
+          echo "=== done ==="
+          REMOTE
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat "$RUNNER_TEMP/report.txt" 2>/dev/null | head -n 500; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
