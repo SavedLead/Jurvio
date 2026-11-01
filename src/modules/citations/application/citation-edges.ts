@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 
@@ -29,7 +30,8 @@ function caseVisibleSql(alias: string): string {
   return `(${alias}.publication = 'published'
     AND ${latestPublicationColumnSql("displayable", "legal_case", `${alias}.id`)}
     AND ${alias}.caption !~* '${SEALED_CAPTION_SQL}'
-    AND ${alias}.docket_number !~* '${SEALED_DOCKET_SQL}')`;
+    AND ${alias}.docket_number !~* '${SEALED_DOCKET_SQL}'
+    AND NOT ${searchExcludedCaseSql(alias)})`;
 }
 function documentVisibleSql(alias: string): string {
   return `(${alias}.publication = 'published' AND ${latestPublicationColumnSql("displayable", "document", `${alias}.id`)})`;

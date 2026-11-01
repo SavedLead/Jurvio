@@ -117,3 +117,15 @@ END $$;
 DROP TRIGGER IF EXISTS publication_decision_citation_dirty ON publication_decision;
 CREATE TRIGGER publication_decision_citation_dirty AFTER INSERT ON publication_decision
 FOR EACH ROW EXECUTE FUNCTION citation_dirty_on_decision();
+
+-- Subscriber-only (sealed-style, #610) cases: a restricted docket event makes the
+-- case search-excluded, so its edges must be rebuilt without it.
+CREATE OR REPLACE FUNCTION citation_dirty_on_restricted_event() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM mark_citation_dirty(NEW.case_id, 3::smallint);
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS direct_court_event_citation_dirty ON direct_court_event;
+CREATE TRIGGER direct_court_event_citation_dirty AFTER INSERT OR UPDATE OF restricted, case_id ON direct_court_event
+FOR EACH ROW WHEN (NEW.restricted AND NEW.case_id IS NOT NULL)
+EXECUTE FUNCTION citation_dirty_on_restricted_event();
