@@ -18,7 +18,7 @@ type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
 export const ZERO_BASELINE_MIN_ITEMS = 5;
 
 export type CourtFetchSource =
-  | "district_rss" | "coa_feed" | "appellate_official" | "govinfo" | "court_site" | "appellate_pacer_rss";
+  | "district_rss" | "coa_feed" | "appellate_official" | "govinfo" | "court_site" | "appellate_pacer_rss" | "courtlistener_feed";
 
 export interface CourtFetchRecord {
   source: CourtFetchSource;

@@ -6,7 +6,7 @@ import {
   refreshTouchedCourts, runCoaLiveFeeds, runScotusLiveDockets, type SourceRunResult,
 } from "@/modules/ingestion/live-feeds/run-live-feeds";
 import { runGovInfoDaily } from "@/modules/ingestion/live-feeds/govinfo-daily";
-import { runAppellatePacerRss, runCourtSiteOpinions } from "@/modules/ingestion/live-feeds/free-sources";
+import { runAppellatePacerRss, runCourtListenerFeeds, runCourtSiteOpinions } from "@/modules/ingestion/live-feeds/free-sources";
 
 // Live feeds: new SCOTUS dockets (supremecourt.gov) and new court of appeals
 // opinions/orders (each circuit's own feed). New cases are drafts. Each source
@@ -14,8 +14,9 @@ import { runAppellatePacerRss, runCourtSiteOpinions } from "@/modules/ingestion/
 //   node jobs/run-live-feeds.mjs --source=scotus|coa|govinfo|all [--courts=ca5,ca9]
 // govinfo: the GovInfo USCOURTS daily source for every district and circuit
 // (GOVINFO_API_KEY, else DEMO_KEY at one page per run). court-site: district
-// website opinion lists; appellate-rss: appellate CM/ECF public RSS. These
-// three are separate scheduler jobs and not part of `all`.
+// website opinion lists; appellate-rss: appellate CM/ECF public RSS; cl-feed:
+// CourtListener's public per-court opinion Atom feeds (gasd msnd oknd vaed, no
+// API token). These four are separate scheduler jobs and not part of `all`.
 // The CourtListener API date_modified tail is disabled (2026-10-31, David
 // Rosenberg). `--source=courtlistener` exits without any request; `all` skips it.
 // The CourtListener bulk-file loaders are separate jobs and are unaffected.
@@ -24,8 +25,8 @@ const args = new Map(process.argv.slice(2).map((value) => {
   return [key, raw] as const;
 }));
 const source = args.get("source") ?? "all";
-if (!["scotus", "coa", "govinfo", "court-site", "appellate-rss", "courtlistener", "all"].includes(source)) {
-  throw new Error("--source must be scotus, coa, govinfo, court-site, appellate-rss or all");
+if (!["scotus", "coa", "govinfo", "court-site", "appellate-rss", "cl-feed", "courtlistener", "all"].includes(source)) {
+  throw new Error("--source must be scotus, coa, govinfo, court-site, appellate-rss, cl-feed or all");
 }
 const COURTLISTENER_API_LIVE_FEED_ENABLED = false;
 if (source === "courtlistener" && !COURTLISTENER_API_LIVE_FEED_ENABLED) {
@@ -73,11 +74,13 @@ try {
           newCases: 0, newEntries: 0, skippedRestricted: 0, skippedAmbiguous: 0, error: String(error) });
       }
     }
-    if (source === "court-site" || source === "appellate-rss") {
+    if (source === "court-site" || source === "appellate-rss" || source === "cl-feed") {
       try {
         const rows = source === "court-site"
           ? await runCourtSiteOpinions(sql, store, { courts, minIntervalMs: 1_000 })
-          : await runAppellatePacerRss(sql, store, { courts, minIntervalMs: 1_000 });
+          : source === "cl-feed"
+            ? await runCourtListenerFeeds(sql, store, { courts, minIntervalMs: 2_000 })
+            : await runAppellatePacerRss(sql, store, { courts, minIntervalMs: 1_000 });
         for (const row of rows) {
           results.push({ source: row.source, court: row.court, ok: row.ok, requests: 1, itemsFetched: row.items,
             newCases: row.outcomes.new_case, newEntries: row.outcomes.entry, skippedRestricted: row.outcomes.restricted,

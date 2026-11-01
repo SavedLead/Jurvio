@@ -3,8 +3,9 @@ name: Diagnose court sources matrix (once, read-only)
 # Read-only court x source health report (free-feeds plan): the court_source
 # matrix joined with court_fetch_log (last success, last HTTP status, items and
 # new items in 24 h, failure streaks, zero-vs-baseline flags), per-URL detail for
-# the last 24 h, the appellate registry validators, and new items per court per
-# source in the last 24 h. Changes nothing: every query runs with
+# the last 24 h, the appellate registry validators, new items per court per
+# source in the last 24 h, the district RSS rotation/backoff state, and a
+# cross-source duplicate count (exact and +-1 day opinion/order twins, 7 days). Changes nothing: every query runs with
 # default_transaction_read_only=on and the helper refuses anything but SELECT/WITH.
 #
 # Dispatch by hand with confirm=DIAGNOSE.
@@ -109,6 +110,66 @@ jobs:
           q "SELECT since, offset_mark IS NOT NULL, sweeps_completed, updated_at FROM govinfo_daily_state"
           echo "--- 8. court-site and appellate RSS items, last 7 days (source | court | items | matched | entry | new_case | restricted | ambiguous | unmatched) ---"
           q "SELECT source, court_code, count(*), count(*) FILTER (WHERE outcome='matched'), count(*) FILTER (WHERE outcome='entry'), count(*) FILTER (WHERE outcome='new_case'), count(*) FILTER (WHERE outcome='restricted'), count(*) FILTER (WHERE outcome='ambiguous'), count(*) FILTER (WHERE outcome='unmatched') FROM free_source_item WHERE seen_at > now() - interval '7 days' GROUP BY 1, 2 ORDER BY 1, 3 DESC"
+          echo "--- 9. district RSS rotation state, courts failing or not visited in 3h (court | health | failures | last_success EST | last_attempt EST | next_retry EST) ---"
+          q "SELECT court_code, health_state, consecutive_failures, to_char(last_successful_retrieval AT TIME ZONE 'America/New_York','MM-DD HH24:MI'),
+                    to_char(updated_at AT TIME ZONE 'America/New_York','MM-DD HH24:MI'),
+                    to_char((CASE WHEN consecutive_failures = 0 THEN last_successful_retrieval + interval '2 hours'
+                                  ELSE updated_at + least(interval '2 hours', interval '5 minutes' * power(2, least(consecutive_failures, 7))) END) AT TIME ZONE 'America/New_York','MM-DD HH24:MI')
+               FROM direct_court_registry WHERE rss_available AND rss_url IS NOT NULL
+                AND (consecutive_failures > 0 OR last_successful_retrieval IS NULL OR last_successful_retrieval < now() - interval '3 hours') ORDER BY 1"
+          echo "--- 10. cross-source duplicate check, docket entries created in the last 7 days (metric | value) ---"
+          # exact: same case + filed_on + entry number (entry type when no number) from a different source.
+          # twin_strict: opinion/order entries on the same case filed within 1 day from a different source.
+          # twin_loose: the hasEquivalentEntry rule (entry type or opinion/order/memorandum/judgment in the text).
+          # Rows are counted on the recent free-source side (a); b is any entry on the case (any provider).
+          q "WITH cm AS (SELECT id FROM provider WHERE code = 'official_cmecf'),
+                  e AS (SELECT * FROM (SELECT de.id, de.case_id, de.filed_on, coalesce(nullif(trim(de.entry_number), ''), coalesce(de.entry_type, 'other')) AS k,
+                                     coalesce(de.entry_type, 'other') AS t, coalesce(de.description, '') AS d,
+                                     CASE WHEN de.provider_entry_id LIKE 'govinfo:%' THEN 'govinfo' WHEN de.provider_entry_id LIKE 'court-site:%' THEN 'court_site'
+                                     WHEN de.provider_entry_id LIKE 'appellate-rss:%' THEN 'appellate_pacer_rss' WHEN de.provider_entry_id LIKE 'coa-feed:%' THEN 'coa_feed'
+                                     WHEN de.provider_entry_id LIKE 'cl-feed:%' THEN 'courtlistener_feed' WHEN de.provider_id = (SELECT id FROM cm) THEN 'district_rss'
+                                     ELSE 'other:' || coalesce((SELECT code FROM provider p WHERE p.id = de.provider_id), '?') END AS src
+                                FROM docket_entry de WHERE de.created_at > now() - interval '7 days' AND de.filed_on IS NOT NULL) s
+                         WHERE src NOT LIKE 'other:%'),
+                  x AS (SELECT a.id, a.case_id, a.filed_on, a.k, a.src AS a_src, b.src AS b_src,
+                               (b.filed_on = a.filed_on AND b.k = a.k) AS exact,
+                               (a.t IN ('opinion','order') AND b.t IN ('opinion','order')) AS strict_twin,
+                               ((a.t IN ('opinion','order') OR a.d ~* '(opinion|memorandum|judgment|\morder\M)')
+                                 AND (b.t IN ('opinion','order') OR b.d ~* '(opinion|memorandum|judgment|\morder\M)')) AS loose_twin
+                          FROM e a
+                          JOIN LATERAL (SELECT de.id, de.filed_on, coalesce(nullif(trim(de.entry_number), ''), coalesce(de.entry_type, 'other')) AS k,
+                                               coalesce(de.entry_type, 'other') AS t, coalesce(de.description, '') AS d,
+                                               CASE WHEN de.provider_entry_id LIKE 'govinfo:%' THEN 'govinfo' WHEN de.provider_entry_id LIKE 'court-site:%' THEN 'court_site'
+                                     WHEN de.provider_entry_id LIKE 'appellate-rss:%' THEN 'appellate_pacer_rss' WHEN de.provider_entry_id LIKE 'coa-feed:%' THEN 'coa_feed'
+                                     WHEN de.provider_entry_id LIKE 'cl-feed:%' THEN 'courtlistener_feed' WHEN de.provider_id = (SELECT id FROM cm) THEN 'district_rss'
+                                     ELSE 'other:' || coalesce((SELECT code FROM provider p WHERE p.id = de.provider_id), '?') END AS src
+                                          FROM docket_entry de WHERE de.case_id = a.case_id AND de.id <> a.id
+                                           AND de.filed_on BETWEEN a.filed_on - 1 AND a.filed_on + 1) b ON b.src <> a.src)
+             SELECT 'free_source_rows_7d', count(*)::text FROM e
+             UNION ALL SELECT 'exact_groups (case+date+entry, >1 source)', count(DISTINCT (case_id, filed_on, k))::text FROM x WHERE exact
+             UNION ALL SELECT 'exact_rows', count(DISTINCT id)::text FROM x WHERE exact
+             UNION ALL SELECT 'exact_rows_free_vs_free', count(DISTINCT id)::text FROM x WHERE exact AND b_src NOT LIKE 'other:%'
+             UNION ALL SELECT 'twin_strict_rows (opinion/order +-1 day)', count(DISTINCT id)::text FROM x WHERE strict_twin
+             UNION ALL SELECT 'twin_strict_rows_free_vs_free', count(DISTINCT id)::text FROM x WHERE strict_twin AND b_src NOT LIKE 'other:%'
+             UNION ALL SELECT 'twin_loose_rows (hasEquivalentEntry rule)', count(DISTINCT id)::text FROM x WHERE loose_twin
+             UNION ALL SELECT 'twin_loose_rows_free_vs_free', count(DISTINCT id)::text FROM x WHERE loose_twin AND b_src NOT LIKE 'other:%'
+             UNION ALL (SELECT 'by_pair ' || a_src || ' x ' || b_src || ' exact/strict/loose',
+                               count(DISTINCT id) FILTER (WHERE exact) || '/' || count(DISTINCT id) FILTER (WHERE strict_twin) || '/' || count(DISTINCT id) FILTER (WHERE loose_twin)
+                          FROM x WHERE exact OR strict_twin OR loose_twin GROUP BY a_src, b_src ORDER BY 1)"
+          echo "--- 11. duplicate examples, free vs free, up to 15 (court | case | a_src a_date a_entry | b_src b_date b_entry) ---"
+          q "WITH cm AS (SELECT id FROM provider WHERE code = 'official_cmecf'),
+                  e AS (SELECT * FROM (SELECT de.id, de.case_id, de.filed_on, coalesce(nullif(trim(de.entry_number), ''), coalesce(de.entry_type, 'other')) AS k,
+                                     coalesce(de.entry_type, 'other') AS t, CASE WHEN de.provider_entry_id LIKE 'govinfo:%' THEN 'govinfo' WHEN de.provider_entry_id LIKE 'court-site:%' THEN 'court_site'
+                                     WHEN de.provider_entry_id LIKE 'appellate-rss:%' THEN 'appellate_pacer_rss' WHEN de.provider_entry_id LIKE 'coa-feed:%' THEN 'coa_feed'
+                                     WHEN de.provider_entry_id LIKE 'cl-feed:%' THEN 'courtlistener_feed' WHEN de.provider_id = (SELECT id FROM cm) THEN 'district_rss'
+                                     ELSE 'other:' || coalesce((SELECT code FROM provider p WHERE p.id = de.provider_id), '?') END AS src
+                                FROM docket_entry de WHERE de.created_at > now() - interval '7 days' AND de.filed_on IS NOT NULL) s
+                         WHERE src NOT LIKE 'other:%')
+             SELECT lower(c.provider_court_id), lc.public_id, a.src || ' ' || a.filed_on || ' ' || a.k || '/' || a.t, b.src || ' ' || b.filed_on || ' ' || b.k || '/' || b.t
+               FROM e a JOIN e b ON b.case_id = a.case_id AND b.id > a.id AND b.src <> a.src AND b.filed_on BETWEEN a.filed_on - 1 AND a.filed_on + 1
+                AND ((b.filed_on = a.filed_on AND b.k = a.k) OR (a.t IN ('opinion','order') AND b.t IN ('opinion','order')))
+               JOIN legal_case lc ON lc.id = a.case_id JOIN court c ON c.id = lc.court_id
+              ORDER BY a.filed_on DESC LIMIT 15"
           echo "=== done ==="
           REMOTE
       - name: Summary

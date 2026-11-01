@@ -286,6 +286,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/run-live-feeds.mjs", "--source=court-site"],
   },
   {
+    // CourtListener's public per-court opinion Atom feeds (not the REST API, no
+    // token or quota) for gasd, msnd, oknd and vaed: no public PACER RSS and no
+    // GovInfo packages there. One request per court, cross-source deduped.
+    lane: "coa",
+    name: "courtlistener-court-feeds",
+    initialDelayMs: 19 * minute,
+    intervalMs: 3 * 60 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-live-feeds.mjs", "--source=cl-feed"],
+  },
+  {
     lane: "coa",
     name: "appellate-backfill-report",
     initialDelayMs: 8 * minute,

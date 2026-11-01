@@ -48,8 +48,10 @@ export function courtSourceFromRow(row: DirectRegistryRow): FederalCourtSource {
 /**
  * Enabled courts not visited in the last `minIntervalMinutes`, least
  * recently retrieved first (never-retrieved first of all). A court that keeps failing waits longer before it is retried
- * (5 min x 2^failures, capped at 6 h) so a dead server does not take a slot
- * every run.
+ * (5 min x 2^failures, capped at 2 h) so a dead server does not take a slot
+ * every run. The cap matches the normal visit interval: with the old 6 h cap
+ * a court down for a day (ecf.ord answering 503 on 2026-10-31) was tried only
+ * every 6 h, so it looked silent in court_fetch_log and came back late.
  */
 export async function selectDirectCourtsDue(sql: Sql, options: { maxCourts: number; only?: string | null; minIntervalMinutes?: number }) {
   const minInterval = Math.max(0, options.minIntervalMinutes ?? 120);
@@ -60,7 +62,7 @@ export async function selectDirectCourtsDue(sql: Sql, options: { maxCourts: numb
     WHERE rss_available AND rss_url IS NOT NULL
       AND (${options.only ?? null}::text IS NULL OR court_code = ${options.only ?? null})
       AND (${options.only ?? null}::text IS NOT NULL OR consecutive_failures = 0
-        OR updated_at < now() - least(interval '6 hours', interval '5 minutes' * power(2, least(consecutive_failures, 7))))
+        OR updated_at < now() - least(interval '2 hours', interval '5 minutes' * power(2, least(consecutive_failures, 7))))
       -- Feeds cover the last 24 hours, so a visit every couple of hours misses
       -- nothing and keeps requests and stored feed copies low.
       AND (${options.only ?? null}::text IS NOT NULL OR last_successful_retrieval IS NULL

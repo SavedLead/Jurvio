@@ -96,12 +96,20 @@ minutes later created only the 5 cafc items posted in between.
 `jobs/ingest-direct-court-feeds.mjs` (coa lane `direct-court`, every 10 min).
 
 - **Coverage.** Migration 0140 enables 67 more districts, which brings the total to 79 of 94. All 94 registered `rss_outside.pl` URLs were requested once on 2026-10-30. The 67 enabled ones answered with XML entries. The remaining 15 answered with an empty body and stay disabled: alnd, flnd, gand, gasd, kyed, mdd, msnd, ndd, nyed, nywd, oked, oknd, pamd, vaed and wvsd.
-- **Rotation.** Each run takes at most 16 due courts, least recently retrieved first, within a 6-minute budget. A court is due when it hasn't been visited for 2 hours; feeds cover 24 hours, so nothing is missed. A failing court backs off: 5 min × 2^failures, capped at 6 h.
+- **Rotation.** Each run takes at most 16 due courts, least recently retrieved first, within a 6-minute budget. A court is due when it hasn't been visited for 2 hours; feeds cover 24 hours, so nothing is missed. A failing court backs off: 5 min × 2^failures, capped at 2 h (was 6 h until 2026-11-01: ecf.ord answered 503 for a day and, at a 6 h cap, looked silent in `court_fetch_log`). `diagnose-court-sources-once` section 9 lists failing or overdue courts with their next retry.
 - **Isolation.** Each court has its own try/catch, and the RSS fetch has a 45 s timeout. Any failure, including the fetch itself, marks only that court degraded. Before this change, one court's ECONNRESET ended the whole run, because the fetch sat outside the try and the loop had no per-court catch.
 - **Cheap re-polls.** Items already stored, linked to a case or restricted, are found with one indexed `ANY()` query and skipped. Only new or still-unlinked items cost a transaction.
 - **Watermarks.** `district_rss` watermarks are recorded per court, and the touched courts' freshness rows are recomputed.
 - **Load.** About 79 × 12 fetches a day, fewer than the old schedule of 12 courts every 5 minutes. Expected database growth is roughly 50k `direct_court_event` rows plus matching `docket_entry` rows a day, about 80–100 MB/day. Watch it for the first days.
 - **Rollback.** `UPDATE direct_court_registry SET rss_available = false WHERE court_code IN (...)` with the list from 0140.
+
+## CourtListener per-court opinion feeds
+
+`jobs/run-live-feeds.mjs --source=cl-feed` (coa lane `courtlistener-court-feeds`, every 3 h).
+
+- **Why.** gasd, msnd, oknd and vaed publish no public PACER RSS (empty `rss_outside.pl` body) and have no GovInfo USCOURTS packages, so no other free source carries their data. CourtListener's public Atom feed `https://www.courtlistener.com/feed/court/{court}/` lists each court's 20 newest opinions (title, date, the first lines of the opinion, the RECAP PDF). It is not the REST API: no token, no quota.
+- **Matching.** Docket from the opinion header (office:yy-type-number; S.D. Ga. `CV 124-005` style too). Existing case: an opinion entry unless another source already has an opinion/order within a day or the same document number. No case: a draft case only from a full docket. Headers that name another district, sealed/minor/juvenile text and items older than 60 days are skipped. Items are recorded once in `free_source_item` (source `courtlistener_feed`).
+- **Found but not built (2026-11-01).** Public hearing calendars: msnd `ecf.msnd.uscourts.gov/cgi-bin/CourtSched.pl`, oknd `www.oknd.uscourts.gov/calendarws/entries/{judge|all}/{day|week}/{start}/{end}` (JSON), vaed `www.vaedonline.uscourts.gov/schedules/w_weekly{1,2,3}.html`. They carry docket numbers and hearing types but need a hearings model, not docket entries. The written-opinions report (`WrtOpRpt.pl`) for all four needs a PACER login.
 
 ## CourtListener tail
 

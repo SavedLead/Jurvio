@@ -10,6 +10,7 @@
 import { circuitAdapter } from "@/modules/ingestion/providers/appellate/adapters";
 import { APPELLATE_RSS_COURTS, appellateRssUrl } from "@/modules/ingestion/providers/appellate/pacer-rss";
 import { SITE_OPINION_SOURCES } from "@/modules/ingestion/providers/courts/site-opinions";
+import { COURTLISTENER_FEED_COURTS, courtListenerFeedUrl } from "@/modules/ingestion/providers/courts/courtlistener-feed";
 import { APPELLATE_COURT_REGISTRY } from "@/modules/ingestion/providers/appellate/registry";
 
 export type CourtSourceKey =
@@ -19,6 +20,7 @@ export type CourtSourceKey =
   | "govinfo"
   | "court_site"
   | "appellate_pacer_rss"
+  | "courtlistener_feed"
   | "pacer_free_opinions";
 
 export const COURT_SOURCE_LABELS: Readonly<Record<CourtSourceKey, string>> = {
@@ -28,6 +30,7 @@ export const COURT_SOURCE_LABELS: Readonly<Record<CourtSourceKey, string>> = {
   govinfo: "GovInfo USCOURTS opinions",
   court_site: "Court website opinions/orders",
   appellate_pacer_rss: "Appellate PACER RSS",
+  courtlistener_feed: "CourtListener court opinion feed",
   pacer_free_opinions: "PACER written-opinions report",
 };
 
@@ -87,6 +90,10 @@ export function districtCatalogRows(districtCodes: readonly string[]): CourtSour
       courtCode: court, source: "court_site" as const, url: source.url, available: true, enabled: true,
       note: "court website opinion list",
     })),
+    ...(COURTLISTENER_FEED_COURTS as readonly string[]).includes(court) ? [{
+      courtCode: court, source: "courtlistener_feed" as const, url: courtListenerFeedUrl(court), available: true, enabled: true,
+      note: "public Atom feed of the court's newest opinions (no public PACER RSS, no GovInfo packages)",
+    }] : [],
     {
       courtCode: court, source: "pacer_free_opinions" as const,
       url: `https://ecf.${court}.uscourts.gov/cgi-bin/WrtOpRpt.pl`, available: true, enabled: false, note: PACER_LOGIN_NOTE,
