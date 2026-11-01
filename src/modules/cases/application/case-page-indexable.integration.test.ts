@@ -68,6 +68,9 @@ describe.skipIf(!databaseUrl)("getPublicCase tierReleaseIndexable", () => {
       const sitemapPaths = (await listCaseSitemapRecords(sql, "jv-", null)).map((record) => record.path);
       expect(sitemapPaths).toContain("/case/jv-idxtier01");
       expect(sitemapPaths).not.toContain("/case/jv-idxsealed");
+      // Indexable decision but no readable opinion and no tier release: the page renders noindex, so no sitemap URL.
+      expect(sitemapPaths).not.toContain("/case/jv-idxlegacy");
+      expect(sitemapPaths).not.toContain("/case/jv-idxtier01/documents");
     } finally {
       await sql.end();
       await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
