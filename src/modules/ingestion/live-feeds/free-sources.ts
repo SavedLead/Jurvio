@@ -2,6 +2,8 @@
  * Two more free sources, each cross-checked against everything else Jurvio has:
  *   court_site           - district court website opinion lists (providers/courts/site-opinions.ts)
  *   appellate_pacer_rss  - appellate CM/ECF public "Recent Entries" RSS (providers/appellate/pacer-rss.ts)
+ *   courtlistener_feed   - CourtListener's public per-court opinion Atom feed, for districts with no
+ *                          public PACER RSS and no GovInfo packages (providers/courts/courtlistener-feed.ts)
  * Every item is recorded once in free_source_item. Entries go on the case only
  * when no other source already has the same kind of entry within a day
  * (hasEquivalentEntry). New cases are draft/not_verified; sealed or
@@ -12,6 +14,9 @@ import type { ArtifactStore } from "../application/artifact-store";
 import { isRestrictedDocketText } from "../domain/federal-stream";
 import { SITE_OPINION_SOURCES, parseSiteOpinions, type SiteOpinionItem, type SiteOpinionSource } from "../providers/courts/site-opinions";
 import { APPELLATE_RSS_COURTS, appellateRssUrl, parseAppellateRss, type AppellateRssItem } from "../providers/appellate/pacer-rss";
+import {
+  COURTLISTENER_FEED_COURTS, courtListenerFeedUrl, parseCourtListenerFeed, type CourtListenerFeedItem,
+} from "../providers/courts/courtlistener-feed";
 import { FetchBudget } from "./polite-fetcher";
 import {
   findFederalCase, hasEquivalentEntry, insertDocketEntryOnce, matchOrCreateDraftCase, providerId, resolveCourt, storeFeedArtifact,
@@ -31,7 +36,7 @@ export interface FreeSourceOptions {
 }
 
 export interface FreeSourceCourtResult {
-  source: "court_site" | "appellate_pacer_rss";
+  source: "court_site" | "appellate_pacer_rss" | "courtlistener_feed";
   court: string;
   ok: boolean;
   items: number;
@@ -228,5 +233,100 @@ async function persistAppellateRssItem(sql: Sql, provider: string, artifactId: s
       description: item.entryText, entryType: item.kind === "opinion" ? "opinion" : item.kind === "other" ? "filing" : "order",
       importance: item.kind === "other" ? "routine" : "high", artifactId });
     return done(created ? "new_case" : "entry", match.caseId);
+  });
+}
+
+// ------------------------------------------------ CourtListener per-court feeds
+
+export async function runCourtListenerFeeds(sql: Sql, store: ArtifactStore, options: FreeSourceOptions = {}): Promise<FreeSourceCourtResult[]> {
+  const courts = COURTLISTENER_FEED_COURTS.filter((court) => !options.courts?.length || options.courts.includes(court));
+  const official = await providerId(sql, "official_cmecf");
+  const courtlistener = await providerId(sql, "courtlistener");
+  const results: FreeSourceCourtResult[] = [];
+  for (const court of courts) results.push(await runCourtListenerFeedCourt(sql, store, { official, courtlistener }, court, options));
+  return results;
+}
+
+async function runCourtListenerFeedCourt(sql: Sql, store: ArtifactStore, providers: { official: string; courtlistener: string },
+  court: string, options: FreeSourceOptions) {
+  const result: FreeSourceCourtResult = { source: "courtlistener_feed", court, ok: false, items: 0, outcomes: emptyOutcomes() };
+  const url = courtListenerFeedUrl(court);
+  const budget = new FetchBudget({ source: `courtlistener_feed:${court}`, maxRequests: 1, maxMs: 60_000,
+    minIntervalMs: options.minIntervalMs ?? 0, fetchImpl: options.fetchImpl });
+  const startedAtMs = Date.now();
+  const now = options.now ?? new Date();
+  const oldest = new Date(now.getTime() - SITE_MAX_AGE_DAYS * 86_400_000).toISOString().slice(0, 10);
+  let body = "";
+  let newItems = 0;
+  let newest: string | null = null;
+  try {
+    body = await budget.text(url, "application/atom+xml");
+    const items = parseCourtListenerFeed(body, court);
+    result.items = items.length;
+    const artifactId = await storeFeedArtifact(sql, store, { providerId: providers.courtlistener, sourceUri: url,
+      sourceRecordId: `cl-feed:${court}`, keyPrefix: `district/courtlistener-feed/${court}`, body,
+      mediaType: "application/atom+xml", metadata: { courtCode: court, items: items.length } });
+    const known = await seen(sql, "courtlistener_feed", items.map((item) => item.itemKey));
+    const district = await districtInfo(sql, court);
+    for (const item of items) {
+      if (known.has(item.itemKey)) { result.outcomes.seen_before += 1; continue; }
+      if (!item.issuedOn || item.issuedOn < oldest) { result.outcomes.too_old += 1; continue; }
+      const outcome = await persistCourtListenerItem(sql, providers, artifactId, item, district);
+      result.outcomes[outcome] += 1;
+      if (outcome === "entry" || outcome === "new_case") newItems += 1;
+      if (!newest || item.issuedOn > newest) newest = item.issuedOn;
+    }
+    result.ok = true;
+  } catch (failure) {
+    result.error = errorText(failure);
+  }
+  await recordCourtFetch(sql, { source: "courtlistener_feed", courtCode: court, url, startedAtMs,
+    httpStatus: result.ok ? 200 : httpStatusOf(result.error ?? ""), ok: result.ok, bytes: body ? Buffer.byteLength(body) : null,
+    items: result.ok ? result.items : null, newItems: result.ok ? newItems : null, error: result.error ?? null });
+  await recordSourceWatermark(sql, { source: "courtlistener_feed", courtCode: court, ok: result.ok, itemsFetched: result.items,
+    newCases: result.outcomes.new_case, newEntries: result.outcomes.entry, newestItemAt: newest ? `${newest}T00:00:00Z` : null,
+    error: result.error ?? null });
+  return result;
+}
+
+async function persistCourtListenerItem(sql: Sql, providers: { official: string; courtlistener: string }, artifactId: string,
+  item: CourtListenerFeedItem, district: { code: string; name: string }): Promise<Outcome> {
+  return sql.begin(async (tx) => {
+    const base = { source: "courtlistener_feed", itemKey: item.itemKey, courtCode: item.courtCode, docketNumber: item.docketNumber, issuedOn: item.issuedOn };
+    const done = async (outcome: Outcome, caseId: string | null = null) => { await mark(tx, { ...base, outcome, caseId }); return outcome; };
+    if (isRestrictedDocketText(item.caption) || isRestrictedDocketText(item.header)) return done("restricted");
+    if (item.otherCourt || !item.docketNumber) return done("unmatched");
+    const existing = await findFederalCase(tx, { courtCode: district.code, docketNumber: item.docketNumber, district: true });
+    if (existing === "ambiguous") return done("ambiguous");
+    let caseId = existing;
+    let created = false;
+    if (!caseId) {
+      // Only a full docket (office:yy-type-number) may create a case.
+      if (!item.docketComplete) return done("unmatched");
+      const courtId = await resolveCourt(tx, { providerId: providers.official, courtCode: district.code, name: district.name,
+        shortName: district.code.toUpperCase(), jurisdiction: "Federal District", artifactId });
+      const match = await matchOrCreateDraftCase(tx, { providerId: providers.official, courtId, courtCode: district.code,
+        docketNumber: item.docketNumber, caption: item.caption, filedOn: null, decidedOn: item.issuedOn, artifactId,
+        identifierType: "courtlistener_feed_docket", identifierValue: `${item.courtCode}:${item.docketNumber}` });
+      if (match.kind === "restricted") return done("restricted");
+      if (match.kind === "ambiguous") return done("ambiguous");
+      caseId = match.caseId;
+      created = match.kind === "created";
+    }
+    if (!created && await hasEquivalentEntry(tx, { caseId, filedOn: item.issuedOn, kind: "opinion", ownPrefix: "cl-feed:" })) {
+      return done("matched", caseId);
+    }
+    // RECAP document numbers are the court's own docket numbers: the same
+    // number on the case from another source (district RSS) is the same filing.
+    if (!created && item.entryNumber) {
+      const [same] = await tx<{ id: string }[]>`
+        SELECT id FROM docket_entry WHERE case_id = ${caseId} AND entry_number = ${item.entryNumber}
+          AND coalesce(provider_entry_id, '') NOT LIKE 'cl-feed:%' LIMIT 1`;
+      if (same) return done("matched", caseId);
+    }
+    await insertDocketEntryOnce(tx, { caseId, providerId: providers.courtlistener,
+      providerEntryId: `cl-feed:${item.courtCode}:${item.opinionId ?? item.itemKey}`, entryNumber: item.entryNumber, filedOn: item.issuedOn,
+      description: `Opinion (CourtListener court feed): ${item.documentUrl}`, entryType: "opinion", importance: "high", artifactId });
+    return done(created ? "new_case" : "entry", caseId);
   });
 }

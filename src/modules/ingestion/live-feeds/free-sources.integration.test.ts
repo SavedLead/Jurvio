@@ -27,7 +27,7 @@ describe.skipIf(!databaseUrl)("court-site opinions and appellate RSS against Pos
   const cleanup = async () => {
     await sql`DELETE FROM legal_case WHERE public_id LIKE 'jv-freesrc%' OR source_artifact_id IN (
       SELECT id FROM raw_artifact WHERE source_record_id LIKE 'court-site:%' OR source_record_id LIKE 'appellate-rss:%')`;
-    await sql`DELETE FROM free_source_item`;
+    await sql`DELETE FROM free_source_item WHERE source IN ('court_site', 'appellate_pacer_rss')`;
     await sql`DELETE FROM court_fetch_log WHERE source IN ('court_site', 'appellate_pacer_rss')`;
     await sql`DELETE FROM court_source_watermark WHERE source IN ('court_site', 'appellate_pacer_rss')`;
   };
