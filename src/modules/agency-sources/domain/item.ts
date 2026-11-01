@@ -38,6 +38,8 @@ export interface AgencyItem {
   restrictedReason: string | null;
   /** Source-side version marker (e.g. FTC "Last Updated"); a change re-reads a known item. */
   changeKey?: string | null;
+  /** District courts the item names even when it states no docket number (review queue context). */
+  statedCourts?: string[];
   /** Full text the item was read from, used only to confirm a matched caption names a party it mentions (not stored). */
   matchText?: string;
 }

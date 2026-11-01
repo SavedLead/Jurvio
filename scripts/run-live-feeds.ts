@@ -5,11 +5,14 @@ import { runCourtListenerTail } from "@/modules/ingestion/live-feeds/courtlisten
 import {
   refreshTouchedCourts, runCoaLiveFeeds, runScotusLiveDockets, type SourceRunResult,
 } from "@/modules/ingestion/live-feeds/run-live-feeds";
+import { runGovInfoDaily } from "@/modules/ingestion/live-feeds/govinfo-daily";
 
 // Live feeds: new SCOTUS dockets (supremecourt.gov) and new court of appeals
 // opinions/orders (each circuit's own feed). New cases are drafts. Each source
 // and each court has its own small budget; one failure never stops the rest.
-//   node jobs/run-live-feeds.mjs --source=scotus|coa|all [--courts=ca5,ca9]
+//   node jobs/run-live-feeds.mjs --source=scotus|coa|govinfo|all [--courts=ca5,ca9]
+// govinfo: the GovInfo USCOURTS daily source for every district and circuit
+// (GOVINFO_API_KEY, else DEMO_KEY at one page per run). Not part of `all`.
 // The CourtListener API date_modified tail is disabled (2026-10-31, David
 // Rosenberg). `--source=courtlistener` exits without any request; `all` skips it.
 // The CourtListener bulk-file loaders are separate jobs and are unaffected.
@@ -18,8 +21,8 @@ const args = new Map(process.argv.slice(2).map((value) => {
   return [key, raw] as const;
 }));
 const source = args.get("source") ?? "all";
-if (!["scotus", "coa", "courtlistener", "all"].includes(source)) {
-  throw new Error("--source must be scotus, coa or all");
+if (!["scotus", "coa", "govinfo", "courtlistener", "all"].includes(source)) {
+  throw new Error("--source must be scotus, coa, govinfo or all");
 }
 const COURTLISTENER_API_LIVE_FEED_ENABLED = false;
 if (source === "courtlistener" && !COURTLISTENER_API_LIVE_FEED_ENABLED) {
@@ -49,6 +52,23 @@ try {
     }
     if (source === "coa" || source === "all") {
       results.push(...await runCoaLiveFeeds(sql, store, courts?.length ? { coa: { maxRequestsPerCourt: 4, maxMsPerCourt: 90_000, minIntervalMs: 1_500, courts } } : {}));
+    }
+    if (source === "govinfo") {
+      try {
+        const govinfo = await runGovInfoDaily(sql, store, {
+          apiKey: process.env.GOVINFO_API_KEY, maxPages: Number.parseInt(args.get("max-pages") ?? "10", 10) || 10,
+        });
+        results.push({ source: "govinfo", court: "_all", ok: govinfo.ok, requests: govinfo.requests, itemsFetched: govinfo.tracked,
+          newCases: govinfo.outcomes.new_case, newEntries: govinfo.outcomes.entry, skippedRestricted: govinfo.outcomes.restricted,
+          skippedAmbiguous: govinfo.outcomes.ambiguous, error: govinfo.error });
+        const busiest = Object.entries(govinfo.perCourt).filter(([, row]) => row.packages > 0).sort((a, b) => b[1].packages - a[1].packages);
+        console.log(JSON.stringify({ govinfo: { credential: govinfo.credential, packages: govinfo.packages, tracked: govinfo.tracked,
+          outcomes: govinfo.outcomes, sweepComplete: govinfo.sweepComplete, courtsWithPackages: busiest.length,
+          perCourt: Object.fromEntries(busiest), needsFreeKey: govinfo.credential === "demo" } }));
+      } catch (error) {
+        results.push({ source: "govinfo", court: "_all", ok: false, requests: 0, itemsFetched: 0,
+          newCases: 0, newEntries: 0, skippedRestricted: 0, skippedAmbiguous: 0, error: String(error) });
+      }
     }
     if (COURTLISTENER_API_LIVE_FEED_ENABLED && (source === "courtlistener" || source === "all")) {
       const universe = await sql<{ court_code: string }[]>`

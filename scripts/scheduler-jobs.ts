@@ -255,6 +255,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/run-live-feeds.mjs", "--source=coa"],
   },
   {
+    // GovInfo USCOURTS: new opinions for all 94 districts and 13 circuits,
+    // cross-checked against the other sources (govinfo_crosscheck). Hourly fits
+    // DEMO_KEY (one page per run); a configured free key reads up to 10 pages.
+    lane: "coa",
+    name: "govinfo-daily",
+    initialDelayMs: 11 * minute,
+    intervalMs: 60 * minute,
+    budgetMs: 15 * minute,
+    command: ["jobs/run-live-feeds.mjs", "--source=govinfo"],
+  },
+  {
     lane: "coa",
     name: "appellate-backfill-report",
     initialDelayMs: 8 * minute,

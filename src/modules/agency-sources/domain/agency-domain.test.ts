@@ -22,6 +22,9 @@ describe("district courts", () => {
     expect(codes("S.D.N.Y., E.D. Cal., D. Mass., N.D. Ohio, W.D. Va., D.D.C., S.D. N.Y.")).toEqual(["nysd", "caed", "mad", "ohnd", "vawd", "dcd", "nysd"]);
     expect(codes("Eastern District of North Carolina and the Northern District of West Virginia")).toEqual(["nced", "wvnd"]);
     expect(codes("District of California")).toEqual([]);
+    expect(codes("attorneys general of Utah, Vermont, and the District of Columbia")).toEqual([]);
+    expect(codes("in the U.S. District Court for the District of Columbia")).toEqual(["dcd"]);
+    expect(codes("Jeanine Pirro, U.S. Attorney for the District of Columbia")).toEqual(["dcd"]);
     expect(codes("Court of Appeals for the District of Columbia Circuit")).toEqual([]);
     expect(courtFromField("Northern District of Ohio")).toBe("ohnd");
     expect(courtFromField("Northern District of Ohio; Southern District of Ohio")).toBeNull();

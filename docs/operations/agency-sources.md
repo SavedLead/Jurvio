@@ -13,6 +13,26 @@ Read-only report: `diagnose-agency-sources-once.yml` (confirm `DIAGNOSE`).
 | `sec-litigation-releases` | SEC | litigation releases RSS + each new release page | ≤25 pages, 250 ms apart (SEC fair access: ≤10/s, UA with contact) |
 | `sec-administrative-proceedings` | SEC | administrative proceedings RSS | 1 request; stored as not-court items |
 | `ftc-cases-proceedings` | FTC | legal-library case listing + changed case pages | ≤12 pages, 5 s apart (robots Crawl-delay) |
+| `state-ag-ca`, `-ny`, `-tx`, `-fl`, `-il`, `-pa`, `-ma`, `-wa`, `-nj`, `state-ag-multistate` (NAAG) | each attorney general's office | CA and PA RSS (PA full text), others the newsroom page (newest 60 links) | ≤8 new release pages, ≥3 s apart (CA Crawl-delay 10 s) |
+| `settlement-admin-jnd` | JND Legal Administration | jndla.com/cases (Nuxt payload: case name, case number, amount, website) | 1 request, at most every 20 h |
+| `settlement-websites` | court-approved settlement websites JND lists | each site's homepage | ≤6 sites per run, each at most weekly |
+| `settlement-admin-epiq`, `-kroll`, `-angeion` | — | registered, not polled | no public case index (Epiq, Angeion); HTTP 403 to our User-Agent (Kroll) |
+
+State AG releases that name no federal court and no federal docket are kept
+as title + link only (`not_court`). Releases that name a federal court but no
+docket number (most AG releases) wait in the review queue with the court they
+name (`stated_courts`); they never link without a stated docket. Releases
+describing a coalition are marked `press_release_multistate`.
+
+Settlement administrator listings and settlement websites are privately
+written, so Jurvio stores only facts from them (case number, court, amount,
+deadlines, document links), never their text. A JND case number is used only
+when it is a district docket and the listing names the court.
+
+As of 2026-10-31 these return HTTP 403 to Jurvio's declared User-Agent from
+the box: myfloridalegal.com (FL), mass.gov (MA), njoag.gov (NJ), naag.org
+(multistate), kroll.com. They stay enabled for the state newsrooms and are
+recorded as `blocked` each run, so they start working if the block lifts.
 
 ## Rules
 

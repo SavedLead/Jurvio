@@ -2,7 +2,7 @@ import type { CaseAgencyItem } from "../application/public-items";
 import { DISTRICT_COURTS } from "../domain/federal-courts";
 
 const KIND_LABEL: Record<string, string> = {
-  press_release: "Press release", litigation_release: "Litigation release", case_page: "Case page",
+  press_release: "Press release", press_release_multistate: "Multistate press release", litigation_release: "Litigation release", case_page: "Case page",
   settlement_notice: "Settlement website", settlement_listing: "Settlement administrator listing",
 };
 

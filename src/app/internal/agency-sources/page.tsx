@@ -39,7 +39,9 @@ export default async function AgencySourcesPage() {
       <tbody>{queue.map((item) => <tr key={item.sourceUrl}>
         <td>{item.sourceCode}</td>
         <td><a href={item.sourceUrl} rel="noopener noreferrer">{item.title}</a>{item.restricted ? ` — restricted: ${item.restrictedReason}` : ""}</td>
-        <td>{item.refs.map((ref) => `${ref.court ?? "court not stated"} ${ref.docket}: ${ref.status}${ref.note ? ` (${ref.note})` : ""}`).join("; ")}</td>
+        <td>{item.refs.length > 0
+          ? item.refs.map((ref) => `${ref.court ?? "court not stated"} ${ref.docket}: ${ref.status}${ref.note ? ` (${ref.note})` : ""}`).join("; ")
+          : `no docket number stated; names ${item.statedCourts.join(", ")}`}</td>
       </tr>)}</tbody>
     </table>
   </main>;

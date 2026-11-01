@@ -9,8 +9,15 @@ export interface SourceContext {
   now: Date;
   /** First pass for this source (no stored items yet): may read a little further back. */
   firstRun: boolean;
+  /** Items another source already stored (e.g. the settlement websites a JND listing names). */
+  storedItems(sourceCode: string): Promise<StoredItem[]>;
   /** The source's stored cursor from its last successful run (adapter-defined). */
   cursor: string | null;
+}
+
+export interface StoredItem {
+  sourceRecordId: string; title: string; settlementAmount: string | null;
+  documents: Array<{ url: string; label: string; kind: string }>; statedCourts: string[]; dockets: string[];
 }
 
 export interface SourceOutcome {

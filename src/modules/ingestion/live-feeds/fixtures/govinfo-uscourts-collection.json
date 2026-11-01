@@ -1,0 +1,305 @@
+{
+ "count": 33,
+ "message": null,
+ "nextPage": null,
+ "previousPage": null,
+ "packages": [
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:03:34Z",
+   "packageId": "USCOURTS-nywd-1_17-cv-00937",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-nywd-1_17-cv-00937/summary",
+   "title": "Rossy v. City of Buffalo et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-29",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:03:12Z",
+   "packageId": "USCOURTS-nywd-1_22-cr-00141",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-nywd-1_22-cr-00141/summary",
+   "title": "USA v. Herbert et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:03:06Z",
+   "packageId": "USCOURTS-pamd-1_25-cv-01393",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-pamd-1_25-cv-01393/summary",
+   "title": "Burton v. Dranzo et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-29",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:03:01Z",
+   "packageId": "USCOURTS-nywd-1_25-cv-01069",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-nywd-1_25-cv-01069/summary",
+   "title": "Eckert v. Ford Motor Company et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:02:11Z",
+   "packageId": "USCOURTS-wiwd-3_24-cv-00842",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-wiwd-3_24-cv-00842/summary",
+   "title": "Hunley, Johnny v. Boyer, Ray et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:02:11Z",
+   "packageId": "USCOURTS-txed-4_11-cr-00127",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-txed-4_11-cr-00127/summary",
+   "title": "USA v. Pieper et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:02:10Z",
+   "packageId": "USCOURTS-mdd-1_26-cv-04297",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-mdd-1_26-cv-04297/summary",
+   "title": "3 Dimensional Wealth Advisory LLC et al v. Barberis"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:02:02Z",
+   "packageId": "USCOURTS-nywd-1_26-cv-02399",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-nywd-1_26-cv-02399/summary",
+   "title": "Case Name in Immigration Case - Unavailable"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:01:36Z",
+   "packageId": "USCOURTS-txed-4_12-cr-00016",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-txed-4_12-cr-00016/summary",
+   "title": "USA v. Salazar et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-29",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:01:16Z",
+   "packageId": "USCOURTS-mdd-1_06-cr-00394",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-mdd-1_06-cr-00394/summary",
+   "title": "USA v. Blake"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:01:06Z",
+   "packageId": "USCOURTS-pamd-4_25-cv-01427",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-pamd-4_25-cv-01427/summary",
+   "title": "Beard v. Whittaker et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:50Z",
+   "packageId": "USCOURTS-pamd-1_26-cv-00669",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-pamd-1_26-cv-00669/summary",
+   "title": "Lewis, Jr. v. Baddick et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:50Z",
+   "packageId": "USCOURTS-okwd-5_26-cv-02635",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-okwd-5_26-cv-02635/summary",
+   "title": "Viloria v. Warden Diamondback Correctional Facility et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:50Z",
+   "packageId": "USCOURTS-mdd-1_25-cv-03601",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-mdd-1_25-cv-03601/summary",
+   "title": "Spahr v. Bisignano"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-29",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:45Z",
+   "packageId": "USCOURTS-txed-1_22-cr-00095",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-txed-1_22-cr-00095/summary",
+   "title": "USA v. Myles"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:44Z",
+   "packageId": "USCOURTS-txed-4_25-cv-00682",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-txed-4_25-cv-00682/summary",
+   "title": "Taylor v. Sheriff, Grayson County"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:44Z",
+   "packageId": "USCOURTS-pamd-1_26-cv-00132",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-pamd-1_26-cv-00132/summary",
+   "title": "Blackstone v. County of Dauphin et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:44Z",
+   "packageId": "USCOURTS-ncwd-3_26-cv-00756",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-ncwd-3_26-cv-00756/summary",
+   "title": "Crowe v. Mecklenburg County et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:34Z",
+   "packageId": "USCOURTS-pamd-4_26-cv-00855",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-pamd-4_26-cv-00855/summary",
+   "title": "Klaiber v. Atherton et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:28Z",
+   "packageId": "USCOURTS-ncwd-3_26-cv-00652",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-ncwd-3_26-cv-00652/summary",
+   "title": "Crowe v. Mecklenburg County et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:27Z",
+   "packageId": "USCOURTS-okwd-5_26-cv-01487",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-okwd-5_26-cv-01487/summary",
+   "title": "Zaidi v. Blanche et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:19Z",
+   "packageId": "USCOURTS-okwd-5_26-cv-01535",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-okwd-5_26-cv-01535/summary",
+   "title": "Mamatov v. Figueroa et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:19Z",
+   "packageId": "USCOURTS-mdd-1_26-cv-00253",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-mdd-1_26-cv-00253/summary",
+   "title": "Makins-Dennis v. LifeStar Response of Maryland, Inc."
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:17Z",
+   "packageId": "USCOURTS-okwd-5_26-cv-00445",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-okwd-5_26-cv-00445/summary",
+   "title": "Tobio Mora et al v. Noem et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:14Z",
+   "packageId": "USCOURTS-txed-4_19-cr-00087",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-txed-4_19-cr-00087/summary",
+   "title": "USA v. Gladney et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:09Z",
+   "packageId": "USCOURTS-txed-4_22-cr-00285",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-txed-4_22-cr-00285/summary",
+   "title": "USA v. Christancho Parada et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T23:00:09Z",
+   "packageId": "USCOURTS-mdd-1_26-cv-01281",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-mdd-1_26-cv-01281/summary",
+   "title": "Murdock v. Johns Hopkins University et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T22:59:59Z",
+   "packageId": "USCOURTS-mdd-1_26-cv-02577",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-mdd-1_26-cv-02577/summary",
+   "title": "General Motors LLC v. Drumwright et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-29",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T22:59:53Z",
+   "packageId": "USCOURTS-nywd-1_25-cv-00655",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-nywd-1_25-cv-00655/summary",
+   "title": "Castile v. County of Niagara et al"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T22:59:52Z",
+   "packageId": "USCOURTS-ord-6_26-cv-00325",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-ord-6_26-cv-00325/summary",
+   "title": "Hunt v. United States Coast Guard"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-29",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T20:00:00Z",
+   "packageId": "USCOURTS-ca5-26-90001",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-ca5-26-90001/summary",
+   "title": "Doe v. Gulf Coast Fixture Co."
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-23",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T19:00:00Z",
+   "packageId": "USCOURTS-caDC-26-9002",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-caDC-26-9002/summary",
+   "title": "Roe v. Fixture Agency"
+  },
+  {
+   "congress": null,
+   "dateIssued": "2026-10-30",
+   "docClass": "USCOURTS",
+   "lastModified": "2026-10-31T18:00:00Z",
+   "packageId": "USCOURTS-nywd-1_26-mj-00001",
+   "packageLink": "https://api.govinfo.gov/packages/USCOURTS-nywd-1_26-mj-00001/summary",
+   "title": "In re Sealed Search Warrant"
+  }
+ ]
+}
