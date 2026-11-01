@@ -27,7 +27,7 @@ jobs:
   diagnose:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
@@ -60,7 +60,7 @@ jobs:
               *) echo "(refused: not a SELECT)"; return 0 ;;
             esac
             sudo -n docker exec \
-              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=1500s -c lock_timeout=5s' \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=2400s -c lock_timeout=5s' \
               "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
           }
           echo "=== CASE SECTIONS AFTER @ $(date -u +%FT%TZ) (read-only) session_read_only=$(q "SELECT current_setting('default_transaction_read_only')") ==="
@@ -92,12 +92,13 @@ jobs:
                       AND caption !~* '(\\m(v|vs)\\.?\\s|\\min re\\M|\\mmatter of\\M|\\mex parte\\M|\\munited states\\M|\\musa\\M|\\msealed\\M|\\mpetition\\M|\\mestate of\\M|\\msearch warrant\\M|\\mseizure\\M|\\mapplication\\M|\\mgrand jury\\M|\\munknown\\M)'
                       AND caption ~* '[a-z]' AND length(caption) <= 120) AS thin_us,
                    (caption ~ '^\\s*\\((HC|PC|SS)\\)\\s+') AS tagged,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0) AS readable,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0 AND d.filed_on IS NOT NULL) AS opinion_dated,
-                   EXISTS (SELECT 1 FROM case_citation_count cc WHERE cc.case_id = pc.id AND cc.cited_by > 0) AS cited
-                 FROM pc),
+                   coalesce(docs.readable, false) AS readable, coalesce(docs.dated, false) AS opinion_dated,
+                   coalesce(cc.cited_by, 0) > 0 AS cited
+                 FROM pc
+               LEFT JOIN (SELECT d.case_id, true AS readable, bool_or(d.filed_on IS NOT NULL) AS dated
+                            FROM document d JOIN document_content dc ON dc.document_id = d.id
+                           WHERE d.publication = 'published' AND octet_length(dc.content_text) > 0 GROUP BY d.case_id) docs ON docs.case_id = pc.id
+               LEFT JOIN case_citation_count cc ON cc.case_id = pc.id),
              a AS (
                  SELECT f.*,
                    (background_summary IS NOT NULL OR (verification = 'verified' AND status_explanation IS NOT NULL)) AS happened_before,
@@ -118,7 +119,7 @@ jobs:
                    count(*) FILTER (WHERE outcome_before), count(*) FILTER (WHERE outcome_after),
                    count(*) FILTER (WHERE thin_us), count(*) FILTER (WHERE readable AND NOT opinion_dated AND decided_on IS NULL AND terminated_on IS NULL)
                  FROM a GROUP BY ROLLUP (1, 2) ORDER BY 1, 2"
-          echo "--- 2. United States v. captions built (kind | dtype | cases) ---"
+          echo "--- 4. title samples (ctype | thin_us | public_id | court | court name | docket | caption | filed | decided | terminated | nos | cause) ---"
           q "WITH pc AS (
                  SELECT c.id, c.caption, c.docket_number, c.verification::text AS verification, c.status_explanation, c.disposition_scope,
                         c.filed_on, c.decided_on, c.terminated_on, c.nature_of_suit_code AS nos, c.cause_of_action AS cause,
@@ -146,12 +147,13 @@ jobs:
                       AND caption !~* '(\\m(v|vs)\\.?\\s|\\min re\\M|\\mmatter of\\M|\\mex parte\\M|\\munited states\\M|\\musa\\M|\\msealed\\M|\\mpetition\\M|\\mestate of\\M|\\msearch warrant\\M|\\mseizure\\M|\\mapplication\\M|\\mgrand jury\\M|\\munknown\\M)'
                       AND caption ~* '[a-z]' AND length(caption) <= 120) AS thin_us,
                    (caption ~ '^\\s*\\((HC|PC|SS)\\)\\s+') AS tagged,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0) AS readable,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0 AND d.filed_on IS NOT NULL) AS opinion_dated,
-                   EXISTS (SELECT 1 FROM case_citation_count cc WHERE cc.case_id = pc.id AND cc.cited_by > 0) AS cited
-                 FROM pc),
+                   coalesce(docs.readable, false) AS readable, coalesce(docs.dated, false) AS opinion_dated,
+                   coalesce(cc.cited_by, 0) > 0 AS cited
+                 FROM pc
+               LEFT JOIN (SELECT d.case_id, true AS readable, bool_or(d.filed_on IS NOT NULL) AS dated
+                            FROM document d JOIN document_content dc ON dc.document_id = d.id
+                           WHERE d.publication = 'published' AND octet_length(dc.content_text) > 0 GROUP BY d.case_id) docs ON docs.case_id = pc.id
+               LEFT JOIN case_citation_count cc ON cc.case_id = pc.id),
              a AS (
                  SELECT f.*,
                    (background_summary IS NOT NULL OR (verification = 'verified' AND status_explanation IS NOT NULL)) AS happened_before,
@@ -165,105 +167,9 @@ jobs:
                    (exact_holding IS NOT NULL OR (verification = 'verified' AND disposition_scope NOT IN ('none', 'unknown'))) AS outcome_before,
                    (exact_holding IS NOT NULL OR (verification = 'verified' AND disposition_scope NOT IN ('none', 'unknown'))
                       OR terminated_on IS NOT NULL OR decided_on IS NOT NULL OR (readable AND opinion_dated)) AS outcome_after
-                 FROM f) SELECT kind, coalesce(dtype, '-'), count(*) FROM a WHERE thin_us GROUP BY ROLLUP (1, 2) ORDER BY 3 DESC"
-          echo "--- 3. United States v. captions by court (court | cases) ---"
-          q "WITH pc AS (
-                 SELECT c.id, c.caption, c.docket_number, c.verification::text AS verification, c.status_explanation, c.disposition_scope,
-                        c.filed_on, c.decided_on, c.terminated_on, c.nature_of_suit_code AS nos, c.cause_of_action AS cause,
-                        coalesce(t.tier::text, 'none') AS tier,
-                        CASE WHEN ct.provider_court_id = 'scotus' OR c.supreme_court_term IS NOT NULL THEN 'scotus' ELSE coalesce(ct.jurisdiction, '?') END AS ctype,
-                        CASE WHEN ct.provider_court_id = 'scotus' OR ct.name ~* 'supreme court of the united states' THEN 'supreme'
-                             WHEN upper(ct.jurisdiction) = 'FS' THEN 'other'
-                             WHEN upper(ct.jurisdiction) IN ('F', 'FEDERAL APPELLATE') OR ct.name ~* '(court of appeals|circuit)' THEN 'appellate'
-                             WHEN upper(ct.jurisdiction) IN ('FB', 'FBP') OR ct.name ~* 'bankruptcy' THEN 'bankruptcy'
-                             WHEN upper(ct.jurisdiction) IN ('FD', 'FEDERAL DISTRICT') OR ct.name ~* 'district' THEN 'district'
-                             ELSE 'other' END AS kind,
-                        substring(lower(c.docket_number) from '^\\s*(?:\\d+:)?\\d{2,4}-([a-z]{1,4})-\\d+') AS dtype,
-                        ct.provider_court_id AS court_code, ct.name AS court_name,
-                        e.background_summary, e.question_presented, e.significance_summary, e.exact_holding
-                   FROM legal_case c JOIN court ct ON ct.id = c.court_id
-                   LEFT JOIN publication_tier_release t ON t.case_id = c.id AND t.state = 'published'
-                   LEFT JOIN scotus_case_enrichment e ON e.case_id = c.id AND e.verification = 'verified'
-                  WHERE c.publication = 'published'),
-             f AS (
-                 SELECT pc.*,
-                   (kind IN ('district', 'other') AND nos IS NOT NULL AND btrim(nos) !~* '^(0+|unknown|n/?a|none|-)?\$') AS nos_ok,
-                   (kind IN ('district', 'other') AND cause IS NOT NULL AND btrim(cause) !~* '^(0+|unknown|n/?a|none|no cause code entered|-)?\$') AS cause_ok,
-                   (regexp_replace(caption, '^\\s*\\([A-Z]{2}\\)\\s+', '') ~* '^.+?\\s+(v|vs)\\.?\\s+.+\$') AS caption_v,
-                   (kind = 'district' AND dtype IN ('cr', 'mj', 'po') AND caption !~* '^.+?\\s+(v|vs)\\.?\\s+.+\$'
-                      AND caption !~* '(\\m(v|vs)\\.?\\s|\\min re\\M|\\mmatter of\\M|\\mex parte\\M|\\munited states\\M|\\musa\\M|\\msealed\\M|\\mpetition\\M|\\mestate of\\M|\\msearch warrant\\M|\\mseizure\\M|\\mapplication\\M|\\mgrand jury\\M|\\munknown\\M)'
-                      AND caption ~* '[a-z]' AND length(caption) <= 120) AS thin_us,
-                   (caption ~ '^\\s*\\((HC|PC|SS)\\)\\s+') AS tagged,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0) AS readable,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0 AND d.filed_on IS NOT NULL) AS opinion_dated,
-                   EXISTS (SELECT 1 FROM case_citation_count cc WHERE cc.case_id = pc.id AND cc.cited_by > 0) AS cited
-                 FROM pc),
-             a AS (
-                 SELECT f.*,
-                   (background_summary IS NOT NULL OR (verification = 'verified' AND status_explanation IS NOT NULL)) AS happened_before,
-                   (background_summary IS NOT NULL OR (verification = 'verified' AND status_explanation IS NOT NULL)
-                      OR filed_on IS NOT NULL OR terminated_on IS NOT NULL OR decided_on IS NOT NULL OR (readable AND opinion_dated)
-                      OR nos_ok OR caption_v OR thin_us OR readable) AS happened_after,
-                   (question_presented IS NOT NULL) AS about_before,
-                   (question_presented IS NOT NULL OR nos_ok OR cause_ok OR (NOT nos_ok AND tagged) OR (kind = 'district' AND dtype = 'cr')) AS about_after,
-                   (significance_summary IS NOT NULL) AS matters_before,
-                   (significance_summary IS NOT NULL OR cited) AS matters_after,
-                   (exact_holding IS NOT NULL OR (verification = 'verified' AND disposition_scope NOT IN ('none', 'unknown'))) AS outcome_before,
-                   (exact_holding IS NOT NULL OR (verification = 'verified' AND disposition_scope NOT IN ('none', 'unknown'))
-                      OR terminated_on IS NOT NULL OR decided_on IS NOT NULL OR (readable AND opinion_dated)) AS outcome_after
-                 FROM f) SELECT court_code, count(*) FROM a WHERE thin_us GROUP BY 1 ORDER BY 2 DESC LIMIT 25"
-          echo "--- 4. title samples (ctype | thin_us | court | court name | docket | caption | filed | decided | terminated | nos | cause) ---"
-          q "WITH pc AS (
-                 SELECT c.id, c.caption, c.docket_number, c.verification::text AS verification, c.status_explanation, c.disposition_scope,
-                        c.filed_on, c.decided_on, c.terminated_on, c.nature_of_suit_code AS nos, c.cause_of_action AS cause,
-                        coalesce(t.tier::text, 'none') AS tier,
-                        CASE WHEN ct.provider_court_id = 'scotus' OR c.supreme_court_term IS NOT NULL THEN 'scotus' ELSE coalesce(ct.jurisdiction, '?') END AS ctype,
-                        CASE WHEN ct.provider_court_id = 'scotus' OR ct.name ~* 'supreme court of the united states' THEN 'supreme'
-                             WHEN upper(ct.jurisdiction) = 'FS' THEN 'other'
-                             WHEN upper(ct.jurisdiction) IN ('F', 'FEDERAL APPELLATE') OR ct.name ~* '(court of appeals|circuit)' THEN 'appellate'
-                             WHEN upper(ct.jurisdiction) IN ('FB', 'FBP') OR ct.name ~* 'bankruptcy' THEN 'bankruptcy'
-                             WHEN upper(ct.jurisdiction) IN ('FD', 'FEDERAL DISTRICT') OR ct.name ~* 'district' THEN 'district'
-                             ELSE 'other' END AS kind,
-                        substring(lower(c.docket_number) from '^\\s*(?:\\d+:)?\\d{2,4}-([a-z]{1,4})-\\d+') AS dtype,
-                        ct.provider_court_id AS court_code, ct.name AS court_name,
-                        e.background_summary, e.question_presented, e.significance_summary, e.exact_holding
-                   FROM legal_case c JOIN court ct ON ct.id = c.court_id
-                   LEFT JOIN publication_tier_release t ON t.case_id = c.id AND t.state = 'published'
-                   LEFT JOIN scotus_case_enrichment e ON e.case_id = c.id AND e.verification = 'verified'
-                  WHERE c.publication = 'published'),
-             f AS (
-                 SELECT pc.*,
-                   (kind IN ('district', 'other') AND nos IS NOT NULL AND btrim(nos) !~* '^(0+|unknown|n/?a|none|-)?\$') AS nos_ok,
-                   (kind IN ('district', 'other') AND cause IS NOT NULL AND btrim(cause) !~* '^(0+|unknown|n/?a|none|no cause code entered|-)?\$') AS cause_ok,
-                   (regexp_replace(caption, '^\\s*\\([A-Z]{2}\\)\\s+', '') ~* '^.+?\\s+(v|vs)\\.?\\s+.+\$') AS caption_v,
-                   (kind = 'district' AND dtype IN ('cr', 'mj', 'po') AND caption !~* '^.+?\\s+(v|vs)\\.?\\s+.+\$'
-                      AND caption !~* '(\\m(v|vs)\\.?\\s|\\min re\\M|\\mmatter of\\M|\\mex parte\\M|\\munited states\\M|\\musa\\M|\\msealed\\M|\\mpetition\\M|\\mestate of\\M|\\msearch warrant\\M|\\mseizure\\M|\\mapplication\\M|\\mgrand jury\\M|\\munknown\\M)'
-                      AND caption ~* '[a-z]' AND length(caption) <= 120) AS thin_us,
-                   (caption ~ '^\\s*\\((HC|PC|SS)\\)\\s+') AS tagged,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0) AS readable,
-                   EXISTS (SELECT 1 FROM document d JOIN document_content dc ON dc.document_id = d.id
-                            WHERE d.case_id = pc.id AND d.publication = 'published' AND length(btrim(dc.content_text)) > 0 AND d.filed_on IS NOT NULL) AS opinion_dated,
-                   EXISTS (SELECT 1 FROM case_citation_count cc WHERE cc.case_id = pc.id AND cc.cited_by > 0) AS cited
-                 FROM pc),
-             a AS (
-                 SELECT f.*,
-                   (background_summary IS NOT NULL OR (verification = 'verified' AND status_explanation IS NOT NULL)) AS happened_before,
-                   (background_summary IS NOT NULL OR (verification = 'verified' AND status_explanation IS NOT NULL)
-                      OR filed_on IS NOT NULL OR terminated_on IS NOT NULL OR decided_on IS NOT NULL OR (readable AND opinion_dated)
-                      OR nos_ok OR caption_v OR thin_us OR readable) AS happened_after,
-                   (question_presented IS NOT NULL) AS about_before,
-                   (question_presented IS NOT NULL OR nos_ok OR cause_ok OR (NOT nos_ok AND tagged) OR (kind = 'district' AND dtype = 'cr')) AS about_after,
-                   (significance_summary IS NOT NULL) AS matters_before,
-                   (significance_summary IS NOT NULL OR cited) AS matters_after,
-                   (exact_holding IS NOT NULL OR (verification = 'verified' AND disposition_scope NOT IN ('none', 'unknown'))) AS outcome_before,
-                   (exact_holding IS NOT NULL OR (verification = 'verified' AND disposition_scope NOT IN ('none', 'unknown'))
-                      OR terminated_on IS NOT NULL OR decided_on IS NOT NULL OR (readable AND opinion_dated)) AS outcome_after
-                 FROM f) SELECT * FROM (SELECT DISTINCT ON (ctype, thin_us) ctype, thin_us, court_code, court_name, docket_number, left(caption, 120), filed_on, decided_on, terminated_on, left(nos, 60), left(cause, 60)
+                 FROM f) SELECT * FROM (SELECT DISTINCT ON (ctype, thin_us) ctype, thin_us, (SELECT public_id FROM legal_case WHERE id = a.id), court_code, court_name, docket_number, left(caption, 120), filed_on, decided_on, terminated_on, left(nos, 60), left(cause, 60)
                    FROM a ORDER BY ctype, thin_us, random()) s
-                UNION ALL SELECT * FROM (SELECT ctype, thin_us, court_code, court_name, docket_number, left(caption, 120), filed_on, decided_on, terminated_on, left(nos, 60), left(cause, 60)
+                UNION ALL SELECT * FROM (SELECT ctype, thin_us, (SELECT public_id FROM legal_case WHERE id = a.id), court_code, court_name, docket_number, left(caption, 120), filed_on, decided_on, terminated_on, left(nos, 60), left(cause, 60)
                    FROM a WHERE nos_ok ORDER BY random() LIMIT 4) s2"
           echo "=== done ==="
           REMOTE
