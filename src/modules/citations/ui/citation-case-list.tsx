@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { RelatedCitationCase } from "../application/public-citations";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 /**
  * A linked-case list with an honest total. `total` is the full count of distinct
@@ -20,7 +21,7 @@ export function CitationCaseList({title, cases, total, summary}: {
     </div>
     {summary ? <p className="citationSummary">{summary}</p> : null}
     {cases.length ? <ul>{cases.map(record=><li key={record.casePublicId}>
-      <Link href={`/case/${record.casePublicId}`}>{record.caption}</Link>
+      <Link href={`/case/${record.casePublicId}`}>{cleanCaseCaption(record.caption)}</Link>
       <small> · {record.courtName} · {record.citationLabel}</small>
     </li>)}</ul> : null}
     {cases.length===50 ? <p>Showing 50 linked cases from Jurvio’s published opinions.</p> : null}

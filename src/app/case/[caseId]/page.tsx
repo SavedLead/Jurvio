@@ -35,6 +35,7 @@ import { listCaseNews } from "@/modules/case-news/application/list-case-news";
 import { CaseNewsSection } from "@/modules/case-news/ui/case-news-section";
 import { listCaseAgencyItems } from "@/modules/agency-sources/application/public-items";
 import { OfficialAgencySources } from "@/modules/agency-sources/ui/official-agency-sources";
+import { agencyTimelineEvents } from "@/modules/agency-sources/domain/timeline";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 
@@ -146,6 +147,8 @@ export default async function CasePage({ params }: CasePageProps) {
       label: entry.description,
     })),
     legalCase.decidedOn ? { date: legalCase.decidedOn, label: "Decision issued" } : null,
+    // Dated filings from linked official agency items (e.g. FTC case pages).
+    ...agencyTimelineEvents(agencyItems),
   ]
     .filter((event): event is { date: string; label: string } => Boolean(event))
     .filter((event, index, events) => events.findIndex((candidate) => candidate.date === event.date && candidate.label === event.label) === index)
@@ -230,7 +233,7 @@ export default async function CasePage({ params }: CasePageProps) {
       question: "What happened most recently?",
       answer: latestEvent
         ? `${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}: ${latestEvent.label}`
-        : "No dated docket event is currently available on Jurvio.",
+        : "No dated docket or agency filing is currently available on Jurvio.",
       sourceUrl: null,
       available: Boolean(latestEvent),
       fromRecord: false,

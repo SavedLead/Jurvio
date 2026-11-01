@@ -85,6 +85,25 @@ export function courtAbbreviation(courtName: string, providerCourtId?: string | 
   return (providerCourtId ? abbreviationFromCode(providerCourtId) : null) ?? abbreviationFromName(courtName);
 }
 
+/**
+ * Provider tags appended to captions ("ZENTIAN LTD. v. APPLE INC. [OPINION]",
+ * "[UNPUBLISHED]", "[ORDER]"). Only an all-caps bracketed tag at the very end.
+ */
+const TRAILING_PROVIDER_TAG = /\s*\[[A-Z][A-Z .'-]{1,30}\]\s*$/;
+
+/**
+ * Text-level caption cleanup shared by every place a caption is shown: decode HTML
+ * entities once (some sources store "&#039;" or "&amp;#039;"), collapse spaces, drop
+ * trailing provider tags such as "[OPINION]", and drop a dangling leading "v." left by
+ * a source with an empty first party.
+ */
+export function cleanCaptionText(caption: string): string {
+  let value = decodeHtmlEntities(caption).replace(/\s+/g, " ").trim();
+  while (TRAILING_PROVIDER_TAG.test(value)) value = value.replace(TRAILING_PROVIDER_TAG, "").trim();
+  value = value.replace(/^(?:v|vs)\.?\s+(?=\S)/i, "");
+  return value;
+}
+
 const GOVERNMENT_PARTY = /^(?:the\s+)?(?:usa|u\.\s?s\.\s?a\.?|u\.\s?s\.|united states(?: of america)?)$/i;
 const NOT_A_DEFENDANT_NAME = /\b(?:v|vs)\.?\s|\bin re\b|\bmatter of\b|\bex parte\b|\bunited states\b|\busa\b|\bsealed\b|\bpetition\b|\bestate of\b|\bsearch warrant\b|\bseizure\b|\bapplication\b|\bgrand jury\b|\bunknown\b/i;
 
@@ -96,9 +115,7 @@ const NOT_A_DEFENDANT_NAME = /\b(?:v|vs)\.?\s|\bin re\b|\bmatter of\b|\bex parte
  */
 export function displayCaption(caption: string, docketNumber: string, courtKind: CourtKind | undefined): string {
   // Drop PACER caption tags such as "(HC) " (E.D. Cal. habeas); record-answers reads them via captionTag().
-  const value = decodeHtmlEntities(caption)
-    .replace(/\s+/g, " ")
-    .trim()
+  const value = cleanCaptionText(caption)
     .replace(/^\([A-Z]{2}\)\s+/, "")
     // PACER RSS prefixes the defendant number: "1 USA v. Nino-Rojas".
     .replace(/^\d+\s+(?=(?:the\s+)?(?:usa|u\.\s?s\.|united states)\b)/i, "");
@@ -132,9 +149,22 @@ export interface CaseTitleInput {
 
 export const CASE_TITLE_TARGET_LENGTH = 60;
 
+/**
+ * Filing year encoded in a federal district docket number ("1:20-cv-00706" -> 2020).
+ * Used only when the record has no filed or decided date.
+ */
+export function docketNumberYear(docketNumber: string, now = new Date()): string | null {
+  const match = /^\s*\d{1,2}:(\d{2})-[a-z]{1,4}-\d+/i.exec(docketNumber);
+  if (!match?.[1]) return null;
+  const twoDigit = Number(match[1]);
+  const nextYear = (now.getUTCFullYear() + 1) % 100;
+  return String(twoDigit <= nextYear ? 2000 + twoDigit : 1900 + twoDigit);
+}
+
 function year(input: CaseTitleInput) {
   const date = input.decidedOn ?? input.filedOn;
-  return date && /^\d{4}/.test(date) ? date.slice(0, 4) : null;
+  if (date && /^\d{4}/.test(date)) return date.slice(0, 4);
+  return docketNumberYear(input.docketNumber);
 }
 
 // Bluebook T6 abbreviations, applied only when a title is too long.
@@ -148,7 +178,7 @@ const T6: Array<[RegExp, string]> = [
   [/\bAdministration\b/g, "Admin."], [/\bAmerica\b/g, "Am."], [/\bAmerican\b/g, "Am."],
   [/\bDistrict\b/g, "Dist."], [/\bCounty\b/g, "Cnty."], [/\bBoard\b/g, "Bd."],
   [/\bEducation\b/g, "Educ."], [/\bHospital\b/g, "Hosp."], [/\bLimited\b/g, "Ltd."],
-  [/\bManagement\b/g, "Mgmt."], [/\bTechnologies\b/g, "Techs."], [/\bTechnology\b/g, "Tech."],
+  [/\bManagement\b/g, "Mgmt."], [/\bPharmaceuticals\b/g, "Pharms."], [/\bPharmaceutical\b/g, "Pharm."], [/\bTechnologies\b/g, "Techs."], [/\bTechnology\b/g, "Tech."],
   [/\band\b/g, "&"],
 ];
 
@@ -164,8 +194,16 @@ function truncateWords(text: string, budget: number) {
   return `${(out || words[0] || text).replace(/[,\s]+$/, "")}…`;
 }
 
+/**
+ * A case name shortened by party (drop "et al" and trailing entity suffixes, then
+ * Bluebook abbreviations) may run past the soft budget up to this length; only a
+ * name still longer than this is cut with an ellipsis.
+ */
+const NAME_HARD_LIMIT = 60;
+
 function shortenName(name: string, budget: number): string {
   if (name.length <= budget) return name;
+  const hardLimit = Math.max(budget, NAME_HARD_LIMIT);
   const trimParty = (party: string) => party.replace(/,?\s+et al\.?$/i, "").split(/,\s+/)[0]?.trim() || party;
   const abbreviate = (party: string) => T6.reduce((value, [pattern, short]) => value.replace(pattern, short), party);
   const parts = /^(.+?)\s+v\.\s+(.+)$/.exec(name);
@@ -178,8 +216,8 @@ function shortenName(name: string, budget: number): string {
   if (`${first} v. ${second}`.length <= budget) return `${first} v. ${second}`;
   first = abbreviate(first);
   second = abbreviate(second);
-  if (`${first} v. ${second}`.length <= budget) return `${first} v. ${second}`;
-  const room = budget - 4;
+  if (`${first} v. ${second}`.length <= hardLimit) return `${first} v. ${second}`;
+  const room = hardLimit - 4;
   const firstBudget = Math.max(Math.ceil(room * 0.6), room - second.length);
   const firstShort = truncateWords(first, firstBudget);
   return `${firstShort} v. ${truncateWords(second, Math.max(8, room - firstShort.length))}`;

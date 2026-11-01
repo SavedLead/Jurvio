@@ -41,7 +41,7 @@ const listCachedPublicCases = unstable_cache(
 );
 const listCachedPublicCaseCourts = unstable_cache(
   async () => listPublicCaseCourts(db()),
-  ["public-case-court-facets"],
+  ["public-case-court-facets-v2"],
   { revalidate: 300, tags: ["public-cases"] },
 );
 
