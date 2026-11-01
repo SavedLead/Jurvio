@@ -65,6 +65,7 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
     </div>
     <PricingJoinForm options={joinOptions} initialPlan={initialPlan} joinedPlan={params.joined ?? null} />
     <p className="pricingFinePrint">Prices in US dollars. Paid plans are not open yet; join a waitlist with just your email and we will email you when they launch. Payment never changes case facts, rankings or explanations.</p>
+    <p className="pricingFinePrint">How fresh alerts are: alert emails go out daily (Free), hourly (Plus) or every 10 minutes (Pro and Team), counted from when Jurvio picks up a new entry. Jurvio checks federal appeals courts every 5 to 60 minutes, district court docket feeds about every 2 hours, the Supreme Court docket every 3 hours and other active federal cases about every 6 hours, and processes CourtListener&apos;s monthly bulk data overnight. New citing opinions are matched about every 15 minutes after they arrive.</p>
     <section className="pricingFaq" aria-labelledby="pricing-faq-title">
       <h2 id="pricing-faq-title">Good to know</h2>
       <dl>
