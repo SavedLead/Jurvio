@@ -55,17 +55,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-sitemap-snapshot.mjs"],
   },
   {
-    // Fills case_citation_count so a case page does not scan every posting
-    // for a popular reporter key. Separate advisory lock from the citation
-    // graph and from the sitemap job. Batches commit as they finish; the
-    // one-statement refresh left the table empty until the whole corpus
-    // distinct committed, which had not happened 13 minutes after restart.
+    // Precomputed Cites / Cited-by edges and counts (case_citation_edge,
+    // case_citation_count). Drains the dirty set (cases whose opinions,
+    // identities or visibility changed), then advances the resumable weekly
+    // full sweep (off-peak 1-6 AM ET; the first sweep starts at once).
+    // Replaced the 2-hour full recount, citation-count-snapshot. ADR 0090.
     lane: "citations",
-    name: "citation-count-snapshot",
+    name: "citation-edges",
     initialDelayMs: 4 * minute,
-    intervalMs: 2 * 60 * minute,
-    budgetMs: 90 * minute,
-    command: ["jobs/refresh-case-citation-counts.mjs"],
+    intervalMs: 10 * minute,
+    budgetMs: 60 * minute,
+    command: ["jobs/refresh-case-citation-edges.mjs", "--budget-seconds=3300"],
   },
   {
     // Fills court_public_stats and judge_public_stats so /courts, /courts/[id],

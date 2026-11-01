@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { CITATION_PARSER_VERSION, citationKey, extractCaseCitations, extractCourtListenerLinks, identityCitations } from "../domain/citations";
+import { DIRTY_IN, DIRTY_OUT, markDirty } from "./citation-edges";
 type Sql = ReturnType<typeof postgres>;
 
 // postgres.js refuses statements with more than 65,534 bind parameters
@@ -92,8 +93,21 @@ export async function syncCitationGraph(sql: Sql, limit: number, options: SyncCi
       const labels = identityCitations([record.official_citation, record.citations, record.verified_labels]);
       return [...new Map([...labels.map(label => [citationKey(label), label] as const),...record.cluster_ids.map(id=>[`cl-cluster:${id}`,`CourtListener opinion cluster ${id}`] as const)]).entries()].map(([key,label]) => ({case_id: record.id, citation_key: key, citation_label: label}));
     });
-    await tx`DELETE FROM case_citation_identity WHERE case_id = ANY(${ids}::uuid[])`;
+    const previous = await tx<{case_id: string; citation_key: string}[]>`DELETE FROM case_citation_identity WHERE case_id = ANY(${ids}::uuid[]) RETURNING case_id, citation_key`;
     await insertIdentities(tx, rows);
+    // Precomputed edges (migration 0172): a case whose cite keys changed, and
+    // every other holder of a changed key (uniqueness may have flipped), must
+    // have its incoming edges rebuilt. Unchanged replays mark nothing.
+    const before = new Set(previous.map(row => `${row.case_id}|${row.citation_key}`));
+    const after = new Set(rows.map(row => `${row.case_id}|${row.citation_key}`));
+    const changedKeys = new Set<string>();
+    for (const pair of before) if (!after.has(pair)) changedKeys.add(pair.slice(pair.indexOf('|') + 1));
+    for (const pair of after) if (!before.has(pair)) changedKeys.add(pair.slice(pair.indexOf('|') + 1));
+    if (changedKeys.size) {
+      const holders = await tx<{case_id: string}[]>`SELECT DISTINCT case_id FROM case_citation_identity WHERE citation_key = ANY(${[...changedKeys]}::text[])`;
+      const changedCases = [...before, ...after].filter(pair => changedKeys.has(pair.slice(pair.indexOf('|') + 1))).map(pair => pair.slice(0, pair.indexOf('|')));
+      await markDirty(tx, [...new Set([...holders.map(row => row.case_id), ...changedCases])], DIRTY_IN);
+    }
     await tx`DELETE FROM case_citation_work WHERE case_id = ANY(${ids}::uuid[])`;
     return cases.length;
   });
@@ -121,6 +135,9 @@ export async function syncCitationGraph(sql: Sql, limit: number, options: SyncCi
         ON CONFLICT(citation_key) DO NOTHING
       `;
     }
+    // The citing cases' outgoing edges change with their opinions' citations.
+    const owners = await tx<{case_id: string}[]>`SELECT DISTINCT case_id FROM document WHERE id = ANY(${ids}::uuid[]) AND publication = 'published'`;
+    await markDirty(tx, owners.map(row => row.case_id), DIRTY_OUT);
     await tx`DELETE FROM document_citation_work WHERE document_id = ANY(${ids}::uuid[])`;
     return queue.length;
   });

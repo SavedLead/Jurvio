@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import { latestPublicationColumnSql, type PublicationFlag } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import { extractCaseCitations, extractCourtListenerLinks } from "../domain/citations";
+import { citationCaseVisibleSql, citationDocumentVisibleSql } from "./citation-edges";
 type Sql = ReturnType<typeof postgres>;
 
 function visible(sql: Sql, column: PublicationFlag, objectType: "legal_case" | "document", objectIdExpr: string) {
@@ -22,7 +23,51 @@ export async function publicCitationTargets(sql: Sql, text: string, html=""): Pr
   `;
 }
 export interface RelatedCitationCase { casePublicId: string; caption: string; courtName: string; documentPublicId: string; citationLabel: string }
+/**
+ * True once the first full citation-edge sweep has finished (migration 0172).
+ * Until then pages keep the live join so lists never shrink mid-backfill.
+ */
+export async function precomputedEdgesReady(sql: Sql): Promise<boolean> {
+  try {
+    const [row] = await sql<{ ready: boolean }[]>`SELECT first_completed_at IS NOT NULL AS ready FROM citation_edge_build WHERE id`;
+    return Boolean(row?.ready);
+  } catch (error) {
+    if ((error as { code?: string }).code === "42P01") return false;
+    throw error;
+  }
+}
+
 export async function relatedCitationCases(sql: Sql, casePublicId: string, direction: "cited"|"citing", limit=50): Promise<RelatedCitationCase[]> {
+  if (await precomputedEdgesReady(sql)) return precomputedRelatedCases(sql, casePublicId, direction, limit);
+  return liveRelatedCitationCases(sql, casePublicId, direction, limit);
+}
+
+/**
+ * First page of Cites / Cited-by from case_citation_edge: an index range scan
+ * on (citing_case_id) or (cited_case_id, citing_filed_on DESC), with both ends
+ * and the citing opinion re-checked for visibility at read time.
+ */
+export async function precomputedRelatedCases(sql: Sql, casePublicId: string, direction: "cited"|"citing", limit=50): Promise<RelatedCitationCase[]> {
+  const cited = direction === "cited";
+  return sql<RelatedCitationCase[]>`
+    SELECT related.public_id AS "casePublicId", related.caption, court.name AS "courtName",
+      d.public_id AS "documentPublicId", COALESCE(e.citation_label, related.official_citation, '') AS "citationLabel"
+    FROM legal_case current_case
+    JOIN case_citation_edge e ON ${cited ? sql`e.citing_case_id = current_case.id` : sql`e.cited_case_id = current_case.id`}
+    JOIN legal_case related ON related.id = ${cited ? sql`e.cited_case_id` : sql`e.citing_case_id`}
+    JOIN court ON court.id = related.court_id
+    JOIN document d ON d.id = e.citing_document_id
+    WHERE current_case.public_id = ${casePublicId}
+      AND ${sql.unsafe(citationCaseVisibleSql("current_case"))}
+      AND ${sql.unsafe(citationCaseVisibleSql("related"))}
+      AND ${sql.unsafe(citationDocumentVisibleSql("d"))}
+    ORDER BY ${cited ? sql`e.mentions DESC, e.depth DESC NULLS LAST, e.cited_case_id` : sql`e.citing_filed_on DESC NULLS LAST, e.citing_case_id`}
+    LIMIT ${limit}
+  `;
+}
+
+/** The pre-0172 live join, kept as the fallback until the first sweep completes. */
+export async function liveRelatedCitationCases(sql: Sql, casePublicId: string, direction: "cited"|"citing", limit=50): Promise<RelatedCitationCase[]> {
   return sql<RelatedCitationCase[]>`
     SELECT DISTINCT ON (related.id) related.public_id AS "casePublicId", related.caption,
       court.name AS "courtName", d.public_id AS "documentPublicId", ref.citation_label AS "citationLabel"
