@@ -1,0 +1,90 @@
+name: Diagnose case news (once, read-only)
+
+# Read-only report on the "In the news" ingest (case_news_link): job health,
+# links by status/source/method, cases with visible coverage, samples for a
+# precision spot-check, the review queue, and a safety check that no visible
+# link sits on a sealed / restricted / non-displayable case.
+# Changes nothing: default_transaction_read_only=on, SELECT/WITH only.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-case-news
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 45
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Case news report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=300s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+          echo "=== CASE NEWS @ $(date -u +%FT%TZ) (read-only) session_read_only=$(q "SELECT current_setting('default_transaction_read_only')") ==="
+          echo "--- 0. migration applied (name) ---"
+          q "SELECT name FROM schema_migration WHERE name LIKE '%case_news%'"
+          echo "--- 1. last 24 runs (finished_at UTC | source | ok | requests | cases | items | published | review | rejected | restricted_skips | rate_limited | error) ---"
+          q "SELECT to_char(finished_at AT TIME ZONE 'UTC','MM-DD HH24:MI'), source, ok, requests, cases_queried, items_seen, links_published, links_review, rejected_low_score, skipped_restricted, rate_limited, left(coalesce(error,''),120) FROM case_news_run ORDER BY id DESC LIMIT 24"
+          echo "--- 1b. latest gdelt run detail (tierCounts, unsearchable, throttleRetries, candidates, lastQueryError) ---"
+          q "SELECT jsonb_build_object('candidates', detail->'candidates', 'tierCounts', detail->'tierCounts', 'unsearchable', detail->'unsearchable', 'throttleRetries', detail->'throttleRetries', 'lastQueryError', detail->'lastQueryError') FROM case_news_run WHERE source = 'gdelt' ORDER BY id DESC LIMIT 3"
+          echo "--- 2. links by status | source | method (links) ---"
+          q "SELECT review_status, source, match_method, count(*) FROM case_news_link GROUP BY 1,2,3 ORDER BY 1,2,3"
+          echo "--- 3. cases with visible links, by court (court | cases | links) ---"
+          q "SELECT ct.provider_court_id, count(DISTINCT l.case_id), count(*) FROM case_news_link l JOIN legal_case c ON c.id = l.case_id JOIN court ct ON ct.id = c.court_id WHERE l.review_status IN ('auto_published','approved') GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 4. query state by tier (tier | cases | with results | not searchable | errors) ---"
+          q "SELECT priority_tier, count(*), count(*) FILTER (WHERE last_result_count > 0), count(*) FILTER (WHERE last_error = 'not searchable'), count(*) FILTER (WHERE last_error IS NOT NULL AND last_error <> 'not searchable') FROM case_news_query_state GROUP BY 1 ORDER BY 2 DESC"
+          echo "--- 5. visible samples for spot-check (public_id | court | caption | outlet | date | method | score | headline) ---"
+          q "SELECT c.public_id, ct.provider_court_id, left(c.caption,70), l.outlet, l.published_at::date, l.match_method, l.match_score, left(l.title,140) FROM case_news_link l JOIN legal_case c ON c.id = l.case_id JOIN court ct ON ct.id = c.court_id WHERE l.review_status IN ('auto_published','approved') ORDER BY l.first_seen_at DESC LIMIT 60"
+          echo "--- 6. review queue samples (public_id | court | caption | outlet | method | score | headline) ---"
+          q "SELECT c.public_id, ct.provider_court_id, left(c.caption,70), l.outlet, l.match_method, l.match_score, left(l.title,140) FROM case_news_link l JOIN legal_case c ON c.id = l.case_id JOIN court ct ON ct.id = c.court_id WHERE l.review_status = 'pending_review' ORDER BY l.first_seen_at DESC LIMIT 40"
+          echo "--- 7. SAFETY: visible links on sealed/restricted/non-published cases (should be 0) ---"
+          q "SELECT count(*) FROM case_news_link l JOIN legal_case c ON c.id = l.case_id WHERE l.review_status IN ('auto_published','approved') AND (c.publication <> 'published' OR c.caption ~* '\\m(sealed|under seal|redacted|grand jury|juvenile|minor child|a minor|in re search|search warrant|doe|roe|anonymous)\\M' OR c.docket_number ~* '-(mj|gj|sw|sealed)-' OR EXISTS (SELECT 1 FROM direct_court_event e WHERE e.case_id = c.id AND e.restricted))"
+          echo "=== done ==="
+          REMOTE
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat "$RUNNER_TEMP/report.txt" 2>/dev/null | head -n 500; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

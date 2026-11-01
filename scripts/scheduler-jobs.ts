@@ -114,6 +114,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   // hitting 429. New federal data comes from the official court feeds and the
   // CourtListener bulk-file loaders, which are unchanged.
   {
+    // "In the news" for case pages: GDELT DOC API (one request every 6 s, ~90
+    // per run) plus Courthouse News RSS. SCOTUS and appeals cases first. Stores
+    // headline/outlet/date/link and the feed's own short description only.
+    lane: "core",
+    name: "case-news",
+    initialDelayMs: 11 * minute,
+    intervalMs: 30 * minute,
+    budgetMs: 14 * minute,
+    command: ["jobs/run-case-news.mjs", "--gdelt-max-requests=90", "--gdelt-max-ms=540000", "--candidates=300"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,
