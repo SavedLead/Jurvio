@@ -9,6 +9,7 @@ import { listPublicDocketEntries } from "@/modules/cases/application/list-public
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
+import { createTermMarker, TermText } from "@/modules/plain-english/ui/term-text";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,7 @@ export default async function DocketPage({ params }: {
     targetPublicId: caseId,
   });
 
+  const docketMarker = createTermMarker("docket");
   return (
     <main className="shell caseShell">
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
@@ -61,10 +63,11 @@ export default async function DocketPage({ params }: {
           <h2>Full docket</h2>
           <ol className="recordList">
             {records.map((entry) => (
+              // One marker for the whole docket: each term is underlined at its first mention.
               <li key={entry.publicId}>
                 <strong>{entry.entryNumber ? "Entry " + entry.entryNumber : "Docket entry"}</strong>
                 {entry.filedOn ? " · " + entry.filedOn : ""}
-                <p>{entry.description}</p>
+                <p><TermText text={entry.description} marker={docketMarker} /></p>
               </li>
             ))}
           </ol>

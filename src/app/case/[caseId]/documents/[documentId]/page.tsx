@@ -10,7 +10,9 @@ import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/u
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { OpinionReaderTools } from "@/modules/cases/ui/opinion-reader-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
-import { distinguishReportersNote, inlineLegalTerms } from "@/modules/legal-context/domain/legal-context";
+import { distinguishReportersNote } from "@/modules/legal-context/domain/legal-context";
+import { labelsForTerms, termsInText } from "@/modules/plain-english/domain/term-index";
+import { createTermMarker, TermText } from "@/modules/plain-english/ui/term-text";
 import { AnnotatedLegalText } from "@/modules/legal-context/ui/annotated-legal-text";
 import { robotsFor } from "@/lib/seo/indexing";
 
@@ -95,6 +97,10 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     new Set(outgoingTargets.map(target => target.citationKey)),
     officialCitation ? [officialCitation] : [],
   );
+  // Only the dictionary terms this opinion actually uses go to the client.
+  const opinionTerms = termsInText(opinion.contentText);
+  const opinionTermLabels = labelsForTerms(new Set(opinionTerms.map((term) => term.key)));
+  const headerMarker = createTermMarker("opinion-header");
   const linkedHtml = linkCaseCitations(opinion.contentHtml, outgoingTargets, { markUnresolved: true, exclude: ownKeys });
   const jsonLd = {
     "@context": "https://schema.org",
@@ -128,16 +134,16 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
           <dl className="metadataGrid">
             {opinion.filedOn ? <div><dt>Filed or decided</dt><dd>{opinion.filedOn}</dd></div> : null}
             <div><dt>Docket</dt><dd>{opinion.docketNumber}</dd></div>
-            {opinion.opinionType && opinion.opinionType !== "unknown" ? <div><dt>Opinion</dt><dd>{opinion.opinionType.replaceAll("-", " ")}</dd></div> : null}
+            {opinion.opinionType && opinion.opinionType !== "unknown" ? <div><dt>Opinion</dt><dd><TermText text={opinion.opinionType.replaceAll("-", " ")} marker={headerMarker} /></dd></div> : null}
             {opinion.authorName ? <div><dt>Author</dt><dd>{opinion.authorName}</dd></div> : null}
-            {opinion.perCuriam ? <div><dt>Authorship</dt><dd>Per curiam</dd></div> : null}
+            {opinion.perCuriam ? <div><dt>Authorship</dt><dd><TermText text="Per curiam" marker={headerMarker} /></dd></div> : null}
             {officialCitation ? <div><dt>Official citation</dt><dd>{officialCitation}</dd></div> : null}
           </dl>
           <aside className="sourceNotice">
             <strong>Official court text.</strong> Jurvio reformats the published opinion for readability without changing the Court&apos;s words.
             {opinion.sourceDownloadUrl ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View the official source</a>.</> : null}
           </aside>
-          <p className="legalTermHelp">Tap or focus any dotted legal term for a plain-language explanation.</p>
+          <p className="legalTermHelp">Hover, tap, or tab to any dotted-underlined legal term for a plain-English definition.</p>
         </header>
 
         <div className="opinionWorkspace">
@@ -151,7 +157,8 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
             <AnnotatedLegalText
               className="opinionBody"
               html={distinguishReportersNote(linkedHtml)}
-              terms={inlineLegalTerms}
+              terms={opinionTerms}
+              labels={opinionTermLabels}
             />
           </div>
           <aside className="readerMetadataRail" aria-label="Opinion source and record details">

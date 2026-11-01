@@ -1,0 +1,48 @@
+/* Dictionary term cards (.ptTerm), shared by server-marked text and the opinion reader. */
+.ptTerm { position: relative; display: inline; }
+/* .ptTerm > .ptTrigger outranks the global button rules (min-height, brand background). */
+.ptTerm > .ptTrigger,
+.ptTerm > .ptTrigger:hover,
+.ptTerm > .ptTrigger:active {
+  display: inline; width: auto; height: auto; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 2px;
+  background: none; box-shadow: none; color: inherit; vertical-align: baseline;
+  font: inherit; font-weight: inherit; letter-spacing: inherit; line-height: inherit; text-align: inherit; text-transform: inherit;
+  white-space: normal; cursor: help;
+  text-decoration: underline dotted #6f83ad; text-decoration-thickness: 1.5px; text-underline-offset: 3px;
+}
+.ptTerm > .ptTrigger:hover, .ptTerm[data-open] > .ptTrigger { background: rgb(49 85 217 / 8%); }
+.ptTerm > .ptTrigger:focus-visible { outline: 2px solid #3155d9; outline-offset: 2px; }
+.ptCard {
+  position: absolute; z-index: 40; bottom: calc(100% + 10px); left: 50%;
+  width: min(320px, calc(100vw - 32px)); padding: 12px 14px;
+  transform: translateX(calc(-50% + var(--pt-shift, 0px)));
+  border: 1px solid #cad3e3; border-radius: 10px; background: #fff;
+  box-shadow: 0 12px 32px rgb(31 42 68 / 16%); color: #172033;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400;
+  letter-spacing: normal; line-height: 1.45; text-align: left; text-transform: none; white-space: normal;
+  visibility: hidden; opacity: 0; transition: opacity .12s ease, visibility 0s linear .12s; pointer-events: none;
+}
+/* Hover bridge so the pointer can move from the term into the card. */
+.ptCard::after { content: ""; position: absolute; right: 0; bottom: -12px; left: 0; height: 12px; }
+.ptTerm[data-below] .ptCard { top: calc(100% + 10px); bottom: auto; }
+.ptTerm[data-below] .ptCard::after { top: -12px; bottom: auto; }
+.ptCardTerm, .ptCardDef { display: block; }
+.ptCardTerm { margin-bottom: 4px; color: #0f1a33; font-size: 14px; font-weight: 700; }
+.ptCardLink { display: inline-block; margin-top: 8px; color: #2448c7; font-weight: 650; text-decoration: none; }
+.ptCardLink:hover, .ptCardLink:focus-visible { text-decoration: underline; }
+.ptSrOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (hover: hover) {
+  .ptTerm:hover:not([data-dismissed]) > .ptCard { visibility: visible; opacity: 1; transition-delay: .15s; pointer-events: auto; }
+}
+.ptTerm[data-open] > .ptCard,
+.ptTerm:not([data-dismissed]):has(:focus-visible) > .ptCard { visibility: visible; opacity: 1; transition-delay: 0s; pointer-events: auto; }
+@media (max-width: 640px) {
+  .ptCard {
+    position: fixed; top: auto; right: max(12px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom));
+    left: max(12px, env(safe-area-inset-left)); width: auto; padding: 16px 18px; transform: none;
+    box-shadow: 0 20px 60px rgb(23 32 51 / 28%); font-size: 15px;
+  }
+  .ptTerm[data-below] .ptCard { top: auto; bottom: max(16px, env(safe-area-inset-bottom)); }
+  .ptCardLink { min-height: 44px; padding: 10px 0 0; }
+}
+@media print { .ptCard { display: none; } .ptTrigger { text-decoration: none; } }
