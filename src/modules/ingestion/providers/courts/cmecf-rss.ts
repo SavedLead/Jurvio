@@ -4,6 +4,7 @@ import {
 } from "../../domain/direct-court";
 import { conditionalRequestHeaders, type HttpValidators } from "../http-validators";
 import type { FederalCourtSource } from "./registry";
+import { CourtFetchHttpError } from "@/modules/operations/application/court-fetch-log";
 
 const MAX_FEED_BYTES = 5 * 1024 * 1024;
 
@@ -91,7 +92,7 @@ export async function fetchCmecfRss(
   if (response.status === 304) {
     return { rawBody: "", retrievedAt: new Date().toISOString(), events: [], notModified: true, etag, lastModified };
   }
-  if (!response.ok) throw new Error(`${court.officialCourtCode} RSS returned HTTP ${response.status}`);
+  if (!response.ok) throw new CourtFetchHttpError(court.rssUrl, response.status, `${court.officialCourtCode} RSS`);
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > MAX_FEED_BYTES) throw new Error("CM/ECF RSS response exceeds byte cap");
   const bytes = new Uint8Array(await response.arrayBuffer());

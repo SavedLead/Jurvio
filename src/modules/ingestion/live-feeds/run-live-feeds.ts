@@ -10,6 +10,7 @@ import type { ArtifactStore } from "../application/artifact-store";
 import { readSourceWatermark, recordSourceWatermark, refreshCourtFreshness } from "@/modules/operations/application/court-freshness";
 import { COA_FEED_SOURCES, coaEntryDescription, dedupeCoaItems, normalizeDocket, parseCoaFeed, type CoaFeedItem } from "./coa-feeds";
 import { FetchBudget, RateLimitedError } from "./polite-fetcher";
+import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
 import { matchOrCreateDraftCase, insertDocketEntryOnce, providerId, resolveCourt, storeFeedArtifact } from "./persist";
 import {
   DEFAULT_DISCOVERY, discoverSeries, parseScotusCursor, parseScotusDocketJson, scotusDocketJsonUrl, scotusSeries,
@@ -168,8 +169,15 @@ export async function runCoaCourt(sql: Sql, store: ArtifactStore, courtCode: str
     if (sources.length === 0) throw new Error(`no live feed configured for ${courtCode}`);
     let succeededSources = 0;
     for (const source of sources) {
+      const startedAtMs = Date.now();
+      let fetched = false;
+      let bytes = 0;
+      let parsed = 0;
+      const before = result.newCases + result.newEntries;
       try {
         const body = await budget.text(source.url);
+        fetched = true;
+        bytes = Buffer.byteLength(body);
         const items = dedupeCoaItems(parseCoaFeed(body, courtCode, source));
         const artifactId = await storeFeedArtifact(sql, store, {
           providerId: provider, sourceUri: source.url, sourceRecordId: `coa-feed:${courtCode}`,
@@ -177,13 +185,23 @@ export async function runCoaCourt(sql: Sql, store: ArtifactStore, courtCode: str
           mediaType: source.format === "rss" ? "application/rss+xml" : "text/html", metadata: { courtCode, items: items.length },
         });
         result.itemsFetched += items.length;
+        parsed = items.length;
         for (const item of items) {
           await persistCoaItem(sql, provider, artifactId, item, result);
           if (item.releasedOn && (!newest || item.releasedOn > newest)) newest = item.releasedOn;
         }
         succeededSources += 1;
+        await recordCourtFetch(sql, {
+          source: "coa_feed", courtCode, url: source.url, startedAtMs, httpStatus: 200, ok: true, bytes,
+          items: parsed, newItems: result.newCases + result.newEntries - before,
+        });
       } catch (error) {
         errors.push(message(error));
+        await recordCourtFetch(sql, {
+          source: "coa_feed", courtCode, url: source.url, startedAtMs,
+          httpStatus: fetched ? 200 : (error instanceof RateLimitedError ? 429 : httpStatusOf(error)),
+          ok: false, bytes: fetched ? bytes : null, error: errorText(error),
+        });
         if (error instanceof RateLimitedError) {
           result.retryAfterUntil = error.retryAfterUntil?.toISOString() ?? null;
           break;

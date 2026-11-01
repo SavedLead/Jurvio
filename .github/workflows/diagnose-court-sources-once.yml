@@ -1,0 +1,111 @@
+name: Diagnose court sources matrix (once, read-only)
+
+# Read-only court x source health report (free-feeds plan): the court_source
+# matrix joined with court_fetch_log (last success, last HTTP status, items and
+# new items in 24 h, failure streaks, zero-vs-baseline flags), per-URL detail for
+# the last 24 h, the appellate registry validators, and new items per court per
+# source in the last 24 h. Changes nothing: every query runs with
+# default_transaction_read_only=on and the helper refuses anything but SELECT/WITH.
+#
+# Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-court-sources
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Court feed report over private VPC (read-only SQL)
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/report.txt"
+          set -uo pipefail
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          q() {
+            case "$(printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //' | cut -c1-6 | tr '[:lower:]' '[:upper:]')" in
+              SELECT|WITH*) ;;
+              *) echo "(refused: not a SELECT)"; return 0 ;;
+            esac
+            sudo -n docker exec \
+              -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=300s -c lock_timeout=5s' \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1" || echo "(query failed)"
+          }
+          echo "=== COURT SOURCES @ $(date -u +%FT%TZ) (read-only) session_read_only=$(q "SELECT current_setting('default_transaction_read_only')") ==="
+          echo "--- 1. matrix (court | source | available | enabled | last_success | last_status | fetches_24h | failures_24h | items_last | items_24h | new_24h | zero_flag | note) ---"
+          q "WITH r AS (SELECT court_code, source, count(*) f, count(*) FILTER (WHERE NOT ok) e, coalesce(sum(items) FILTER (WHERE ok),0) i, coalesce(sum(new_items) FILTER (WHERE ok),0) n
+                       FROM court_fetch_log WHERE fetched_at > now() - interval '24 hours' GROUP BY 1,2),
+                  l AS (SELECT DISTINCT ON (court_code, source) court_code, source, http_status, items, zero_vs_baseline, error FROM court_fetch_log
+                       WHERE fetched_at > now() - interval '35 days' ORDER BY court_code, source, fetched_at DESC),
+                  s AS (SELECT court_code, source, max(fetched_at) t FROM court_fetch_log WHERE ok GROUP BY 1,2)
+             SELECT cs.court_code, cs.source, cs.available, cs.enabled, to_char(coalesce(s.t, wm.last_success_at) AT TIME ZONE 'America/New_York','MM-DD HH24:MI'),
+                    l.http_status, coalesce(r.f,0), coalesce(r.e,0), l.items, coalesce(r.i,0), coalesce(r.n,0), coalesce(l.zero_vs_baseline,false), coalesce(left(l.error,80), cs.note)
+               FROM court_source cs LEFT JOIN r USING (court_code, source) LEFT JOIN l USING (court_code, source) LEFT JOIN s USING (court_code, source)
+               LEFT JOIN court_source_watermark wm ON wm.court_code = cs.court_code AND wm.source = cs.source
+              WHERE cs.source <> 'pacer_free_opinions' ORDER BY 1,2"
+          echo "--- 2. per URL, last 24h (court | source | fetches | ok | last_status | items_last | max_items | new | url) ---"
+          q "SELECT court_code, source, count(*), count(*) FILTER (WHERE ok), (array_agg(http_status ORDER BY fetched_at DESC))[1],
+                    (array_agg(items ORDER BY fetched_at DESC))[1], max(items), sum(new_items), left(url,140)
+               FROM court_fetch_log WHERE fetched_at > now() - interval '24 hours' GROUP BY 1,2,url ORDER BY 1,2,url"
+          echo "--- 3. zero-vs-baseline and failing (last 24h) ---"
+          q "SELECT court_code, source, to_char(fetched_at AT TIME ZONE 'America/New_York','MM-DD HH24:MI'), http_status, items, baseline_items, left(coalesce(error,''),120), left(url,120)
+               FROM court_fetch_log WHERE fetched_at > now() - interval '24 hours' AND (zero_vs_baseline OR NOT ok) ORDER BY fetched_at DESC LIMIT 200"
+          echo "--- 4. appellate_source_registry (code | health | failures | last_success | etag | last_modified | items_7d | opinionsUrl) ---"
+          q "WITH i AS (SELECT court_code, count(*) FILTER (WHERE first_seen_at > now() - interval '7 days') d7, count(*) FILTER (WHERE first_seen_at > now() - interval '24 hours') d1 FROM appellate_ingestion_item GROUP BY 1)
+             SELECT s.court_code, s.health_state, s.consecutive_failures, s.last_successful_retrieval, s.listing_etag, s.listing_last_modified, coalesce(i.d1,0), coalesce(i.d7,0)
+               FROM appellate_source_registry s LEFT JOIN i USING (court_code) ORDER BY 1"
+          echo "--- 5. new items per court in the last 24h by path (court | district_events | district_new_cases | appellate_items | coa_feed_entries | govinfo_entries | court_site_entries) ---"
+          q "WITH d AS (SELECT court_code, count(*) n FROM direct_court_event WHERE first_seen_at > now() - interval '24 hours' GROUP BY 1),
+                  a AS (SELECT court_code, count(*) n FROM appellate_ingestion_item WHERE first_seen_at > now() - interval '24 hours' GROUP BY 1),
+                  e AS (SELECT lower(c.provider_court_id) court_code,
+                          count(*) FILTER (WHERE de.provider_entry_id LIKE 'coa-feed:%') coa,
+                          count(*) FILTER (WHERE de.provider_entry_id LIKE 'govinfo:%') gov,
+                          count(*) FILTER (WHERE de.provider_entry_id LIKE 'court-site:%') site
+                        FROM docket_entry de JOIN legal_case lc ON lc.id = de.case_id JOIN court c ON c.id = lc.court_id
+                       WHERE de.created_at > now() - interval '24 hours'
+                         AND (de.provider_entry_id LIKE 'coa-feed:%' OR de.provider_entry_id LIKE 'govinfo:%' OR de.provider_entry_id LIKE 'court-site:%')
+                       GROUP BY 1),
+                  nc AS (SELECT lower(c.provider_court_id) court_code, count(*) n FROM legal_case lc JOIN court c ON c.id = lc.court_id
+                       WHERE lc.created_at > now() - interval '24 hours' GROUP BY 1)
+             SELECT cs.court_code, coalesce(d.n,0), coalesce(nc.n,0), coalesce(a.n,0), coalesce(e.coa,0), coalesce(e.gov,0), coalesce(e.site,0)
+               FROM (SELECT DISTINCT court_code FROM court_source) cs LEFT JOIN d USING (court_code) LEFT JOIN a USING (court_code)
+               LEFT JOIN e USING (court_code) LEFT JOIN nc USING (court_code) ORDER BY 1"
+          echo "=== done ==="
+          REMOTE
+      - name: Summary
+        if: always()
+        run: |
+          { echo '```'; cat "$RUNNER_TEMP/report.txt" 2>/dev/null | head -n 1200; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
