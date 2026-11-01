@@ -32,7 +32,7 @@ export const CASE_NEWS_SOURCES: readonly CaseNewsSourceInfo[] = [
     id: "google_news_rss",
     name: "Google News RSS",
     enabled: false,
-    terms: "Turned off 2026-11-01 by the owner: Google's feed terms allow personal, non-commercial feed-reader use only, which does not cover a commercial site. Never queried; links it found earlier were deleted (migration 0153_case_news_google_off_single_party) and the case-page readers exclude this source.",
+    terms: "Turned off 2026-11-01 by the owner: Google's feed terms allow personal, non-commercial feed-reader use only, which does not cover a commercial site. Never queried; links it found earlier were deleted (migration 0160_case_news_google_off_single_party) and the case-page readers exclude this source.",
     termsUrl: "https://news.google.com/rss",
   },
   {
