@@ -127,6 +127,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/run-case-news.mjs", "--gdelt-max-requests=25", "--gdelt-max-ms=420000", "--candidates=300"],
   },
   {
+    // Followed-case docket alert digests. Every 10 minutes; each user is emailed at
+    // most once per plan cadence (Free daily, Plus hourly, Pro/Team every tick).
+    // No-op until RESEND_API_KEY, EMAIL_FROM and EMAIL_POSTAL_ADDRESS are set.
+    lane: "core",
+    name: "account-alerts",
+    initialDelayMs: 4 * minute,
+    intervalMs: 10 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-account-alerts.mjs", "--max-users=500"],
+  },
+  {
     lane: "core",
     name: "judge-case-matching",
     initialDelayMs: 8 * minute,

@@ -42,14 +42,13 @@ export async function createFixtures(sql: Sql) {
   async function addDocketEntry(caseId: string, description: string, options: { createdAt?: string; filedOn?: string | null; displayable?: boolean } = {}) {
     counter += 1;
     const [row] = await sql<{ id: string }[]>`
-      INSERT INTO docket_entry (public_id, case_id, entry_number, filed_on, description, created_at)
-      VALUES (${`jd-acct${tag}${counter}`}, ${caseId}, ${String(counter)}, ${options.filedOn === undefined ? new Date().toISOString().slice(0, 10) : options.filedOn},
+      INSERT INTO docket_entry (public_id, case_id, provider_entry_id, entry_number, filed_on, description, created_at)
+      VALUES (${`jd-acct${tag}${counter}`}, ${caseId}, ${`acct-${tag}-${counter}`}, ${String(counter)}, ${options.filedOn === undefined ? new Date().toISOString().slice(0, 10) : options.filedOn},
         ${description}, ${options.createdAt ?? new Date().toISOString()}) RETURNING id`;
-    if (options.displayable === false) {
-      await sql`
-        INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version)
-        VALUES ('docket_entry', ${row!.id}, false, false, false, false, false, 'test', 'test')`;
-    }
+    // Like the public docket page, alerts only show entries with a displayable decision.
+    await sql`
+      INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version)
+      VALUES ('docket_entry', ${row!.id}, ${options.displayable ?? true}, false, false, false, false, 'test', 'test')`;
     return row!.id;
   }
 
