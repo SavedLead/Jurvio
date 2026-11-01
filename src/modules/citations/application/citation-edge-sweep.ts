@@ -67,7 +67,7 @@ export async function runCitationEdgeJob(sql: Sql, plan: EdgeJobPlan): Promise<E
     sweep_covered_from: Date | null; sweep_requested_at: Date | null; first_completed_at: Date | null }[]>`
     SELECT sweep_started_at, sweep_cursor, sweep_completed_at, sweep_covered_from, sweep_requested_at, first_completed_at
     FROM citation_edge_build WHERE id`;
-  if (!state) throw new Error("citation_edge_build row missing (migration 0171)");
+  if (!state) throw new Error("citation_edge_build row missing (migration 0172)");
   const recount = Boolean(state.first_completed_at);
   const drainDirty = async (maxBatches: number) => {
     for (let i = 0; i < maxBatches && left() > 0; i++) {

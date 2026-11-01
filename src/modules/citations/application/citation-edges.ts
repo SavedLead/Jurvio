@@ -6,7 +6,7 @@ type Sql = ReturnType<typeof postgres>;
 type Tx = postgres.TransactionSql;
 
 /**
- * Precomputed Cites / Cited-by edges and dirty-set counts (migration 0171,
+ * Precomputed Cites / Cited-by edges and dirty-set counts (migration 0172,
  * ADR 0090).
  *
  * One function builds every edge: `rebuildOutgoing` recomputes all edges whose

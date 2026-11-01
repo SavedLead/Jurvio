@@ -24,7 +24,7 @@ export async function publicCitationTargets(sql: Sql, text: string, html=""): Pr
 }
 export interface RelatedCitationCase { casePublicId: string; caption: string; courtName: string; documentPublicId: string; citationLabel: string }
 /**
- * True once the first full citation-edge sweep has finished (migration 0171).
+ * True once the first full citation-edge sweep has finished (migration 0172).
  * Until then pages keep the live join so lists never shrink mid-backfill.
  */
 export async function precomputedEdgesReady(sql: Sql): Promise<boolean> {
@@ -66,7 +66,7 @@ export async function precomputedRelatedCases(sql: Sql, casePublicId: string, di
   `;
 }
 
-/** The pre-0171 live join, kept as the fallback until the first sweep completes. */
+/** The pre-0172 live join, kept as the fallback until the first sweep completes. */
 export async function liveRelatedCitationCases(sql: Sql, casePublicId: string, direction: "cited"|"citing", limit=50): Promise<RelatedCitationCase[]> {
   return sql<RelatedCitationCase[]>`
     SELECT DISTINCT ON (related.id) related.public_id AS "casePublicId", related.caption,

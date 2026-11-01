@@ -95,7 +95,7 @@ export async function syncCitationGraph(sql: Sql, limit: number, options: SyncCi
     });
     const previous = await tx<{case_id: string; citation_key: string}[]>`DELETE FROM case_citation_identity WHERE case_id = ANY(${ids}::uuid[]) RETURNING case_id, citation_key`;
     await insertIdentities(tx, rows);
-    // Precomputed edges (migration 0171): a case whose cite keys changed, and
+    // Precomputed edges (migration 0172): a case whose cite keys changed, and
     // every other holder of a changed key (uniqueness may have flipped), must
     // have its incoming edges rebuilt. Unchanged replays mark nothing.
     const before = new Set(previous.map(row => `${row.case_id}|${row.citation_key}`));
