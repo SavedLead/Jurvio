@@ -164,7 +164,7 @@ function caseKindPhrase(input: RecordAnswerInput, nos: ParsedNatureOfSuit | null
 }
 
 /** Short case-type label for meta descriptions, e.g. "Civil rights case" or "Federal criminal case". */
-export function caseTypeLabel(input: Pick<RecordAnswerInput, "courtKind" | "docketNumber" | "natureOfSuit">): string {
+export function caseTypeLabel(input: Pick<RecordAnswerInput, "courtKind" | "docketNumber" | "natureOfSuit" | "captionCategory">): string {
   const nos = input.courtKind === "district" || input.courtKind === "other" ? parseNatureOfSuit(input.natureOfSuit) : null;
   const phrase = caseKindPhrase({ ...input } as RecordAnswerInput, nos).replace(/^(A|An)\s+/, "");
   return phrase.charAt(0).toUpperCase() + phrase.slice(1);
@@ -250,6 +250,7 @@ export interface CaseMetaInput {
   terminatedOn: string | null;
   decidedOn: string | null;
   officialCitation?: string | null;
+  captionCategory?: string | null;
 }
 
 /** Meta description: case type, court, judge and status, all from record fields. */
