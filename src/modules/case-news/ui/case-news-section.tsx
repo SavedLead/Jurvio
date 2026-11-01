@@ -8,7 +8,7 @@ export function formatNewsDate(value: string): string {
   return Number.isFinite(date.getTime()) ? dateFormat.format(date) : value;
 }
 
-/** "In the news": headline, outlet, date, link and the source's own short snippet. Hidden when empty. */
+/** "In the news": headline, the source's own short snippet and a link to the source (David, 2026-10-31). Hidden when empty. */
 export function CaseNewsSection({ links }: { links: CaseNewsLink[] }) {
   if (links.length === 0) return null;
   const sources = new Set(links.map((link) => link.source));
@@ -23,9 +23,7 @@ export function CaseNewsSection({ links }: { links: CaseNewsLink[] }) {
             <a className="caseNewsHeadline" href={link.url} rel="nofollow ugc noopener noreferrer" target="_blank">{link.title}</a>
             {link.snippet ? <p className="caseNewsSnippet">{link.snippet}</p> : null}
             <p className="caseNewsMeta">
-              <span>{link.outlet}</span>
-              <span aria-hidden="true"> · </span>
-              <time dateTime={link.publishedAt.slice(0, 10)}>{formatNewsDate(link.publishedAt)}</time>
+              <a href={link.url} rel="nofollow ugc noopener noreferrer" target="_blank">Read at {link.outlet}</a>
             </p>
           </li>
         ))}

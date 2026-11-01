@@ -15,14 +15,15 @@ describe("CaseNewsSection", () => {
   it("renders nothing when there is no coverage", () => {
     expect(renderToStaticMarkup(<CaseNewsSection links={[]} />)).toBe("");
   });
-  it("shows headline, snippet, outlet and date with nofollow ugc links and GDELT credit", () => {
+  it("shows only headline, snippet and a link to the source, with nofollow ugc and GDELT credit", () => {
     const html = renderToStaticMarkup(<CaseNewsSection links={[link]} />);
     expect(html).toContain("In the news");
     expect(html).toContain('rel="nofollow ugc noopener noreferrer"');
     expect(html).toContain("Ninth Circuit upholds Seattle law challenged by Uber");
     expect(html).toContain("A panel rejected the challenge.");
-    expect(html).toContain("Reuters");
-    expect(html).toContain("Oct 20, 2026");
+    expect(html).toContain("Read at Reuters");
+    expect(html).not.toContain("Oct 20, 2026");
+    expect(html).not.toContain("<time");
     expect(html).toContain("gdeltproject.org");
   });
   it("formats Postgres timestamps", () => {

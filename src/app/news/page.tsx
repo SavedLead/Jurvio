@@ -2,7 +2,6 @@ import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { db } from "@/db/client";
 import { listRecentCaseNews } from "@/modules/case-news/application/list-case-news";
-import { formatNewsDate } from "@/modules/case-news/ui/case-news-section";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import "../case/[caseId]/case-intelligence.css";
 
@@ -34,9 +33,7 @@ export default async function NewsPage() {
               <a className="caseNewsHeadline" href={link.url} rel="nofollow ugc noopener noreferrer" target="_blank">{link.title}</a>
               {link.snippet ? <p className="caseNewsSnippet">{link.snippet}</p> : null}
               <p className="caseNewsMeta">
-                <span>{link.outlet}</span>
-                <span aria-hidden="true"> · </span>
-                <time dateTime={link.publishedAt.slice(0, 10)}>{formatNewsDate(link.publishedAt)}</time>
+                <a href={link.url} rel="nofollow ugc noopener noreferrer" target="_blank">Read at {link.outlet}</a>
               </p>
               <p className="caseNewsCase">Case: <Link href={`/case/${link.casePublicId}` as Route}>{cleanCaseCaption(link.caseCaption)}</Link></p>
             </li>
