@@ -37,5 +37,7 @@ describe("court fetch health", () => {
     const pacer = rows.filter((row) => row.source === "pacer_free_opinions");
     expect(pacer.map((row) => row.courtCode)).toEqual(["nyed", "akd"]);
     expect(pacer.every((row) => !row.enabled)).toBe(true);
+    const govinfo = rows.filter((row) => row.source === "govinfo" && row.enabled);
+    expect(govinfo.map((row) => row.courtCode).sort()).toEqual([...CIRCUIT_CODES, "nyed", "akd"].sort());
   });
 });

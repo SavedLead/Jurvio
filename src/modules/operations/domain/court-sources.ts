@@ -51,6 +51,7 @@ export function circuitCatalogRows(): CourtSourceRow[] {
       courtCode: court, source: "coa_feed", url: feeds[0]?.url ?? null, available: feeds.length > 0, enabled: feeds.length > 0,
       note: feeds.length > 1 ? `${feeds.length} listings` : null,
     });
+    rows.push(govinfoRow(court));
     const official = APPELLATE_COURT_REGISTRY.find((entry) => entry.code === court);
     rows.push({
       courtCode: court, source: "appellate_official", url: official?.opinionsUrl ?? null,
@@ -60,12 +61,26 @@ export function circuitCatalogRows(): CourtSourceRow[] {
   return rows;
 }
 
+const GOVINFO_COURT: Readonly<Record<string, string>> = { cadc: "caDC", cafc: "ca13" };
+
+/** GovInfo USCOURTS: read for every court by the govinfo-daily job. */
+function govinfoRow(court: string): CourtSourceRow {
+  return {
+    courtCode: court, source: "govinfo",
+    url: `https://www.govinfo.gov/app/collection/uscourts/${GOVINFO_COURT[court] ?? court}`,
+    available: true, enabled: true, note: "daily via api.govinfo.gov collections; cross-checked (govinfo_crosscheck)",
+  };
+}
+
 /** Rows that apply to every district (beyond the RSS rows read from direct_court_registry). */
 export function districtCatalogRows(districtCodes: readonly string[]): CourtSourceRow[] {
-  return districtCodes.map((court) => ({
-    courtCode: court, source: "pacer_free_opinions" as const,
-    url: `https://ecf.${court}.uscourts.gov/cgi-bin/WrtOpRpt.pl`, available: true, enabled: false, note: PACER_LOGIN_NOTE,
-  }));
+  return districtCodes.flatMap((court) => [
+    govinfoRow(court),
+    {
+      courtCode: court, source: "pacer_free_opinions" as const,
+      url: `https://ecf.${court}.uscourts.gov/cgi-bin/WrtOpRpt.pl`, available: true, enabled: false, note: PACER_LOGIN_NOTE,
+    },
+  ]);
 }
 
 export function catalogRows(districtCodes: readonly string[]): CourtSourceRow[] {
