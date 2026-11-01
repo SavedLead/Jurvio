@@ -156,3 +156,14 @@ describe("meta description", () => {
     })).toBe("United States v. Olsen: federal criminal case in the Eastern District of California, docket 1:26-cr-00123. Judge: Jane Q. Example. Filed Oct. 30, 2026. Status: No closing date on record.");
   });
 });
+
+describe("meta description caption tags", () => {
+  it("uses the PACER caption tag for the case type", async () => {
+    const { buildCaseMetaDescription } = await import("./record-answers");
+    expect(buildCaseMetaDescription({
+      caption: "Kumar v. Moss et al", docketNumber: "1:26-cv-08930", courtName: "Eastern District of California",
+      courtKind: "district", natureOfSuit: null, judgeName: null, filedOn: "2026-10-30", terminatedOn: null, decidedOn: null,
+      captionCategory: "habeas corpus",
+    })).toContain("Kumar v. Moss et al: habeas corpus case in the Eastern District of California");
+  });
+});

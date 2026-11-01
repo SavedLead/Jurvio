@@ -68,6 +68,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     terminatedOn: legalCase.terminatedOn ?? null,
     decidedOn: legalCase.decidedOn,
     officialCitation: legalCase.officialCitation,
+    captionCategory: legalCase.captionCategory ?? null,
   });
   return {
     title: { absolute: title },
