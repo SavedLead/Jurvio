@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { currentUser } from "@/modules/accounts/http/session";
@@ -25,7 +25,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
   const params = await searchParams;
   const next = safeRedirectPath(params.next);
   const follow = safeCasePublicId(params.follow);
-  if (await currentUser()) redirect(next as never);
+  if (await currentUser()) redirect(next as Route);
   const available = signInAvailable();
   const error = params.error ? ERRORS[params.error] ?? null : null;
 
@@ -35,7 +35,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
       <h1 id="signin-title">{params.sent ? "Check your email" : "Sign in"}</h1>
       {params.sent ? <>
         <p className="accountIntro">If that address can receive mail, a sign-in link is on its way. It works once and expires in 15 minutes.</p>
-        <p className="accountFinePrint">Nothing arrived? Check spam, or <Link href={`/signin${follow ? `?follow=${follow}` : ""}`}>send another link</Link>.</p>
+        <p className="accountFinePrint">Nothing arrived? Check spam, or <Link href={`/signin${follow ? `?follow=${follow}` : ""}` as Route}>send another link</Link>.</p>
       </> : !available ? <>
         <p className="accountNotice" role="status">Sign-in is temporarily unavailable. Please check back soon. Every case page stays free to read.</p>
       </> : <>
