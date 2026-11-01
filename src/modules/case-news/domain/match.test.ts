@@ -142,4 +142,19 @@ describe("one-party matches go to review", () => {
     expect(matchNewsItem(item("Supreme Court weighs Ellingburg appeal", null, new Date("2024-01-01T00:00:00Z")),
       rss(scotus("Ellingburg v. United States", "24-482"), { filedOn: "2025-06-01" }))).toBeNull();
   });
+  it("a circuit name is not a party mention ('Ninth Circuit' is not 'Ninth Inning Inc.')", () => {
+    const terms = caseNewsTerms({ caption: "Ninth Inning Inc., et al. v. National Football League, Inc, et al.", docketNumber: "24-5493", courtCode: "ca9", courtName: "Ninth Circuit" });
+    for (const title of ["Ninth Circuit panel skeptical of San Diego abortion clinic speech restrictions",
+      "Ninth Circuit says 'immediate' removal of Nevada wild horses doesn't mean instant",
+      "Idaho gets green light to enforce abortion ban in health-risk cases"]) {
+      expect(matchNewsItem(item(title), rss(terms))).toBeNull();
+    }
+    expect(withoutCourtNames("9th Circuit and D.C. Circuit rule")).not.toMatch(/Circuit/);
+  });
+  it("a court named as a party is never matched by name", () => {
+    const terms = scotus("D'Ostroph v. United States Court of Appeals for the Eighth Circuit", "25-6001");
+    expect(terms.right?.key).toBeNull();
+    expect(matchNewsItem(item("Idaho gets green light to enforce abortion ban in health-risk cases",
+      "The Ninth Circuit ruled; the Supreme Court declined to step in."), rss(terms))).toBeNull();
+  });
 });

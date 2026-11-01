@@ -70,7 +70,12 @@ const ORG_FILLER = new Set(["the", "of", "and", "for", "in", "on", "at", "a", "a
   "coalition", "committee", "partners", "capital", "technologies", "systems", "services", "bank", "trust", "new",
   "first", "general", "global", "north", "south", "east", "west", "city", "county", "state", "university", "college",
   "health", "medical", "insurance", "federal", "public", "community", "citizens", "people", "alliance", "workers",
-  "local", "chapter", "society", "network", "media", "energy", "industries", "enterprises", "home", "homes"]);
+  "local", "chapter", "society", "network", "media", "energy", "industries", "enterprises", "home", "homes",
+  // Ordinals and court words name circuits ("Ninth Circuit"), never the party ("Ninth Inning Inc.").
+  "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth",
+  "circuit", "court", "courts", "appeals", "district", "supreme"]);
+// A court named as a party (mandamus: "D'Ostroph v. United States Court of Appeals for the Eighth Circuit").
+const COURT_PARTY = /\bCOURTS?\b[\s\S]*\b(?:APPEALS|DISTRICT|SUPREME|CIRCUIT|BANKRUPTCY|SUPERIOR|CLAIMS|MUNICIPAL|JUVENILE|FAMILY|PROBATE)\b|\b(?:APPEALS|DISTRICT|SUPREME|CIRCUIT|BANKRUPTCY|SUPERIOR|CLAIMS|MUNICIPAL|JUVENILE|FAMILY|PROBATE)\b[\s\S]*\bCOURTS?\b/i;
 
 /** The word a headline would most likely use for an organization: "Harvard", "Uber". */
 export function anchorToken(name: string): string | null {
@@ -161,6 +166,8 @@ export function describeParty(side: string): PartyTerm {
   const raw = cleanSide(side);
   const upper = raw.toUpperCase();
   if (!raw) return { raw, key: null, aliases: [], kind: "unknown", distinctiveness: 0 };
+  // A court is never matched by name: its words are the court terms of every headline about that court.
+  if (COURT_PARTY.test(upper)) return { raw, key: null, aliases: [], kind: "government", distinctiveness: 0 };
   if (UNITED_STATES.test(upper)) {
     return { raw, key: null, aliases: ["United States", "U.S.", "Justice Department", "DOJ", "prosecutors", "federal government"], kind: "government", distinctiveness: 0.3 };
   }
