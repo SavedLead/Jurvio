@@ -2,16 +2,18 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { EmailCaptureForm, WAITLIST_SUCCESS } from "./email-capture-form";
 
 const HINT = "jurvio_signed_in=1";
 
 /**
  * The pricing-card button. With checkout enabled it posts to Stripe Checkout;
  * otherwise it is "Coming soon": signed-in visitors join the plan's waitlist,
- * signed-out visitors sign in first. Signed-in state is read in the browser so
- * /pricing stays one cacheable page.
+ * signed-out visitors join by email (no sign-in needed). While email sign-in
+ * is not configured, "Get started free" is an email box on the waitlist too.
+ * Signed-in state is read in the browser so /pricing stays one cacheable page.
  */
-export function PlanAction({ plan, planName, checkout }: { plan: "free" | "plus" | "pro" | "team"; planName: string; checkout: boolean }) {
+export function PlanAction({ plan, planName, checkout, signInAvailable = true }: { plan: "free" | "plus" | "pro" | "team"; planName: string; checkout: boolean; signInAvailable?: boolean }) {
   const [signedIn, setSignedIn] = useState(false);
   const [joined, setJoined] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -22,18 +24,23 @@ export function PlanAction({ plan, planName, checkout }: { plan: "free" | "plus"
   }, [plan]);
 
   if (plan === "free") {
-    return signedIn
-      ? <Link className="accountButton secondary" href="/account">Your account</Link>
-      : <Link className="accountButton" href="/signin?next=/account">Get started free</Link>;
+    if (signedIn) return <Link className="accountButton secondary" href="/account">Your account</Link>;
+    if (!signInAvailable) {
+      return <EmailCaptureForm action="/api/auth/request" hidden={{ next: "/account" }} buttonLabel="Get started free"
+        inputLabel="Email address for the free plan" footnote="Free accounts open soon. Leave your email and we'll tell you when." />;
+    }
+    return <Link className="accountButton" href="/signin?next=/account">Get started free</Link>;
   }
   if (checkout) {
     return signedIn
       ? <form action="/api/billing/checkout" method="post"><input type="hidden" name="plan" value={plan} /><button className="accountButton" type="submit">Choose {planName}</button></form>
       : <Link className="accountButton" href="/signin?next=/pricing">Sign in to choose {planName}</Link>;
   }
-  if (joined) return <p className="pricingJoined" role="status">You are on the {planName} waitlist. We will email you when it opens.</p>;
+  if (joined) return <p className="pricingJoined" role="status">{signedIn ? `You are on the ${planName} waitlist. We will email you when it opens.` : WAITLIST_SUCCESS}</p>;
   if (!signedIn) {
-    return <div className="pricingSoon"><span>Coming soon</span><Link className="accountButton secondary" href="/signin?next=/pricing">Sign in to join the waitlist</Link></div>;
+    return <div className="pricingSoon"><span>Coming soon</span>
+      <EmailCaptureForm action="/api/waitlist" hidden={{ plan }} buttonLabel={`Join the ${planName} waitlist`} inputLabel={`Email address for the ${planName} waitlist`} />
+    </div>;
   }
   return <div className="pricingSoon">
     <span>Coming soon</span>

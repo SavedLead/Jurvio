@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/modules/accounts/http/session";
 import { signInAvailable } from "@/modules/accounts/http/config";
 import { safeCasePublicId, safeRedirectPath } from "@/modules/accounts/domain/tokens";
+import { EmailCaptureForm, WAITLIST_SUCCESS } from "@/modules/accounts/ui/email-capture-form";
 import "../account-pages.css";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +18,7 @@ export const metadata: Metadata = {
 const ERRORS: Record<string, string> = {
   invalid: "Enter a valid email address.",
   rate_limited: "Too many sign-in requests. Wait a few minutes and try again.",
-  unavailable: "Sign-in is temporarily unavailable. Please try again later.",
+  unavailable: "We could not save that just now. Please try again in a minute.",
   expired: "That sign-in link has expired or was already used. Request a new one below.",
 };
 
@@ -32,12 +33,21 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
   return <main className="accountShell">
     <section className="accountCard" aria-labelledby="signin-title">
       <p className="accountEyebrow">Jurvio account</p>
-      <h1 id="signin-title">{params.sent ? "Check your email" : "Sign in"}</h1>
+      <h1 id="signin-title">{params.sent ? "Check your email" : params.waitlisted ? "You're on the list" : available ? "Sign in" : "Get case alerts by email"}</h1>
       {params.sent ? <>
         <p className="accountIntro">If that address can receive mail, a sign-in link is on its way. It works once and expires in 15 minutes.</p>
         <p className="accountFinePrint">Nothing arrived? Check spam, or <Link href={`/signin${follow ? `?follow=${follow}` : ""}` as Route}>send another link</Link>.</p>
+      </> : params.waitlisted ? <>
+        <p className="emailCaptureDone" role="status">{WAITLIST_SUCCESS}</p>
+        <p className="accountFinePrint">{follow
+          ? <>We saved your request to follow this case. <Link href={`/case/${follow}` as Route}>Back to the case</Link>.</>
+          : <>Every case page stays free to read. <Link href="/cases">Find a case</Link> or <Link href="/pricing">see plans</Link>.</>}</p>
       </> : !available ? <>
-        <p className="accountNotice" role="status">Sign-in is temporarily unavailable. Please check back soon. Every case page stays free to read.</p>
+        <p className="accountIntro">Jurvio accounts and email alerts open soon. Leave your email and we&apos;ll tell you the moment they go live{follow ? ", and this case will already be on your follow list" : ""}. Every case page stays free to read in the meantime.</p>
+        {error ? <p className="accountNotice error" role="alert">{error}</p> : null}
+        <EmailCaptureForm action="/api/auth/request" hidden={follow ? { next, follow } : { next }} buttonLabel="Notify me when alerts go live"
+          footnote={<>One email when accounts open, then only what you sign up for. See <Link href="/privacy">Privacy</Link>.</>} />
+        <p className="accountFinePrint"><Link href="/cases">Browse cases</Link> · <Link href="/pricing">See plans</Link></p>
       </> : <>
         <p className="accountIntro">{follow
           ? "Enter your email and we will send a one-time link. The case is followed as soon as you open it."

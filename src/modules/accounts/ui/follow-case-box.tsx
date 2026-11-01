@@ -3,6 +3,7 @@
 import type { Route } from "next";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { EmailCaptureForm, WAITLIST_SUCCESS } from "./email-capture-form";
 import "./follow-case-box.css";
 
 interface FollowApiState {
@@ -21,17 +22,20 @@ const HINT = "jurvio_signed_in=1";
  * "Follow this case". The page only renders this for cases that may be
  * followed; the follow API re-checks. Signed-out visitors get an email box that
  * starts the one-time-link sign-in and follows the case when the link is
- * opened. Signed-in state is fetched in the browser, so the case page HTML is
+ * opened. While email sign-in is not configured, the same box puts the email
+ * and case on the waitlist (converted to a real follow at sign-up). Signed-in state is fetched in the browser, so the case page HTML is
  * identical for everyone and stays edge-cacheable.
  */
 export function FollowCaseBox({ caseId }: { caseId: string }) {
   const [state, setState] = useState<FollowApiState | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [waitlisted, setWaitlisted] = useState(false);
 
   useEffect(() => {
     const note = new URLSearchParams(window.location.search).get("follow");
     if (note === "followed") setMessage("You are now following this case.");
+    if (note === "waitlisted") setWaitlisted(true);
     if (!document.cookie.split(";").some((part) => part.trim() === HINT)) {
       setState({ signedIn: false });
       return;
@@ -72,13 +76,13 @@ export function FollowCaseBox({ caseId }: { caseId: string }) {
     <h2 id="follow-case-title">Follow this case</h2>
     {!state.signedIn ? <>
       <p>Get an email when new docket entries are filed. Free for up to 3 cases.</p>
-      <form action="/api/auth/request" method="post">
-        <input type="email" name="email" required maxLength={254} autoComplete="email" placeholder="you@example.com" aria-label="Email address" />
-        <input type="hidden" name="next" value={`/case/${caseId}`} />
-        <input type="hidden" name="follow" value={caseId} />
-        <button type="submit">Follow by email</button>
-      </form>
-      <small>We email a one-time sign-in link. No password.</small>
+      <EmailCaptureForm
+        action="/api/auth/request"
+        hidden={{ next: `/case/${caseId}`, follow: caseId }}
+        buttonLabel="Follow by email"
+        initialMessage={waitlisted ? WAITLIST_SUCCESS : undefined}
+        footnote="No password. We only email you about cases you follow."
+      />
     </> : <>
       <p>{state.following ? "You get an email when new docket entries are filed." : "Get an email when new docket entries are filed."}</p>
       <button type="button" className={state.following ? "following" : undefined} disabled={busy} onClick={toggle} aria-pressed={Boolean(state.following)}>
