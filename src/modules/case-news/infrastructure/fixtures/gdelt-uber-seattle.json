@@ -1,0 +1,7 @@
+{"articles": [
+ { "url": "https://www.reuters.com/legal/ninth-circuit-upholds-seattle-gig-worker-law-uber-2026-10-20/", "url_mobile": "", "title": "Ninth Circuit upholds Seattle gig worker law challenged by Uber", "seendate": "20261020T181500Z", "socialimage": "", "domain": "reuters.com", "language": "English", "sourcecountry": "United States" },
+ { "url": "https://www.seattletimes.com/business/uber-instacart-lose-appeal-over-seattle-delivery-pay/", "url_mobile": "", "title": "Uber, Instacart lose appeal over Seattle delivery pay rules", "seendate": "20261021T090000Z", "socialimage": "", "domain": "seattletimes.com", "language": "English", "sourcecountry": "United States" },
+ { "url": "https://some-aggregator.example/uber-seattle-ruling", "url_mobile": "", "title": "Uber v. Seattle: what the ruling means", "seendate": "20261022T090000Z", "socialimage": "", "domain": "some-aggregator.example", "language": "English", "sourcecountry": "United States" },
+ { "url": "https://www.cnbc.com/2026/10/19/uber-earnings-preview.html", "url_mobile": "", "title": "Uber earnings preview: what to watch", "seendate": "20261019T120000Z", "socialimage": "", "domain": "cnbc.com", "language": "English", "sourcecountry": "United States" },
+ { "url": "https://www.lemonde.fr/uber-seattle", "url_mobile": "", "title": "Uber perd en appel à Seattle", "seendate": "20261021T120000Z", "socialimage": "", "domain": "lemonde.fr", "language": "French", "sourcecountry": "France" }
+]}
