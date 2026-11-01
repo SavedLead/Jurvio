@@ -15,6 +15,8 @@ import {
 import { robotsFor } from "@/lib/seo/indexing";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
+import { publicDocumentType } from "@/modules/cases/domain/public-labels";
+import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 
 export const dynamic = "force-dynamic";
 
@@ -60,7 +62,8 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn}
         decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode} />
-      {opinionTextIsPending(legalCase.hasReadableOpinion) ? (
+      {opinionTextIsPending(legalCase.hasReadableOpinion) && legalCase.decidedOn
+        && (legalCase.courtKind === "supreme" || legalCase.courtKind === "appellate") ? (
         <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
           <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
           <p>{OPINION_TEXT_PENDING_BODY}</p>
@@ -70,13 +73,13 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
         <section className="contentSection availableDocuments">
           <p className="sectionKicker">Available court materials</p>
           <h2>Documents currently available</h2>
-          <p className="sectionIntroduction">This list includes only documents Jurvio has obtained and verified. It does not claim to be the complete Supreme Court record.</p>
+          <p className="sectionIntroduction">Court documents Jurvio has for this case. This may not be every document the court has on file.</p>
           <ul className="documentCards">{records.map((document) => (
             <li key={document.publicId}>
               <div>
-                <span className="documentType">{document.documentType.replaceAll("_", " ")}</span>
+                <span className="documentType">{publicDocumentType(document.documentType)}</span>
                 <h3>{document.title}</h3>
-                {document.filedOn ? <time dateTime={document.filedOn}>{document.filedOn}</time> : null}
+                {document.filedOn ? <time dateTime={document.filedOn}>{formatPublicCaseDate(document.filedOn) ?? document.filedOn}</time> : null}
               </div>
               <div className="documentActions">
                 {document.hasReadableContent ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>Read on Jurvio</Link> : null}

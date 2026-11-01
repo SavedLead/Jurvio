@@ -9,6 +9,7 @@ import { scotusTermLabel } from "@/modules/scotus/domain/term";
 import styles from "./supreme-court.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { publicOpinionType } from "@/modules/cases/domain/public-labels";
 
 // Keep database access at runtime; unstable_cache still shares the five-minute result.
 export const dynamic = "force-dynamic";
@@ -78,7 +79,7 @@ export default async function SupremeCourtPage() {
         <article><span>Current membership</span><strong>9</strong><p>One Chief Justice and eight Associate Justices.</p><a href="#justices">Meet the Court ↓</a></article>
         <article><span>Argument season</span><strong>Oct–Apr</strong><p>Arguments are generally held on selected Monday, Tuesday, and Wednesday mornings.</p><a href="https://www.supremecourt.gov/oral_arguments/calendarsandlists.aspx">Current calendar ↗</a></article>
         <article><span>Decisions and orders</span><strong>Term-long</strong><p>Orders appear throughout the term. Opinions often accelerate after arguments end.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">Latest official opinions ↗</a></article>
-        <article><span>Jurvio corpus</span><strong>{discovery.caseCount.toLocaleString()}</strong><p>Supreme Court case pages currently approved for public display.</p><Link href="/cases">Browse records →</Link></article>
+        <article><span>Jurvio corpus</span><strong>{discovery.caseCount.toLocaleString()}</strong><p>Supreme Court cases you can read about on Jurvio.</p><Link href="/cases">Browse records →</Link></article>
       </div>
       <aside className={styles.freshness}><strong>Freshness matters</strong><p>Calendar, docket, order, and opinion status can change. Jurvio links to the controlling official source and does not infer an outcome from silence or an incomplete import.</p></aside>
     </section>
@@ -140,9 +141,9 @@ export default async function SupremeCourtPage() {
       {discovery.opinions.length ? <div className={styles.opinionList}>{discovery.opinions.map((opinion) => <article key={opinion.documentPublicId}>
         <div className={styles.opinionMeta}><time dateTime={opinion.filedOn ?? undefined}>{formatDate(opinion.filedOn)}</time>{scotusTermLabel(opinion.filedOn) ? <span>{scotusTermLabel(opinion.filedOn)}</span> : null}</div>
         <div><p>Docket {opinion.docketNumber}</p><h3><Link href={`/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` as Route}>{cleanCaseCaption(opinion.caseCaption)}</Link></h3>
-          <div className={styles.tags}><span>{opinion.opinionType.replaceAll("-", " ")}</span>{opinion.perCuriam ? <span>Per curiam</span> : null}{opinion.authorName ? <span>{opinion.authorName}</span> : null}{opinion.precedentialStatus ? <span>{opinion.precedentialStatus}</span> : null}</div>
+          <div className={styles.tags}>{publicOpinionType(opinion.opinionType) ? <span>{publicOpinionType(opinion.opinionType)}</span> : null}{opinion.perCuriam ? <span>Per curiam</span> : null}{opinion.authorName ? <span>{opinion.authorName}</span> : null}{opinion.precedentialStatus ? <span>{opinion.precedentialStatus}</span> : null}</div>
         </div><div className={styles.reading}><strong>{opinion.wordCount.toLocaleString()}</strong><span>words</span></div>
-      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Corpus status</p><h3>Opinion text is being prepared.</h3><p>{discovery.caseCount.toLocaleString()} verified Supreme Court case pages are live. Opinion documents will appear after readable text is extracted and separately verified.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">See current official opinions ↗</a></div>}
+      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Opinions</p><h3>Full opinion text is on its way.</h3><p>{discovery.caseCount.toLocaleString()} Supreme Court cases are on Jurvio. Full opinion text appears on each case page as we add it.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">See current official opinions ↗</a></div>}
     </section>
 
     <section id="sources" className={styles.sourceDirectory}>

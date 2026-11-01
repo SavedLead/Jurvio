@@ -20,6 +20,8 @@ import { publicCitationTargets } from "@/modules/citations/application/public-ci
 import { linkCaseCitations } from "@/modules/citations/domain/link-citations";
 import { citationKey } from "@/modules/citations/domain/citations";
 import { citationCountLine, summarizeCitations } from "@/modules/citations/domain/citation-summary";
+import { publicOpinionType } from "@/modules/cases/domain/public-labels";
+import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 
 export const dynamic = "force-dynamic";
 
@@ -132,9 +134,9 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
           <h1><BrandedCaseCaption caption={caption} /></h1>
           <p className="lede">Judicial opinion</p>
           <dl className="metadataGrid">
-            {opinion.filedOn ? <div><dt>Filed or decided</dt><dd>{opinion.filedOn}</dd></div> : null}
+            {opinion.filedOn ? <div><dt>Filed or decided</dt><dd><time dateTime={opinion.filedOn}>{formatPublicCaseDate(opinion.filedOn) ?? opinion.filedOn}</time></dd></div> : null}
             <div><dt>Docket</dt><dd>{opinion.docketNumber}</dd></div>
-            {opinion.opinionType && opinion.opinionType !== "unknown" ? <div><dt>Opinion</dt><dd><TermText text={opinion.opinionType.replaceAll("-", " ")} marker={headerMarker} /></dd></div> : null}
+            {publicOpinionType(opinion.opinionType) ? <div><dt>Opinion</dt><dd><TermText text={publicOpinionType(opinion.opinionType)} marker={headerMarker} /></dd></div> : null}
             {opinion.authorName ? <div><dt>Author</dt><dd>{opinion.authorName}</dd></div> : null}
             {opinion.perCuriam ? <div><dt>Authorship</dt><dd><TermText text="Per curiam" marker={headerMarker} /></dd></div> : null}
             {officialCitation ? <div><dt>Official citation</dt><dd>{officialCitation}</dd></div> : null}
@@ -167,10 +169,8 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
               <dl className="railFacts">
                 <div><dt>Court</dt><dd>{opinion.courtName}</dd></div>
                 <div><dt>Docket</dt><dd>{opinion.docketNumber}</dd></div>
-                {opinion.filedOn ? <div><dt>Filed or decided</dt><dd>{opinion.filedOn}</dd></div> : null}
+                {opinion.filedOn ? <div><dt>Filed or decided</dt><dd><time dateTime={opinion.filedOn}>{formatPublicCaseDate(opinion.filedOn) ?? opinion.filedOn}</time></dd></div> : null}
                 {officialCitation ? <div><dt>Citation</dt><dd>{officialCitation}</dd></div> : null}
-                <div><dt>Readable text</dt><dd>Extracted and verified</dd></div>
-                <div><dt>Permanent ID</dt><dd>{opinion.documentPublicId}</dd></div>
               </dl>
             </section>
             {citationSummary.cases ? (
@@ -190,7 +190,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
           </aside>
         </div>
       </article>
-      <p className="permalink">Permanent Jurvio record: <Link href={canonicalPath as Route}>{opinion.documentPublicId}</Link></p>
+      <p className="permalink">Permanent link: <Link href={canonicalPath as Route}>{permanentUrl.replace(/^https:\/\//, "")}</Link></p>
     </main>
   );
 }

@@ -12,7 +12,7 @@ const browseItems = [
   ["Attorneys", "Find counsel, firms, appearances, and case history", "/attorneys", "03"],
   ["Judges", "Explore judicial records, courts, and written opinions", "/judges", "04"],
   ["Courts", "Browse jurisdictions and understand how they work", "/courts", "05"],
-  ["Explainers", "Understand legal terms, procedure, jurisdiction, and doctrine", "/explainers", "06"],
+  ["Dictionary", "Plain-English meanings of legal terms, procedure, and jurisdiction", "/explainers", "06"],
 ] as const;
 
 const startingPaths = [
@@ -105,7 +105,7 @@ export default async function HomePage() {
             <h2>The record, organized around the questions people actually ask.</h2>
             <dl>
               <div><dt>What happened?</dt><dd>Key events and decisions</dd></div>
-              <div><dt>Where does it stand?</dt><dd>Current status and verification time</dd></div>
+              <div><dt>Where does it stand?</dt><dd>Current status, in plain English</dd></div>
               <div><dt>Who is involved?</dt><dd>Parties, counsel, judges, and courts</dd></div>
               <div><dt>What does it mean?</dt><dd>Neutral procedure and term explanations</dd></div>
             </dl>
@@ -184,7 +184,7 @@ export default async function HomePage() {
                   </h3>
                   <p>Docket {legalCase.docketNumber}</p>
                   <footer>
-                    <span>{legalCase.hasPublicDocument ? "Readable opinion available" : "Verified case record"}</span>
+                    <span>{legalCase.hasPublicDocument ? "Readable opinion available" : "Case record"}</span>
                     <Link href={`/case/${legalCase.publicId}` as Route}>Open case →</Link>
                   </footer>
                 </article>

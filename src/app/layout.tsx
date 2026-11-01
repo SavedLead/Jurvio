@@ -15,7 +15,7 @@ import { PlainTermsBehavior } from "@/modules/plain-english/ui/plain-terms-behav
 const primaryNavigation = [
   ["Research", "/search"], ["Cases", "/cases"], ["Parties", "/parties"],
   ["Professionals", "/attorneys"], ["Judges & Courts", "/judges"],
-  ["Supreme Court", "/supreme-court"], ["Explainers", "/explainers"],
+  ["Supreme Court", "/supreme-court"], ["Dictionary", "/explainers"],
   ["News & Trackers", "/government-litigation"],
   ["Pricing", "/pricing"],
 ] as const;
@@ -23,7 +23,7 @@ const primaryNavigation = [
 const footerNavigation = [
   { title: "Research", links: [["Cases", "/cases"], ["Search", "/search"], ["Supreme Court", "/supreme-court"], ["Government litigation", "/government-litigation"]] },
   { title: "People & institutions", links: [["Parties", "/parties"], ["Attorneys", "/attorneys"], ["Law firms", "/law-firms"], ["Judges", "/judges"], ["Courts", "/courts"]] },
-  { title: "Learn", links: [["Legal explainers", "/explainers"], ["Legal procedure", "/explainers"], ["Jurisdiction", "/explainers"], ["Glossary", "/explainers"]] },
+  { title: "Learn", links: [["Legal dictionary", "/explainers#glossary-title"], ["Step-by-step explainers", "/explainers#deep-explainers"], ["Court procedure roadmaps", "/explainers#roadmap-title"], ["Jurisdiction", "/explainers/jurisdiction"]] },
   { title: "Data & trust", links: [["Coverage", "/coverage"], ["Sources & methodology", "/methodology"], ["Editorial standards", "/editorial-standards"], ["Public-records policy", "/public-records-policy"], ["Privacy", "/privacy"], ["Terms", "/terms"], ["Contact", "/contact"], ["Corrections", "/corrections"], ["Sitemap", "/sitemap.xml"]] },
 ] as const;
 

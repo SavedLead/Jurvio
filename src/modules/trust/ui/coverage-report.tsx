@@ -113,7 +113,7 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
           </li>
           {limitations.heldForReview > 0 ? (
             <li>
-              <strong>{count(limitations.heldForReview)} ingested records are held for review</strong>{" "}
+              <strong>{count(limitations.heldForReview)} collected records are waiting for a quality check</strong>{" "}
               and are deliberately not published. Records stay unpublished until they pass Jurvio’s
               publication and privacy checks.
             </li>
