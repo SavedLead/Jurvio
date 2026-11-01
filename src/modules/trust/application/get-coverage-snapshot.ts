@@ -237,7 +237,7 @@ export function describeBlocker(reason: string): string {
     ocr_failed: "Scanned source document could not be read reliably enough to publish",
     ocr_required: "Scanned source document is awaiting text extraction",
     missing_docket_number: "Source document does not identify its docket number",
-    transient_processing_failure: "Processing failed and is queued to retry",
+    transient_processing_failure: "Text extraction did not finish and will be retried automatically",
   };
   return known[reason] ?? reason.replaceAll("_", " ");
 }

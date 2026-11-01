@@ -12,8 +12,8 @@ describe("opinion text availability", () => {
   });
 
   it("uses public language for the pending state", () => {
-    expect(OPINION_TEXT_PENDING_HEADING).toBe("Opinion text is pending");
-    expect(OPINION_TEXT_PENDING_BODY).toMatch(/verified case details/);
-    expect(OPINION_TEXT_PENDING_BODY).not.toMatch(/hold|quarantine|draft/i);
+    expect(OPINION_TEXT_PENDING_HEADING).toBe("The full opinion isn't on Jurvio yet");
+    expect(OPINION_TEXT_PENDING_BODY).toMatch(/written opinion/);
+    expect(OPINION_TEXT_PENDING_BODY).not.toMatch(/hold|quarantine|draft|pending|verified/i);
   });
 });

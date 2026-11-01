@@ -1,6 +1,10 @@
 import { CaseNav } from "./case-nav";
 import { BrandedCaseCaption } from "./branded-case-caption";
 import { caseCitationSuffix } from "@/modules/cases/domain/case-title";
+import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
+
+const shortCaption = (caption: string) => (caption.length > 60 ? `${caption.slice(0, 57).trimEnd()}…` : caption);
+const displayDate = (value: string) => <time dateTime={value}>{formatPublicCaseDate(value) ?? value}</time>;
 
 interface CaseHeaderProps {
   caseId: string;
@@ -31,15 +35,15 @@ export function CaseHeader({
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumb">
-        <a href="/cases">Cases</a><span aria-hidden="true">/</span><span>{caseId}</span>
+        <a href="/cases">Cases</a><span aria-hidden="true">/</span><span aria-current="page">{shortCaption(caption)}</span>
       </nav>
       <header className="caseHeader">
         <p className="eyebrow">{courtName}</p>
         <h1><BrandedCaseCaption caption={caption} /><span className="caseTitleCitation">{citationSuffix}</span></h1>
         <dl className="caseMeta" aria-label="Case details">
           <div><dt>Docket</dt><dd>{docketNumber}</dd></div>
-          {filedOn ? <div><dt>Filed</dt><dd>{filedOn}</dd></div> : null}
-          {decidedOn ? <div><dt>Decided</dt><dd>{decidedOn}</dd></div> : null}
+          {filedOn ? <div><dt>Filed</dt><dd>{displayDate(filedOn)}</dd></div> : null}
+          {decidedOn ? <div><dt>Decided</dt><dd>{displayDate(decidedOn)}</dd></div> : null}
           {supremeCourtTerm ? <div><dt>Supreme Court term</dt><dd>{supremeCourtTerm}</dd></div> : null}
           {officialCitation ? <div><dt>Official citation</dt><dd>{officialCitation}</dd></div> : null}
         </dl>

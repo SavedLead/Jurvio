@@ -16,6 +16,6 @@ export default async function PartiesPage() {
   return <main className={styles.page}>
     <header className={styles.hero}><p className={styles.eyebrow}>Public legal directory</p><h1>Parties</h1>
       <p>People, companies, and public bodies appearing in court records Jurvio is permitted to display. A listing describes an appearance in a case, not wrongdoing or liability.</p></header>
-    <EntityDirectory records={parties} hrefPrefix="/parties" emptyTitle="No parties are published yet" emptyDescription="Party profiles will appear after their related court records pass Jurvio’s source, verification, privacy, and publication checks." />
+    <EntityDirectory records={parties} hrefPrefix="/parties" emptyTitle="Party profiles are coming soon" emptyDescription="Profiles for people, companies, and agencies named in cases are still being built. In the meantime, search cases by a party's name." />
   </main>;
 }

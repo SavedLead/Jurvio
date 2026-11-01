@@ -27,9 +27,9 @@ export default async function UsAttorneysPage() {
           <div><dt>Public cases</dt><dd>{office.caseCount.toLocaleString()}</dd></div>
           <div><dt>Active cases</dt><dd>{office.activeCaseCount.toLocaleString()}</dd></div>
           <div><dt>Attributed attorneys</dt><dd>{office.attorneyCount.toLocaleString()}</dd></div>
-          <div><dt>Latest filed case</dt><dd>{office.latestCaseFiledOn ?? "Not yet available"}</dd></div>
+          <div><dt>Latest filed case</dt><dd>{office.latestCaseFiledOn ?? "None on Jurvio yet"}</dd></div>
         </dl>
       </article>
-    </li>)}</ol> : <section className={styles.empty}><h2>USAO profiles are being prepared</h2><p>The office directory will appear as soon as the authoritative district mapping and source-backed case attribution migration completes.</p></section>}
+    </li>)}</ol> : <section className={styles.empty}><h2>U.S. Attorney office profiles are coming soon</h2><p>This directory will list each office and its cases once they are connected to the court records.</p></section>}
   </main>;
 }

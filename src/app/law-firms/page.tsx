@@ -16,6 +16,6 @@ export default async function LawFirmsPage() {
   return <main className={styles.page}>
     <header className={styles.hero}><p className={styles.eyebrow}>Public legal directory</p><h1>Law firms</h1>
       <p>Law-firm records connected to published litigation, with links back to the underlying public cases.</p></header>
-    <EntityDirectory records={firms} hrefPrefix="/law-firms" emptyTitle="No law-firm profiles are published yet" emptyDescription="Jurvio will add law-firm profiles when a qualifying source identifies the firm and the relationship passes publication review." />
+    <EntityDirectory records={firms} hrefPrefix="/law-firms" emptyTitle="Law-firm profiles are coming soon" emptyDescription="We only connect a firm to a case when the court record clearly names it, so these profiles are still being built. In the meantime, you can search cases by name." />
   </main>;
 }

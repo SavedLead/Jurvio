@@ -54,18 +54,18 @@ export default async function GovernmentLitigationPage() {
     </section>
 
     <section className={styles.explainer}>
-      <div><p className={styles.eyebrow}>How this works</p><h2>Source lead → review → court record</h2></div>
-      <ol><li><strong>Discover</strong><span>An official release or executive order enters a private review queue.</span></li><li><strong>Verify</strong><span>Jurvio checks identifiers and language against source records.</span></li><li><strong>Connect</strong><span>A court link appears only after a deterministic or human-reviewed match.</span></li></ol>
+      <div><p className={styles.eyebrow}>How this works</p><h2>Official announcement → check → court record</h2></div>
+      <ol><li><strong>Discover</strong><span>We collect official agency announcements and executive orders.</span></li><li><strong>Verify</strong><span>Jurvio checks identifiers and language against source records.</span></li><li><strong>Connect</strong><span>We link to a court case only when the match is certain.</span></li></ol>
     </section>
 
     <section className={styles.feed}>
-      <div className={styles.sectionHeading}><div><p className={styles.eyebrow}>Reviewed leads</p><h2>Latest source-backed developments</h2></div><p>Allegations remain attributed to their source.</p></div>
+      <div className={styles.sectionHeading}><div><p className={styles.eyebrow}>Latest updates</p><h2>Latest source-backed developments</h2></div><p>Allegations remain attributed to their source.</p></div>
       {leads.length ? <div className={styles.list}>{leads.map((lead) => <article key={lead.publicId}>
         <div className={styles.meta}><span>{lead.agencyCode.replace("executive_office", "Executive Office").toUpperCase()}</span><time>{dateLabel(lead.sourcePublishedAt)}</time></div>
         <h3><Link href={`/government-litigation/${lead.publicId}` as Route}>{lead.sourceTitle}</Link></h3>
         <p>{lead.attributedSummary}</p>
-        <div className={styles.links}><Link href={`/government-litigation/${lead.publicId}` as Route}>Read reviewed source context</Link>{lead.casePublicId ? <Link href={`/case/${lead.casePublicId}` as Route}>View connected court record</Link> : <span>No verified court match published</span>}</div>
-      </article>)}</div> : <div className={styles.empty}><h3>No government litigation leads are approved for public display yet.</h3><p>The tracker will remain empty until an official source has been captured, its language has been attributed, and publication review is complete.</p><Link href={"/cases" as Route}>Browse published cases</Link></div>}
+        <div className={styles.links}><Link href={`/government-litigation/${lead.publicId}` as Route}>Read reviewed source context</Link>{lead.casePublicId ? <Link href={`/case/${lead.casePublicId}` as Route}>View connected court record</Link> : <span>No court case linked yet</span>}</div>
+      </article>)}</div> : <div className={styles.empty}><h3>No updates to show yet.</h3><p>Government announcements will appear here once each one has been checked against its official source and matched to a court case.</p><Link href={"/cases" as Route}>Browse published cases</Link></div>}
     </section>
   </main>;
 }

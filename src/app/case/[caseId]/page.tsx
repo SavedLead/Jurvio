@@ -12,6 +12,7 @@ import {
 } from "@/modules/cases/application/list-public-case-sections";
 import { buildCaseMetaDescription, buildRecordAnswers } from "@/modules/cases/domain/record-answers";
 import { buildCaseTitle } from "@/modules/cases/domain/case-title";
+import { publicDocumentType, publicOpinionType, publicPartyRole } from "@/modules/cases/domain/public-labels";
 import { formatPublicCaseDate, formatVerifiedOutcome, visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
 import {
   OPINION_TEXT_PENDING_BODY,
@@ -134,14 +135,16 @@ export default async function CasePage({ params }: CasePageProps) {
   const outcome = verified ? formatVerifiedOutcome(legalCase.dispositionScope) : null;
   const supportingStatusDetails = outcome ? statusDetails.filter(([label]) => label !== "Disposition") : statusDetails;
   const readableDocuments = documents.filter((document) => document.hasReadableContent);
-  const opinionTextPending = opinionTextIsPending(legalCase.hasReadableOpinion);
+  // Only decided appellate / Supreme Court cases are expected to have an opinion;
+  // an open district docket has nothing "pending" to promise.
+  const opinionTextPending = opinionTextIsPending(legalCase.hasReadableOpinion)
+    && Boolean(legalCase.decidedOn)
+    && (legalCase.courtKind === "supreme" || legalCase.courtKind === "appellate");
   const sourceDocument = documents.find((document) => document.sourceDownloadUrl);
   const primaryOpinion = readableDocuments.find((document) => document.opinionType || document.documentType.includes("opinion")) ?? readableDocuments[0];
   const opinionPath = primaryOpinion ? `/case/${caseId}/documents/${primaryOpinion.publicId}` : null;
   const decisionLabel = primaryOpinion?.perCuriam ? "Per curiam" : primaryOpinion?.authorName;
-  const opinionType = primaryOpinion?.opinionType && primaryOpinion.opinionType !== "unknown"
-    ? primaryOpinion.opinionType.replaceAll("-", " ")
-    : null;
+  const opinionType = publicOpinionType(primaryOpinion?.opinionType);
   const timelineEvents = [
     legalCase.filedOn ? { date: legalCase.filedOn, label: "Case filed" } : null,
     ...docketEntries.filter((entry) => entry.filedOn).map((entry) => ({
@@ -155,7 +158,7 @@ export default async function CasePage({ params }: CasePageProps) {
     .filter((event): event is { date: string; label: string } => Boolean(event))
     .filter((event, index, events) => events.findIndex((candidate) => candidate.date === event.date && candidate.label === event.label) === index)
     .sort((left, right) => left.date.localeCompare(right.date));
-  const availableDocumentTypes = [...new Set(documents.map((document) => document.documentType.replaceAll("_", " ")))];
+  const availableDocumentTypes = [...new Set(documents.map((document) => publicDocumentType(document.documentType)))];
   const caption = cleanCaseCaption(legalCase.caption);
   const canonicalPath = `/case/${caseId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
@@ -186,7 +189,7 @@ export default async function CasePage({ params }: CasePageProps) {
       question: "What happened in this case?",
       answer: verifiedHappened
         ?? recordAnswers.happened
-        ?? `The public record currently confirms this case as ${legalCase.courtName} docket ${legalCase.docketNumber}. A source-backed plain-English summary is not yet available.`,
+        ?? `${legalCase.courtName} case number ${legalCase.docketNumber}.`,
       sourceUrl: verifiedHappened ? legalCase.backgroundSourceUrl : null,
       available: Boolean(verifiedHappened || recordAnswers.happened),
       fromRecord: !verifiedHappened && Boolean(recordAnswers.happened),
@@ -196,7 +199,7 @@ export default async function CasePage({ params }: CasePageProps) {
       question: "What is this case about?",
       answer: legalCase.questionPresented
         ?? recordAnswers.about
-        ?? "Jurvio has not yet verified a plain-English description of the legal question in this case.",
+        ?? "",
       sourceUrl: legalCase.questionPresented ? legalCase.questionSourceUrl : null,
       available: Boolean(legalCase.questionPresented || recordAnswers.about),
       fromRecord: !legalCase.questionPresented && Boolean(recordAnswers.about),
@@ -205,7 +208,7 @@ export default async function CasePage({ params }: CasePageProps) {
       id: "current-status",
       question: "Where does the case stand now?",
       answer: (verified ? legalCase.statusExplanation : null)
-        ?? (latestEvent ? `The latest dated event currently available is “${latestEvent.label}” on ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}.` : "Jurvio has not yet verified the current procedural posture."),
+        ?? (latestEvent ? `The latest dated event in the record is “${latestEvent.label}” on ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}.` : ""),
       sourceUrl: null,
       available: Boolean((verified && legalCase.statusExplanation) || latestEvent),
       fromRecord: false,
@@ -215,7 +218,7 @@ export default async function CasePage({ params }: CasePageProps) {
       question: "Why does this case matter?",
       answer: legalCase.significanceSummary
         ?? recordAnswers.matters
-        ?? "A source-backed explanation of this case’s broader significance is not yet available.",
+        ?? "",
       sourceUrl: legalCase.significanceSummary ? legalCase.significanceSourceUrl : null,
       available: Boolean(legalCase.significanceSummary || recordAnswers.matters),
       fromRecord: !legalCase.significanceSummary && Boolean(recordAnswers.matters),
@@ -225,7 +228,7 @@ export default async function CasePage({ params }: CasePageProps) {
       question: "What was the ruling or outcome?",
       answer: verifiedOutcome
         ?? recordAnswers.outcome
-        ?? "No final ruling or closing date appears in the court record Jurvio holds.",
+        ?? "",
       sourceUrl: verifiedOutcome ? legalCase.holdingSourceUrl ?? legalCase.dispositionSourceUrl : null,
       available: Boolean(verifiedOutcome || recordAnswers.outcome),
       fromRecord: !verifiedOutcome && Boolean(recordAnswers.outcome),
@@ -235,7 +238,7 @@ export default async function CasePage({ params }: CasePageProps) {
       question: "What happened most recently?",
       answer: latestEvent
         ? `${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}: ${latestEvent.label}`
-        : "No dated docket or agency filing is currently available on Jurvio.",
+        : "",
       sourceUrl: null,
       available: Boolean(latestEvent),
       fromRecord: false,
@@ -311,20 +314,18 @@ export default async function CasePage({ params }: CasePageProps) {
             <section>
               <p className="sectionKicker">Case status</p>
               <dl className="railFacts">
-                <div><dt>Verification</dt><dd>{verified ? "Court metadata verified" : "Source review in progress"}</dd></div>
-                {opinionTextPending
-                  ? <div><dt>Opinion text</dt><dd>Pending</dd></div>
-                  : <div><dt>Readable text</dt><dd>Available on Jurvio</dd></div>}
-                {legalCase.decidedOn ? <div><dt>Decision date</dt><dd>{legalCase.decidedOn}</dd></div> : null}
+                {legalCase.hasReadableOpinion
+                  ? <div><dt>Opinion text</dt><dd>Available on Jurvio</dd></div>
+                  : opinionTextPending ? <div><dt>Opinion text</dt><dd>Not on Jurvio yet</dd></div> : null}
+                {legalCase.decidedOn ? <div><dt>Decision date</dt><dd><time dateTime={legalCase.decidedOn}>{formatPublicCaseDate(legalCase.decidedOn) ?? legalCase.decidedOn}</time></dd></div> : null}
                 {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
                 {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
-                <div><dt>Permanent ID</dt><dd>{caseId}</dd></div>
               </dl>
             </section>
             {sourceDocument ? (
               <section>
                 <p className="sectionKicker">Official source</p>
-                <p>This record includes source-linked court material.</p>
+                <p>Read the original document from the court.</p>
                 <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
               </section>
             ) : null}
@@ -340,20 +341,20 @@ export default async function CasePage({ params }: CasePageProps) {
             </section>
           ) : null}
           <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
-            <p className="sectionKicker">Case intelligence</p>
-            <h2 id="case-answers-title">{recentlyFiled ? "This case was recently filed" : "What the verified record tells us"}</h2>
+            <p className="sectionKicker">Quick answers</p>
+            <h2 id="case-answers-title">{recentlyFiled ? "This case was recently filed" : "What the court record tells us"}</h2>
             <p className="caseAnswerIntro">
               {recentlyFiled
-                ? "The court record is new. Verified answers, documents, and developments will appear here as they become available."
-                : "Direct answers from the verified public record. Missing information is labeled instead of inferred."}
+                ? "This case is new. More details, documents, and updates will appear here as the court record grows."
+                : "Short answers drawn from the court record. If the record doesn't say, we leave it out rather than guess."}
             </p>
             <div className="caseAnswerGrid">
-              {caseAnswers.map((item) => (
+              {caseAnswers.filter((item) => item.available).map((item) => (
                 <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
                   <h3>{item.question}</h3>
                   <p>{linkedText(item.answer, createTermMarker(`answer-${item.id}`))}</p>
                   <footer>
-                    <span>{!item.available ? "Not yet available" : item.fromRecord ? "From the court record" : "Source-backed answer"}</span>
+                    <span>{item.sourceUrl ? "Source-backed answer" : "From the court record"}</span>
                     {item.sourceUrl ? <a href={item.sourceUrl} rel="nofollow noopener">View source</a> : null}
                   </footer>
                 </article>
@@ -362,16 +363,14 @@ export default async function CasePage({ params }: CasePageProps) {
           </section>
           <section className="caseLeadSection caseFeatureSection" aria-labelledby="understand-case">
             <div className="featureHeading">
-              <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Verified case record</h2></div>
+              <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Case record</h2></div>
             </div>
             {verified && legalCase.statusExplanation ? (
               <p className="statusExplanation">{linkedText(legalCase.statusExplanation, statusMarker)}</p>
             ) : (
               <p className="verifiedFactSummary">
-                The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as {legalCase.courtName} docket {legalCase.docketNumber}.
-                {opinionTextPending
-                  ? ` ${OPINION_TEXT_PENDING_BODY}`
-                  : readableDocuments.length > 0
+                <strong><BrandedCaseCaption caption={caption} /></strong> is {legalCase.courtName} case number {legalCase.docketNumber}.
+                {readableDocuments.length > 0
                     ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.`
                     : ""}
               </p>
@@ -399,7 +398,7 @@ export default async function CasePage({ params }: CasePageProps) {
                   <h2 id="case-outcome">Holding and outcome</h2>
               </div>
               {outcome ? <div className="outcomeCallout"><strong>{marked(outcome, holdingMarker)}.</strong></div> : null}
-              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>Exact sourced holding</h3><p>{linkedText(legalCase.exactHolding, holdingMarker)}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>The holding, quoted from the court</h3><p>{linkedText(legalCase.exactHolding, holdingMarker)}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
             </section>
           ) : null}
 
@@ -473,14 +472,14 @@ export default async function CasePage({ params }: CasePageProps) {
               <div className="availableDocumentTypes" aria-label="Available document types">
                 {availableDocumentTypes.map((type) => <span key={type}>{marked(type, documentsMarker)}</span>)}
               </div>
-              <p className="sectionIntroduction">Jurvio shows only verified documents currently available for this case. Additional court materials will appear here as they are obtained and verified.</p>
+              <p className="sectionIntroduction">Court documents Jurvio has for this case. More will appear here as we add them.</p>
               <ul className="documentCards">
                 {documents.map((document) => (
                   <li key={document.publicId}>
                     <div>
-                      <span className="documentType">{marked(document.documentType.replaceAll("_", " "), documentsMarker)}</span>
+                      <span className="documentType">{marked(publicDocumentType(document.documentType), documentsMarker)}</span>
                       <h3>{document.title}</h3>
-                      {document.filedOn ? <time dateTime={document.filedOn}>{document.filedOn}</time> : null}
+                      {document.filedOn ? <time dateTime={document.filedOn}>{formatPublicCaseDate(document.filedOn) ?? document.filedOn}</time> : null}
                     </div>
                     <div className="documentActions">
                       {document.hasReadableContent ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>Read on Jurvio</Link> : null}
@@ -515,7 +514,7 @@ export default async function CasePage({ params }: CasePageProps) {
               <h2 id="named-parties">Parties</h2>
               <p className="sourceNote">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
               <ul className="recordList">
-                {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><strong>{party.displayName}</strong><p>{marked(party.role.replaceAll("_", " "), partiesMarker)}</p></li>)}
+                {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><strong>{party.displayName}</strong><p>{marked(publicPartyRole(party.role), partiesMarker)}</p></li>)}
               </ul>
               <Link className="sectionLink" href={`/case/${caseId}/parties` as Route}>View all parties →</Link>
             </section>

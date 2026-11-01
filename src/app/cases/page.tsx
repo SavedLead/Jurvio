@@ -89,8 +89,8 @@ function toQueryOptions(filters: CaseListingFilters): ListPublicCasesOptions {
 }
 
 function statusFor(legalCase: PublicCaseListItem) {
-  if (legalCase.verification !== "verified") return { label: "Source review in progress", tone: styles.statusPending };
-  return { label: legalCase.decidedOn ? "Decided" : "Status verified", tone: styles.statusVerified };
+  // Internal review states are never shown to readers; only the court outcome stage.
+  return legalCase.decidedOn ? { label: "Decided", tone: styles.statusVerified } : { label: "Filed", tone: styles.statusPending };
 }
 
 function pageWindow(current: number, last: number) {
@@ -200,7 +200,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
               <legend>Record</legend>
               <label className={styles.check}><input type="checkbox" name="decided" value="1" defaultChecked={filters.decided} /> Decision issued</label>
               <label className={styles.check}><input type="checkbox" name="opinion" value="1" defaultChecked={filters.opinion} /> Readable opinion</label>
-              <label className={styles.check}><input type="checkbox" name="verified" value="1" defaultChecked={filters.verified} /> Status verified</label>
+              <label className={styles.check}><input type="checkbox" name="verified" value="1" defaultChecked={filters.verified} /> Status confirmed from court events</label>
             </fieldset>
 
             <fieldset className={styles.filterGroup}>
@@ -218,7 +218,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
           </form>
           <aside className={styles.trustNote}>
             <strong>Only cleared records appear here</strong>
-            Cases are listed once their court metadata is verified and cleared for public display. <Link href="/public-records-policy">Publication policy</Link>
+            Cases appear here once the court&apos;s case details have been checked. <Link href="/public-records-policy">Publication policy</Link>
           </aside>
         </FilterDisclosure>
 
@@ -287,7 +287,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
           {result.cases.length === 0 ? (
             <section className={styles.empty}>
               <h2>No public cases match yet</h2>
-              <p>Try a shorter party name, the docket number alone, or remove a filter. Some cases are still being verified before publication.</p>
+              <p>Try a shorter party name, the docket number alone, or remove a filter. Some cases may not be on Jurvio yet.</p>
               <Link href="/cases">Clear search and filters</Link>
             </section>
           ) : (

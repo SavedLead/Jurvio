@@ -10,6 +10,7 @@ import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { createTermMarker, TermText } from "@/modules/plain-english/ui/term-text";
+import { publicPartyRole } from "@/modules/cases/domain/public-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +63,7 @@ export default async function PartiesPage({ params }: {
             {records.map((party) => (
               <li key={party.publicId + ":" + party.role}>
                 <strong>{party.displayName}</strong>
-                <p><TermText text={party.role.replaceAll("_", " ")} marker={partiesMarker} /> · Name as filed: {party.nameAsFiled}</p>
+                <p><TermText text={publicPartyRole(party.role)} marker={partiesMarker} /> · Name as filed: {party.nameAsFiled}</p>
               </li>
             ))}
           </ul>

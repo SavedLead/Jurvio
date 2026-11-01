@@ -11,6 +11,7 @@ export default function AttorneysPage() {
   return <main className={styles.page}><header className={styles.hero}>
     <p className={styles.eyebrow}>Public legal directory</p><h1>Attorneys</h1>
     <p>Attorney profiles will connect counsel to the cases, courts, filings, and law firms documented by qualifying public sources.</p>
-  </header><section className={styles.empty}><h2>No attorney profiles are published yet</h2>
-    <p>The current canonical data model does not yet identify attorneys separately from parties. Jurvio will not infer or fabricate those relationships.</p></section></main>;
+  </header><section className={styles.empty}><h2>Attorney profiles are coming soon</h2>
+    <p>We only connect a lawyer to a case when the court record clearly names them, so these profiles are still being built. In the meantime, you can search cases by name.</p>
+    <p><a href="/search">Search court records →</a></p></section></main>;
 }
