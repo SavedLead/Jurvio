@@ -1,5 +1,6 @@
 import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
+import { citedStubsForCase, type CitedStub } from "./citation-stubs";
 import { caseCitationCounts, relatedCitationCases, type CaseCitationCounts, type RelatedCitationCase } from "./public-citations";
 
 /** Citation lists can lag a publication by up to fifteen minutes. */
@@ -9,18 +10,24 @@ export interface CachedCaseCitations {
   cited: RelatedCitationCase[];
   citing: RelatedCitationCase[];
   counts: CaseCitationCounts;
+  /** Cited cases not on Jurvio yet that have a stub page (noindex). */
+  stubs: CitedStub[];
 }
 
 export const loadCachedCaseCitations = unstable_cache(
   async (casePublicId: string): Promise<CachedCaseCitations> => {
     const sql = db();
-    const [cited, citing, counts] = await Promise.all([
+    const [cited, citing, counts, stubs] = await Promise.all([
       relatedCitationCases(sql, casePublicId, "cited"),
       relatedCitationCases(sql, casePublicId, "citing"),
       caseCitationCounts(sql, casePublicId),
+      citedStubsForCase(sql, casePublicId).catch((error: { code?: string }) => {
+        if (error.code === "42P01") return [];
+        throw error;
+      }),
     ]);
-    return { cited, citing, counts };
+    return { cited, citing, counts, stubs };
   },
-  ["public-case-citations-v2"],
+  ["public-case-citations-v3"],
   { revalidate: CASE_CITATION_REVALIDATE_SECONDS },
 );

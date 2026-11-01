@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { env } from "@/lib/config/env";
 import { citationBacklog } from "@/modules/citations/application/citation-lane";
+import { refreshCitationStubs } from "@/modules/citations/application/citation-stubs";
 import { discoverLiveOpinionText } from "@/modules/ingestion/live-feeds/live-opinion-text";
 
 // Nightly citation catch-up (ADR 0090, plan D13). Scheduled hourly; does its
@@ -10,7 +11,8 @@ import { discoverLiveOpinionText } from "@/modules/ingestion/live-feeds/live-opi
 //  2. give transiently failed live-text rows (not 404/410) one more chance;
 //  3. re-queue citation parsing for live-text documents extracted in the last
 //     2 days that have no parse rows (lost trigger / crashed worker);
-//  4. log queue sizes for the coverage history.
+//  4. refresh cited-case stubs (C9), resumable, up to 8 minutes;
+//  5. log queue sizes for the coverage history.
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
   return [key!, raw];
@@ -38,11 +40,12 @@ try {
         AND NOT EXISTS (SELECT 1 FROM document_citation_work w WHERE w.document_id = q.document_id)
       LIMIT 20000
       ON CONFLICT (document_id) DO NOTHING RETURNING 1`;
+    const stubs = await refreshCitationStubs(sql, { deadline: Date.now() + 8 * 60_000 });
     const backlog = await citationBacklog(sql);
     await sql`INSERT INTO live_opinion_text_watermark (source, discovered_through) VALUES ('nightly', now())
       ON CONFLICT (source) DO UPDATE SET discovered_through = now(), updated_at = now()`;
     console.log(JSON.stringify({ citationNightly: "done", day, rescanned, retriedLiveText: retried.length,
-      requeuedUnparsed: requeued.length, backlog }));
+      requeuedUnparsed: requeued.length, stubs, backlog }));
   }
 } finally {
   await sql.end();
