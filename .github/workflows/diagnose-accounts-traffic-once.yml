@@ -10,10 +10,16 @@ name: Diagnose accounts + traffic (once, read-only)
 # under nice/ionice on public-01. No writes, reloads, deploys or restarts.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type READ-ONLY-REPORT to run (read-only; no writes)
+        required: true
+        type: string
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: jurvio-diagnose-accounts-traffic
@@ -30,6 +36,11 @@ jobs:
       DB_HOST: 10.116.0.2
       PUBLIC_HOST: 10.116.0.5
     steps:
+      - name: Confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "READ-ONLY-REPORT" ]; then echo "::error::type READ-ONLY-REPORT"; exit 1; fi
       - name: Configure SSH
         run: |
           set -euo pipefail
@@ -193,3 +204,61 @@ jobs:
           PY
           echo "=== DONE traffic ==="
           REMOTE
+
+  search-console:
+    # Read-only Search Console report: webmasters.readonly scope, GET/query
+    # endpoints only (no sitemap submit, no URL inspection quota use).
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 8
+    steps:
+      - name: Confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "READ-ONLY-REPORT" ]; then echo "::error::type READ-ONLY-REPORT"; exit 1; fi
+      - name: Authenticate to Google Cloud (read-only scope)
+        id: google-auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/936072370485/locations/global/workloadIdentityPools/github-actions/providers/jurvio
+          service_account: jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com
+          access_token_scopes: https://www.googleapis.com/auth/webmasters.readonly
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sitemaps + search analytics (read-only)
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+        run: |
+          cat > /tmp/gsc-read.mjs <<'JS'
+          const token = process.env.GOOGLE_OAUTH_ACCESS_TOKEN;
+          const site = encodeURIComponent("sc-domain:jurvio.com");
+          const base = `https://www.googleapis.com/webmasters/v3/sites/${site}`;
+          async function g(url, body) {
+            const r = await fetch(url, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+            const t = await r.text();
+            if (!r.ok) return { error: r.status, body: t.slice(0, 300) };
+            return t ? JSON.parse(t) : null;
+          }
+          const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+          const sites = await g("https://www.googleapis.com/webmasters/v3/sites");
+          console.log("sites:", JSON.stringify(sites?.siteEntry ?? sites));
+          const sm = await g(`${base}/sitemaps`);
+          console.log("sitemaps:", JSON.stringify(sm, null, 1));
+          const range = { startDate: day(30), endDate: day(0) };
+          console.log("range:", JSON.stringify(range));
+          const tot = await g(`${base}/searchAnalytics/query`, { ...range, dataState: "all" });
+          console.log("totals_30d:", JSON.stringify(tot));
+          const tot7 = await g(`${base}/searchAnalytics/query`, { startDate: day(7), endDate: day(0), dataState: "all" });
+          console.log("totals_7d:", JSON.stringify(tot7));
+          const byDate = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["date"], dataState: "all", rowLimit: 40 });
+          console.log("by_date:", JSON.stringify(byDate?.rows ?? byDate));
+          const pages = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["page"], dataState: "all", rowLimit: 15 });
+          console.log("top_pages:", JSON.stringify(pages?.rows ?? pages));
+          const queries = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["query"], dataState: "all", rowLimit: 15 });
+          console.log("top_queries:", JSON.stringify(queries?.rows ?? queries));
+          const pagesCount = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["page"], dataState: "all", rowLimit: 25000 });
+          console.log("distinct_pages_with_impressions_30d:", pagesCount?.rows?.length ?? JSON.stringify(pagesCount));
+          JS
+          node /tmp/gsc-read.mjs
