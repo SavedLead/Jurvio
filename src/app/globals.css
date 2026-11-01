@@ -37,6 +37,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .brandWordmark { display: block; width: 132px; height: auto; }
 .desktopNavigation { display: flex; align-items: center; gap: clamp(10px, 1.35vw, 20px); font-size: 13px; font-weight: 650; }
 .desktopNavigation a { color: #303a4e; white-space: nowrap; }
+.desktopNavigation .headerAccount { color: var(--brand); }
 .desktopNavigation .headerSearch { padding: 10px 14px; border-radius: 7px; background: var(--ink); color: white; }
 .desktopNavigation .headerSearch:hover { background: var(--brand); text-decoration: none; }
 .mobileNavigation { display: none; position: relative; }

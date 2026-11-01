@@ -31,6 +31,13 @@ const schema = z.object({
   JURVIO_BACKUP_SECRET_ACCESS_KEY: z.string().optional(),
   JURVIO_BACKUP_ENDPOINT: z.string().url().optional(),
   JURVIO_BACKUP_REGION: z.string().optional(),
+  // Customer email (sign-in links, alert digests) via Resend. Both RESEND_API_KEY
+  // and EMAIL_FROM are required to send; otherwise production shows "sign-in
+  // temporarily unavailable" and digests are skipped. EMAIL_POSTAL_ADDRESS is the
+  // footer address required on alert digests. See src/modules/accounts.
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().optional(),
+  EMAIL_POSTAL_ADDRESS: z.string().optional(),
 });
 
 let cached: z.infer<typeof schema> | undefined;

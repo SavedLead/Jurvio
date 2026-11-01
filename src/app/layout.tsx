@@ -7,6 +7,7 @@ import "./scotus-layout.css";
 import { robotsFor } from "@/lib/seo/indexing";
 import { PrivacySafeAnalytics } from "./privacy-safe-analytics";
 import { MobileNavigation } from "./mobile-navigation";
+import { AccountNavLink } from "./account-nav-link";
 
 const primaryNavigation = [
   ["Research", "/search"], ["Cases", "/cases"], ["Parties", "/parties"],
@@ -41,6 +42,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         </Link>
         <nav className="desktopNavigation" aria-label="Primary">
           {primaryNavigation.map(([label, href]) => <Link href={href} key={href}>{label}</Link>)}
+          <AccountNavLink className="headerAccount" />
           <Link className="headerSearch" href="/search">Search Jurvio</Link>
         </nav>
         <MobileNavigation items={primaryNavigation} />
