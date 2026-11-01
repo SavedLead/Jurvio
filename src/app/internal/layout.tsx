@@ -19,6 +19,7 @@ const navigation = [
   { href: "/internal/analytics", icon: "↗", label: "Product analytics" },
   { href: "/internal#users", icon: "♙", label: "Users & access" },
   { href: "/internal/publication", icon: "✓", label: "Content review" },
+  { href: "/internal/case-news", icon: "✎", label: "Case news review" },
   { href: "/internal#launch", icon: "△", label: "Launch readiness" },
 ] as const;
 

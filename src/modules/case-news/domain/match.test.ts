@@ -46,6 +46,12 @@ describe("matchNewsItem", () => {
     const rice = caseNewsTerms({ caption: "RICE V. ACME WIDGETS, INC.", docketNumber: "26-100", courtCode: "ca5", courtName: "Fifth Circuit" });
     expect(matchNewsItem(item("Fifth Circuit: Acme Widgets recalls rice cookers"), ctx({ terms: rice }))).toBeNull();
   });
+  it("matches all-caps company names and agency acronyms in headlines", () => {
+    const att = caseNewsTerms({ caption: "AT&T INC. V. FEDERAL COMMUNICATIONS COMMISSION", docketNumber: "25-1001", courtCode: "ca5", courtName: "Fifth Circuit" });
+    const result = matchNewsItem(item("Fifth Circuit tosses FCC fine against AT&T"), ctx({ terms: att, filedOn: "2026-01-10" }));
+    expect(result?.method).toBe("parties_court_timeframe");
+    expect(reviewStatusFor(result!.score)).toBe("auto_published");
+  });
   it("publishes a docket number match with the court named", () => {
     const district = caseNewsTerms({ caption: "SECURITIES AND EXCHANGE COMMISSION V. ACME CRYPTO LLC", docketNumber: "1:26-cv-04411", courtCode: "nysd", courtName: "U.S. District Court for the Southern District of New York" });
     const result = matchNewsItem(item("SEC sues Acme Crypto", "The complaint (No. 1:26-cv-04411) was filed in the Southern District of New York."),
