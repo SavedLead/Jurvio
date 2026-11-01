@@ -3,6 +3,7 @@
 import type { Route } from "next";
 import Link from "next/link";
 import { useRef } from "react";
+import { AccountNavLink } from "./account-nav-link";
 
 interface MobileNavigationProps {
   items: ReadonlyArray<readonly [label: string, href: Route]>;
@@ -29,6 +30,7 @@ export function MobileNavigation({ items }: MobileNavigationProps) {
             {label}
           </Link>
         ))}
+        <AccountNavLink onClick={closeMenu} />
       </nav>
     </details>
   );
