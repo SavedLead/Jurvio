@@ -53,7 +53,8 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
   return (
     <main className="shell caseShell">
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
-        docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn} />
+        docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn}
+        decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode} />
       {opinionTextIsPending(legalCase.hasReadableOpinion) ? (
         <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
           <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
