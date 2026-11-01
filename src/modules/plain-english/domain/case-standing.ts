@@ -427,10 +427,13 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
       sourceHref: docket?.kind === "dismissal" ? input.docketPath ?? null : input.opinionPath,
     });
   } else {
+    const criminal = /^(?:USA|U\.S\.A?\.?|United States(?: of America)?)\s+v\.?\s/i.test(input.caption);
     points.push({
       id: "who-won",
-      label: "Who won?",
-      text: "Jurvio does not have the court's final ruling for this case, so we cannot say who won.",
+      label: criminal ? "How did it end?" : "Who won?",
+      text: criminal
+        ? "Jurvio does not have the court's final ruling or judgment for this case, so we cannot say how it ended."
+        : "Jurvio does not have the court's final ruling for this case, so we cannot say who won.",
     });
   }
   return {

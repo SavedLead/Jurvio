@@ -144,6 +144,12 @@ describe("buildCaseStanding", () => {
     expect(standing?.points.map((point) => point.text).join(" ")).toContain("cannot say who won");
   });
 
+  it("district criminal case: asks how it ended, not who won", () => {
+    const standing = buildCaseStanding({ ...base, courtKind: "district", caption: "USA v. Doe", decidedOn: null, filedOn: "2024-01-01" });
+    expect(standing?.points.find((point) => point.id === "who-won")?.label).toBe("How did it end?");
+    expect(standing?.headline).toBe("No final ruling in Jurvio's records.");
+  });
+
   it("district: quotes a dismissal from the court's opinion", () => {
     const standing = buildCaseStanding({ ...base, courtKind: "district", decidedOn: null, filedOn: "2024-01-01", opinionTail: "The complaint is DISMISSED with prejudice.", opinionPath: "/d" });
     expect(standing?.points.find((point) => point.id === "decided")?.text).toContain("cannot be filed again");
