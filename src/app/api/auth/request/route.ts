@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { requestSignIn } from "@/modules/accounts/application/sign-in";
+import { followKindsToBits, parseFollowKinds } from "@/modules/accounts/application/follows";
 import { captureLead, honeypotTripped, LEAD_SUCCESS_MESSAGE, type LeadStatus } from "@/modules/accounts/application/waitlist";
 import { safeCasePublicId, safeRedirectPath } from "@/modules/accounts/domain/tokens";
 import { absoluteUrl, signInDeps } from "@/modules/accounts/http/config";
@@ -18,12 +19,14 @@ export async function POST(request: NextRequest) {
   const sql = db();
   const ip = clientIp(request);
   const follow = safeCasePublicId(body.follow);
+  // Follow box checkboxes; unticking both still follows docket activity.
+  const followKindBits = followKindsToBits(parseFollowKinds(body) ?? { activity: true, citations: false });
   let status: Status;
   if (honeypotTripped(body.company)) {
     status = "waitlisted";
   } else {
     try {
-      status = await requestSignIn(sql, { email: body.email, ip, redirectPath: body.next, followCasePublicId: body.follow }, signInDeps());
+      status = await requestSignIn(sql, { email: body.email, ip, redirectPath: body.next, followCasePublicId: body.follow, followKindBits }, signInDeps());
     } catch (error) {
       console.error(JSON.stringify({ signin: "request_failed", error: error instanceof Error ? error.message : "error" }));
       status = "unavailable";
@@ -33,7 +36,7 @@ export async function POST(request: NextRequest) {
     if (status === "unavailable") {
       try {
         const lead = await captureLead(sql, follow
-          ? { email: body.email, ip, source: "case_follow", casePublicId: follow }
+          ? { email: body.email, ip, source: "case_follow", casePublicId: follow, followKindBits }
           : { email: body.email, ip, source: "signin" });
         status = LEAD_TO_STATUS[lead];
       } catch (error) {

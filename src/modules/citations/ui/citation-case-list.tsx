@@ -7,7 +7,8 @@ import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
  * cases (including ones not yet on Jurvio for "Cases cited"); `summary` is the
  * plain-language count line shown under the heading.
  */
-export function CitationCaseList({title, cases, total, summary}: {
+export function CitationCaseList({id, title, cases, total, summary}: {
+  id?: string;
   title: string;
   cases: readonly RelatedCitationCase[];
   total?: number;
@@ -15,7 +16,7 @@ export function CitationCaseList({title, cases, total, summary}: {
 }) {
   const count = total ?? cases.length;
   if (!cases.length && !count) return null;
-  return <section className="contentSection caseFeatureSection citationCaseList">
+  return <section id={id} className="contentSection caseFeatureSection citationCaseList">
     <div className="featureHeading">
       <h2>{title} <span className="citationCount">{count.toLocaleString("en-US")}</span></h2>
     </div>

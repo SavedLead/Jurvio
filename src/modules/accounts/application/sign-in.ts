@@ -14,6 +14,8 @@ export interface SignInRequestInput {
   ip: string;
   redirectPath?: unknown;
   followCasePublicId?: unknown;
+  /** Follow kinds ticked in the signed-out Follow box: bit 1 activity, bit 2 citations. */
+  followKindBits?: number;
 }
 
 export interface SignInDeps {
@@ -22,6 +24,10 @@ export interface SignInDeps {
   production: boolean;
   /** Dev-only sink for the link when no provider is configured. */
   log?: (line: string) => void;
+}
+
+function followKindBits(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 3 ? value : 1;
 }
 
 export function signInLink(siteUrl: string, token: string): string {
@@ -65,8 +71,8 @@ export async function requestSignIn(sql: Sql, input: SignInRequestInput, deps: S
   const redirectPath = safeRedirectPath(input.redirectPath);
   const followCasePublicId = safeCasePublicId(input.followCasePublicId);
   await sql`
-    INSERT INTO auth_login_token (token_hash, email, redirect_path, follow_case_public_id, requested_ip_hash, expires_at)
-    VALUES (${hashToken(token)}, ${email}, ${redirectPath}, ${followCasePublicId},
+    INSERT INTO auth_login_token (token_hash, email, redirect_path, follow_case_public_id, follow_kinds, requested_ip_hash, expires_at)
+    VALUES (${hashToken(token)}, ${email}, ${redirectPath}, ${followCasePublicId}, ${followKindBits(input.followKindBits)},
       ${hashIdentifier("ip", input.ip || "unknown")}, now() + make_interval(mins => ${LOGIN_TOKEN_TTL_MINUTES}))`;
   const link = signInLink(deps.siteUrl, token);
 
@@ -91,16 +97,17 @@ export interface VerifiedSignIn {
   sessionToken: string;
   redirectPath: string;
   followCasePublicId: string | null;
+  followKindBits?: number;
 }
 
 /** Consumes a magic-link token (single use, unexpired) and opens a session. */
 export async function verifySignIn(sql: Sql, token: unknown): Promise<VerifiedSignIn | null> {
   if (typeof token !== "string" || token.length < 20 || token.length > 200) return null;
   return sql.begin(async (tx) => {
-    const [login] = await tx<{ email: string; redirectPath: string | null; followCasePublicId: string | null }[]>`
+    const [login] = await tx<{ email: string; redirectPath: string | null; followCasePublicId: string | null; followKindBits: number }[]>`
       UPDATE auth_login_token SET consumed_at = now()
       WHERE token_hash = ${hashToken(token)} AND consumed_at IS NULL AND expires_at > now()
-      RETURNING email, redirect_path AS "redirectPath", follow_case_public_id AS "followCasePublicId"`;
+      RETURNING email, redirect_path AS "redirectPath", follow_case_public_id AS "followCasePublicId", follow_kinds AS "followKindBits"`;
     if (!login) return null;
     const [user] = await tx<{ id: string }[]>`
       INSERT INTO app_user (email, email_verified_at, last_signed_in_at) VALUES (${login.email}, now(), now())
@@ -118,6 +125,7 @@ export async function verifySignIn(sql: Sql, token: unknown): Promise<VerifiedSi
       sessionToken,
       redirectPath: safeRedirectPath(login.redirectPath),
       followCasePublicId: login.followCasePublicId,
+      followKindBits: followKindBits(login.followKindBits),
     };
   });
 }

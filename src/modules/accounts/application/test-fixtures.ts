@@ -52,6 +52,25 @@ export async function createFixtures(sql: Sql) {
     return row!.id;
   }
 
+  /** A published opinion in `citingCaseId` and a precomputed edge to `citedCaseId` (case_citation_edge, A2). */
+  async function addCitationEdge(citingCaseId: string, citedCaseId: string, options: {
+    firstSeenAt?: string; sources?: number; documentCreatedAt?: string; filedOn?: string | null; documentDisplayable?: boolean;
+  } = {}) {
+    counter += 1;
+    const filedOn = options.filedOn === undefined ? new Date().toISOString().slice(0, 10) : options.filedOn;
+    const [doc] = await sql<{ id: string }[]>`
+      INSERT INTO document (public_id, case_id, document_type, title, filed_on, publication, created_at)
+      VALUES (${`jdoc-acct${tag}${counter}`}, ${citingCaseId}, 'opinion', 'Opinion', ${filedOn}, 'published', ${options.documentCreatedAt ?? new Date().toISOString()})
+      RETURNING id`;
+    await sql`
+      INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version)
+      VALUES ('document', ${doc!.id}, ${options.documentDisplayable ?? true}, true, true, false, false, 'test', 'test')`;
+    await sql`
+      INSERT INTO case_citation_edge (citing_case_id, cited_case_id, citing_document_id, citation_label, mentions, sources, citing_filed_on, first_seen_at)
+      VALUES (${citingCaseId}, ${citedCaseId}, ${doc!.id}, '1 U.S. 1', 1, ${options.sources ?? 1}, ${filedOn}, ${options.firstSeenAt ?? new Date().toISOString()})`;
+    return doc!.id;
+  }
+
   async function createUser(email = `acct-${tag}-${counter++}@example.test`, plan: string | null = null) {
     const [row] = await sql<{ id: string }[]>`INSERT INTO app_user (email, email_verified_at) VALUES (${email}, now()) RETURNING id`;
     userIds.push(row!.id);
@@ -64,10 +83,11 @@ export async function createFixtures(sql: Sql) {
     const artifacts = await sql<{ id: string }[]>`DELETE FROM direct_court_event WHERE case_id = ANY(${caseIds}) RETURNING raw_artifact_id AS id`;
     await sql`DELETE FROM raw_artifact WHERE id = ANY(${artifacts.map((row) => row.id)})`;
     await sql`DELETE FROM publication_decision WHERE object_id IN (SELECT id FROM docket_entry WHERE case_id = ANY(${caseIds}))`;
+    await sql`DELETE FROM publication_decision WHERE object_id IN (SELECT id FROM document WHERE case_id = ANY(${caseIds}))`;
     await sql`DELETE FROM publication_decision WHERE object_id = ANY(${caseIds})`;
     await sql`DELETE FROM legal_case WHERE id = ANY(${caseIds})`;
     await sql`DELETE FROM court WHERE id = ${court!.id}`;
   }
 
-  return { tag, courtId: court!.id, createCase, addDocketEntry, createUser, cleanup };
+  return { tag, courtId: court!.id, createCase, addDocketEntry, addCitationEdge, createUser, cleanup };
 }

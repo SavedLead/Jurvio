@@ -1,6 +1,6 @@
 import type { Sql } from "postgres";
 import type { VerifiedSignIn } from "./sign-in";
-import { followCase } from "./follows";
+import { followCase, followKindsFromBits } from "./follows";
 import { convertLeads } from "./waitlist";
 
 /**
@@ -16,7 +16,8 @@ export async function completeSignInIntent(sql: Sql, verified: VerifiedSignIn): 
     console.error(JSON.stringify({ signin: "lead_conversion_failed", error: error instanceof Error ? error.message : "error" }));
   });
   if (!verified.followCasePublicId) return verified.redirectPath;
-  const result = await followCase(sql, verified.userId, verified.followCasePublicId).catch(() => null);
+  const result = await followCase(sql, verified.userId, verified.followCasePublicId,
+    followKindsFromBits(verified.followKindBits), { merge: true }).catch(() => null);
   const casePath = `/case/${verified.followCasePublicId}`;
   const base = verified.redirectPath.startsWith(casePath) ? verified.redirectPath : casePath;
   const note = result?.status === "limit_reached" ? "limit" : result && result.status !== "not_eligible" ? "followed" : null;

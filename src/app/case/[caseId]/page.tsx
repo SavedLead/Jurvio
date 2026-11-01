@@ -295,7 +295,7 @@ export default async function CasePage({ params }: CasePageProps) {
       <div className="caseWorkspace">
         <aside className="caseWorkspaceNav">
           <CaseNav caseId={caseId} />
-          {followEligible ? <FollowCaseBox caseId={caseId} /> : null}
+          {followEligible ? <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /> : null}
           <div className="caseProvenanceRail" aria-label="Source and record details">
             <section>
               <p className="sectionKicker">Case status</p>
@@ -428,6 +428,7 @@ export default async function CasePage({ params }: CasePageProps) {
           />
           <CitedStubList stubs={citations.stubs ?? []} />
           <CitationCaseList
+            id="cited-by"
             title="Cited by"
             cases={citingCases}
             total={citationCounts.citedBy}

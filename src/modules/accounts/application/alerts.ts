@@ -2,9 +2,10 @@ import type { Sql } from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { CADENCE_INTERVAL_MS, effectivePlan, planLimits, type AlertCadence } from "../domain/plans";
 import { escapeHtml, type EmailProvider } from "../infrastructure/email";
+import { citationCaseVisibleSql, citationDocumentVisibleSql } from "@/modules/citations/application/citation-edges";
 import { followEligibleSql } from "./follows";
 
-// Docket-entry alert digests for followed cases. Runs every 10 minutes from
+// Docket-entry and citation alert digests for followed cases. Runs every 10 minutes from
 // the production scheduler; each user is emailed at most once per their plan
 // cadence (Free daily, Plus hourly, Pro/Team "instant" = every 10 minutes).
 // No provider or no postal address configured = the whole run is a no-op and
@@ -12,6 +13,15 @@ import { followEligibleSql } from "./follows";
 // still covers what was filed.
 
 export const MAX_ENTRIES_PER_CASE = 10;
+export const MAX_CITATIONS_PER_CASE = 10;
+/**
+ * Citation alerts fire only for edges Jurvio's own parser found in a newly
+ * ingested, recently filed opinion: the citing document reached Jurvio at most
+ * this long before the edge appeared...
+ */
+const CITATION_NEW_DOCUMENT_DAYS = 14;
+/** ...and was filed at most this long before (backlog parsing of old opinions is not news). */
+const CITATION_RECENT_FILING_DAYS = 60;
 /** Entries created this recently are left for the next run (in-flight ingestion transactions). */
 const SETTLE_INTERVAL = "2 minutes";
 /** A newly ingested entry filed long before the follow is history, not news. */
@@ -47,6 +57,31 @@ export interface DigestEntry {
   description: string;
 }
 
+export interface CitationDigestEntry {
+  casePublicId: string;
+  caption: string;
+  citingPublicId: string;
+  citingCaption: string;
+  citingCourtName: string | null;
+  citingFiledOn: string | null;
+  citationLabel: string | null;
+}
+
+/**
+ * SQL condition: case_citation_edge `e` (citing document `d`) is a new
+ * citation worth alerting on. Excludes edges from the first full sweep,
+ * CourtListener-map-only edges and backlog parsing of old documents.
+ */
+export function alertableCitationEdgeSql(e = "e", d = "d"): string {
+  for (const alias of [e, d]) if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("invalid alias");
+  return `(
+    (${e}.sources & 1) = 1
+    AND ${e}.first_seen_at > (SELECT b.first_completed_at FROM citation_edge_build b)
+    AND ${d}.created_at >= ${e}.first_seen_at - make_interval(days => ${CITATION_NEW_DOCUMENT_DAYS})
+    AND (${e}.citing_filed_on IS NULL OR ${e}.citing_filed_on >= (${e}.first_seen_at - make_interval(days => ${CITATION_RECENT_FILING_DAYS}))::date)
+  )`;
+}
+
 export function isDue(cadence: AlertCadence, lastDigestAt: Date | null, now: Date): boolean {
   if (!lastDigestAt) return true;
   return now.getTime() - lastDigestAt.getTime() >= CADENCE_INTERVAL_MS[cadence] - CADENCE_SLACK_MS;
@@ -71,6 +106,7 @@ export function oneClickUnsubscribeUrl(siteUrl: string, token: string) {
 
 export function buildDigestEmail(input: {
   entries: DigestEntry[];
+  citations?: CitationDigestEntry[];
   siteUrl: string;
   unsubscribeToken: string;
   postalAddress: string;
@@ -78,10 +114,22 @@ export function buildDigestEmail(input: {
 }) {
   const byCase = new Map<string, DigestEntry[]>();
   for (const entry of input.entries) byCase.set(entry.casePublicId, [...(byCase.get(entry.casePublicId) ?? []), entry]);
+  const citations = input.citations ?? [];
+  const citedCases = new Map<string, CitationDigestEntry[]>();
+  for (const cite of citations) citedCases.set(cite.casePublicId, [...(citedCases.get(cite.casePublicId) ?? []), cite]);
   const total = input.entries.length;
-  const subject = byCase.size === 1
+  const citeTotal = citations.length;
+  const citeSubject = citedCases.size === 1
+    ? `${citeTotal} new ${citeTotal === 1 ? "opinion cites" : "opinions cite"} ${truncate(citations[0]!.caption, 70)}`
+    : `${citeTotal} new citing opinions for ${citedCases.size} cases you follow`;
+  const docketSubject = total === 0 ? "" : byCase.size === 1
     ? `${total} new docket ${total === 1 ? "entry" : "entries"}: ${truncate(input.entries[0]!.caption, 70)}`
     : `${total} new docket entries in ${byCase.size} cases you follow`;
+  const subject = !citeTotal ? docketSubject
+    : !total ? citeSubject
+    : `${docketSubject} · ${citeTotal} new citing ${citeTotal === 1 ? "opinion" : "opinions"}`;
+  const citedUrl = (id: string) => new URL(`/case/${id}#cited-by`, input.siteUrl).toString();
+  const citingUrl = (id: string) => new URL(`/case/${id}`, input.siteUrl).toString();
   const caseUrl = (id: string) => new URL(`/case/${id}/docket`, input.siteUrl).toString();
   const accountUrl = new URL("/account", input.siteUrl).toString();
   const unsubscribe = unsubscribeUrl(input.siteUrl, input.unsubscribeToken);
@@ -107,18 +155,37 @@ export function buildDigestEmail(input: {
 <ul style="margin:0;padding-left:18px">${shown.map((entry) => `<li style="margin:0 0 6px"><span style="color:#5b6678">${escapeHtml([entry.filedOn, entry.entryNumber ? `#${entry.entryNumber}` : null].filter(Boolean).join(" "))}</span> ${escapeHtml(truncate(entry.description, 300))}</li>`).join("")}${more > 0 ? `<li>and ${more} more</li>` : ""}</ul>
 </div>`);
   }
+  const citeTextBlocks: string[] = [];
+  const citeHtmlBlocks: string[] = [];
+  for (const [caseId, cites] of citedCases) {
+    const shown = cites.slice(0, MAX_CITATIONS_PER_CASE);
+    const more = cites.length - shown.length;
+    const line = (cite: CitationDigestEntry) => [cite.citingFiledOn, cite.citingCourtName].filter(Boolean).join(" · ");
+    citeTextBlocks.push([
+      `Newly cited: ${truncate(cites[0]!.caption, 160)}`,
+      ...shown.map((cite) => `- ${truncate(cite.citingCaption, 160)}${line(cite) ? ` (${line(cite)})` : ""} ${citingUrl(cite.citingPublicId)}`),
+      more > 0 ? `- and ${more} more` : null,
+      citedUrl(caseId),
+    ].filter(Boolean).join("\n"));
+    citeHtmlBlocks.push(`<div style="margin:0 0 22px">
+<p style="margin:0 0 8px;font-weight:700">Newly cited: <a href="${escapeHtml(citedUrl(caseId))}" style="color:#084cc8;text-decoration:none">${escapeHtml(truncate(cites[0]!.caption, 160))}</a></p>
+<ul style="margin:0;padding-left:18px">${shown.map((cite) => `<li style="margin:0 0 6px"><a href="${escapeHtml(citingUrl(cite.citingPublicId))}" style="color:#084cc8;text-decoration:none">${escapeHtml(truncate(cite.citingCaption, 160))}</a>${line(cite) ? ` <span style="color:#5b6678">${escapeHtml(line(cite))}</span>` : ""}</li>`).join("")}${more > 0 ? `<li>and ${more} more</li>` : ""}</ul>
+</div>`);
+  }
+  const heading = total && citeTotal ? "New activity on cases you follow"
+    : citeTotal ? "New opinions citing cases you follow" : "New docket activity on cases you follow";
   const footerText = [
-    `You get Jurvio ${cadenceLine} because you follow these cases. Docket text comes from public court records; Jurvio is not legal advice.`,
+    `You get Jurvio ${cadenceLine} because you follow these cases. Docket text and opinions come from public court records; Jurvio is not legal advice.`,
     `Manage follows: ${accountUrl}`,
     `Unsubscribe from alerts: ${unsubscribe}`,
     input.postalAddress,
   ].join("\n");
-  const text = `New docket activity on cases you follow\n\n${textBlocks.join("\n\n")}\n\n--\n${footerText}\n`;
+  const text = `${heading}\n\n${[...textBlocks, ...citeTextBlocks].join("\n\n")}\n\n--\n${footerText}\n`;
   const html = `<!doctype html><html><body style="font-family:system-ui,sans-serif;color:#0b1730;max-width:640px">
-<h1 style="font-size:20px">New docket activity on cases you follow</h1>
-${htmlBlocks.join("\n")}
+<h1 style="font-size:20px">${escapeHtml(heading)}</h1>
+${[...htmlBlocks, ...citeHtmlBlocks].join("\n")}
 <hr style="border:0;border-top:1px solid #dfe4ec;margin:24px 0">
-<p style="font-size:12px;color:#5b6678">You get Jurvio ${escapeHtml(cadenceLine)} because you follow these cases. Docket text comes from public court records; Jurvio is not legal advice.<br>
+<p style="font-size:12px;color:#5b6678">You get Jurvio ${escapeHtml(cadenceLine)} because you follow these cases. Docket text and opinions come from public court records; Jurvio is not legal advice.<br>
 <a href="${escapeHtml(accountUrl)}">Manage follows</a> · <a href="${escapeHtml(unsubscribe)}">Unsubscribe from alerts</a><br>
 ${escapeHtml(input.postalAddress)}</p>
 </body></html>`;
@@ -151,10 +218,14 @@ export async function runAlertDigests(sql: Sql, deps: AlertDeps): Promise<AlertR
     LEFT JOIN account_subscription s ON s.user_id = u.id
     WHERE u.alerts_unsubscribed_at IS NULL
       AND u.email_verified_at IS NOT NULL
-      AND EXISTS (
+      AND (EXISTS (
         SELECT 1 FROM case_follow f
         JOIN docket_entry e ON e.case_id = f.case_id
-        WHERE f.user_id = u.id AND e.created_at > f.last_alerted_entry_created_at AND e.created_at <= ${cutoff})
+        WHERE f.user_id = u.id AND f.activity AND e.created_at > f.last_alerted_entry_created_at AND e.created_at <= ${cutoff})
+      OR EXISTS (
+        SELECT 1 FROM case_follow f
+        JOIN case_citation_edge ce ON ce.cited_case_id = f.case_id
+        WHERE f.user_id = u.id AND f.citations AND ce.first_seen_at > f.last_alerted_citation_at AND ce.first_seen_at <= ${cutoff}))
     ORDER BY u.last_digest_at NULLS FIRST, u.id
     LIMIT ${(deps.maxUsers ?? 500) * 4}`;
   summary.candidates = candidates.length;
@@ -173,7 +244,7 @@ export async function runAlertDigests(sql: Sql, deps: AlertDeps): Promise<AlertR
       JOIN legal_case c ON c.id = f.case_id
       LEFT JOIN court ON court.id = c.court_id
       JOIN docket_entry e ON e.case_id = f.case_id
-      WHERE f.user_id = ${user.id}
+      WHERE f.user_id = ${user.id} AND f.activity
         AND e.created_at > f.last_alerted_entry_created_at AND e.created_at <= ${cutoff}
         AND (e.filed_on IS NULL OR e.filed_on >= (f.created_at - make_interval(days => ${BACKFILL_GRACE_DAYS}))::date)
         AND ${sql.unsafe(followEligibleSql("c"))}
@@ -181,24 +252,55 @@ export async function runAlertDigests(sql: Sql, deps: AlertDeps): Promise<AlertR
       ORDER BY f.created_at, c.id, e.filed_on DESC NULLS LAST, e.created_at DESC
       LIMIT 2000`;
 
-    const advance = (db: Sql) => db`
-      UPDATE case_follow f SET last_alerted_entry_created_at = GREATEST(f.last_alerted_entry_created_at, latest.max_created)
-      FROM (
-        SELECT f2.case_id, max(e.created_at) AS max_created
-        FROM case_follow f2 JOIN docket_entry e ON e.case_id = f2.case_id
-        WHERE f2.user_id = ${user.id} AND e.created_at > f2.last_alerted_entry_created_at AND e.created_at <= ${cutoff}
-        GROUP BY f2.case_id
-      ) latest
-      WHERE f.user_id = ${user.id} AND f.case_id = latest.case_id`;
+    const citations = await sql<CitationDigestEntry[]>`
+      SELECT c.public_id AS "casePublicId", c.caption,
+        citing.public_id AS "citingPublicId", citing.caption AS "citingCaption", citing_court.name AS "citingCourtName",
+        ce.citing_filed_on::text AS "citingFiledOn", ce.citation_label AS "citationLabel"
+      FROM case_follow f
+      JOIN legal_case c ON c.id = f.case_id
+      JOIN case_citation_edge ce ON ce.cited_case_id = f.case_id
+      JOIN legal_case citing ON citing.id = ce.citing_case_id
+      LEFT JOIN court citing_court ON citing_court.id = citing.court_id
+      JOIN document d ON d.id = ce.citing_document_id
+      WHERE f.user_id = ${user.id} AND f.citations
+        AND ce.first_seen_at > f.last_alerted_citation_at AND ce.first_seen_at <= ${cutoff}
+        AND ${sql.unsafe(alertableCitationEdgeSql("ce", "d"))}
+        AND ${sql.unsafe(followEligibleSql("c"))}
+        AND ${sql.unsafe(citationCaseVisibleSql("c"))}
+        AND ${sql.unsafe(citationCaseVisibleSql("citing"))}
+        AND ${sql.unsafe(citationDocumentVisibleSql("d"))}
+      ORDER BY f.created_at, c.id, ce.citing_filed_on DESC NULLS LAST, ce.first_seen_at DESC
+      LIMIT 1000`;
 
-    if (entries.length === 0) {
+    const advance = async (db: Sql) => {
+      await db`
+        UPDATE case_follow f SET last_alerted_entry_created_at = GREATEST(f.last_alerted_entry_created_at, latest.max_created)
+        FROM (
+          SELECT f2.case_id, max(e.created_at) AS max_created
+          FROM case_follow f2 JOIN docket_entry e ON e.case_id = f2.case_id
+          WHERE f2.user_id = ${user.id} AND f2.activity AND e.created_at > f2.last_alerted_entry_created_at AND e.created_at <= ${cutoff}
+          GROUP BY f2.case_id
+        ) latest
+        WHERE f.user_id = ${user.id} AND f.case_id = latest.case_id`;
+      await db`
+        UPDATE case_follow f SET last_alerted_citation_at = GREATEST(f.last_alerted_citation_at, latest.max_seen)
+        FROM (
+          SELECT f2.case_id, max(ce.first_seen_at) AS max_seen
+          FROM case_follow f2 JOIN case_citation_edge ce ON ce.cited_case_id = f2.case_id
+          WHERE f2.user_id = ${user.id} AND f2.citations AND ce.first_seen_at > f2.last_alerted_citation_at AND ce.first_seen_at <= ${cutoff}
+          GROUP BY f2.case_id
+        ) latest
+        WHERE f.user_id = ${user.id} AND f.case_id = latest.case_id`;
+    };
+
+    if (entries.length === 0 && citations.length === 0) {
       // Only hidden, ineligible or backfilled-history entries: move past them silently.
       await advance(sql);
       summary.emptyAdvanced += 1;
       continue;
     }
 
-    const message = buildDigestEmail({ entries, siteUrl: deps.siteUrl, unsubscribeToken: user.unsubscribeToken, postalAddress, cadence });
+    const message = buildDigestEmail({ entries, citations, siteUrl: deps.siteUrl, unsubscribeToken: user.unsubscribeToken, postalAddress, cadence });
     const result = await deps.provider.send({
       to: user.email,
       ...message,
@@ -211,7 +313,7 @@ export async function runAlertDigests(sql: Sql, deps: AlertDeps): Promise<AlertR
     await sql`
       INSERT INTO email_event (user_id, kind, provider, status, provider_message_id, detail)
       VALUES (${user.id}, 'alert_digest', ${deps.provider.name}, ${result.ok ? "sent" : "failed"}, ${result.providerMessageId ?? null},
-        ${sql.json({ entries: entries.length, cadence, ...(result.error ? { error: result.error } : {}) })})`;
+        ${sql.json({ entries: entries.length, citations: citations.length, cadence, ...(result.error ? { error: result.error } : {}) })})`;
     if (!result.ok) {
       summary.failed += 1;
       continue;

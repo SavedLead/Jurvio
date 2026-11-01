@@ -11,6 +11,8 @@ interface FollowApiState {
   signedIn: boolean;
   eligible?: boolean;
   following?: boolean;
+  activity?: boolean;
+  citations?: boolean;
   followCount?: number;
   followLimit?: number;
   error?: string;
@@ -27,8 +29,13 @@ const FREE_FOLLOW_LIMIT = PLANS.free.followLimit;
  * opened. While email sign-in is not configured, the same box puts the email
  * and case on the waitlist (converted to a real follow at sign-up). Signed-in state is fetched in the browser, so the case page HTML is
  * identical for everyone and stays edge-cacheable.
+ *
+ * Two kinds, each its own toggle: docket activity (new entries) and citations
+ * (new opinions on Jurvio citing this case; natural for old or closed cases).
+ * `citationsFirst` pre-ticks citations instead of activity for signed-out
+ * visitors on cases whose docket is unlikely to move.
  */
-export function FollowCaseBox({ caseId }: { caseId: string }) {
+export function FollowCaseBox({ caseId, citationsFirst = false }: { caseId: string; citationsFirst?: boolean }) {
   const [state, setState] = useState<FollowApiState | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -50,20 +57,25 @@ export function FollowCaseBox({ caseId }: { caseId: string }) {
     return () => { cancelled = true; };
   }, [caseId]);
 
-  async function toggle() {
+  async function setKinds(next: { activity: boolean; citations: boolean }) {
     if (!state?.signedIn) return;
     setBusy(true);
     setMessage("");
     try {
+      const off = !next.activity && !next.citations;
       const response = await fetch(`/api/follows/${encodeURIComponent(caseId)}`, {
-        method: state.following ? "DELETE" : "POST",
+        method: off ? "DELETE" : "POST",
         credentials: "same-origin",
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: off ? undefined : JSON.stringify(next),
       });
       const body = await response.json() as FollowApiState;
       if (response.status === 401) { setState({ signedIn: false }); return; }
       setState(body);
-      if (!body.error) setMessage(body.following ? "You are now following this case." : "You stopped following this case.");
+      if (!body.error) setMessage(!body.following ? "You stopped following this case."
+        : body.activity && body.citations ? "You get docket and citation alerts for this case."
+        : body.citations ? "You get an email when a new opinion cites this case."
+        : "You get an email when new docket entries are filed.");
     } catch {
       setMessage("Something went wrong. Try again.");
     } finally {
@@ -71,25 +83,40 @@ export function FollowCaseBox({ caseId }: { caseId: string }) {
     }
   }
 
+  const toggle = (kind: "activity" | "citations") => setKinds({
+    activity: kind === "activity" ? !state?.activity : Boolean(state?.activity),
+    citations: kind === "citations" ? !state?.citations : Boolean(state?.citations),
+  });
+
   if (state === null) return <section id="follow" className="followCaseBox" aria-busy="true" aria-label="Follow this case" />;
   if (state.signedIn && state.eligible === false) return null;
 
   return <section id="follow" className="followCaseBox" aria-labelledby="follow-case-title">
     <h2 id="follow-case-title">Follow this case</h2>
     {!state.signedIn ? <>
-      <p>Get an email when new docket entries are filed. Free for up to {FREE_FOLLOW_LIMIT} cases. <Link className="followPlansLink" href={"/pricing" as Route}>See plans</Link></p>
+      <p>Get an email when new docket entries are filed or a new opinion cites this case. Free for up to {FREE_FOLLOW_LIMIT} cases. <Link className="followPlansLink" href={"/pricing" as Route}>See plans</Link></p>
       <EmailCaptureForm
         action="/api/auth/request"
-        hidden={{ next: `/case/${caseId}`, follow: caseId }}
+        hidden={{ next: `/case/${caseId}`, follow: caseId, follow_kinds: "1" }}
         buttonLabel="Follow by email"
         initialMessage={waitlisted ? WAITLIST_SUCCESS : undefined}
         footnote="No password. We only email you about cases you follow."
+        fieldsBeforeButton={<fieldset className="followKinds">
+          <legend>Email me about</legend>
+          <label><input type="checkbox" name="follow_activity" value="on" defaultChecked={!citationsFirst} /> New docket entries</label>
+          <label><input type="checkbox" name="follow_citations" value="on" defaultChecked={citationsFirst} /> New opinions citing this case</label>
+        </fieldset>}
       />
     </> : <>
-      <p>{state.following ? "You get an email when new docket entries are filed." : "Get an email when new docket entries are filed."}</p>
-      <button type="button" className={state.following ? "following" : undefined} disabled={busy} onClick={toggle} aria-pressed={Boolean(state.following)}>
-        {state.following ? "Following ✓ (unfollow)" : "Follow this case"}
-      </button>
+      <p>{state.following ? "Choose what you get emails about." : "Get an email when new docket entries are filed or a new opinion cites this case."}</p>
+      <div className="followKinds" role="group" aria-label="Follow alerts">
+        <button type="button" className={state.activity ? "following" : undefined} disabled={busy} onClick={() => toggle("activity")} aria-pressed={Boolean(state.activity)}>
+          {state.activity ? "Docket activity ✓" : "Follow docket activity"}
+        </button>
+        <button type="button" className={state.citations ? "following" : undefined} disabled={busy} onClick={() => toggle("citations")} aria-pressed={Boolean(state.citations)}>
+          {state.citations ? "Citations ✓" : "Follow citations"}
+        </button>
+      </div>
       {typeof state.followCount === "number" ? <small>{state.followCount} of {state.followLimit} follows used · <Link href="/account">Manage</Link>{state.error === "limit_reached" ? null : <> · <Link href={"/pricing" as Route}>See plans</Link></>}</small> : null}
       {state.error === "limit_reached" ? <p className="followUpgrade" role="alert">
         You are following {state.followCount} of {state.followLimit} cases on your plan.
