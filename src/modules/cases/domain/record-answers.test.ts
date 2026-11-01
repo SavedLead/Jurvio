@@ -167,3 +167,24 @@ describe("meta description caption tags", () => {
     })).toContain("Kumar v. Moss et al: habeas corpus case in the Eastern District of California");
   });
 });
+
+describe("court phrases and in rem wording", () => {
+  it("reads CourtListener court names naturally", async () => {
+    const { courtPhrase } = await import("./record-answers");
+    expect(courtPhrase("District Court, W.D. Texas")).toBe("the U.S. District Court for the Western District of Texas");
+    expect(courtPhrase("District Court, D. Massachusetts")).toBe("the U.S. District Court for the District of Massachusetts");
+    expect(courtPhrase("United States Bankruptcy Court, S.D. Florida.")).toBe("the United States Bankruptcy Court for the Southern District of Florida");
+    expect(courtPhrase("United States District Court for the Northern District of California")).toBe("the United States District Court for the Northern District of California");
+    expect(courtPhrase("Eastern District of California")).toBe("the Eastern District of California");
+    expect(courtPhrase("The Court of Federal Claims")).toBe("The Court of Federal Claims");
+  });
+
+  it("never says the United States is prosecuting a device", () => {
+    const answers = buildRecordAnswers({
+      ...base, caption: "United States v. One Electronic Device", docketNumber: "5:26-mj-70358",
+      natureOfSuit: null, causeOfAction: null,
+    });
+    expect(answers.happened).not.toContain("prosecuting");
+    expect(answers.happened).toContain("A federal magistrate judge matter");
+  });
+});

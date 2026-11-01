@@ -130,8 +130,55 @@ function splitCaption(caption: string): { first: string; second: string } | null
   return first && second ? { first, second } : null;
 }
 
-function courtPhrase(courtName: string) {
-  return /^(the|united states|u\.s\.)\b/i.test(courtName) ? courtName : `the ${courtName}`;
+const DIRECTION_WORDS: Record<string, string> = { N: "Northern", S: "Southern", E: "Eastern", W: "Western", M: "Middle", C: "Central" };
+
+/**
+ * Court name as it reads in a sentence: "District Court, W.D. Texas" becomes
+ * "the U.S. District Court for the Western District of Texas"; other names get a leading "the".
+ */
+export function courtPhrase(courtName: string) {
+  const name = courtName.replace(/\s+/g, " ").trim().replace(/\.$/, "");
+  const cl = /^(District|Bankruptcy) Court, (?:([NSEWMC])\.\s?)?D\.\s?(.+)$/.exec(name);
+  if (cl?.[1] && cl[3]) {
+    const district = cl[2] ? `${DIRECTION_WORDS[cl[2]]} District` : "District";
+    const court = cl[1] === "District" ? "U.S. District Court" : "U.S. Bankruptcy Court";
+    return `the ${court} for the ${district} of ${cl[3].trim()}`;
+  }
+  const comma = /^(United States (?:District|Bankruptcy) Court), (?:([NSEWMC])\.\s?)?D\.\s?(.+)$/.exec(name);
+  if (comma?.[1] && comma[3]) {
+    const district = comma[2] ? `${DIRECTION_WORDS[comma[2]]} District` : "District";
+    return `the ${comma[1]} for the ${district} of ${comma[3].trim()}`;
+  }
+  return /^the\b/i.test(name) ? name : `the ${name}`;
+}
+
+/** Decodes HTML character references, including double-encoded ones ("&#x26;#167;" -> "§"). */
+export function decodeHtmlEntities(value: string): string {
+  const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", sect: "§" };
+  let current = value;
+  for (let pass = 0; pass < 3; pass++) {
+    const next = current.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
+      if (code[0] === "#") {
+        const point = code[1]?.toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+        return Number.isFinite(point) && point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : match;
+      }
+      return named[code.toLowerCase()] ?? match;
+    });
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Magistrate / criminal-docket captions that name a thing rather than a person
+ * (search warrants, seized devices, premises, accounts, in rem property). These
+ * are never "United States v. <defendant>" prosecutions.
+ */
+export function isInRemCaption(caption: string): boolean {
+  const value = caption.trim();
+  return /^\d/.test(value)
+    || /\b(devices?|property|properties|premises|accounts?|warrants?|search|seized|seizure|residence|vehicles?|cellular|phones?|iphones?|e-?mail|tracking|currency|funds|parcels?|packages?|storage|information associated)\b/i.test(value);
 }
 
 function article(word: string) {
@@ -157,7 +204,7 @@ function caseKindPhrase(input: RecordAnswerInput, nos: ParsedNatureOfSuit | null
     const category = nos?.category ?? input.captionCategory ?? null;
     return category ? `${article(category)} ${category} case` : "A civil case";
   }
-  if (type === "mj") return "A federal magistrate judge criminal matter";
+  if (type === "mj") return "A federal magistrate judge matter";
   if (type === "po") return "A federal petty offense case";
   if (type === "mc") return "A miscellaneous case";
   return "A case";
@@ -188,7 +235,7 @@ export function buildRecordAnswers(input: RecordAnswerInput): RecordAnswers {
   opening.push(`in ${courtPhrase(court)}`);
   if (parties && input.courtKind === "district" && type === "cv") {
     opening.push(`by ${parties.first} against ${parties.second}`);
-  } else if (parties && district && (type === "cr" || type === "mj" || type === "po") && /^(united states|usa|u\.s\.a?\.?)( of america)?$/i.test(parties.first)) {
+  } else if (parties && district && (type === "cr" || type === "mj" || type === "po") && /^(united states|usa|u\.s\.a?\.?)( of america)?$/i.test(parties.first) && !isInRemCaption(parties.second)) {
     opening.push(`in which the United States is prosecuting ${parties.second}`);
   } else if (parties && !district) {
     opening.push(`between ${parties.first} and ${parties.second}`);
