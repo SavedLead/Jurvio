@@ -101,3 +101,42 @@
     min-height: 0;
   }
 }
+
+.caseNewsList {
+  display: grid;
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.caseNewsList li {
+  border-bottom: 1px solid var(--line, #e6e8ec);
+  padding-bottom: 16px;
+}
+
+.caseNewsList li:last-child {
+  border-bottom: 0;
+}
+
+.caseNewsHeadline {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.caseNewsSnippet {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.caseNewsMeta {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.caseNewsCase {
+  margin: 6px 0 0;
+  font-size: 14px;
+}

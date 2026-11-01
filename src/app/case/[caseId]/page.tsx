@@ -30,6 +30,8 @@ import { publicCitationTargets } from "@/modules/citations/application/public-ci
 import { citationCountLine } from "@/modules/citations/domain/citation-summary";
 import { CitedCaseText } from "@/modules/citations/ui/cited-case-text";
 import { CitationCaseList } from "@/modules/citations/ui/citation-case-list";
+import { listCaseNews } from "@/modules/case-news/application/list-case-news";
+import { CaseNewsSection } from "@/modules/case-news/ui/case-news-section";
 
 export const dynamic = "force-dynamic";
 
@@ -100,11 +102,13 @@ export default async function CasePage({ params }: CasePageProps) {
   if (!loaded) notFound();
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents, citations] = await Promise.all([
+  const [docketEntries, parties, documents, citations, newsLinks] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
     loadCachedCaseCitations(caseId),
+    // News is optional: a failure here must never break the case page.
+    listCaseNews(sql, caseId).catch(() => []),
   ]);
   const { cited: citedCases, citing: citingCases, counts: citationCounts } = citations;
   const verified = legalCase.verification === "verified";
@@ -408,6 +412,8 @@ export default async function CasePage({ params }: CasePageProps) {
             total={citationCounts.citedBy}
             summary={citationCounts.citedBy ? `${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio cite this case` : undefined}
           />
+
+          <CaseNewsSection links={newsLinks} />
 
           {timelineEvents.length > 0 ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">
