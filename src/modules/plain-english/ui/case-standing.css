@@ -1,0 +1,76 @@
+.caseStands {
+  margin-bottom: 18px;
+  padding: 26px 30px;
+  border: 1px solid #c9d7ec;
+  border-left: 5px solid var(--brand);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.caseStands > h2 {
+  margin: 6px 0 14px;
+  font-size: clamp(22px, 2.4vw, 30px);
+  line-height: 1.15;
+  letter-spacing: -.02em;
+}
+
+.caseStandsList {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.caseStandsItem {
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) 1fr;
+  gap: 4px 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.caseStandsItem dt {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.caseStandsItem dd {
+  margin: 0;
+}
+
+.caseStandsItem dd > p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.caseStandsItem blockquote {
+  margin: 8px 0 0;
+  padding: 8px 14px;
+  border-left: 3px solid #c9d7ec;
+  background: #f7faff;
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1.5;
+}
+
+.caseStandsItem .caseStandsSource {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.caseStandsNote {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .caseStands {
+    padding: 22px 18px;
+  }
+
+  .caseStandsItem {
+    grid-template-columns: 1fr;
+  }
+}
