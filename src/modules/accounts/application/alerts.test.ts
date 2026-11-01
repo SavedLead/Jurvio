@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDigestEmail, isDue } from "./alerts";
+import { buildDigestEmail, isDue, type DigestEntry } from "./alerts";
 
 describe("alert cadence and digest email", () => {
   const now = new Date("2026-11-01T12:00:00Z");
@@ -13,7 +13,7 @@ describe("alert cadence and digest email", () => {
   });
 
   it("groups entries by case with unsubscribe link and postal address, escaping html", () => {
-    const entries = Array.from({ length: 12 }, (_, i) => ({
+    const entries: DigestEntry[] = Array.from({ length: 12 }, (_, i) => ({
       casePublicId: "jv-a", caption: "Acme <Corp> v. Beta", docketNumber: "1:26-cv-1", courtName: "S.D.N.Y.",
       entryNumber: String(i + 1), filedOn: "2026-10-31", description: `Order ${i + 1}`,
     }));
