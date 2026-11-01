@@ -34,7 +34,7 @@ export interface SaveCounts { isNew: boolean; refs: number; matched: number; que
 
 function contentHash(item: AgencyItem): string {
   return createHash("sha256").update(JSON.stringify([item.title, item.officialExcerpt, item.documents, item.keyDates,
-    item.settlementAmount, item.references.map((ref) => [ref.docket.canonical, ref.courtCode]), item.restrictedReason])).digest("hex");
+    item.settlementAmount, item.references.map((ref) => [ref.docket.canonical, ref.courtCode]), item.restrictedReason, item.statedCourts ?? []])).digest("hex");
 }
 
 function itemText(item: AgencyItem): string {
@@ -49,17 +49,17 @@ export async function saveItem(sql: Sql, item: AgencyItem): Promise<SaveCounts> 
   return sql.begin(async (tx) => {
     const [row] = await tx<{ id: string; inserted: boolean; unchanged: boolean }[]>`
       INSERT INTO agency_source_item (source_code, source_record_id, source_url, title, item_kind, issuing_office, published_at,
-        official_excerpt, documents, key_dates, settlement_amount, restricted, restricted_reason, review_status, content_hash, change_key)
+        official_excerpt, documents, key_dates, settlement_amount, restricted, restricted_reason, review_status, content_hash, change_key, stated_courts)
       VALUES (${item.sourceCode}, ${item.sourceRecordId}, ${item.sourceUrl}, ${item.title.slice(0, 1000)}, ${item.itemKind},
         ${item.issuingOffice}, ${item.publishedAt}, ${item.officialExcerpt}, ${tx.json(item.documents as unknown as postgres.JSONValue)},
         ${tx.json(item.keyDates as unknown as postgres.JSONValue)}, ${item.settlementAmount}, ${restricted}, ${item.restrictedReason},
-        ${item.notCourt ? "not_court" : "queued"}, ${hash}, ${item.changeKey ?? null})
+        ${item.notCourt ? "not_court" : "queued"}, ${hash}, ${item.changeKey ?? null}, ${item.statedCourts ?? []}::text[])
       ON CONFLICT (source_code, source_record_id) DO UPDATE SET
         source_url = EXCLUDED.source_url, title = EXCLUDED.title, item_kind = EXCLUDED.item_kind, issuing_office = EXCLUDED.issuing_office,
         published_at = coalesce(EXCLUDED.published_at, agency_source_item.published_at), official_excerpt = EXCLUDED.official_excerpt,
         documents = EXCLUDED.documents, key_dates = EXCLUDED.key_dates, settlement_amount = EXCLUDED.settlement_amount,
         restricted = EXCLUDED.restricted, restricted_reason = EXCLUDED.restricted_reason, content_hash = EXCLUDED.content_hash,
-        change_key = EXCLUDED.change_key,
+        change_key = EXCLUDED.change_key, stated_courts = EXCLUDED.stated_courts,
         review_status = CASE WHEN EXCLUDED.restricted THEN 'queued' ELSE agency_source_item.review_status END,
         updated_at = now()
       RETURNING id, (xmax = 0) AS inserted, false AS unchanged
@@ -121,4 +121,15 @@ export async function recheckUnmatched(sql: Sql, limit = 300): Promise<{ checked
     }
   }
   return { checked: refs.length, newlyMatched };
+}
+
+export async function storedItems(sql: Sql, sourceCode: string) {
+  return sql<Array<{ sourceRecordId: string; title: string; settlementAmount: string | null;
+    documents: Array<{ url: string; label: string; kind: string }>; statedCourts: string[]; dockets: string[] }>>`
+    SELECT item.source_record_id AS "sourceRecordId", item.title, item.settlement_amount AS "settlementAmount", item.documents,
+      item.stated_courts AS "statedCourts",
+      coalesce((SELECT array_agg(ref.docket_number ORDER BY ref.docket_number) FROM agency_item_case_ref ref WHERE ref.item_id = item.id), '{}') AS dockets
+    FROM agency_source_item item WHERE item.source_code = ${sourceCode} AND NOT item.restricted
+    ORDER BY item.updated_at DESC LIMIT 2000
+  `;
 }

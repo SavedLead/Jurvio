@@ -100,7 +100,10 @@ export function findCourtMentions(text: string): CourtMention[] {
       ? "district of columbia"
       : `${direction}district of ${canonical === "Virgin Islands" ? "the " : ""}${canonical}`.toLowerCase();
     const code = NAME_TO_CODE.get(key);
-    // "District of California" names no court (California has four): ignore it.
+    // "District of California" names no court (California has four): ignore it. "the District of
+    // Columbia" is also a jurisdiction (multistate coalitions list it with the states), so it counts
+    // as the court only right after "court ... for the" or "U.S. Attorney for the".
+    if (code === "dcd" && !/(?:court|attorney|attorney's office)[^.]{0,40}\bfor\s+the\s*$/i.test(text.slice(Math.max(0, (match.index ?? 0) - 80), match.index))) continue;
     if (code) mentions.push({ code, index: match.index ?? 0, text: match[0], form: "name" });
   }
   for (const match of text.matchAll(ABBR_PATTERN)) {
