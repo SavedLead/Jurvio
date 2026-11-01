@@ -9,6 +9,8 @@ import { PrivacySafeAnalytics } from "./privacy-safe-analytics";
 import { MobileNavigation } from "./mobile-navigation";
 import { AccountNavLink } from "./account-nav-link";
 import { NavLinks } from "./nav-links";
+import "@/modules/plain-english/ui/plain-terms.css";
+import { PlainTermsBehavior } from "@/modules/plain-english/ui/plain-terms-behavior";
 
 const primaryNavigation = [
   ["Research", "/search"], ["Cases", "/cases"], ["Parties", "/parties"],
@@ -38,6 +40,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en"><body>
       <a className="skipLink" href="#main-content">Skip to main content</a>
       <PrivacySafeAnalytics />
+      <PlainTermsBehavior />
       <header className="siteHeader">
         <Link className="brand" href="/" aria-label="Jurvio home">
           <Image className="brandWordmark" src="/brand/jurvio-wordmark-light.svg" width={333} height={112} priority alt="Jurvio" />

@@ -72,3 +72,6 @@
 .sources span { display:block; margin-top:3px; color:#858c9c; font-size:11px; line-height:1.45; }
 @media (max-width:900px){.grid,.roadmapGrid,.areaGrid{grid-template-columns:repeat(2,1fr)}.articleGrid{grid-template-columns:1fr;gap:35px}.sidebar{position:static}.tools{grid-template-columns:1fr}}
 @media (max-width:620px){.hero{padding-top:48px}.inner{padding-inline:18px}.grid,.roadmapGrid,.termGroup dl,.areaGrid{grid-template-columns:1fr}.article{padding-top:36px}.popular,.deep,.roadmaps,.glossary{padding-block:42px}.cloud{padding:20px}}
+/* "Learn more" links from case-page term cards land on #term-<key>. */
+.term { scroll-margin-top: 96px; }
+.term:target { margin: 0 -12px; padding: 18px 12px; border-radius: 10px; background: #fff8db; box-shadow: inset 3px 0 0 #e0b100; }

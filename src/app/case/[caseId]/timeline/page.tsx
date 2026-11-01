@@ -9,6 +9,7 @@ import { listPublicDocketEntries } from "@/modules/cases/application/list-public
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
+import { createTermMarker, TermText } from "@/modules/plain-english/ui/term-text";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +47,7 @@ export default async function TimelinePage({ params }: {
     contentKind: "case", targetType: "case", targetPublicId: caseId,
   });
 
+  const timelineMarker = createTermMarker("timeline");
   return (
     <main className="shell caseShell">
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
@@ -59,7 +61,7 @@ export default async function TimelinePage({ params }: {
             {records.map((event) => (
               <li key={event.publicId}>
                 {event.filedOn ? <time>{event.filedOn}</time> : null}
-                <p>{event.description}</p>
+                <p><TermText text={event.description} marker={timelineMarker} /></p>
               </li>
             ))}
           </ol>

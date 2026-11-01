@@ -8,6 +8,7 @@ import {
   type GlossaryDomain, type GlossaryJurisdiction,
 } from "@/modules/explainers/domain/glossary";
 import { glossaryAdditions } from "@/modules/explainers/domain/glossary-additions";
+import { termKey } from "@/modules/plain-english/domain/term-key";
 import styles from "./explainers.module.css";
 
 const allGlossaryTerms = [...glossaryTerms, ...glossaryAdditions];
@@ -50,7 +51,7 @@ export function GlossaryBrowser() {
       {glossaryStages.map((stage) => {
         const stageTerms = terms.filter((item) => item.stage === stage).sort((a, b) => b.popularity - a.popularity || a.term.localeCompare(b.term));
         if (!stageTerms.length) return null;
-        return <section className={styles.termGroup} key={stage}><h3>{stage}</h3><dl>{stageTerms.map((item) => <div className={styles.term} key={`${item.jurisdiction}-${item.term}`}><dt>{item.explainerSlug ? <Link href={`/explainers/${item.explainerSlug}` as Route}>{item.term}</Link> : item.term}{item.jurisdiction !== "general" && <span>{item.jurisdiction}</span>}</dt><dd>{item.definition}<small>{item.aliases?.length ? `Also: ${item.aliases.join(", ")} · ` : ""}{item.domains.join(" · ")}</small></dd></div>)}</dl></section>;
+        return <section className={styles.termGroup} key={stage}><h3>{stage}</h3><dl>{stageTerms.map((item) => <div className={styles.term} id={`term-${termKey(item.term)}`} key={`${item.jurisdiction}-${item.term}`}><dt>{item.explainerSlug ? <Link href={`/explainers/${item.explainerSlug}` as Route}>{item.term}</Link> : item.term}{item.jurisdiction !== "general" && <span>{item.jurisdiction}</span>}</dt><dd>{item.definition}<small>{item.aliases?.length ? `Also: ${item.aliases.join(", ")} · ` : ""}{item.domains.join(" · ")}</small></dd></div>)}</dl></section>;
       })}
       {!terms.length && <p className={styles.empty}>No exact match. Try a shorter word or a different court filter.</p>}
     </section>

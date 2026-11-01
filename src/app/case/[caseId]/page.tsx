@@ -39,6 +39,7 @@ import { OfficialAgencySources } from "@/modules/agency-sources/ui/official-agen
 import { agencyTimelineEvents } from "@/modules/agency-sources/domain/timeline";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
+import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-english/ui/term-text";
 
 export const dynamic = "force-dynamic";
 
@@ -249,7 +250,17 @@ export default async function CasePage({ params }: CasePageProps) {
     ...caseAnswers.map(answer=>answer.answer), legalCase.backgroundSummary,
     legalCase.significanceSummary, legalCase.questionPresented, legalCase.exactHolding,
   ].filter(Boolean).join(" "));
-  const linkedText=(text:string)=><CitedCaseText text={text} targets={narrativeTargets} />;
+  // Citations become links; the plain stretches get dictionary-term tooltips
+  // (first mention of each term per section, see createTermMarker).
+  const linkedText=(text:string, marker:TermMarker)=><CitedCaseText text={text} targets={narrativeTargets}
+    renderText={(plain)=><TermText text={plain} marker={marker} />} />;
+  const marked=(text:string|null|undefined, marker:TermMarker)=><TermText text={text} marker={marker} />;
+  const lineupMarker=createTermMarker("lineup");
+  const timelineMarker=createTermMarker("timeline");
+  const documentsMarker=createTermMarker("documents");
+  const partiesMarker=createTermMarker("parties");
+  const statusMarker=createTermMarker("status");
+  const holdingMarker=createTermMarker("holding");
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
     eventType: "page_view",
@@ -340,7 +351,7 @@ export default async function CasePage({ params }: CasePageProps) {
               {caseAnswers.map((item) => (
                 <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
                   <h3>{item.question}</h3>
-                  <p>{linkedText(item.answer)}</p>
+                  <p>{linkedText(item.answer, createTermMarker(`answer-${item.id}`))}</p>
                   <footer>
                     <span>{!item.available ? "Not yet available" : item.fromRecord ? "From the court record" : "Source-backed answer"}</span>
                     {item.sourceUrl ? <a href={item.sourceUrl} rel="nofollow noopener">View source</a> : null}
@@ -354,7 +365,7 @@ export default async function CasePage({ params }: CasePageProps) {
               <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Verified case record</h2></div>
             </div>
             {verified && legalCase.statusExplanation ? (
-              <p className="statusExplanation">{linkedText(legalCase.statusExplanation)}</p>
+              <p className="statusExplanation">{linkedText(legalCase.statusExplanation, statusMarker)}</p>
             ) : (
               <p className="verifiedFactSummary">
                 The published court record identifies <strong><BrandedCaseCaption caption={caption} /></strong> as {legalCase.courtName} docket {legalCase.docketNumber}.
@@ -365,11 +376,11 @@ export default async function CasePage({ params }: CasePageProps) {
                     : ""}
               </p>
             )}
-            {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{linkedText(legalCase.backgroundSummary)}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
-            {legalCase.significanceSummary ? <div className="verifiedNarrative"><h3>Why it matters</h3><p>{linkedText(legalCase.significanceSummary)}</p>{legalCase.significanceSourceUrl ? <a href={legalCase.significanceSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+            {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{linkedText(legalCase.backgroundSummary, createTermMarker("background"))}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+            {legalCase.significanceSummary ? <div className="verifiedNarrative"><h3>Why it matters</h3><p>{linkedText(legalCase.significanceSummary, createTermMarker("significance"))}</p>{legalCase.significanceSourceUrl ? <a href={legalCase.significanceSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
             {supportingStatusDetails.length > 0 ? (
               <dl className="caseStatusGrid">
-                {supportingStatusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+                {supportingStatusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{marked(value, statusMarker)}</dd></div>)}
               </dl>
             ) : null}
           </section>
@@ -377,7 +388,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {legalCase.questionPresented ? (
             <section className="contentSection caseFeatureSection" aria-labelledby="question-presented">
               <div className="featureHeading"><h2 id="question-presented">Question presented</h2></div>
-              <p>{linkedText(legalCase.questionPresented)}</p>
+              <p>{linkedText(legalCase.questionPresented, createTermMarker("question"))}</p>
               {legalCase.questionSourceUrl ? <a className="sectionLink" href={legalCase.questionSourceUrl} rel="nofollow noopener">Read the official petition →</a> : null}
             </section>
           ) : null}
@@ -387,8 +398,8 @@ export default async function CasePage({ params }: CasePageProps) {
               <div className="featureHeading">
                   <h2 id="case-outcome">Holding and outcome</h2>
               </div>
-              {outcome ? <div className="outcomeCallout"><strong>{outcome}.</strong></div> : null}
-              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>Exact sourced holding</h3><p>{linkedText(legalCase.exactHolding)}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
+              {outcome ? <div className="outcomeCallout"><strong>{marked(outcome, holdingMarker)}.</strong></div> : null}
+              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>Exact sourced holding</h3><p>{linkedText(legalCase.exactHolding, holdingMarker)}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
             </section>
           ) : null}
 
@@ -396,9 +407,9 @@ export default async function CasePage({ params }: CasePageProps) {
             <section className="contentSection caseFeatureSection" aria-labelledby="decision-lineup">
               <div className="featureHeading decisionHeading">
                 <h2 id="decision-lineup">Decision lineup</h2>
-                {decisionLabel ? <strong className="decisionLabel">{decisionLabel}</strong> : null}
+                {decisionLabel ? <strong className="decisionLabel">{marked(decisionLabel, lineupMarker)}</strong> : null}
               </div>
-              {opinionType ? <p className="verifiedDetail">Opinion type: <strong>{opinionType}</strong></p> : null}
+              {opinionType ? <p className="verifiedDetail">Opinion type: <strong>{marked(opinionType, lineupMarker)}</strong></p> : null}
               {legalCase.decisionLineup?.voteBreakdown?.label ? (
                 <p className="verifiedDetail">Final vote: <strong>{legalCase.decisionLineup.voteBreakdown.label}</strong></p>
               ) : null}
@@ -407,14 +418,14 @@ export default async function CasePage({ params }: CasePageProps) {
                   {legalCase.decisionLineup.justiceVotes.map((vote) => (
                     <div key={vote.justice}>
                       <dt>{formatJusticeName(vote.justice)}</dt>
-                      <dd>{formatJusticePosition(vote.position)}</dd>
+                      <dd>{marked(formatJusticePosition(vote.position), lineupMarker)}</dd>
                     </div>
                   ))}
                 </dl>
               ) : (
                 <>
                   {legalCase.decisionLineup?.joins?.length ? <p className="verifiedDetail">Joined by: <strong>{legalCase.decisionLineup.joins.map(formatJusticeName).join(", ")}</strong></p> : null}
-                  {legalCase.decisionLineup?.separateOpinions?.map((opinion) => <p className="verifiedDetail" key={opinion.author + opinion.type}>{formatJusticeName(opinion.author)}: <strong>{formatJusticePosition(opinion.type)}</strong></p>)}
+                  {legalCase.decisionLineup?.separateOpinions?.map((opinion) => <p className="verifiedDetail" key={opinion.author + opinion.type}>{formatJusticeName(opinion.author)}: <strong>{marked(formatJusticePosition(opinion.type), lineupMarker)}</strong></p>)}
                 </>
               )}
             </section>
@@ -446,7 +457,7 @@ export default async function CasePage({ params }: CasePageProps) {
                 {timelineEvents.map((event) => (
                   <li key={event.date + event.label}>
                     <time dateTime={event.date}>{formatPublicCaseDate(event.date) ?? event.date}</time>
-                    <span>{event.label}</span>
+                    <span>{marked(event.label, timelineMarker)}</span>
                   </li>
                 ))}
               </ol>
@@ -460,14 +471,14 @@ export default async function CasePage({ params }: CasePageProps) {
                 <div><p className="sectionKicker">Available court materials</p><h2 id="available-documents">Documents and argument</h2></div>
               </div>
               <div className="availableDocumentTypes" aria-label="Available document types">
-                {availableDocumentTypes.map((type) => <span key={type}>{type}</span>)}
+                {availableDocumentTypes.map((type) => <span key={type}>{marked(type, documentsMarker)}</span>)}
               </div>
               <p className="sectionIntroduction">Jurvio shows only verified documents currently available for this case. Additional court materials will appear here as they are obtained and verified.</p>
               <ul className="documentCards">
                 {documents.map((document) => (
                   <li key={document.publicId}>
                     <div>
-                      <span className="documentType">{document.documentType.replaceAll("_", " ")}</span>
+                      <span className="documentType">{marked(document.documentType.replaceAll("_", " "), documentsMarker)}</span>
                       <h3>{document.title}</h3>
                       {document.filedOn ? <time dateTime={document.filedOn}>{document.filedOn}</time> : null}
                     </div>
@@ -504,7 +515,7 @@ export default async function CasePage({ params }: CasePageProps) {
               <h2 id="named-parties">Parties</h2>
               <p className="sourceNote">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
               <ul className="recordList">
-                {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><strong>{party.displayName}</strong><p>{party.role.replaceAll("_", " ")}</p></li>)}
+                {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><strong>{party.displayName}</strong><p>{marked(party.role.replaceAll("_", " "), partiesMarker)}</p></li>)}
               </ul>
               <Link className="sectionLink" href={`/case/${caseId}/parties` as Route}>View all parties →</Link>
             </section>
