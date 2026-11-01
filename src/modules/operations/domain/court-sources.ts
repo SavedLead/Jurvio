@@ -7,7 +7,7 @@
  *
  * Pure data, no I/O.
  */
-import { COA_FEED_SOURCES } from "@/modules/ingestion/live-feeds/coa-feeds";
+import { circuitAdapter } from "@/modules/ingestion/providers/appellate/adapters";
 import { APPELLATE_COURT_REGISTRY } from "@/modules/ingestion/providers/appellate/registry";
 
 export type CourtSourceKey =
@@ -46,10 +46,10 @@ const PACER_LOGIN_NOTE = "needs a PACER account (the report itself is free); fol
 export function circuitCatalogRows(): CourtSourceRow[] {
   const rows: CourtSourceRow[] = [];
   for (const court of CIRCUIT_CODES) {
-    const feeds = COA_FEED_SOURCES[court] ?? [];
+    const feeds = circuitAdapter(court)?.requests(new Date()) ?? [];
     rows.push({
       courtCode: court, source: "coa_feed", url: feeds[0]?.url ?? null, available: feeds.length > 0, enabled: feeds.length > 0,
-      note: feeds.length > 1 ? `${feeds.length} listings` : null,
+      note: feeds.length > 1 ? `${feeds.length} listings: ${feeds.map((feed) => feed.label).join(", ")}` : null,
     });
     rows.push(govinfoRow(court));
     const official = APPELLATE_COURT_REGISTRY.find((entry) => entry.code === court);

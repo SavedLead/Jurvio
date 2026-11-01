@@ -8,7 +8,8 @@
 import type postgres from "postgres";
 import type { ArtifactStore } from "../application/artifact-store";
 import { readSourceWatermark, recordSourceWatermark, refreshCourtFreshness } from "@/modules/operations/application/court-freshness";
-import { COA_FEED_SOURCES, coaEntryDescription, dedupeCoaItems, normalizeDocket, parseCoaFeed, type CoaFeedItem } from "./coa-feeds";
+import { coaEntryDescription, normalizeDocket } from "./coa-feeds";
+import { CIRCUIT_ADAPTERS, circuitAdapter, dedupeAdapterItems, type AdapterItem } from "../providers/appellate/adapters";
 import { FetchBudget, RateLimitedError } from "./polite-fetcher";
 import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
 import { matchOrCreateDraftCase, insertDocketEntryOnce, providerId, resolveCourt, storeFeedArtifact } from "./persist";
@@ -165,24 +166,25 @@ export async function runCoaCourt(sql: Sql, store: ArtifactStore, courtCode: str
   const errors: string[] = [];
   try {
     const provider = await providerId(sql, "official_cmecf");
-    const sources = COA_FEED_SOURCES[courtCode] ?? [];
-    if (sources.length === 0) throw new Error(`no live feed configured for ${courtCode}`);
+    const adapter = circuitAdapter(courtCode);
+    if (!adapter) throw new Error(`no live feed configured for ${courtCode}`);
     let succeededSources = 0;
-    for (const source of sources) {
+    for (const source of adapter.requests(new Date())) {
       const startedAtMs = Date.now();
       let fetched = false;
       let bytes = 0;
       let parsed = 0;
       const before = result.newCases + result.newEntries;
       try {
-        const body = await budget.text(source.url);
+        const body = await budget.text(source.url, undefined, { method: source.method, body: source.body });
         fetched = true;
         bytes = Buffer.byteLength(body);
-        const items = dedupeCoaItems(parseCoaFeed(body, courtCode, source));
+        const items = dedupeAdapterItems(adapter.parse(body, source));
         const artifactId = await storeFeedArtifact(sql, store, {
           providerId: provider, sourceUri: source.url, sourceRecordId: `coa-feed:${courtCode}`,
           keyPrefix: `appellate/live-feed/${courtCode}`, body,
-          mediaType: source.format === "rss" ? "application/rss+xml" : "text/html", metadata: { courtCode, items: items.length },
+          mediaType: /^\s*<\?xml|<rss\b/i.test(body.slice(0, 500)) ? "application/rss+xml" : "text/html",
+          metadata: { courtCode, items: items.length, listing: source.label },
         });
         result.itemsFetched += items.length;
         parsed = items.length;
@@ -222,7 +224,7 @@ export async function runCoaCourt(sql: Sql, store: ArtifactStore, courtCode: str
   return result;
 }
 
-async function persistCoaItem(sql: Sql, provider: string, artifactId: string, item: CoaFeedItem, result: SourceRunResult) {
+async function persistCoaItem(sql: Sql, provider: string, artifactId: string, item: AdapterItem, result: SourceRunResult) {
   await sql.begin(async (tx) => {
     const courtId = await resolveCourt(tx, { providerId: provider, courtCode: item.courtCode,
       name: `United States Court of Appeals for the ${COA_NAMES[item.courtCode] ?? item.courtCode}`,
@@ -238,7 +240,7 @@ async function persistCoaItem(sql: Sql, provider: string, artifactId: string, it
     // One PDF can decide consolidated appeals listed under several dockets, so
     // the entry id carries the docket as well as the document.
     const created = await insertDocketEntryOnce(tx, {
-      caseId: match.caseId, providerId: provider, providerEntryId: `coa-feed:${item.courtCode}:${normalizeDocket(item.docketNumber)}:${item.documentUrl}`, entryNumber: null,
+      caseId: match.caseId, providerId: provider, providerEntryId: `coa-feed:${item.courtCode}:${normalizeDocket(item.docketNumber)}:${item.entryKeyUrl ?? item.documentUrl}`, entryNumber: null,
       filedOn: item.releasedOn, description: `${coaEntryDescription(item)}: ${item.documentUrl}`,
       entryType: item.kind === "order" ? "order" : "opinion", importance: item.kind === "order" ? "routine" : "high", artifactId,
     });
@@ -248,7 +250,7 @@ async function persistCoaItem(sql: Sql, provider: string, artifactId: string, it
 
 /** All configured courts of appeals, one isolated budget each. */
 export async function runCoaLiveFeeds(sql: Sql, store: ArtifactStore, options: LiveFeedOptions = {}): Promise<SourceRunResult[]> {
-  const courts = options.coa?.courts ?? Object.keys(COA_FEED_SOURCES);
+  const courts = options.coa?.courts ?? Object.keys(CIRCUIT_ADAPTERS);
   const results: SourceRunResult[] = [];
   for (const court of courts) {
     try {
