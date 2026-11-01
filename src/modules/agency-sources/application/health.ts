@@ -10,7 +10,7 @@ export interface AgencySourceHealth {
 
 export interface QueuedAgencyItem {
   sourceCode: string; title: string; sourceUrl: string; publishedAt: string | null; restricted: boolean;
-  restrictedReason: string | null; refs: Array<{ docket: string; court: string | null; status: string; note: string | null }>;
+  restrictedReason: string | null; statedCourts: string[]; refs: Array<{ docket: string; court: string | null; status: string; note: string | null }>;
 }
 
 export async function getAgencySourceHealth(sql: Sql): Promise<AgencySourceHealth[]> {
@@ -32,11 +32,11 @@ export async function getAgencySourceHealth(sql: Sql): Promise<AgencySourceHealt
 export async function listReviewQueue(sql: Sql, limit = 100): Promise<QueuedAgencyItem[]> {
   return sql<QueuedAgencyItem[]>`
     SELECT item.source_code AS "sourceCode", item.title, item.source_url AS "sourceUrl", item.published_at::text AS "publishedAt",
-      item.restricted, item.restricted_reason AS "restrictedReason",
+      item.restricted, item.restricted_reason AS "restrictedReason", item.stated_courts AS "statedCourts",
       coalesce(json_agg(json_build_object('docket', ref.docket_number, 'court', ref.court_code, 'status', ref.match_status, 'note', ref.match_note))
         FILTER (WHERE ref.id IS NOT NULL), '[]') AS refs
-    FROM agency_source_item item JOIN agency_item_case_ref ref ON ref.item_id = item.id
-    WHERE item.review_status = 'queued'
+    FROM agency_source_item item LEFT JOIN agency_item_case_ref ref ON ref.item_id = item.id
+    WHERE item.review_status = 'queued' AND (ref.id IS NOT NULL OR cardinality(item.stated_courts) > 0)
     GROUP BY item.id ORDER BY item.first_seen_at DESC LIMIT ${Math.min(Math.max(limit, 1), 500)}
   `;
 }

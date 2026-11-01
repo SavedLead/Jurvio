@@ -9,7 +9,7 @@ import { BudgetExhaustedError, FetchBudget, RateLimitedError } from "@/modules/i
 import type { SourceAdapter } from "../providers/context";
 import { HttpStatusError, RobotsDisallowedError } from "../providers/context";
 import { parseRobots, robotsAllows, type RobotsRules } from "./robots";
-import { knownRecords, recheckUnmatched, registerSources, saveItem } from "./persist";
+import { knownRecords, recheckUnmatched, registerSources, saveItem, storedItems } from "./persist";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -78,6 +78,7 @@ export async function runAgencySource(sql: Sql, adapter: SourceAdapter, options:
       cursor: stored?.cursor ?? null,
       canFetch: () => budget.canFetch,
       known: (ids) => knownRecords(sql, definition.code, ids),
+      storedItems: (code) => storedItems(sql, code),
       fetchText: async (url, accept) => {
         const rules = await robotsFor(url);
         if (!robotsAllows(rules, url)) throw new RobotsDisallowedError(url);

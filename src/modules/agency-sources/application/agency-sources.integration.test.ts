@@ -4,6 +4,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DOJ_ADAPTER, dojPageUrl } from "../providers/doj";
 import { SEC_ADAPTERS } from "../providers/sec";
+import { JND_ADAPTER, SETTLEMENT_SITES_ADAPTER } from "../providers/settlements";
 import { runAgencySource, runAgencySources } from "./run";
 import { listCaseAgencyItems } from "./public-items";
 
@@ -28,10 +29,10 @@ describe.skipIf(!databaseUrl)("agency sources against Postgres", () => {
   const ids: Record<string, string> = {};
 
   const cleanup = async () => {
-    await sql`DELETE FROM agency_item_case_ref WHERE item_id IN (SELECT id FROM agency_source_item WHERE source_code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings'))`;
-    await sql`DELETE FROM agency_source_item WHERE source_code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings')`;
-    await sql`DELETE FROM agency_source_run WHERE source_code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings')`;
-    await sql`DELETE FROM agency_source WHERE code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings')`;
+    await sql`DELETE FROM agency_item_case_ref WHERE item_id IN (SELECT id FROM agency_source_item WHERE source_code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings', 'settlement-admin-jnd', 'settlement-websites'))`;
+    await sql`DELETE FROM agency_source_item WHERE source_code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings', 'settlement-admin-jnd', 'settlement-websites')`;
+    await sql`DELETE FROM agency_source_run WHERE source_code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings', 'settlement-admin-jnd', 'settlement-websites')`;
+    await sql`DELETE FROM agency_source WHERE code IN ('doj-press-releases', 'sec-litigation-releases', 'sec-administrative-proceedings', 'settlement-admin-jnd', 'settlement-websites')`;
     await sql`DELETE FROM legal_case WHERE public_id LIKE 'jv-agencyt%'`;
   };
 
@@ -55,6 +56,7 @@ describe.skipIf(!databaseUrl)("agency sources against Postgres", () => {
     await kase("jv-agencyt03", "txsd", "1:26-cr-00110", "USA v. Taylor");
     await kase("jv-agencyt04", "lawd", "1:26-cr-00111", "USA v. Somebody Else");
     await kase("jv-agencyt05", "scd", "6:26-cv-05267", "Securities and Exchange Commission v. Urich", "draft");
+    await kase("jv-agencyt06", "njd", "2:18-cv-04772", "In re Celgene Corporation Securities Litigation");
   });
 
   afterAll(async () => {
@@ -125,5 +127,26 @@ describe.skipIf(!databaseUrl)("agency sources against Postgres", () => {
     await sql`UPDATE agency_source_item SET restricted = true, restricted_reason = 'test', review_status = 'queued'
       WHERE source_code = 'doj-press-releases' AND source_url LIKE '%usao-sdfl%'`;
     expect(await listCaseAgencyItems(sql as never, "jv-agencyt01")).toEqual([]);
+  });
+
+  it("settlements: JND listing, then the settlement website it names, both linked with amount and deadlines", async () => {
+    const routes = {
+      "https://www.jndla.com/robots.txt": "User-agent: *\nDisallow:\n",
+      "https://www.jndla.com/cases": fixture("settlement-admin-jnd.html"),
+      "https://www.celgenesecuritieslitigation.com/robots.txt": "",
+      "https://www.celgenesecuritieslitigation.com/": fixture("settlement-site-celgene.html"),
+    };
+    const result = await runAgencySources(sql as never, [fast(JND_ADAPTER), fast(SETTLEMENT_SITES_ADAPTER)], { fetchImpl: fixtureFetch(routes), sleep: noSleep });
+    expect(result.reports.map((report) => [report.source, report.status, report.matched])).toEqual([
+      ["settlement-admin-jnd", "ok", 1], ["settlement-websites", "ok", 1],
+    ]);
+    const shown = await listCaseAgencyItems(sql as never, "jv-agencyt06");
+    expect(shown.map((item) => [item.publisher, item.settlementAmount])).toEqual(expect.arrayContaining([
+      ["JND Legal Administration", "$239M"], ["Court-approved settlement website", "$239M"],
+    ]));
+    expect(shown.find((item) => item.itemKind === "settlement_notice")?.keyDates.length).toBeGreaterThan(0);
+    // JND is re-read at most every 20 hours.
+    const again = await runAgencySources(sql as never, [fast(JND_ADAPTER)], { fetchImpl: fixtureFetch(routes), sleep: noSleep });
+    expect(again.reports[0]).toMatchObject({ status: "ok", requests: 0 });
   });
 });
