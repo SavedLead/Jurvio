@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { db } from "@/db/client";
-import { loadRequestPublicCase } from "@/app/case/load-public-case";
+import { loadCaseForViewer } from "@/app/case/load-public-case";
+import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import {
   listPublicDocketEntries,
   listPublicDocuments,
@@ -34,6 +35,7 @@ import { listCaseNews } from "@/modules/case-news/application/list-case-news";
 import { CaseNewsSection } from "@/modules/case-news/ui/case-news-section";
 import { listCaseAgencyItems } from "@/modules/agency-sources/application/public-items";
 import { OfficialAgencySources } from "@/modules/agency-sources/ui/official-agency-sources";
+import { agencyTimelineEvents } from "@/modules/agency-sources/domain/timeline";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 
@@ -45,13 +47,16 @@ interface CasePageProps {
 
 async function loadCase(params: CasePageProps["params"]) {
   const { caseId } = await params;
-  const legalCase = await loadRequestPublicCase(caseId);
-  return legalCase ? { caseId, legalCase } : null;
+  const access = await loadCaseForViewer(caseId);
+  if (access.status === "missing") return null;
+  if (access.status === "gated") return { caseId, gated: true as const };
+  return { caseId, gated: false as const, legalCase: access.legalCase };
 }
 
 export async function generateMetadata({ params }: CasePageProps): Promise<Metadata> {
   const loaded = await loadCase(params);
   if (!loaded) return { title: "Case not found" };
+  if (loaded.gated) return subscriberGateMetadata();
   const legalCase = loaded.legalCase;
   const caption = cleanCaseCaption(legalCase.caption);
   // "United States v. Olsen, No. 1:26-cr-00123 (E.D. Cal. 2026)"; judge, type and status go in the description.
@@ -104,6 +109,7 @@ function formatJusticePosition(value: string) {
 export default async function CasePage({ params }: CasePageProps) {
   const loaded = await loadCase(params);
   if (!loaded) notFound();
+  if (loaded.gated) return <SubscriberCaseGate path={`/case/${loaded.caseId}`} />;
   const { caseId, legalCase } = loaded;
   const sql = db();
   const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible] = await Promise.all([
@@ -141,6 +147,8 @@ export default async function CasePage({ params }: CasePageProps) {
       label: entry.description,
     })),
     legalCase.decidedOn ? { date: legalCase.decidedOn, label: "Decision issued" } : null,
+    // Dated filings from linked official agency items (e.g. FTC case pages).
+    ...agencyTimelineEvents(agencyItems),
   ]
     .filter((event): event is { date: string; label: string } => Boolean(event))
     .filter((event, index, events) => events.findIndex((candidate) => candidate.date === event.date && candidate.label === event.label) === index)
@@ -225,7 +233,7 @@ export default async function CasePage({ params }: CasePageProps) {
       question: "What happened most recently?",
       answer: latestEvent
         ? `${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}: ${latestEvent.label}`
-        : "No dated docket event is currently available on Jurvio.",
+        : "No dated docket or agency filing is currently available on Jurvio.",
       sourceUrl: null,
       available: Boolean(latestEvent),
       fromRecord: false,

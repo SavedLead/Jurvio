@@ -1,5 +1,6 @@
 import type { Metadata, Route } from "next";
 import Link from "next/link";
+import { viewerHasSubscriberAccess } from "@/modules/accounts/http/viewer";
 import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import {
@@ -35,12 +36,12 @@ const PAGE_SIZE = 50;
 
 const listCachedPublicCases = unstable_cache(
   async (options: ListPublicCasesOptions) => listPublicCases(db(), options),
-  ["public-case-directory-v3"],
+  ["public-case-directory-v4"],
   { revalidate: 300, tags: ["public-cases"] },
 );
 const listCachedPublicCaseCourts = unstable_cache(
   async () => listPublicCaseCourts(db()),
-  ["public-case-court-facets"],
+  ["public-case-court-facets-v2"],
   { revalidate: 300, tags: ["public-cases"] },
 );
 
@@ -102,7 +103,11 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
   // Browsing traffic and crawlers reuse a five-minute snapshot. Searches containing
   // user-entered text stay live so free text never pollutes the shared cache.
   const [result, courts] = await Promise.all([
-    hasUserText(filters) ? listPublicCases(db(), toQueryOptions(filters)) : listCachedPublicCases(toQueryOptions(filters)),
+    // Paid subscribers' live text searches also include subscriber-only (sealed-style) records;
+    // the shared snapshot never does.
+    hasUserText(filters)
+      ? listPublicCases(db(), { ...toQueryOptions(filters), includeSubscriberOnly: await viewerHasSubscriberAccess() })
+      : listCachedPublicCases(toQueryOptions(filters)),
     listCachedPublicCaseCourts(),
   ]);
   const pages = Math.max(1, Math.ceil(result.total / result.pageSize));

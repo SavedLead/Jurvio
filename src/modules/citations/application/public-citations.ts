@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { latestPublicationColumnSql, type PublicationFlag } from "@/modules/publication/application/current-visibility";
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import { extractCaseCitations, extractCourtListenerLinks } from "../domain/citations";
 import { citationCaseVisibleSql, citationDocumentVisibleSql } from "./citation-edges";
 type Sql = ReturnType<typeof postgres>;
@@ -18,6 +19,7 @@ export async function publicCitationTargets(sql: Sql, text: string, html=""): Pr
     FROM case_citation_identity identity JOIN legal_case c ON c.id=identity.case_id JOIN court ON court.id=c.court_id
     WHERE NOT EXISTS(SELECT 1 FROM case_citation_identity other WHERE other.citation_key=identity.citation_key AND other.case_id<>identity.case_id) AND identity.citation_key IN ${sql(keys)} AND c.publication='published'
       AND ${visible(sql, "displayable", "legal_case", "c.id")}
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("c"))}
   `;
 }
 export interface RelatedCitationCase { casePublicId: string; caption: string; courtName: string; documentPublicId: string; citationLabel: string }
@@ -81,6 +83,8 @@ export async function liveRelatedCitationCases(sql: Sql, casePublicId: string, d
       AND ${visible(sql, "displayable", "legal_case", "current_case.id")}
       AND ${visible(sql, "displayable", "legal_case", "related.id")}
       AND ${visible(sql, "displayable", "document", "d.id")}
+      -- Subscriber-only (sealed-style) cases never appear as public citation links.
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("related"))}
     ORDER BY related.id, d.filed_on DESC NULLS LAST, d.id, ref.start_offset LIMIT ${limit}
   `;
 }

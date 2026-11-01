@@ -1,9 +1,12 @@
+import { cache } from "react";
 import type { Metadata, Route } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { db } from "@/db/client";
 import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
+import { viewerHasSubscriberAccess } from "@/modules/accounts/http/viewer";
+import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { OpinionReaderTools } from "@/modules/cases/ui/opinion-reader-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
@@ -22,15 +25,24 @@ interface OpinionPageProps {
   params: Promise<{ caseId: string; documentId: string }>;
 }
 
-async function load(params: OpinionPageProps["params"]) {
-  const { caseId, documentId } = await params;
+const loadOpinion = cache(async (caseId: string, documentId: string) => {
   if (!/^jv-[a-z0-9]{8,10}$/.test(caseId) || !/^jd-[a-z0-9]{8,10}$/.test(documentId)) return null;
   return getPublicOpinion(db(), caseId, documentId);
+});
+
+/** null = not found; "gated" = subscriber-only opinion and the viewer is not a paid subscriber. */
+async function load(params: OpinionPageProps["params"]) {
+  const { caseId, documentId } = await params;
+  const opinion = await loadOpinion(caseId, documentId);
+  if (!opinion) return null;
+  if (opinion.subscriberOnly && !(await viewerHasSubscriberAccess())) return "gated" as const;
+  return opinion;
 }
 
 export async function generateMetadata({ params }: OpinionPageProps): Promise<Metadata> {
   const opinion = await load(params);
   if (!opinion) return { title: "Opinion not found" };
+  if (opinion === "gated") return subscriberGateMetadata();
   const caption = cleanCaseCaption(opinion.caseCaption);
   const title = [
     caption,
@@ -52,6 +64,10 @@ export async function generateMetadata({ params }: OpinionPageProps): Promise<Me
 export default async function OpinionPage({ params }: OpinionPageProps) {
   const opinion = await load(params);
   if (!opinion) notFound();
+  if (opinion === "gated") {
+    const { caseId, documentId } = await params;
+    return <SubscriberCaseGate path={`/case/${caseId}/documents/${documentId}`} />;
+  }
 
   const caption = cleanCaseCaption(opinion.caseCaption);
   const canonicalPath = `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`;
@@ -154,7 +170,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
               <section className="citationRail">
                 <h2>Cases cited <span className="citationCount">{citationSummary.cases.toLocaleString("en-US")}</span></h2>
                 <p>{citationCountLine(citationSummary.cases, citationSummary.onJurvio)}</p>
-                {outgoingTargets.length ? <ul>{[...new Map(outgoingTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{target.caption}</Link></li>)}</ul> : null}
+                {outgoingTargets.length ? <ul>{[...new Map(outgoingTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{cleanCaseCaption(target.caption)}</Link></li>)}</ul> : null}
                 {citationSummary.notYetOnJurvio.length ? (
                   <details className="citationPendingList">
                     <summary>Not yet on Jurvio ({citationSummary.notYetOnJurvio.length})</summary>

@@ -8,6 +8,7 @@ import { currentJustices, officialScotusLinks } from "@/modules/scotus/domain/co
 import { scotusTermLabel } from "@/modules/scotus/domain/term";
 import styles from "./supreme-court.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 // Keep database access at runtime; unstable_cache still shares the five-minute result.
 export const dynamic = "force-dynamic";
@@ -49,7 +50,7 @@ export default async function SupremeCourtPage() {
     description: "Supreme Court cases, opinions, Justices, schedules, history, and educational context.",
     about: { "@type": "GovernmentOrganization", name: "Supreme Court of the United States", url: "https://www.supremecourt.gov/" },
     mainEntity: { "@type": "ItemList", numberOfItems: discovery.opinions.length, itemListElement: discovery.opinions.map((opinion, index) => ({
-      "@type": "ListItem", position: index + 1, url: `${origin}/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`, name: opinion.caseCaption,
+      "@type": "ListItem", position: index + 1, url: `${origin}/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`, name: cleanCaseCaption(opinion.caseCaption),
     })) },
   };
 
@@ -138,7 +139,7 @@ export default async function SupremeCourtPage() {
       </div>
       {discovery.opinions.length ? <div className={styles.opinionList}>{discovery.opinions.map((opinion) => <article key={opinion.documentPublicId}>
         <div className={styles.opinionMeta}><time dateTime={opinion.filedOn ?? undefined}>{formatDate(opinion.filedOn)}</time>{scotusTermLabel(opinion.filedOn) ? <span>{scotusTermLabel(opinion.filedOn)}</span> : null}</div>
-        <div><p>Docket {opinion.docketNumber}</p><h3><Link href={`/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` as Route}>{opinion.caseCaption}</Link></h3>
+        <div><p>Docket {opinion.docketNumber}</p><h3><Link href={`/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` as Route}>{cleanCaseCaption(opinion.caseCaption)}</Link></h3>
           <div className={styles.tags}><span>{opinion.opinionType.replaceAll("-", " ")}</span>{opinion.perCuriam ? <span>Per curiam</span> : null}{opinion.authorName ? <span>{opinion.authorName}</span> : null}{opinion.precedentialStatus ? <span>{opinion.precedentialStatus}</span> : null}</div>
         </div><div className={styles.reading}><strong>{opinion.wordCount.toLocaleString()}</strong><span>words</span></div>
       </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Corpus status</p><h3>Opinion text is being prepared.</h3><p>{discovery.caseCount.toLocaleString()} verified Supreme Court case pages are live. Opinion documents will appear after readable text is extracted and separately verified.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">See current official opinions ↗</a></div>}

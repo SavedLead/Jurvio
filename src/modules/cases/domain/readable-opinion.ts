@@ -26,3 +26,29 @@ export function readableOpinionExistsSql(caseAlias: string): string {
       ), false)
   )`;
 }
+
+export const TIER_RELEASE_RULE_VERSION = "publication-tiers-v1";
+export const INDEXABLE_TIER_RELEASE_REASONS = ["tier1_release", "tier2_release"] as const;
+
+/** Current case decision is an indexable Tier 1 / Tier 2 release (publication-tiers-v1). */
+export function tierReleaseIndexableSql(caseAlias: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(caseAlias)) throw new Error(`invalid SQL alias: ${caseAlias}`);
+  return `EXISTS (
+    SELECT 1 FROM publication_current tier_current
+    JOIN publication_decision tier_decision ON tier_decision.id = tier_current.decision_id
+    WHERE tier_current.object_type = 'legal_case'
+      AND tier_current.object_id = ${caseAlias}.id
+      AND tier_decision.indexable
+      AND tier_decision.rule_version = '${TIER_RELEASE_RULE_VERSION}'
+      AND tier_decision.reason_code IN (${INDEXABLE_TIER_RELEASE_REASONS.map((reason) => `'${reason}'`).join(", ")})
+  )`;
+}
+
+/**
+ * SQL twin of casePageIndexable() for the main /case/<id> URL (sitemaps):
+ * readable opinion text or an indexable Tier 1/2 release. Callers add the
+ * search-exclusion (sealed) rule themselves.
+ */
+export function casePageIndexableSql(caseAlias: string): string {
+  return `(${readableOpinionExistsSql(caseAlias)} OR ${tierReleaseIndexableSql(caseAlias)})`;
+}

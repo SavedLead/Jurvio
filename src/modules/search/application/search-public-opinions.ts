@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
 type Sql = ReturnType<typeof postgres>;
@@ -335,6 +336,8 @@ async function hydrateHits(sql: Sql, hits: SearchHit[], anchor: string): Promise
       END AS anchor_at
     ) located
     WHERE projection.document_id IN ${sql(ids)}
+      -- Subscriber-only (sealed-style) cases never appear in public opinion search.
+      AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
   `;
   const order = new Map(hits.map((hit, index) => [hit.documentId, index]));
   return details

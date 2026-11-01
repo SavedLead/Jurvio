@@ -7,6 +7,7 @@ import { getPublicGovernmentLead } from "@/modules/government-tracker/applicatio
 import { allegationNotice } from "@/modules/government-tracker/domain/publication-policy";
 import styles from "../tracker.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,7 @@ export default async function GovernmentLeadPage({ params }: Props) {
     <aside className={styles.notice}><strong>Important context</strong><p>{allegationNotice(lead.agencyName)} The linked official release and court record control if anything on this page differs.</p></aside>
     <div className={styles.detailGrid}>
       <section><p className={styles.eyebrow}>Source record</p><h2>What Jurvio verified</h2><dl><div><dt>Official source</dt><dd>{lead.agencyName}</dd></div><div><dt>Source type</dt><dd>{lead.sourceKind.replaceAll("_", " ")}</dd></div><div><dt>Court connection</dt><dd>{lead.casePublicId ? "Reviewed match published" : "No verified match published"}</dd></div></dl></section>
-      <aside><h2>Primary links</h2><a href={lead.sourceUrl} rel="noopener noreferrer">Read the official source ↗</a>{lead.casePublicId ? <Link href={`/case/${lead.casePublicId}` as Route}>Open {lead.caseCaption ?? "the connected case"}</Link> : null}{lead.docketNumber ? <p>Docket {lead.docketNumber}</p> : null}</aside>
+      <aside><h2>Primary links</h2><a href={lead.sourceUrl} rel="noopener noreferrer">Read the official source ↗</a>{lead.casePublicId ? <Link href={`/case/${lead.casePublicId}` as Route}>Open {lead.caseCaption ? cleanCaseCaption(lead.caseCaption) : "the connected case"}</Link> : null}{lead.docketNumber ? <p>Docket {lead.docketNumber}</p> : null}</aside>
     </div>
   </main>;
 }

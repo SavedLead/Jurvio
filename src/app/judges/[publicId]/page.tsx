@@ -7,6 +7,7 @@ import { calculateOutcomeRates, getPublicJudge } from "@/modules/judges/applicat
 import directory from "@/modules/directory/ui/directory.module.css";
 import styles from "@/modules/judges/ui/judge-analytics.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 export const dynamic = "force-dynamic";
 
@@ -82,7 +83,7 @@ export default async function JudgePage({ params }: { params: Promise<{ publicId
 
     <section className={directory.section}><h2>Recent public cases</h2>
       <ol className={directory.caseList}>{judge.recentCases.map((record) => <li key={record.publicId}>
-        <Link href={`/case/${record.publicId}` as Route}><div><h3>{record.caption}</h3><p>{record.courtName} · {record.docketNumber}</p></div><time>{record.filedOn ?? "Date unavailable"}</time></Link>
+        <Link href={`/case/${record.publicId}` as Route}><div><h3>{cleanCaseCaption(record.caption)}</h3><p>{record.courtName} · {record.docketNumber}</p></div><time>{record.filedOn ?? "Date unavailable"}</time></Link>
       </li>)}</ol>
     </section>
 

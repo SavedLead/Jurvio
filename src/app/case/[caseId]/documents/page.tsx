@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { db } from "@/db/client";
-import { loadRequestPublicCase } from "@/app/case/load-public-case";
+import { loadCaseForViewer } from "@/app/case/load-public-case";
+import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import { listPublicDocuments } from "@/modules/cases/application/list-public-case-sections";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import {
@@ -21,13 +22,16 @@ interface DocumentsPageProps { params: Promise<{ caseId: string }> }
 
 async function load(params: DocumentsPageProps["params"]) {
   const { caseId } = await params;
-  const legalCase = await loadRequestPublicCase(caseId);
-  return legalCase ? { caseId, legalCase } : null;
+  const access = await loadCaseForViewer(caseId);
+  if (access.status === "missing") return null;
+  if (access.status === "gated") return { caseId, gated: true as const };
+  return { caseId, gated: false as const, legalCase: access.legalCase };
 }
 
 export async function generateMetadata({ params }: DocumentsPageProps): Promise<Metadata> {
   const loaded = await load(params);
   if (!loaded) return { title: "Documents not found" };
+  if (loaded.gated) return subscriberGateMetadata();
   const caption = cleanCaseCaption(loaded.legalCase.caption);
   return {
     title: [caption, "Documents", loaded.legalCase.docketNumber, loaded.legalCase.courtName].filter(Boolean).join(" | "),
@@ -40,6 +44,7 @@ export async function generateMetadata({ params }: DocumentsPageProps): Promise<
 export default async function DocumentsPage({ params }: DocumentsPageProps) {
   const loaded = await load(params);
   if (!loaded) notFound();
+  if (loaded.gated) return <SubscriberCaseGate path={`/case/${loaded.caseId}/documents`} />;
   const { caseId, legalCase } = loaded;
   const sql = db();
   const records = await listPublicDocuments(sql, caseId);

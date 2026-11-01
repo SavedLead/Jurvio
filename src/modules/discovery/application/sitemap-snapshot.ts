@@ -3,6 +3,7 @@ import { siteOrigin } from "@/lib/config/site-url";
 import { xmlEscape } from "@/modules/discovery/http/xml";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
+import { casePageIndexableSql, readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
 import {
   SITEMAP_CASE_PAGE_SIZE,
   SITEMAP_PAGE_SIZE,
@@ -108,6 +109,8 @@ async function opinionIds(sql: Sql, after: string | null): Promise<string[]> {
     JOIN publication_decision doc_decision ON doc_decision.id = doc_row.decision_id AND doc_decision.indexable
     WHERE document.publication = 'published'
       AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
+      -- The opinion reader 404s without extracted content.
+      AND EXISTS (SELECT 1 FROM document_content content WHERE content.document_id = document.id)
       AND (${after}::text IS NULL OR document.public_id > ${after})
     ORDER BY document.public_id
     LIMIT ${SITEMAP_PAGE_SIZE}
@@ -193,10 +196,15 @@ async function publishSitemapIndex(sql: Sql): Promise<void> {
 }
 
 async function caseRecords(sql: Sql, ids: string[]): Promise<SitemapRecord[]> {
-  const rows = await sql<{ public_id: string; updated_at: string; has_docket: boolean; has_documents: boolean; has_parties: boolean }[]>`
+  // Each URL is listed only when its page renders "index" (same rules as the
+  // pages' robots metadata): the case page and /documents need readable
+  // opinion text (or, for the case page, a Tier 1/2 release); docket,
+  // timeline and parties pages index whenever the case is not search-excluded.
+  const rows = await sql<{ public_id: string; updated_at: string; case_indexable: boolean; has_docket: boolean; has_documents: boolean; has_parties: boolean }[]>`
     SELECT c.public_id, c.updated_at::text AS updated_at,
+      ${sql.unsafe(casePageIndexableSql("c"))} AS case_indexable,
       EXISTS (SELECT 1 FROM docket_entry entry WHERE entry.case_id = c.id) AS has_docket,
-      EXISTS (SELECT 1 FROM document d WHERE d.case_id = c.id AND d.publication = 'published') AS has_documents,
+      ${sql.unsafe(readableOpinionExistsSql("c"))} AS has_documents,
       EXISTS (SELECT 1 FROM party_appearance appearance WHERE appearance.case_id = c.id) AS has_parties
     FROM legal_case c
     WHERE c.public_id = ANY(${ids}::text[])
@@ -204,7 +212,7 @@ async function caseRecords(sql: Sql, ids: string[]): Promise<SitemapRecord[]> {
   `;
   const records: SitemapRecord[] = [];
   for (const row of rows) {
-    records.push({ path: `/case/${row.public_id}`, updatedAt: row.updated_at });
+    if (row.case_indexable) records.push({ path: `/case/${row.public_id}`, updatedAt: row.updated_at });
     if (row.has_docket) {
       records.push({ path: `/case/${row.public_id}/docket`, updatedAt: row.updated_at });
       records.push({ path: `/case/${row.public_id}/timeline`, updatedAt: row.updated_at });

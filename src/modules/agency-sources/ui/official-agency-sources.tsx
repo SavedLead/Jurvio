@@ -42,7 +42,7 @@ export function OfficialAgencySources({ items }: { items: CaseAgencyItem[] }) {
                 {item.officialExcerpt ? <blockquote cite={item.sourceUrl}>{item.officialExcerpt}</blockquote> : null}
                 {item.settlementAmount ? <p>Settlement amount stated: {item.settlementAmount}</p> : null}
                 {item.keyDates.length > 0 ? (
-                  <ul>{item.keyDates.map((date) => <li key={`${date.label}:${date.date}`}>{date.label}: <time dateTime={date.date}>{date.date}</time></li>)}</ul>
+                  <ul>{item.keyDates.map((date) => <li key={`${date.label}:${date.date}`}>{date.label}{date.label.includes(":") ? " (as of " : ": "}<time dateTime={date.date}>{date.date}</time>{date.label.includes(":") ? ")" : ""}</li>)}</ul>
                 ) : null}
                 {item.documents.length > 0 ? (
                   <ul>{item.documents.slice(0, 8).map((document) => (

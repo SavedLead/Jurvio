@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCaseTitle, courtAbbreviation, displayCaption } from "./case-title";
+import { buildCaseTitle, cleanCaptionText, courtAbbreviation, displayCaption, docketNumberYear } from "./case-title";
 
 describe("court abbreviations", () => {
   it.each([
@@ -60,8 +60,8 @@ describe("case titles", () => {
       decidedOn: "2025-12-01",
     });
     expect(title.endsWith(", No. 24-60471 (5th Cir. 2025)")).toBe(true);
-    expect(title.length).toBeLessThanOrEqual(72);
-    expect(title.startsWith("Nat'l Ass'n of")).toBe(true);
+    // Shortened by party and abbreviation, never cut with an ellipsis.
+    expect(title).toBe("Nat'l Ass'n of Mfrs. v. Sec. & Exch. Comm'n, No. 24-60471 (5th Cir. 2025)");
     expect(buildCaseTitle({ caption: "Securities and Exchange Commission v. Coinbase, Inc.", docketNumber: "1:23-cv-04738", courtName: "Southern District of New York", filedOn: "2023-06-06", decidedOn: null }))
       .toBe("Sec. & Exch. Comm'n v. Coinbase, No. 1:23-cv-04738 (S.D.N.Y. 2023)");
   });
@@ -92,5 +92,49 @@ describe("caption fixes (warrants, count prefixes, entities)", () => {
   it("strips PACER defendant-number prefixes and normalizes USA", () => {
     expect(displayCaption("1 USA v. Nino-Rojas", "3:26-mj-04918", "district")).toBe("United States v. Nino-Rojas");
     expect(displayCaption("2 United States of America v. Doe", "1:26-cr-00001", "district")).toBe("United States v. Doe");
+  });
+});
+
+describe("audit caption cleanup", () => {
+  it("drops trailing provider tags, decodes entities once and drops a dangling leading v.", () => {
+    expect(cleanCaptionText("ZENTIAN LTD. v. APPLE INC. [OPINION]")).toBe("ZENTIAN LTD. v. APPLE INC.");
+    expect(cleanCaptionText("Doe v. Roe [UNPUBLISHED] [ORDER]")).toBe("Doe v. Roe");
+    expect(cleanCaptionText("IN RE APPLE INC.&amp;#039;S APPLICATION")).toBe("IN RE APPLE INC.'S APPLICATION");
+    expect(cleanCaptionText("IN RE APPLE INC.&#039;S APPLICATION")).toBe("IN RE APPLE INC.'S APPLICATION");
+    expect(cleanCaptionText("v. IN RE APPLE INC.")).toBe("IN RE APPLE INC.");
+    expect(cleanCaptionText("Smith v. [Redacted] Corp.")).toBe("Smith v. [Redacted] Corp.");
+    expect(displayCaption("ZENTIAN LTD. v. APPLE INC. [OPINION]", "24-2205", "appellate")).toBe("ZENTIAN LTD. v. APPLE INC.");
+  });
+
+  it("falls back to the docket-number year when the record has no dates", () => {
+    expect(docketNumberYear("1:20-cv-00706", new Date("2026-11-01T00:00:00Z"))).toBe("2020");
+    expect(docketNumberYear("2:26-cv-12729", new Date("2026-11-01T00:00:00Z"))).toBe("2026");
+    expect(docketNumberYear("1:98-cr-00001", new Date("2026-11-01T00:00:00Z"))).toBe("1998");
+    expect(docketNumberYear("24-2205")).toBeNull();
+  });
+
+  it("shortens agency captions by party, never with an ellipsis, and always keeps the year", () => {
+    const title = buildCaseTitle({
+      caption: "Federal Trade Commission et al v. Vyera Pharmaceuticals, LLC et al",
+      docketNumber: "1:20-cv-00706",
+      courtName: "Southern District of New York",
+      providerCourtId: "nysd",
+      filedOn: null,
+      decidedOn: null,
+    });
+    expect(title).toBe("Federal Trade Comm'n v. Vyera Pharms., No. 1:20-cv-00706 (S.D.N.Y. 2020)");
+    expect(title).not.toContain("…");
+  });
+
+  it("keeps a long two-party name whole up to the hard limit instead of cutting a party", () => {
+    const title = buildCaseTitle({
+      caption: "Acme Widget Holdings Group v. Metropolitan Transit Partners",
+      docketNumber: "1:24-cv-01234",
+      courtName: "Southern District of New York",
+      filedOn: "2024-02-01",
+      decidedOn: null,
+    });
+    expect(title).not.toContain("…");
+    expect(title.endsWith(", No. 1:24-cv-01234 (S.D.N.Y. 2024)")).toBe(true);
   });
 });

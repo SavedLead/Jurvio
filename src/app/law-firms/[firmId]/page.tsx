@@ -6,6 +6,7 @@ import { isPublicId } from "@/lib/ids/public-id";
 import { canIndexDirectoryProfile, getPublicEntity } from "@/modules/directory/application/public-directory";
 import styles from "@/modules/directory/ui/directory.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
+import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ firmId: string }> }
@@ -33,7 +34,7 @@ export default async function LawFirmPage({ params }: Props) {
         <div><dt>Jurvio ID</dt><dd>{firm.publicId}</dd></div><div><dt>Public cases</dt><dd>{firm.caseCount.toLocaleString()}</dd></div>
         <div><dt>Latest filing</dt><dd>{firm.latestCaseDate ?? "Unavailable"}</dd></div><div><dt>Verification</dt><dd>{firm.verification.replaceAll("_", " ")}</dd></div></dl></header>
     <section className={styles.section}><h2>Published case relationships</h2><ol className={styles.caseList}>{firm.appearances.map((appearance, index) => <li key={`${appearance.casePublicId}-${appearance.role}-${index}`}>
-      <Link href={`/case/${appearance.casePublicId}` as Route}><div><h3>{appearance.caption}</h3><p>{appearance.courtName} · Docket {appearance.docketNumber} · {appearance.role}</p></div><time>{appearance.filedOn ?? "Date unavailable"}</time></Link>
+      <Link href={`/case/${appearance.casePublicId}` as Route}><div><h3>{cleanCaseCaption(appearance.caption)}</h3><p>{appearance.courtName} · Docket {appearance.docketNumber} · {appearance.role}</p></div><time>{appearance.filedOn ?? "Date unavailable"}</time></Link>
     </li>)}</ol></section>
     <aside className={styles.disclaimer}>This profile reflects relationships stated in qualifying public court records. It does not represent an endorsement, rating, or complete history of the firm.</aside>
   </main>;
