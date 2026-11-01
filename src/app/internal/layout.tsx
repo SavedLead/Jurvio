@@ -13,6 +13,7 @@ const navigation = [
   { href: "/internal/uptime", icon: "♥", label: "Uptime & Speed" },
   { href: "/internal/ingestion-report", icon: "≣", label: "Publication X-ray" },
   { href: "/internal/freshness", icon: "◷", label: "Court freshness" },
+  { href: "/internal/agency-sources", icon: "§", label: "Agency sources" },
   { href: "/internal#alerts", icon: "◉", label: "Case alerts" },
   { href: "/internal/governance", icon: "◇", label: "Costs & governance" },
   { href: "/internal/analytics", icon: "↗", label: "Product analytics" },
