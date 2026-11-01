@@ -5,7 +5,7 @@
 #
 #   scripts/ops/builder-job.sh jobs/<job>.mjs [job args...]
 #
-# Needs: SSH to $INGESTION_USER@$DB_HOST already configured, GH_TOKEN with
+# Needs: SSH to $INGESTION_USER@$DB_HOST already configured (SSH_CONFIG_FILE or ~/.ssh), GH_TOKEN with
 # packages:read (to pull the image), docker on the runner.
 # Optional: JOB_CPUS (default 1.25), JOB_MEMORY (default 2500m),
 #   JOB_ENV_KEYS (extra env names copied from the worker, space separated).
@@ -24,7 +24,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-remote() { ssh "$INGESTION_USER@$DB_HOST" "$@"; }
+# SSH_CONFIG_FILE: per-run config written by the workflow (keeps ~/.ssh untouched).
+ssh_cfg=(); [ -n "${SSH_CONFIG_FILE:-}" ] && ssh_cfg=(-F "$SSH_CONFIG_FILE")
+remote() { ssh "${ssh_cfg[@]}" "$INGESTION_USER@$DB_HOST" "$@"; }
 worker="$(remote "sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=worker-citations --format '{{.ID}}' | head -n1")"
 [ -n "$worker" ] || worker="$(remote "sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=worker-core --format '{{.ID}}' | head -n1")"
 [ -n "$worker" ] || { echo "::error::no running jurvio worker container on web-01"; exit 1; }
@@ -43,7 +45,7 @@ grep -q '^DATABASE_URL=' "$work/raw.env" || { echo "::error::worker has no DATAB
 port=5432; host="$bind_host"
 if [ "$bind_host" = "127.0.0.1" ] || ! timeout 5 bash -c "</dev/tcp/$bind_host/5432" 2>/dev/null; then
   port=15432; host=127.0.0.1
-  ssh -N -o ExitOnForwardFailure=yes -L "127.0.0.1:$port:$bind_host:5432" "$INGESTION_USER@$DB_HOST" &
+  ssh "${ssh_cfg[@]}" -N -o ExitOnForwardFailure=yes -L "127.0.0.1:$port:$bind_host:5432" "$INGESTION_USER@$DB_HOST" &
   tunnel_pid=$!
   for _ in $(seq 1 20); do timeout 2 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null && break; sleep 1; done
   echo "database route: ssh tunnel via web-01"
