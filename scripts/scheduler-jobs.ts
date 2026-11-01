@@ -55,6 +55,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-sitemap-snapshot.mjs"],
   },
   {
+    // Nightly citation catch-up (ADR 0090, D13): hourly tick, works once per ET
+    // day between 01:00 and 05:00; cheap bounded SQL only.
+    lane: "citations",
+    name: "citation-nightly",
+    initialDelayMs: 7 * minute,
+    intervalMs: 60 * minute,
+    budgetMs: 15 * minute,
+    command: ["jobs/run-citation-nightly.mjs"],
+  },
+  {
     // Precomputed Cites / Cited-by edges and counts (case_citation_edge,
     // case_citation_count). Drains the dirty set (cases whose opinions,
     // identities or visibility changed), then advances the resumable weekly
@@ -300,6 +310,18 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     intervalMs: 3 * 60 * minute,
     budgetMs: 8 * minute,
     command: ["jobs/run-live-feeds.mjs", "--source=court-site"],
+  },
+  {
+    // Live-feed opinion text (ADR 0090, D11): fetch + pdftotext the opinion PDFs the
+    // live feeds above recorded (court sites, circuit feeds, GovInfo districts) so
+    // the citation parser sees them. Draft documents only; no OCR here (scanned
+    // PDFs wait for the builder workflow live-opinion-text-builder.yml).
+    lane: "coa",
+    name: "live-opinion-text",
+    initialDelayMs: 9 * minute,
+    intervalMs: 20 * minute,
+    budgetMs: 13 * minute,
+    command: ["jobs/run-live-opinion-text.mjs", "--limit=60", "--budget-seconds=660", "--backfill-days=3"],
   },
   {
     // CourtListener's public per-court opinion Atom feeds (not the REST API, no

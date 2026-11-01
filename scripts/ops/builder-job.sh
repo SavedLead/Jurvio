@@ -71,6 +71,8 @@ for line in open(src):
     line = line.rstrip("\n")
     if not line or "=" not in line: continue
     k, v = line.split("=", 1)
+    if k not in ("DATABASE_URL", "INGESTION_USER_AGENT", "NODE_ENV", "JURVIO_SPACES_BUCKET", "JURVIO_SPACES_ENDPOINT", "JURVIO_SPACES_REGION") and len(v) >= 4:
+        print(f"::add-mask::{v}")
     if k == "DATABASE_URL":
         u = urllib.parse.urlsplit(v)
         if u.password: print(f"::add-mask::{u.password}")
