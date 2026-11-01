@@ -1,0 +1,307 @@
+name: Postgres bulk volume + tablespace on web-01 (once, no restart)
+
+# Puts the 250 GB DigitalOcean block volume (approved by David Rosenberg on
+# 2026-10-31, about $25/mo) to work for the CourtListener federal bulk load
+# without restarting Postgres or taking the site down. The volume itself is
+# created and attached to jurvio-web-01 outside this workflow (DigitalOcean API);
+# this workflow never creates, resizes or deletes cloud resources.
+#
+# Postgres runs in the compose `postgres` container with PGDATA on the named
+# volume jurvio_postgres. release-production.sh runs `compose up -d postgres`, so
+# the postgres service definition is NOT changed (that would recreate the
+# container). Instead:
+#   host  /dev/disk/by-id/scsi-0DO_Volume_<name>  -> /mnt/jurvio_pgbulk (ext4)
+#   host  /mnt/jurvio_pgbulk/pg    bind -> <PGDATA on host>/pgbulk_tblspc
+#   host  /mnt/jurvio_pgbulk/meta  bind (ro) -> <artifacts volume on host>/.pgbulk-volume
+# all three in /etc/fstab with nofail and ordered before docker.service. Docker
+# bind-mounts volumes recursively, so containers created later see the submounts.
+# The running postgres and app containers get the same mounts inside their mount
+# namespaces (nsenter; no restart). The tablespace is
+#   jurvio_bulk  LOCATION '/var/lib/postgresql/data/pgbulk_tblspc'
+# and is only created after checking, from inside the container, that the path is
+# on the volume (same st_dev as /mnt/jurvio_pgbulk on the host).
+#
+# action:
+#   inspect     read-only: block devices, mounts, fstab, container mounts, the
+#               tablespaces, and sizes/scan counts of the bulk-load tables + indexes.
+#   mount       format only if the device has NO filesystem, mount, fstab, binds,
+#               namespace mounts, marker file. Idempotent.
+#   tablespace  CREATE TABLESPACE jurvio_bulk (after the st_dev check). Idempotent.
+#   move        objects=comma list. Indexes: REINDEX (TABLESPACE jurvio_bulk) INDEX
+#               CONCURRENTLY (reads and writes continue; an interrupted rebuild's
+#               invalid _ccnew index is dropped CONCURRENTLY). Tables: only the
+#               loader-only UNLOGGED tables (courtlistener_pending_cluster and the
+#               three *_stage tables), with lock_timeout 5s, and only while no
+#               session holds a lock on them. Live public tables are never moved.
+# Never restarts Postgres, never changes the postgres compose service, never
+# moves PGDATA, never publishes anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type PG_BULK_VOLUME to run"
+        required: true
+        type: string
+      action:
+        description: "inspect, mount, tablespace, or move"
+        required: true
+        default: "inspect"
+        type: string
+      volume_name:
+        description: "DigitalOcean volume name (device /dev/disk/by-id/scsi-0DO_Volume_<name>)"
+        required: true
+        default: "jurvio-pg-bulk-01"
+        type: string
+      objects:
+        description: "move only: comma list of index names and/or loader-only table names"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-pg-bulk-volume
+  cancel-in-progress: false
+
+jobs:
+  volume:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 360
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      ACTION: ${{ inputs.action }}
+      VOLUME_NAME: ${{ inputs.volume_name }}
+      OBJECTS: ${{ inputs.objects }}
+    steps:
+      - name: Require confirm=PG_BULK_VOLUME
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "PG_BULK_VOLUME" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=PG_BULK_VOLUME."
+            exit 1
+          fi
+          case "$ACTION" in inspect|mount|tablespace|move) ;; *) echo "::error::unknown action $ACTION"; exit 1;; esac
+          if ! printf '%s' "$VOLUME_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,62}$'; then
+            echo "::error::volume_name must be lowercase letters, digits and dashes"; exit 1
+          fi
+          if [ -n "$OBJECTS" ] && ! printf '%s' "$OBJECTS" | grep -Eq '^[a-z_][a-z0-9_]{0,62}(,[a-z_][a-z0-9_]{0,62})*$'; then
+            echo "::error::objects must be a comma list of lowercase identifiers"; exit 1
+          fi
+          if [ "$ACTION" = "move" ] && [ -z "$OBJECTS" ]; then echo "::error::move needs objects"; exit 1; fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run on web-01 over the private VPC
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "ACTION='$ACTION' VOLUME_NAME='$VOLUME_NAME' OBJECTS='$OBJECTS' bash -s" <<'REMOTE' | tee "$RUNNER_TEMP/volume.log"
+          set -euo pipefail
+          MNT=/mnt/jurvio_pgbulk
+          DEV="/dev/disk/by-id/scsi-0DO_Volume_${VOLUME_NAME}"
+          TS=jurvio_bulk
+          PG_TS_IN=/var/lib/postgresql/data/pgbulk_tblspc
+          ART_STAT_IN=/var/lib/jurvio/artifacts/.pgbulk-volume
+          MARKER=.jurvio-pgbulk-volume
+          LOADER_TABLES=" courtlistener_pending_cluster courtlistener_cluster_stage courtlistener_opinion_stage courtlistener_docket_stage "
+          find_svc() { sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter "label=com.docker.compose.service=$1" --format '{{.ID}}' | head -n1; }
+          pg="$(find_svc postgres)"; app="$(find_svc app)"
+          [ -n "$pg" ] || { echo "::error::postgres container missing"; exit 1; }
+          mount_src() { sudo -n docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$2\"}}{{.Source}}{{end}}{{end}}" "$1"; }
+          PGDATA_HOST="$(mount_src "$pg" /var/lib/postgresql/data)"
+          [ -n "$PGDATA_HOST" ] || { echo "::error::cannot find the postgres data mount"; exit 1; }
+          PG_TS_HOST="$PGDATA_HOST/pgbulk_tblspc"
+          ART_HOST=""; [ -n "$app" ] && ART_HOST="$(mount_src "$app" /var/lib/jurvio/artifacts)"
+          q() {
+            sudo -n docker exec -e PGOPTIONS="${PGOPT:--c statement_timeout=900s -c lock_timeout=5s}" \
+              "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q -At -F ' | ' -c "$1"
+          }
+          qro() { PGOPT='-c default_transaction_read_only=on -c statement_timeout=900s -c lock_timeout=5s' q "$1" || echo "(query failed)"; }
+          host_dev() { sudo -n stat -c '%d' "$1" 2>/dev/null || echo none; }
+          ctr_dev() { sudo -n docker exec "$1" stat -c '%d' "$2" 2>/dev/null || echo none; }
+          echo "=== pg-bulk-volume action=${ACTION} volume=${VOLUME_NAME} @ $(date -u +%FT%TZ) ==="
+          echo "pgdata_host=${PGDATA_HOST} artifacts_host=${ART_HOST:-none}"
+
+          inspect() {
+            echo "--- block devices ---"
+            lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT 2>/dev/null || true
+            ls -l /dev/disk/by-id/ 2>/dev/null | grep -i DO_Volume || echo "(no DO volume devices)"
+            echo "--- df ---"; df -h / "$MNT" 2>/dev/null | sort -u || df -h /
+            echo "--- fstab (non-comment lines) ---"; grep -Ev '^\s*(#|$)' /etc/fstab || true
+            echo "--- mounts of interest ---"; findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS | grep -E "jurvio_pgbulk|pgbulk|DO_Volume" || echo "(none)"
+            echo "--- st_dev: host mnt=$(host_dev "$MNT") pg_ts_host=$(host_dev "$PG_TS_HOST") pgdata_host=$(host_dev "$PGDATA_HOST") | in postgres: ts=$(ctr_dev "$pg" "$PG_TS_IN") pgdata=$(ctr_dev "$pg" /var/lib/postgresql/data) | in app: stat=$( [ -n "$app" ] && ctr_dev "$app" "$ART_STAT_IN" || echo none) ---"
+            echo "--- container mounts ---"
+            for c in "$pg" ${app:+"$app"}; do sudo -n docker inspect -f '{{.Name}}{{range .Mounts}} | {{.Type}} {{.Source}} -> {{.Destination}} ({{.Propagation}}){{end}}' "$c"; done
+            echo "nsenter=$(command -v nsenter || echo missing) postgres_uid=$(sudo -n docker exec "$pg" id -u postgres)"
+            echo "--- postgres ---"
+            qro "SELECT version()"
+            echo "--- tablespaces (name | location | size) ---"
+            qro "SELECT spcname, pg_tablespace_location(oid), pg_size_pretty(pg_tablespace_size(oid)) FROM pg_tablespace ORDER BY 1"
+            echo "--- bulk-load tables (table | tablespace | heap+toast | indexes | total | rows_est) ---"
+            qro "SELECT c.relname, coalesce(t.spcname, 'default'), pg_size_pretty(pg_table_size(c.oid)), pg_size_pretty(pg_indexes_size(c.oid)),
+                        pg_size_pretty(pg_total_relation_size(c.oid)), c.reltuples::bigint
+                   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+                  WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+                    AND c.relname IN ('document','document_content','document_identifier','judicial_opinion','opinion_search_projection',
+                                      'legal_case','case_identifier','opinion_cluster','raw_artifact','federal_publication_hold',
+                                      'citation_publication_hold','publication_review','courtlistener_pending_cluster',
+                                      'courtlistener_cluster_stage','courtlistener_opinion_stage','courtlistener_docket_stage')
+                  ORDER BY pg_total_relation_size(c.oid) DESC"
+            echo "--- their indexes (index | table | tablespace | size | idx_scan | valid) ---"
+            qro "SELECT i.relname, t.relname, coalesce(ts.spcname, 'default'), pg_size_pretty(pg_relation_size(i.oid)), coalesce(s.idx_scan, 0), x.indisvalid
+                   FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class t ON t.oid = x.indrelid
+                   JOIN pg_namespace n ON n.oid = t.relnamespace LEFT JOIN pg_tablespace ts ON ts.oid = i.reltablespace
+                   LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = i.oid
+                  WHERE n.nspname = 'public'
+                    AND t.relname IN ('document','document_content','document_identifier','judicial_opinion','opinion_search_projection',
+                                      'legal_case','case_identifier','opinion_cluster','raw_artifact','federal_publication_hold',
+                                      'citation_publication_hold','publication_review','courtlistener_pending_cluster',
+                                      'courtlistener_cluster_stage','courtlistener_opinion_stage','courtlistener_docket_stage')
+                  ORDER BY pg_relation_size(i.oid) DESC"
+            echo "--- invalid indexes anywhere (should be none) ---"
+            qro "SELECT i.relname, pg_size_pretty(pg_relation_size(i.oid)) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE NOT x.indisvalid"
+            echo "--- database size ---"; qro "SELECT pg_size_pretty(pg_database_size('jurvio'))"
+          }
+
+          # Mount the volume inside a running container's mount namespace (no restart).
+          # $1 container, $2 subdir of the volume, $3 target path in the container, $4 rw|ro
+          ns_mount() {
+            local c="$1" sub="$2" target="$3" mode="$4" pid real mm maj min
+            if [ "$(ctr_dev "$c" "$target")" = "$(host_dev "$MNT")" ]; then echo "ns_mount: $target already on the volume in $c"; return 0; fi
+            pid="$(sudo -n docker inspect -f '{{.State.Pid}}' "$c")"
+            real="$(readlink -f "$DEV")"
+            mm="$(lsblk -dno MAJ:MIN "$real" | tr -d ' ')"; maj="${mm%%:*}"; min="${mm##*:}"
+            sudo -n nsenter -t "$pid" -m -- /bin/sh -euc "
+              mkdir -p '$target' /run/pgbulk-root
+              [ -b /run/pgbulk.dev ] || mknod /run/pgbulk.dev b $maj $min
+              mount -t ext4 -o noatime,discard /run/pgbulk.dev /run/pgbulk-root
+              mount --bind '/run/pgbulk-root/$sub' '$target'
+              [ '$mode' = ro ] && mount -o remount,bind,ro '$target' || true
+              umount /run/pgbulk-root
+              rmdir /run/pgbulk-root
+              rm -f /run/pgbulk.dev
+            "
+            [ "$(ctr_dev "$c" "$target")" = "$(host_dev "$MNT")" ] || { echo "::error::namespace mount of $target in $c did not land on the volume"; exit 1; }
+            echo "ns_mount: $target -> volume:/$sub ($mode) in $c"
+          }
+
+          do_mount() {
+            [ -b "$DEV" ] || { echo "::error::$DEV not present. Attach the volume to jurvio-web-01 first."; exit 1; }
+            real="$(readlink -f "$DEV")"
+            rootdisk="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null || true)"
+            [ "/dev/${rootdisk}" != "$real" ] || { echo "::error::$real is the root disk"; exit 1; }
+            fstype="$(sudo -n blkid -o value -s TYPE "$real" || true)"
+            if [ -z "$fstype" ]; then
+              if [ -n "$(lsblk -no NAME "$real" | tail -n +2)" ]; then echo "::error::$real has partitions; refusing to format"; exit 1; fi
+              echo "formatting $real (no filesystem found)"
+              sudo -n mkfs.ext4 -q -L jurvio_pgbulk "$real"
+            elif [ "$fstype" != ext4 ]; then
+              echo "::error::$real has a $fstype filesystem; expected ext4 or none"; exit 1
+            fi
+            sudo -n tune2fs -m 1 "$real" >/dev/null
+            sudo -n install -d -m 755 "$MNT"
+            sudo -n cp -a /etc/fstab "/etc/fstab.bak-pgbulk-$(date +%Y%m%d%H%M%S)"
+            add_fstab() { grep -qF "$1" /etc/fstab || printf '%s\n' "$1" | sudo -n tee -a /etc/fstab >/dev/null; }
+            add_fstab "$DEV $MNT ext4 defaults,nofail,noatime,discard,x-systemd.before=docker.service 0 2"
+            sudo -n systemctl daemon-reload
+            mountpoint -q "$MNT" || sudo -n mount "$MNT"
+            [ "$(host_dev "$MNT")" != "$(host_dev /)" ] || { echo "::error::$MNT is not a separate filesystem"; exit 1; }
+            pguid="$(sudo -n docker exec "$pg" id -u postgres)"
+            sudo -n install -d -o "$pguid" -g "$pguid" -m 700 "$MNT/pg"
+            sudo -n install -d -m 755 "$MNT/meta"
+            printf '%s\n' "$VOLUME_NAME" | sudo -n tee "$MNT/meta/$MARKER" >/dev/null
+            sudo -n install -d -o "$pguid" -g "$pguid" -m 700 "$PG_TS_HOST"
+            add_fstab "$MNT/pg $PG_TS_HOST none bind,nofail,x-systemd.requires-mounts-for=$MNT,x-systemd.before=docker.service 0 0"
+            if [ -n "$ART_HOST" ]; then
+              sudo -n install -d -m 755 "$ART_HOST/.pgbulk-volume"
+              add_fstab "$MNT/meta $ART_HOST/.pgbulk-volume none bind,ro,nofail,x-systemd.requires-mounts-for=$MNT,x-systemd.before=docker.service 0 0"
+            fi
+            sudo -n systemctl daemon-reload
+            sudo -n findmnt --verify --tab-file /etc/fstab || echo "::warning::findmnt --verify reported issues (see above)"
+            mountpoint -q "$PG_TS_HOST" || sudo -n mount "$PG_TS_HOST"
+            if [ -n "$ART_HOST" ]; then mountpoint -q "$ART_HOST/.pgbulk-volume" || sudo -n mount "$ART_HOST/.pgbulk-volume"; fi
+            ns_mount "$pg" pg "$PG_TS_IN" rw
+            [ -n "$app" ] && ns_mount "$app" meta "$ART_STAT_IN" ro
+            sudo -n docker exec "$pg" sh -c "test -w '$PG_TS_IN' && ls -A '$PG_TS_IN' | wc -l" | sed 's/^/pg_ts_entries=/'
+            [ -n "$app" ] && sudo -n docker exec "$app" sh -c "cat '$ART_STAT_IN/$MARKER'; df -h '$ART_STAT_IN' /var/lib/jurvio/artifacts"
+            df -h / "$MNT"
+          }
+
+          verify_ts_path() {
+            local want; want="$(host_dev "$MNT")"
+            [ "$want" != none ] && [ "$want" != "$(host_dev /)" ] || { echo "::error::$MNT is not mounted"; exit 1; }
+            [ "$(ctr_dev "$pg" "$PG_TS_IN")" = "$want" ] || { echo "::error::$PG_TS_IN in the postgres container is not on the volume; run action=mount"; exit 1; }
+          }
+
+          do_tablespace() {
+            verify_ts_path
+            if [ "$(q "SELECT count(*) FROM pg_tablespace WHERE spcname = '$TS'")" = "1" ]; then
+              echo "tablespace $TS already exists at $(q "SELECT pg_tablespace_location(oid) FROM pg_tablespace WHERE spcname = '$TS'")"
+            else
+              # PGDATA nesting draws a WARNING ("tablespace location should not be inside the
+              # data directory"); expected: it is how the location survives container
+              # recreation without changing the postgres service. Backups use pg_dump --no-tablespaces.
+              q "CREATE TABLESPACE $TS LOCATION '$PG_TS_IN'"
+            fi
+            q "SELECT spcname, pg_tablespace_location(oid), pg_size_pretty(pg_tablespace_size(oid)) FROM pg_tablespace ORDER BY 1"
+            sudo -n docker exec "$pg" sh -c "ls -la '$PG_TS_IN'"
+          }
+
+          vol_avail() { df -B1 --output=avail "$MNT" | tail -1 | tr -d ' '; }
+
+          do_move() {
+            verify_ts_path
+            [ "$(q "SELECT count(*) FROM pg_tablespace WHERE spcname = '$TS'")" = "1" ] || { echo "::error::tablespace $TS missing; run action=tablespace"; exit 1; }
+            for obj in ${OBJECTS//,/ }; do
+              kind="$(q "SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = '$obj'")"
+              size="$(q "SELECT pg_total_relation_size('public.$obj'::regclass)" 2>/dev/null || echo 0)"
+              cur="$(q "SELECT coalesce(t.spcname, 'default') FROM pg_class c LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace WHERE c.oid = 'public.$obj'::regclass" 2>/dev/null || echo '?')"
+              echo "== $obj kind=${kind:-missing} size=$size tablespace=$cur volume_avail=$(vol_avail)"
+              [ -n "$kind" ] || { echo "::warning::$obj not found; skipped"; continue; }
+              if [ "$(vol_avail)" -lt $(( size * 13 / 10 + 10737418240 )) ]; then echo "::error::not enough room on the volume for $obj"; exit 1; fi
+              case "$kind" in
+                i)
+                  if [ "$cur" = "$TS" ]; then echo "already on $TS"; continue; fi
+                  start=$(date +%s)
+                  if ! PGOPT='-c statement_timeout=0 -c lock_timeout=0 -c maintenance_work_mem=512MB' q "REINDEX (TABLESPACE $TS, VERBOSE) INDEX CONCURRENTLY public.$obj"; then
+                    echo "::error::REINDEX CONCURRENTLY failed for $obj; dropping any invalid leftover"
+                    for bad in $(q "SELECT i.relname FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE NOT x.indisvalid AND i.relname LIKE '${obj}_ccnew%'"); do
+                      PGOPT='-c statement_timeout=0 -c lock_timeout=0' q "DROP INDEX CONCURRENTLY IF EXISTS public.$bad" && echo "dropped $bad"
+                    done
+                    exit 1
+                  fi
+                  echo "moved index $obj in $(( $(date +%s) - start ))s"
+                  ;;
+                r)
+                  case "$LOADER_TABLES" in *" $obj "*) ;; *) echo "::error::$obj is not a loader-only table; live tables are never moved (ALTER TABLE SET TABLESPACE locks them)"; exit 1;; esac
+                  holders="$(q "SELECT count(*) FROM pg_locks l WHERE l.relation = 'public.$obj'::regclass AND l.pid <> pg_backend_pid()")"
+                  [ "$holders" = "0" ] || { echo "::error::$holders lock(s) held on $obj (a loader is running); try again later"; exit 1; }
+                  idx="$(q "SELECT string_agg(format('ALTER INDEX public.%I SET TABLESPACE $TS;', i.relname), ' ') FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = 'public.$obj'::regclass")"
+                  start=$(date +%s)
+                  PGOPT='-c statement_timeout=0 -c lock_timeout=5s' q "BEGIN; ALTER TABLE public.$obj SET TABLESPACE $TS; ${idx} COMMIT;"
+                  echo "moved table $obj (+ its indexes) in $(( $(date +%s) - start ))s"
+                  ;;
+                *) echo "::error::$obj has relkind $kind; only indexes and loader-only tables"; exit 1;;
+              esac
+              q "SELECT c.relname, coalesce(t.spcname, 'default'), pg_size_pretty(pg_total_relation_size(c.oid)) FROM pg_class c LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace WHERE c.oid = 'public.$obj'::regclass"
+            done
+            q "SELECT spcname, pg_size_pretty(pg_tablespace_size(oid)) FROM pg_tablespace ORDER BY 1"
+            df -h / "$MNT"
+          }
+
+          case "$ACTION" in
+            inspect) inspect ;;
+            mount) do_mount; inspect ;;
+            tablespace) do_tablespace ;;
+            move) do_move ;;
+          esac
+          echo "=== done ==="
+          REMOTE

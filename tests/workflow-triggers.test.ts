@@ -306,7 +306,9 @@ describe("workflow trigger policy", () => {
     expect(script).toContain('"--reset-checkpoint=${RESET_CHECKPOINT}"');
     expect(script).toContain('case "$RESET_CHECKPOINT" in true|false)');
     expect(script).toContain("--include-bankruptcy=false");
-    expect(script).toContain("remain / total < 0.30");
+    // Root-only 30% floor, or root+volume 30% with per-disk minimums (bulk-disk-floor.ts).
+    expect(script).toContain("remain / total >= 0.30 if vt == 0");
+    expect(script).toContain("combined >= 0.30 and remain / total >= 0.15 and va / vt >= 0.10");
     // Cached between runs; deleted only when the checkpoint says complete.
     expect(script).toMatch(/cache=hit/);
     expect(script).toMatch(/"stopped":"complete"'; then\s+done_flag=true[\s\S]*rm -f "\$file"/);
@@ -362,7 +364,8 @@ describe("workflow trigger policy", () => {
       expect(body).toContain(`jobs/${script}.mjs`);
       expect(body).toContain("--budget-minutes=90");
       expect(body).toContain("--reset-checkpoint=false");
-      expect(body).toContain("avail / total < 0.30");
+      expect(body).toContain("avail / total >= 0.30 if vt == 0");
+      expect(body).toContain("combined >= 0.30 and avail / total >= 0.15 and va / vt >= 0.10");
     }
     const opinions = (jobs.opinions!.steps ?? []).map((step) => step.run ?? "").join("\n");
     // Opinion text waits for complete docket and cluster checkpoints.
