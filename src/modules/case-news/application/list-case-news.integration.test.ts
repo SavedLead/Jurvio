@@ -32,10 +32,10 @@ describe.skipIf(!databaseUrl)("case news read path", () => {
           INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version)
           VALUES ('legal_case', ${row!.id}, ${displayable}, true, true, false, false, 'test', 'test')`;
       }
-      const insert = (caseId: string, slug: string, status: string, daysAgo = 1) => sql`
+      const insert = (caseId: string, slug: string, status: string, daysAgo = 1, source = "gdelt") => sql`
         INSERT INTO case_news_link (case_id, url, outlet, outlet_domain, title, published_at, source, match_method, match_score, match_rule_version, review_status)
         VALUES (${caseId}, ${`https://www.reuters.com/${slug}`}, 'Reuters', 'reuters.com', ${`Headline ${slug}`}, now() - make_interval(days => ${daysAgo}),
-          'gdelt', 'parties_court_timeframe', 0.9, 'test', ${status})`;
+          ${source}, 'parties_court_timeframe', 0.9, 'test', ${status})`;
       await insert(ids["jv-readopen"]!, "a", "auto_published", 2);
       await insert(ids["jv-readopen"]!, "b", "approved", 1);
       await insert(ids["jv-readopen"]!, "c", "pending_review");
@@ -43,6 +43,9 @@ describe.skipIf(!databaseUrl)("case news read path", () => {
       await insert(ids["jv-readseal"]!, "e", "auto_published");
       await insert(ids["jv-readhide"]!, "f", "auto_published");
       await insert(ids["jv-readhide"]!, "g", "pending_review");
+      // Google News RSS is off (personal-use terms): even a stored row is never shown or queued.
+      await insert(ids["jv-readopen"]!, "gn1", "auto_published", 0, "google_news_rss");
+      await insert(ids["jv-readopen"]!, "gn2", "pending_review", 0, "google_news_rss");
 
       expect((await listCaseNews(sql, "jv-readopen")).map((link) => link.title)).toEqual(["Headline b", "Headline a"]);
       expect(await listCaseNews(sql, "jv-readseal")).toEqual([]);

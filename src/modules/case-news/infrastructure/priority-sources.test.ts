@@ -1,9 +1,7 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { FetchBudget, RateLimitedError } from "@/modules/ingestion/live-feeds/polite-fetcher";
 import { caseNewsTerms } from "../domain/case-terms";
 import { buildPriorityQuery, buildPriorityQueryCore, isTransientNetworkError, searchGdelt } from "./gdelt";
-import { buildGoogleNewsUrl, parseGoogleNewsRss, searchGoogleNews } from "./google-news";
 
 const terms = (caption: string, docketNumber: string, courtCode = "scotus", courtName = "scotus") =>
   caseNewsTerms({ caption, docketNumber, courtCode, courtName });
@@ -37,34 +35,6 @@ describe("transient GDELT failures back off like rate limiting", () => {
   it("turns fetch failed into RateLimitedError and stops the budget", async () => {
     const budget = new FetchBudget({ source: "gdelt", maxRequests: 5, maxMs: 60_000, minIntervalMs: 0, fetchImpl: (async () => { throw new TypeError("fetch failed"); }) as typeof fetch });
     await expect(searchGdelt(budget, "x")).rejects.toBeInstanceOf(RateLimitedError);
-    expect(budget.canFetch).toBe(false);
-  });
-});
-
-describe("Google News RSS", () => {
-  const xml = readFileSync(new URL("./fixtures/google-news-search.xml", import.meta.url), "utf8");
-  it("builds a search URL", () => {
-    const url = new URL(buildGoogleNewsUrl('Barrett "Supreme Court"'));
-    expect(url.hostname).toBe("news.google.com");
-    expect(url.searchParams.get("q")).toBe('Barrett "Supreme Court" when:90d');
-    expect(url.searchParams.get("ceid")).toBe("US:en");
-  });
-  it("keeps headline, outlet, link and date; no duplicate snippet", () => {
-    const items = parseGoogleNewsRss(xml);
-    expect(items.length).toBe(3);
-    expect(items[0]).toMatchObject({ title: "Who is Justice Barrett?", sourceName: "SCOTUSblog", sourceDomain: "scotusblog.com", snippet: null });
-    expect(items[0]!.url).toMatch(/^https:\/\/news\.google\.com\//);
-  });
-  it("keeps a truncated description when it adds to the headline", () => {
-    const long = "word ".repeat(80);
-    const feed = `<rss><channel><item><title>Court rules - Reuters</title><link>https://news.google.com/a</link><pubDate>Mon, 26 Oct 2026 10:00:00 GMT</pubDate><description>&lt;p&gt;${long}&lt;/p&gt;</description><source url="https://www.reuters.com">Reuters</source></item></channel></rss>`;
-    const [item] = parseGoogleNewsRss(feed);
-    expect(item!.title).toBe("Court rules");
-    expect(item!.snippet!.length).toBeLessThanOrEqual(200);
-  });
-  it("stops on 503 like a rate limit", async () => {
-    const budget = new FetchBudget({ source: "google_news_rss", maxRequests: 5, maxMs: 60_000, minIntervalMs: 0, fetchImpl: (async () => new Response("captcha", { status: 503 })) as typeof fetch });
-    await expect(searchGoogleNews(budget, "x")).rejects.toBeInstanceOf(RateLimitedError);
     expect(budget.canFetch).toBe(false);
   });
 });

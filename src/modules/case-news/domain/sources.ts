@@ -31,8 +31,8 @@ export const CASE_NEWS_SOURCES: readonly CaseNewsSourceInfo[] = [
   {
     id: "google_news_rss",
     name: "Google News RSS",
-    enabled: true,
-    terms: "Enabled 2026-11-01 at the owner's request as a keyless second matcher for SCOTUS and appeals cases (one search per case, 8 s apart, ~30 per run). Google's feed terms describe personal, non-commercial feed-reader use; we store and show only the headline, the feed's own short description (truncated), outlet name, link and date, and never fetch article text. Disable with --no-google-news if Google objects.",
+    enabled: false,
+    terms: "Turned off 2026-11-01 by the owner: Google's feed terms allow personal, non-commercial feed-reader use only, which does not cover a commercial site. Never queried; links it found earlier were deleted (migration 0153_case_news_google_off_single_party) and the case-page readers exclude this source.",
     termsUrl: "https://news.google.com/rss",
   },
   {

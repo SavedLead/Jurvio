@@ -27,6 +27,10 @@ describe.skipIf(!databaseUrl)("runCaseNews", () => {
         ["jv-newsmaple", "25-231", "MAPLEBEAR INC., ET AL. V. CITY OF SEATTLE", "published"],
         ["jv-newsseal", "25-900", "SEALED V. ACME WIDGETS, INC.", "published"],
         ["jv-newsrestr", "25-901", "ACME ROCKETS, INC. V. CITY OF TACOMA", "restricted"],
+        // One distinctive party (the other is an agency): a headline naming it plus the court goes to review only.
+        ["jv-newszeph", "25-240", "ZEPHYRA HOLDINGS LLC V. NATIONAL LABOR RELATIONS BOARD", "published"],
+        // Party named like a sitting judge: "Judge Quillfeather" headlines are not about this case.
+        ["jv-newsquill", "25-241", "QUILLFEATHER V. UNITED STATES", "published"],
       ];
       for (const [publicId, docket, caption, publication] of cases) {
         const [row] = await sql<{ id: string }[]>`
@@ -37,6 +41,9 @@ describe.skipIf(!databaseUrl)("runCaseNews", () => {
           INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version)
           VALUES ('legal_case', ${row!.id}, true, true, true, false, false, 'test', 'test')`;
       }
+      await sql`
+        INSERT INTO judge (public_id, display_name, normalized_name, court_id, active)
+        VALUES ('jj-quill', 'Maria L. Quillfeather', 'maria l quillfeather', ${court!.id}, true)`;
       const requested: string[] = [];
       const recentGdelt = fixture("gdelt-uber-seattle.json").replace(/"seendate": "202610(\d\d)T/g, (_m, day: string) => {
         const date = new Date(Date.now() - (25 - Number(day)) * 86_400_000);
@@ -78,13 +85,17 @@ describe.skipIf(!databaseUrl)("runCaseNews", () => {
       });
       const cnsLink = links.find((link) => link.source === "courthousenews_rss");
       expect(cnsLink?.snippet).toMatch(/^A Ninth Circuit panel rejected/);
-      // Precision: same-issue Maplebear case gets nothing from Uber headlines; sealed/restricted get nothing.
-      expect(links.filter((link) => link.public_id !== "jv-newsuber")).toEqual([]);
+      // One-party match: queued for review, never published.
+      expect(links.filter((link) => link.public_id === "jv-newszeph").map((link) => [link.match_method, link.review_status]))
+        .toEqual([["single_party_court", "pending_review"]]);
+      // Precision: same-issue Maplebear case gets nothing from Uber headlines; sealed/restricted and the
+      // judge-named party get nothing.
+      expect(links.filter((link) => link.public_id !== "jv-newsuber" && link.public_id !== "jv-newszeph")).toEqual([]);
 
       const runs = await sql<{ source: string; ok: boolean; links_published: number }[]>`SELECT source, ok, links_published FROM case_news_run ORDER BY id`;
       expect(runs.map((run) => run.source)).toEqual(["gdelt", "courthousenews_rss"]);
       const [state] = await sql<{ count: number }[]>`SELECT count(*)::int AS count FROM case_news_query_state`;
-      expect(state!.count).toBe(2);
+      expect(state!.count).toBe(4);
 
       // A reviewer's decision is final; re-running neither duplicates nor overrides it.
       await sql`UPDATE case_news_link SET review_status = 'rejected' WHERE outlet = 'The Seattle Times'`;

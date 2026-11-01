@@ -2,11 +2,11 @@ import type { Sql } from "postgres";
 import { FetchBudget, RateLimitedError } from "@/modules/ingestion/live-feeds/polite-fetcher";
 import { caseNewsTerms, searchable, type CaseNewsTerms, type PartyTerm } from "../domain/case-terms";
 import {
-  CASE_NEWS_MATCH_RULE_VERSION, matchNewsItem, mentionsParty, reviewStatusFor, type MatchContext, type MatchResult, type NewsItem,
+  CASE_NEWS_MATCH_RULE_VERSION, distinctiveForSingleParty, matchNewsItem, mentionsCourt, mentionsParty, reviewStatusFor, withoutCourtNames,
+  type MatchContext, type MatchResult, type NewsItem,
 } from "../domain/match";
 import { isEstablishedOutlet, outletDomain, outletName } from "../domain/outlets";
-import { buildDocketQuery, buildPartiesQuery, buildPriorityQuery, buildPriorityQueryCore, GDELT_MIN_INTERVAL_MS, searchGdelt } from "../infrastructure/gdelt";
-import { GOOGLE_NEWS_MIN_INTERVAL_MS, searchGoogleNews } from "../infrastructure/google-news";
+import { buildDocketQuery, buildPartiesQuery, buildPriorityQuery, GDELT_MIN_INTERVAL_MS, searchGdelt } from "../infrastructure/gdelt";
 import { COURTHOUSE_NEWS_FEEDS, fetchRssFeeds } from "../infrastructure/rss";
 import { captionLooksRestricted, caseNewsEligibleSql } from "./eligibility";
 import { RECHECK_HOURS, selectCaseNewsCandidates, type CaseNewsCandidate, type PriorityTier } from "./select-candidates";
@@ -20,8 +20,6 @@ export interface CaseNewsRunOptions {
   candidateLimit: number;
   rss: boolean;
   gdelt: boolean;
-  googleNews?: boolean;
-  googleNewsMaxRequests?: number;
   tiers?: PriorityTier[];
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -78,6 +76,24 @@ export async function nameAmbiguity(sql: Sql, caseId: string, courtCode: string 
     LIMIT 25`, params as never[]);
   if (rows.some((row) => row.same)) return "same_court";
   return rows.length ? "other_court" : "none";
+}
+
+/** Last name from a judge display name ("John G. Roberts, Jr." -> "roberts"). */
+export function judgeSurname(displayName: string): string | null {
+  const tokens = displayName.replace(/,.*$/, "").replace(/[.]/g, " ").split(/\s+/)
+    .filter((token) => /^[A-Za-z'’-]{2,}$/.test(token) && !/^(?:JR|SR|II|III|IV)$/i.test(token));
+  const last = tokens.at(-1);
+  return last && last.length >= 3 ? last.toLowerCase() : null;
+}
+
+/** Surnames of sitting judges in the judge table; a party with one of these names never matches on its name alone. */
+export async function loadJudgeSurnames(sql: Sql): Promise<Set<string>> {
+  try {
+    const rows = await sql<{ display_name: string }[]>`SELECT display_name FROM judge WHERE active IS TRUE`;
+    return new Set(rows.map((row) => judgeSurname(row.display_name)).filter((name): name is string => Boolean(name)));
+  } catch {
+    return new Set();
+  }
 }
 
 interface UpsertInput {
@@ -176,6 +192,7 @@ async function runGdelt(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRu
     fetchImpl: options.fetchImpl, sleep: options.sleep,
   });
   const backoff = { retries: 0 };
+  const judgeSurnames = await loadJudgeSurnames(sql);
   const candidates = await selectCaseNewsCandidates(sql, { limit: options.candidateLimit, tiers: options.tiers });
   summary.detail.candidates = candidates.length;
   let unsearchable = 0;
@@ -210,7 +227,7 @@ async function runGdelt(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRu
           if (article.language && article.language !== "English") continue;
           await scoreAndStore(sql, summary, candidate.caseId, { url: article.url, title: article.title, snippet: null, publishedAt: article.publishedAt }, "gdelt", {
             terms, filedOn: candidate.filedOn, decidedOn: candidate.decidedOn, ambiguity: ambiguity ?? "none",
-            courtInFullText: kind === "parties" || priority, docketInFullText: kind === "docket", now: now(),
+            courtInFullText: kind === "parties" || priority, docketInFullText: kind === "docket", judgeSurnames, now: now(),
           }, samples, candidate.publicId);
         }
       }
@@ -247,61 +264,6 @@ async function searchGdeltWithBackoff(budget: FetchBudget, query: string, start:
   }
 }
 
-/**
- * Google News RSS search: a second, keyless matcher for SCOTUS and appeals cases.
- * Walks the recent SCOTUS-then-appeals pool a slice per run (cursor kept in the
- * run's detail), one search per case, paced politely. Stores headline, short
- * feed snippet, outlet, link and date only; same scoring and thresholds as GDELT.
- */
-async function runGoogleNews(sql: Sql, options: CaseNewsRunOptions): Promise<SourceRunSummary> {
-  const summary = emptySummary("google_news_rss");
-  const now = options.now ?? (() => new Date());
-  const samples: unknown[] = [];
-  const budget = new FetchBudget({
-    source: "google_news_rss", maxRequests: options.googleNewsMaxRequests ?? 30, maxMs: 5 * 60_000,
-    minIntervalMs: GOOGLE_NEWS_MIN_INTERVAL_MS, timeoutMs: 20_000, fetchImpl: options.fetchImpl, sleep: options.sleep,
-  });
-  const pool = await selectCaseNewsCandidates(sql, { limit: 2000, tiers: ["scotus", "appeals"], ignoreSchedule: true });
-  const [last] = await sql<{ cursor: number | null }[]>`
-    SELECT (detail->>'cursor')::int AS cursor FROM case_news_run WHERE source = 'google_news_rss' ORDER BY id DESC LIMIT 1`;
-  const cursor = last?.cursor && last.cursor < pool.length ? last.cursor : 0;
-  let unsearchable = 0;
-  let processed = 0;
-  const errors: string[] = [];
-  for (let i = 0; i < pool.length && budget.canFetch; i += 1) {
-    const index = (cursor + i) % pool.length;
-    const candidate = pool[index]!;
-    processed = i + 1;
-    if (captionLooksRestricted(candidate.caption, candidate.docketNumber)) { summary.skippedRestricted += 1; continue; }
-    const terms = caseNewsTerms(candidate);
-    const built = buildPriorityQueryCore(terms, candidate.docketNumber);
-    if (!built) { unsearchable += 1; continue; }
-    let items;
-    try {
-      items = await searchGoogleNews(budget, built.query);
-    } catch (caught) {
-      if (caught instanceof RateLimitedError) { summary.rateLimited = true; processed = i; break; }
-      errors.push(String(caught).slice(0, 200));
-      continue;
-    }
-    summary.casesQueried += 1;
-    summary.itemsSeen += items.length;
-    if (!items.length) continue;
-    const ambiguity = await nameAmbiguity(sql, candidate.caseId, candidate.courtCode, terms);
-    for (const item of items) {
-      await scoreAndStore(sql, summary, candidate.caseId, { url: item.url, title: item.title, snippet: item.snippet, publishedAt: item.publishedAt }, "google_news_rss", {
-        terms, filedOn: candidate.filedOn, decidedOn: candidate.decidedOn, ambiguity,
-        courtInFullText: false, docketInFullText: false, now: now(),
-      }, samples, candidate.publicId, item.sourceDomain);
-    }
-  }
-  summary.requests = budget.requests;
-  if (errors.length) { summary.detail.errors = errors.slice(0, 10); summary.detail.errorCount = errors.length; }
-  if (summary.casesQueried === 0 && errors.length) { summary.ok = false; summary.error = errors[0] ?? null; }
-  summary.detail = { ...summary.detail, pool: pool.length, cursor: pool.length ? (cursor + processed) % pool.length : 0, unsearchable, samples };
-  return summary;
-}
-
 /** Cases named in a news item ("X v. Y" in the headline or description), found through the caption trigram index. */
 async function casesNamedIn(sql: Sql, text: string): Promise<CaseNewsCandidate[]> {
   const found: CaseNewsCandidate[] = [];
@@ -335,14 +297,25 @@ async function runCourthouseNews(sql: Sql, options: CaseNewsRunOptions): Promise
   // Active priority cases, regardless of their GDELT schedule.
   const active = await selectActiveForRss(sql);
   const activeTerms = active.map((candidate) => ({ candidate, terms: caseNewsTerms(candidate) }));
+  const judgeSurnames = await loadJudgeSurnames(sql);
+  let singlePartyAmbiguous = 0;
   for (const item of items) {
     const text = `${item.title}\n${item.snippet ?? ""}`;
+    const partyText = withoutCourtNames(text);
     const pool = new Map<string, { candidate: CaseNewsCandidate; terms: CaseNewsTerms }>();
+    const singleParty: Array<{ candidate: CaseNewsCandidate; terms: CaseNewsTerms }> = [];
     for (const entry of activeTerms) {
       const hasDocket = entry.terms.docketPatterns.some((pattern) => pattern.test(text));
-      const hasKeys = Boolean(entry.terms.right) && [entry.terms.left, entry.terms.right].every((party) => party && mentionsParty(text, party));
-      if (hasDocket || hasKeys) pool.set(entry.candidate.caseId, entry);
+      const hasKeys = Boolean(entry.terms.right) && [entry.terms.left, entry.terms.right].every((party) => party && mentionsParty(partyText, party));
+      if (hasDocket || hasKeys) { pool.set(entry.candidate.caseId, entry); continue; }
+      // One distinctive party plus this case's court named in the item: a review-queue candidate.
+      const sides = [entry.terms.left, entry.terms.right].filter((party): party is PartyTerm => Boolean(party));
+      if (mentionsCourt(text, entry.terms.courtTerms)
+        && sides.some((party) => distinctiveForSingleParty(party, judgeSurnames) && mentionsParty(partyText, party))) singleParty.push(entry);
     }
+    // A name that fits many cases in the same court identifies none of them: skip one-party candidates past the cap.
+    if (singleParty.length > SINGLE_PARTY_MAX_CASES_PER_ITEM) singlePartyAmbiguous += 1;
+    else for (const entry of singleParty) pool.set(entry.candidate.caseId, entry);
     for (const candidate of await casesNamedIn(sql, text)) {
       if (!pool.has(candidate.caseId)) pool.set(candidate.caseId, { candidate, terms: caseNewsTerms(candidate) });
     }
@@ -351,14 +324,17 @@ async function runCourthouseNews(sql: Sql, options: CaseNewsRunOptions): Promise
       const ambiguity = await nameAmbiguity(sql, candidate.caseId, candidate.courtCode, terms);
       await scoreAndStore(sql, summary, candidate.caseId, item, "courthousenews_rss", {
         terms, filedOn: candidate.filedOn, decidedOn: candidate.decidedOn, ambiguity,
-        courtInFullText: false, docketInFullText: false, now: now(),
+        courtInFullText: false, docketInFullText: false, judgeSurnames, now: now(),
       }, samples, candidate.publicId);
     }
   }
   summary.casesQueried = active.length;
-  summary.detail = { ...summary.detail, samples };
+  summary.detail = { ...summary.detail, singlePartyAmbiguous, samples };
   return summary;
 }
+
+/** An RSS item naming one party that fits more cases than this is too ambiguous to queue for any of them. */
+export const SINGLE_PARTY_MAX_CASES_PER_ITEM = 3;
 
 /** Max cases the RSS matcher checks each item against. */
 const RSS_POOL_LIMIT = 5000;
@@ -401,7 +377,6 @@ export async function runCaseNews(sql: Sql, options: CaseNewsRunOptions): Promis
   const summaries: SourceRunSummary[] = [];
   const steps: Array<[string, boolean, () => Promise<SourceRunSummary>]> = [
     ["gdelt", options.gdelt, () => runGdelt(sql, options)],
-    ["google_news_rss", options.googleNews ?? false, () => runGoogleNews(sql, options)],
     ["courthousenews_rss", options.rss, () => runCourthouseNews(sql, options)],
   ];
   for (const [source, enabled, step] of steps) {
