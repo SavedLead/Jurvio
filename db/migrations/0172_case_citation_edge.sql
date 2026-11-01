@@ -128,7 +128,13 @@ BEGIN
   PERFORM mark_citation_dirty(NEW.case_id, 3::smallint);
   RETURN NEW;
 END $$;
-DROP TRIGGER IF EXISTS direct_court_event_citation_dirty ON direct_court_event;
-CREATE TRIGGER direct_court_event_citation_dirty AFTER INSERT OR UPDATE OF restricted, case_id ON direct_court_event
-FOR EACH ROW WHEN (NEW.restricted AND NEW.case_id IS NOT NULL)
-EXECUTE FUNCTION citation_dirty_on_restricted_event();
+-- Only on a direct_court_event table in this schema (test schemas that do not
+-- create it must never touch public's trigger).
+DO $$
+BEGIN
+  IF to_regclass(quote_ident(current_schema()) || '.direct_court_event') IS NOT NULL THEN
+    EXECUTE 'DROP TRIGGER IF EXISTS direct_court_event_citation_dirty ON direct_court_event';
+    EXECUTE 'CREATE TRIGGER direct_court_event_citation_dirty AFTER INSERT OR UPDATE OF restricted, case_id ON direct_court_event '
+      'FOR EACH ROW WHEN (NEW.restricted AND NEW.case_id IS NOT NULL) EXECUTE FUNCTION citation_dirty_on_restricted_event()';
+  END IF;
+END $$;
