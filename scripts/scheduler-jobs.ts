@@ -109,18 +109,10 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     budgetMs: 12 * minute,
     command: ["jobs/run-live-feeds.mjs", "--source=scotus"],
   },
-  {
-    // CourtListener dockets modified since the stored watermark (federal
-    // courts only), oldest change first, from listing pages alone: at most 5
-    // requests per run. Stops on the first 429 and stays quiet until the
-    // stored Retry-After time. Draft cases only.
-    lane: "core",
-    name: "courtlistener-tail",
-    initialDelayMs: 6 * minute,
-    intervalMs: 60 * minute,
-    budgetMs: 8 * minute,
-    command: ["jobs/run-live-feeds.mjs", "--source=courtlistener"],
-  },
+  // The CourtListener API live tail ("courtlistener-tail") was dropped on
+  // 2026-10-31 (David Rosenberg): it shared the API token's daily quota and kept
+  // hitting 429. New federal data comes from the official court feeds and the
+  // CourtListener bulk-file loaders, which are unchanged.
   {
     lane: "core",
     name: "judge-case-matching",
