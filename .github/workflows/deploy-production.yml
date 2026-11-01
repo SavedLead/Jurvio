@@ -332,6 +332,53 @@ jobs:
             mv "$tmp" "$env_file"
             echo "GOVINFO_API_KEY synced into box env (value not printed)."
           '
+      - name: Sync customer email settings to box env
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_POSTAL_ADDRESS: ${{ secrets.EMAIL_POSTAL_ADDRESS }}
+        run: |
+          set -euo pipefail
+          # The account-alerts scheduler job (worker-core) emails followed-case digests
+          # through Resend. Upsert each set secret into the box env as one line over
+          # stdin (never in argv or logs); unset secrets leave the env untouched and
+          # the job stays a no-op. "Release and verify" recreates the containers.
+          payload="$(mktemp)"
+          trap 'rm -f "$payload"' EXIT
+          chmod 600 "$payload"
+          for name in RESEND_API_KEY EMAIL_FROM EMAIL_POSTAL_ADDRESS; do
+            value="${!name:-}"
+            [ -n "$value" ] || continue
+            case "$value" in *$'\n'*|*$'\r'*) echo "::error::$name contains a newline"; exit 1;; esac
+            printf '%s=%s\n' "$name" "$value" >> "$payload"
+          done
+          if [ ! -s "$payload" ]; then
+            echo "::notice title=Customer email not configured::RESEND_API_KEY/EMAIL_FROM/EMAIL_POSTAL_ADDRESS secrets are empty; account-alerts stays a no-op."
+            exit 0
+          fi
+          SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+          timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" '
+            set -euo pipefail
+            umask 077
+            env_file=/opt/jurvio/.env.production
+            touch "$env_file"
+            updates="$(mktemp)"; tmp="$(mktemp)"
+            cat > "$updates"
+            cp "$env_file" "$tmp"
+            while IFS= read -r line; do
+              key="${line%%=*}"
+              grep -v "^${key}=" "$tmp" > "$tmp.next" || true
+              mv "$tmp.next" "$tmp"
+              printf "%s\n" "$line" >> "$tmp"
+              echo "$key synced into box env (value not printed)."
+            done < "$updates"
+            chmod 600 "$tmp"
+            mv "$tmp" "$env_file"
+            rm -f "$updates"
+          ' < "$payload"
       - name: Release and verify
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:

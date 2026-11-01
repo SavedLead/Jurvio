@@ -34,6 +34,9 @@ export default async function AccountPage() {
         <dt>Alerts</dt><dd>{account.alertsUnsubscribed ? "Unsubscribed" : CADENCE_LABEL[plan.alertCadence]}</dd>
         <dt>Follows</dt><dd>{account.followCount} of {plan.followLimit}</dd>
       </dl>
+      {account.alertsUnsubscribed ? <form action="/api/alerts/resubscribe" method="post" style={{ marginBottom: 12 }}>
+        <button className="accountButton" type="submit">Resume alert emails</button>
+      </form> : null}
       <form action="/api/auth/signout" method="post">
         <button className="accountButton secondary" type="submit">Sign out</button>
       </form>
