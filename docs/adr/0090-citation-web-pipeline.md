@@ -59,3 +59,22 @@ bucket on a builder runner. Nothing touches the CourtListener REST API or either
   hidden, restricted and sealed-caption cases never appear).
 
 Every phase checkpoints `rows_read` in `courtlistener_citation_import` and resumes.
+
+## D11/D13: live-feed opinion text and nightly catch-up (migration 0174)
+
+`live_opinion_text` queues opinions the live feeds recorded without text: district
+court-site PDFs (`free_source_item.item_key`), circuit site feeds (the URL at the end
+of `coa-feed:*` docket entries) and GovInfo district packages (granule PDF via the
+GovInfo API, key sent as `X-Api-Key`, never in URLs). Circuit GovInfo packages stay
+with the official appellate pipeline. The resident `live-opinion-text` lane (coa,
+every 20 min, 60 docs, native `pdftotext` only) fetches one request per host every
+4 s, stores the PDF in the artifact store and the text as a DRAFT `judicial_opinion`
+document + `document_content`, which fires the citation triggers. Scanned PDFs are
+parked as `ocr_required` for `live-opinion-text-builder.yml` (OCR with tesseract on
+the builder, also the N-day backfill). Sealed/restricted captions are never queued;
+a case that already has opinion text within a day is marked `duplicate`.
+Publication of these drafts is a separate decision (not automated here).
+
+`citation-nightly` (citations lane, hourly tick, once per ET day 01:00-05:00)
+re-scans 7 days of live feeds, retries transient live-text failures, re-queues
+unparsed live-text documents, and logs queue sizes.
