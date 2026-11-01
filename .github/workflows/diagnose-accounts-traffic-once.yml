@@ -1,0 +1,264 @@
+name: Diagnose accounts + traffic (once, read-only)
+
+# Strictly read-only. Prints AGGREGATE counts only (no emails, no IPs):
+# * follows / waitlist / plan interest / sign-ups from the accounts tables
+#   (0153 customer accounts, 0161 lead_waitlist), excluding test rows;
+# * origin traffic from jurvio-public-01 nginx logs (24h / 7d / 30d), bots vs
+#   humans by user agent, top path templates. Origin logs only see requests
+#   Cloudflare did not serve from its edge cache, so these are lower bounds.
+# DB session is READ ONLY with a short statement_timeout; log parsing runs
+# under nice/ionice on public-01. No writes, reloads, deploys or restarts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type READ-ONLY-REPORT to run (read-only; no writes)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: jurvio-diagnose-accounts-traffic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      PUBLIC_HOST: 10.116.0.5
+    steps:
+      - name: Confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "READ-ONLY-REPORT" ]; then echo "::error::type READ-ONLY-REPORT"; exit 1; fi
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Accounts / follows / waitlist counts (read-only aggregates)
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -At -F ' | ' -v ON_ERROR_STOP=0 <<'SQL'
+          SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;
+          SET statement_timeout = '15s';
+          SET lock_timeout = '2s';
+          SELECT '=== now (UTC) ===', now() AT TIME ZONE 'UTC';
+          SELECT '=== migrations present ===', string_agg(name, ',' ORDER BY name) FROM schema_migration WHERE name ~ '^(0153|0161|0171|0176)';
+          SELECT '=== case_follow columns ===', string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_name = 'case_follow' AND table_schema = current_schema();
+          -- test-row rule (used everywhere below)
+          SELECT '=== test rule ===', 'example.com/example.* domains, audit-test, david.audit-verify, +audit/+test tags, @jurvio.com addresses';
+          SELECT '=== lead_waitlist totals (all rows / test rows / real rows) ===',
+            count(*), count(*) FILTER (WHERE email ~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)'),
+            count(*) FILTER (WHERE email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)')
+            FROM lead_waitlist;
+          SELECT '=== lead_waitlist real: rows | unique emails | sum submissions | converted | first | last ===',
+            count(*), count(DISTINCT email), coalesce(sum(submissions),0), count(*) FILTER (WHERE converted_at IS NOT NULL),
+            min(created_at) AT TIME ZONE 'America/New_York', max(created_at) AT TIME ZONE 'America/New_York'
+            FROM lead_waitlist WHERE email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)';
+          SELECT '=== lead_waitlist real by source/plan: source | plan | rows | unique emails | submissions ===';
+          SELECT source, coalesce(plan::text,'-'), count(*), count(DISTINCT email), sum(submissions)
+            FROM lead_waitlist WHERE email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)'
+            GROUP BY 1,2 ORDER BY 1,2;
+          SELECT '=== lead_waitlist real case_follow: distinct cases ===', count(DISTINCT case_public_id)
+            FROM lead_waitlist WHERE source='case_follow' AND email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)';
+          SELECT '=== lead_waitlist real top followed cases: case_public_id | emails ===';
+          SELECT case_public_id, count(DISTINCT email) FROM lead_waitlist
+            WHERE source='case_follow' AND email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)'
+            GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10;
+          SELECT '=== lead_waitlist real by day (ET): day | rows | unique emails ===';
+          SELECT (created_at AT TIME ZONE 'America/New_York')::date, count(*), count(DISTINCT email) FROM lead_waitlist
+            WHERE email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)' GROUP BY 1 ORDER BY 1;
+          SELECT '=== app_user: all | test | real | real verified ===',
+            count(*), count(*) FILTER (WHERE email ~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)'),
+            count(*) FILTER (WHERE email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)'),
+            count(*) FILTER (WHERE email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)' AND email_verified_at IS NOT NULL)
+            FROM app_user;
+          SELECT '=== case_follow: all rows | real rows | real users | real cases ===',
+            count(*), count(*) FILTER (WHERE u.email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)'),
+            count(DISTINCT f.user_id) FILTER (WHERE u.email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)'),
+            count(DISTINCT f.case_id) FILTER (WHERE u.email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)')
+            FROM case_follow f JOIN app_user u ON u.id = f.user_id;
+          SELECT '=== plan_waitlist real: plan | users ===';
+          SELECT w.plan, count(*) FROM plan_waitlist w JOIN app_user u ON u.id=w.user_id
+            WHERE u.email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)' GROUP BY 1 ORDER BY 1;
+          SELECT '=== auth_login_token real: requests | with follow intent | consumed ===',
+            count(*), count(*) FILTER (WHERE follow_case_public_id IS NOT NULL), count(*) FILTER (WHERE consumed_at IS NOT NULL)
+            FROM auth_login_token WHERE email !~ '(@example\.|audit-test|david\.audit-verify|\+audit|\+test|@jurvio\.com$)';
+          SELECT '=== email_event: kind | status | n ===';
+          SELECT kind, status, count(*) FROM email_event GROUP BY 1,2 ORDER BY 1,2;
+          SELECT '=== account_subscription: plan | status | n ===';
+          SELECT plan, status, count(*) FROM account_subscription GROUP BY 1,2 ORDER BY 1,2;
+          SELECT '=== DONE db ===';
+          SQL
+          REMOTE
+
+      - name: Origin traffic from public-01 nginx logs (aggregates only)
+        run: |
+          set -euo pipefail
+          target=""
+          if ssh "root@$PUBLIC_HOST" true 2>/dev/null; then target=root; elif ssh "$INGESTION_USER@$PUBLIC_HOST" true; then target="$INGESTION_USER"; else echo "::error::no ssh to public-01"; exit 1; fi
+          ssh "$target@$PUBLIC_HOST" bash -se <<'REMOTE'
+          set -uo pipefail
+          echo "=== log files ==="
+          sudo -n ls -la --time-style=+%Y-%m-%dT%H:%M /var/log/nginx/ 2>/dev/null || ls -la /var/log/nginx/
+          if sudo -n true 2>/dev/null; then SUDO="sudo -n"; else SUDO=""; fi
+          $SUDO nice -n 19 ionice -c3 python3 - <<'PY' || echo "(traffic summary failed)"
+          import collections, datetime, glob, gzip, os, re, time
+          now = time.time()
+          windows = {"24h": 86400, "7d": 7*86400, "30d": 30*86400}
+          files = sorted(glob.glob("/var/log/nginx/jurvio.access.log*"), key=os.path.getmtime)
+          files = [f for f in files if now - os.path.getmtime(f) < 32*86400]
+          stamp = re.compile(r"\[(\d{2})/([A-Za-z]{3})/(\d{4}):(\d{2}):(\d{2}):(\d{2}) ([+-]\d{4})\]")
+          req_re = re.compile(r'"([A-Z]+) ([^" ]+)[^"]*" (\d{3})')
+          ua_re = re.compile(r'"([^"]*)"\s+cf=(\S*)')
+          months = {m: i for i, m in enumerate(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], 1)}
+          bot_re = re.compile(r"bot|crawl|spider|slurp|curl|wget|python|httpx|go-http|java/|okhttp|axios|node-fetch|headless|lighthouse|monitor|uptime|scrapy|facebookexternalhit|preview|feed|gptbot|claude|perplexity|bytespider|ahrefs|semrush|mj12|dataforseo|petalbot|amazonbot|applebot|bingpreview|^-$|^$", re.I)
+          asset_re = re.compile(r"^/(_next/|favicon|static/|.*\.(?:js|css|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|map|txt|xml|json)$)", re.I)
+          def tmpl(p):
+              p = p.split("?", 1)[0]
+              p = re.sub(r"/jv-[a-z0-9]{8,10}", "/:case", p, flags=re.I)
+              p = re.sub(r"/jd-[a-z0-9]{8,10}", "/:doc", p, flags=re.I)
+              p = re.sub(r"/(judge|judges|party|parties|attorney|attorneys|law-firm|law-firms|court|courts|sitemaps/[a-z]+)/[^/]+", r"/\1/:id", p)
+              return p[:80]
+          S = {w: dict(req=0, ips=set(), human_ips=set(), pv=0, human_pv=0, bot_req=0, google_req=0, bing_req=0, status=collections.Counter(), paths=collections.Counter(), hpaths=collections.Counter(), bots=collections.Counter(), signin_post=0, follow_post=0, waitlist_post=0) for w in windows}
+          first = None; parsed = 0
+          for f in files:
+              op = gzip.open if f.endswith(".gz") else open
+              try:
+                  fh = op(f, "rt", errors="replace")
+              except Exception as e:
+                  print("skip", f, e); continue
+              with fh:
+                  for line in fh:
+                      m = stamp.search(line)
+                      if not m: continue
+                      d, mon, y, H, M, Sx, off = m.groups()
+                      sign = 1 if off[0] == "+" else -1
+                      ep = datetime.datetime(int(y), months[mon], int(d), int(H), int(M), int(Sx), tzinfo=datetime.timezone.utc).timestamp() - sign*(int(off[1:3])*3600+int(off[3:5])*60)
+                      age = now - ep
+                      if age > 30*86400 or age < 0: continue
+                      parsed += 1
+                      first = ep if first is None or ep < first else first
+                      r = req_re.search(line)
+                      method, path, status = (r.group(1), r.group(2), r.group(3)) if r else ("?", "?", "000")
+                      u = ua_re.search(line)
+                      ua = u.group(1) if u else ""
+                      cf = u.group(2) if u else "-"
+                      ip = cf if cf not in ("-", "") else line.split(" ", 1)[0]
+                      if ip.startswith("127.") or ip.startswith("10."): continue
+                      is_bot = bool(bot_re.search(ua))
+                      is_page = method == "GET" and status.startswith("2") and not asset_re.search(path.split("?",1)[0]) and not path.startswith("/api/")
+                      for w, span in windows.items():
+                          if age > span: continue
+                          s = S[w]
+                          s["req"] += 1; s["ips"].add(ip); s["status"][status[0]+"xx"] += 1
+                          if is_bot:
+                              s["bot_req"] += 1
+                              lb = ua.lower()
+                              name = next((k for k in ["googlebot","bingbot","gptbot","claudebot","perplexity","applebot","amazonbot","ahrefsbot","semrushbot","bytespider","petalbot","yandex","duckduck","facebookexternalhit","curl","python","go-http"] if k in lb), "other-bot")
+                              s["bots"][name] += 1
+                          if "googlebot" in ua.lower(): s["google_req"] += 1
+                          if "bingbot" in ua.lower(): s["bing_req"] += 1
+                          if is_page:
+                              s["pv"] += 1; s["paths"][tmpl(path)] += 1
+                              if not is_bot:
+                                  s["human_pv"] += 1; s["human_ips"].add(ip); s["hpaths"][tmpl(path)] += 1
+                          if method == "POST":
+                              pp = path.split("?",1)[0]
+                              if pp.startswith("/api/auth/request"): s["signin_post"] += 1
+                              if "follow" in pp: s["follow_post"] += 1
+                              if "waitlist" in pp: s["waitlist_post"] += 1
+          print("files_read=", len(files), "lines_in_30d=", parsed)
+          print("earliest_line_utc=", datetime.datetime.fromtimestamp(first, datetime.timezone.utc).isoformat() if first else None)
+          for w in windows:
+              s = S[w]
+              print(f"=== {w} === requests={s['req']} unique_ips={len(s['ips'])} page_views(GET 2xx html-ish)={s['pv']} human_page_views={s['human_pv']} human_unique_ips={len(s['human_ips'])} bot_requests={s['bot_req']} googlebot_requests={s['google_req']} bingbot_requests={s['bing_req']} status={dict(s['status'])}")
+              print(f"  POSTs: /api/auth/request={s['signin_post']} *follow*={s['follow_post']} *waitlist*={s['waitlist_post']}")
+              print("  bots:", s["bots"].most_common(12))
+              print("  top paths (all):", s["paths"].most_common(12))
+              print("  top paths (human UA):", s["hpaths"].most_common(12))
+          PY
+          echo "=== DONE traffic ==="
+          REMOTE
+
+  search-console:
+    # Read-only Search Console report: webmasters.readonly scope, GET/query
+    # endpoints only (no sitemap submit, no URL inspection quota use).
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 8
+    steps:
+      - name: Confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "READ-ONLY-REPORT" ]; then echo "::error::type READ-ONLY-REPORT"; exit 1; fi
+      - name: Authenticate to Google Cloud (read-only scope)
+        id: google-auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/936072370485/locations/global/workloadIdentityPools/github-actions/providers/jurvio
+          service_account: jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com
+          access_token_scopes: https://www.googleapis.com/auth/webmasters.readonly
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sitemaps + search analytics (read-only)
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+        run: |
+          cat > /tmp/gsc-read.mjs <<'JS'
+          const token = process.env.GOOGLE_OAUTH_ACCESS_TOKEN;
+          const site = encodeURIComponent("sc-domain:jurvio.com");
+          const base = `https://www.googleapis.com/webmasters/v3/sites/${site}`;
+          async function g(url, body) {
+            const r = await fetch(url, { method: body ? "POST" : "GET", headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+            const t = await r.text();
+            if (!r.ok) return { error: r.status, body: t.slice(0, 300) };
+            return t ? JSON.parse(t) : null;
+          }
+          const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+          const sites = await g("https://www.googleapis.com/webmasters/v3/sites");
+          console.log("sites:", JSON.stringify(sites?.siteEntry ?? sites));
+          const sm = await g(`${base}/sitemaps`);
+          console.log("sitemaps:", JSON.stringify(sm, null, 1));
+          const range = { startDate: day(30), endDate: day(0) };
+          console.log("range:", JSON.stringify(range));
+          const tot = await g(`${base}/searchAnalytics/query`, { ...range, dataState: "all" });
+          console.log("totals_30d:", JSON.stringify(tot));
+          const tot7 = await g(`${base}/searchAnalytics/query`, { startDate: day(7), endDate: day(0), dataState: "all" });
+          console.log("totals_7d:", JSON.stringify(tot7));
+          const byDate = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["date"], dataState: "all", rowLimit: 40 });
+          console.log("by_date:", JSON.stringify(byDate?.rows ?? byDate));
+          const pages = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["page"], dataState: "all", rowLimit: 15 });
+          console.log("top_pages:", JSON.stringify(pages?.rows ?? pages));
+          const queries = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["query"], dataState: "all", rowLimit: 15 });
+          console.log("top_queries:", JSON.stringify(queries?.rows ?? queries));
+          const pagesCount = await g(`${base}/searchAnalytics/query`, { ...range, dimensions: ["page"], dataState: "all", rowLimit: 25000 });
+          console.log("distinct_pages_with_impressions_30d:", pagesCount?.rows?.length ?? JSON.stringify(pagesCount));
+          JS
+          node /tmp/gsc-read.mjs
