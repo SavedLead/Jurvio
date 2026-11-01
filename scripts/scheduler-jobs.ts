@@ -118,12 +118,13 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // most 40 per run, with a growing cooldown after throttling) plus Courthouse
     // News RSS matched against every recent SCOTUS and appeals case. SCOTUS and appeals cases first. Stores
     // headline/outlet/date/link and the feed's own short description only.
+    // Google News RSS is off (2026-11-01): its terms are personal, non-commercial only.
     lane: "core",
     name: "case-news",
     initialDelayMs: 11 * minute,
     intervalMs: 30 * minute,
     budgetMs: 14 * minute,
-    command: ["jobs/run-case-news.mjs", "--gdelt-max-requests=25", "--gdelt-max-ms=420000", "--google-news-max-requests=30", "--candidates=300"],
+    command: ["jobs/run-case-news.mjs", "--gdelt-max-requests=25", "--gdelt-max-ms=420000", "--candidates=300"],
   },
   {
     lane: "core",

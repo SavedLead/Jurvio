@@ -24,7 +24,10 @@ export interface CaseNewsReviewItem extends RecentCaseNewsLink {
   firstSeenAt: string;
 }
 
-const VISIBLE = "l.review_status IN ('auto_published', 'approved')";
+/** Sources whose terms do not allow display on Jurvio; never shown or queued even if a row exists. */
+export const DISALLOWED_SOURCES = ["google_news_rss"] as const;
+const ALLOWED_SOURCE = `l.source NOT IN (${DISALLOWED_SOURCES.map((source) => `'${source}'`).join(", ")})`;
+const VISIBLE = `l.review_status IN ('auto_published', 'approved') AND ${ALLOWED_SOURCE}`;
 
 /** Visible coverage for one case page; empty for sealed, restricted or hidden cases. */
 export async function listCaseNews(sql: Sql, casePublicId: string, limit = 10): Promise<CaseNewsLink[]> {
@@ -64,7 +67,7 @@ export async function listCaseNewsReviewQueue(sql: Sql, limit = 100): Promise<Ca
     FROM case_news_link l
     JOIN legal_case c ON c.id = l.case_id
     JOIN court ct ON ct.id = c.court_id
-    WHERE l.review_status = 'pending_review' AND ${caseNewsEligibleSql("c")}
+    WHERE l.review_status = 'pending_review' AND ${ALLOWED_SOURCE} AND ${caseNewsEligibleSql("c")}
     ORDER BY l.match_score DESC, l.first_seen_at DESC
     LIMIT $1`, [limit]);
 }

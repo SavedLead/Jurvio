@@ -1,12 +1,26 @@
 import type { CaseNewsTerms, PartyTerm } from "./case-terms";
 
-export const CASE_NEWS_MATCH_RULE_VERSION = "case-news-match-v1";
+export const CASE_NEWS_MATCH_RULE_VERSION = "case-news-match-v2";
 /** At or above: shown on the case page. */
 export const PUBLISH_THRESHOLD = 0.85;
 /** At or above (and below PUBLISH_THRESHOLD): internal review queue. Below: dropped. */
 export const REVIEW_THRESHOLD = 0.6;
 
-export type MatchMethod = "docket_number" | "case_name_court" | "parties_court_timeframe";
+export type MatchMethod = "docket_number" | "case_name_court" | "parties_court_timeframe" | "single_party_court";
+
+/** Score for a one-party match: always in the review band, never auto-published. */
+export const SINGLE_PARTY_SCORE = 0.7;
+export const SINGLE_PARTY_AMBIGUOUS_SCORE = 0.62;
+
+/**
+ * Surnames of the sitting Supreme Court justices. A party with one of these
+ * names ("Barrett v. United States") cannot be matched on its name alone:
+ * "Justice Barrett" headlines are about the justice. Lower-court judges come
+ * from the judge table at run time (MatchContext.judgeSurnames).
+ */
+export const SITTING_JUSTICE_SURNAMES: ReadonlySet<string> = new Set([
+  "roberts", "thomas", "alito", "sotomayor", "kagan", "gorsuch", "kavanaugh", "barrett", "jackson",
+]);
 
 export interface NewsItem {
   url: string;
@@ -28,6 +42,8 @@ export interface MatchContext {
   courtInFullText: boolean;
   /** The source already guaranteed the article text contains this docket number (a GDELT docket query). */
   docketInFullText: boolean;
+  /** Lower-case surnames of sitting judges; a party with such a name never matches on its name alone. */
+  judgeSurnames?: ReadonlySet<string>;
   now?: Date;
 }
 
@@ -82,6 +98,50 @@ function caseNamePattern(left: PartyTerm, right: PartyTerm): RegExp | null {
   return new RegExp(`(?<![\\p{L}])(?:${l.join("|")})(?:[\\w.,'’&\\s]{0,40}?)\\s+v(?:s)?\\.?\\s+(?:[\\w.'’&\\s]{0,20}?)(?:${r.join("|")})(?![\\p{L}])`, "iu");
 }
 
+// "Justice Amy Coney Barrett", "Chief Justice Roberts", "U.S. District Judge Jane Smith", "Justices Alito and Thomas".
+const JUDGE_TITLE = String.raw`(?:Chief\s+Justice|Associate\s+Justice|Justice|Magistrate\s+Judge|Judge|Hon\.|Honorable)\s+(?:[A-Z][\p{L}.'’-]*\s+){0,2}|(?:Justices|Judges)\s+(?:[A-Z][\p{L}'’-]*\s+and\s+)?`;
+
+/** The text with every titled-judge mention of this phrase removed ("Justice Barrett" is not the party Barrett). */
+export function withoutJudgeMentions(text: string, phrase: string): string {
+  const body = phrase.trim().split(/\s+/).map(escapeRegExp).join("[\\s-]+");
+  return text.replace(new RegExp(`(?<![\\p{L}])(?:${JUDGE_TITLE})${body}(?![\\p{L}\\p{N}])`, "gu"), " ");
+}
+
+const COURT_NAME_PREFIX = /(?<![\p{L}])(?:U\.\s?S\.|United\s+States)(?=\s+(?:Supreme\s+Court|Court\s+of|District\s+(?:Court|Judge)|Circuit|Courts?\s+of\s+Appeals|Magistrate|Bankruptcy\s+Court|Tax\s+Court|Court\s+of\s+Federal\s+Claims|Judge|Justice\b(?!\s+Department)))/gu;
+
+/** The text with "U.S." / "United States" removed where it only names a court or a judge. */
+export function withoutCourtNames(text: string): string {
+  return text.replace(COURT_NAME_PREFIX, " ");
+}
+
+/** A party mention that is not a judge's titled name. */
+function mentionsPartyNotAsJudge(text: string, party: PartyTerm): PartyMention | null {
+  let rest = text;
+  for (const phrase of partyPhrases(party)) rest = withoutJudgeMentions(rest, phrase);
+  return mentionsParty(rest, party);
+}
+
+/** Lower-case surname-like words a party is known by in headlines. */
+function partyNameWords(party: PartyTerm): string[] {
+  return partyPhrases(party).map((phrase) => phrase.toLowerCase());
+}
+
+/**
+ * Can this party alone identify the case in a headline (with the court)?
+ * Only a person or organization with a distinctive name: never a government
+ * ("United States", "State of X", "City of Y"), an agency, a common or
+ * serial-official surname, or a name shared with a sitting justice or judge.
+ */
+export function distinctiveForSingleParty(party: PartyTerm, judgeSurnames?: ReadonlySet<string>): boolean {
+  if (!party.key) return false;
+  if (party.kind !== "person" && party.kind !== "organization") return false;
+  if (party.distinctiveness < 0.6) return false;
+  return !partyNameWords(party).some((word) => SITTING_JUSTICE_SURNAMES.has(word) || judgeSurnames?.has(word));
+}
+
+// Words that show a headline is about litigation, for sources whose court evidence is only in the article body.
+const LEGAL_CONTEXT = /(?<![\p{L}])(?:court|courts|justices?|judges?|appeals?|appellate|ruling|rules|ruled|lawsuit|suit|sues|sued|case|argument|arguments|oral|petition|certiorari|cert|verdict|conviction|sentence|sentencing|decision|opinion|docket|plaintiffs?|defendants?|lawyers?|attorneys?|litigation|legal|law|unconstitutional|constitutional|hearing|hears|heard|overturn(?:s|ed)?|uphold(?:s)?|upheld|reverse[sd]?|vacate[sd]?|remand(?:s|ed)?|injunction|block(?:s|ed)?)(?![\p{L}])/iu;
+
 function dayDiff(from: Date, to: Date): number {
   return (to.getTime() - from.getTime()) / 86_400_000;
 }
@@ -108,22 +168,30 @@ const round = (value: number) => Math.round(Math.min(1, Math.max(0, value)) * 10
 export function matchNewsItem(item: NewsItem, context: MatchContext): MatchResult | null {
   const { terms } = context;
   const text = `${item.title}\n${item.snippet ?? ""}`;
-  const leftHit = mentionsParty(text, terms.left);
-  const rightHit = terms.right ? mentionsParty(text, terms.right) : null;
+  // "U.S. Supreme Court" / "United States Court of Appeals" name the court, not the United States as a party.
+  const partyText = withoutCourtNames(text);
+  const leftHit = mentionsParty(partyText, terms.left);
+  const rightHit = terms.right ? mentionsParty(partyText, terms.right) : null;
   const courtHit = mentionsCourt(text, terms.courtTerms);
   const courtEvidence = Boolean(courtHit) || context.courtInFullText;
   const inWindow = withinTimeframe(item.publishedAt, context.filedOn, context.decidedOn, context.now);
   const base = { leftHit: leftHit?.phrase ?? null, rightHit: rightHit?.phrase ?? null, courtHit, courtInFullText: context.courtInFullText, inWindow };
   const results: MatchResult[] = [];
   const ambiguous = context.ambiguity === "same_court" || (context.ambiguity === "other_court" && !courtHit);
+  // A party sharing a justice's or judge's surname never matches on its name alone; it needs a mention that is not "Justice X".
+  const judgeNamed = (party: PartyTerm) => partyNameWords(party).some((word) => SITTING_JUSTICE_SURNAMES.has(word) || Boolean(context.judgeSurnames?.has(word)));
+  const leftPlain = leftHit ? mentionsPartyNotAsJudge(partyText, terms.left) : null;
+  const rightPlain = terms.right && rightHit ? mentionsPartyNotAsJudge(partyText, terms.right) : null;
+  const leftUsable = judgeNamed(terms.left) ? leftPlain : leftHit;
+  const rightUsable = terms.right && judgeNamed(terms.right) ? rightPlain : rightHit;
 
   const docketHit = terms.docketPatterns.find((pattern) => pattern.test(text));
   if (docketHit || context.docketInFullText) {
     let score = docketHit ? 0.88 : 0.6;
-    if (leftHit || rightHit) score += 0.07;
+    if (leftUsable || rightUsable) score += 0.07;
     if (courtEvidence) score += terms.docketDistinctive ? 0.04 : 0.06;
     if (!terms.docketDistinctive && !courtEvidence) score = Math.min(score, 0.7);
-    if (!docketHit && !(leftHit || rightHit)) score = Math.min(score, 0.75);
+    if (!docketHit && !(leftUsable || rightUsable)) score = Math.min(score, 0.75);
     if (!inWindow) score = Math.min(score, 0.8);
     results.push({ method: "docket_number", score: round(score), evidence: { ...base, docketInText: Boolean(docketHit), docketInFullText: context.docketInFullText } });
   }
@@ -137,16 +205,35 @@ export function matchNewsItem(item: NewsItem, context: MatchContext): MatchResul
       if (ambiguous) score = Math.min(score, 0.8);
       if (!inWindow) score = Math.min(score, 0.75);
       results.push({ method: "case_name_court", score: round(score), evidence: { ...base, caseName: true, ambiguity: context.ambiguity } });
-    } else if (courtEvidence && inWindow) {
+    } else if (courtEvidence && inWindow && leftUsable && rightUsable) {
       let score = 0.55 + 0.25 * Math.max(...sides) + 0.15 * Math.min(...sides) + (courtHit ? 0.05 : 0);
       if (ambiguous) score = Math.min(score, 0.8);
       results.push({ method: "parties_court_timeframe", score: round(score), evidence: { ...base, ambiguity: context.ambiguity } });
     }
   }
 
+  // One distinctive party plus the court, no docket: review queue only.
+  if (!results.length && inWindow) {
+    const single = singlePartyHit(terms, leftPlain, rightPlain, context.judgeSurnames);
+    const courtShown = Boolean(courtHit) || (context.courtInFullText && LEGAL_CONTEXT.test(text));
+    if (single && courtShown) {
+      const score = Math.min(ambiguous ? SINGLE_PARTY_AMBIGUOUS_SCORE : SINGLE_PARTY_SCORE, PUBLISH_THRESHOLD - 0.01);
+      results.push({ method: "single_party_court", score: round(score), evidence: { ...base, singleParty: single.phrase, ambiguity: context.ambiguity } });
+    }
+  }
+
   const best = results.sort((a, b) => b.score - a.score)[0];
   if (!best || best.score < REVIEW_THRESHOLD) return null;
   return best;
+}
+
+/** The one distinctive party a headline names, when it names exactly one usable side. */
+function singlePartyHit(terms: CaseNewsTerms, left: PartyMention | null, right: PartyMention | null, judgeSurnames?: ReadonlySet<string>): PartyMention | null {
+  const leftOk = left && distinctiveForSingleParty(terms.left, judgeSurnames) && left.distinctiveness >= 0.6 ? left : null;
+  const rightOk = right && terms.right && distinctiveForSingleParty(terms.right, judgeSurnames) && right.distinctiveness >= 0.6 ? right : null;
+  // Two distinctive sides both named is a two-party match, handled above.
+  if (leftOk && rightOk) return null;
+  return leftOk ?? rightOk;
 }
 
 export function reviewStatusFor(score: number): "auto_published" | "pending_review" | null {
