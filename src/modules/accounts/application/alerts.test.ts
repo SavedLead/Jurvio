@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDigestEmail, isDue, type DigestEntry } from "./alerts";
+import { buildDigestEmail, isDue, type CitationDigestEntry, type DigestEntry } from "./alerts";
 
 describe("alert cadence and digest email", () => {
   const now = new Date("2026-11-01T12:00:00Z");
@@ -26,5 +26,21 @@ describe("alert cadence and digest email", () => {
     expect(email.text).toContain("Jurvio, 1 Main St, New York, NY 10001");
     expect(email.html).toContain("Acme &lt;Corp&gt; v. Beta");
     expect(email.html).not.toContain("<Corp>");
+  });
+
+  it("adds a newly-cited section and a citation subject", () => {
+    const citations: CitationDigestEntry[] = [
+      { casePublicId: "jv-old", caption: "Old <Landmark> v. Case", citingPublicId: "jv-new1", citingCaption: "New v. Citer", citingCourtName: "2d Cir.", citingFiledOn: "2026-10-30", citationLabel: "1 U.S. 1" },
+    ];
+    const only = buildDigestEmail({ entries: [], citations, siteUrl: "https://jurvio.com", unsubscribeToken: "ab".repeat(24), postalAddress: "Jurvio", cadence: "daily" });
+    expect(only.subject).toBe("1 new opinion cites Old <Landmark> v. Case");
+    expect(only.text).toContain("New opinions citing cases you follow");
+    expect(only.text).toContain("https://jurvio.com/case/jv-new1");
+    expect(only.text).toContain("https://jurvio.com/case/jv-old#cited-by");
+    expect(only.html).toContain("Old &lt;Landmark&gt; v. Case");
+    const entries: DigestEntry[] = [{ casePublicId: "jv-a", caption: "Acme v. Beta", docketNumber: "1", courtName: null, entryNumber: "1", filedOn: null, description: "Order" }];
+    const mixed = buildDigestEmail({ entries, citations, siteUrl: "https://jurvio.com", unsubscribeToken: "ab".repeat(24), postalAddress: "Jurvio", cadence: "daily" });
+    expect(mixed.subject).toBe("1 new docket entry: Acme v. Beta · 1 new citing opinion");
+    expect(mixed.text).toContain("New activity on cases you follow");
   });
 });

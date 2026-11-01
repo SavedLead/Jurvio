@@ -49,7 +49,7 @@ export default async function AccountPage() {
           {account.follows.map((follow) => <li key={follow.casePublicId}>
             <span>
               <Link href={`/case/${follow.casePublicId}` as Route}>{cleanCaseCaption(follow.caption)}</Link>
-              <small>{[follow.courtName, follow.docketNumber].filter(Boolean).join(" · ")}</small>
+              <small>{[follow.courtName, follow.docketNumber, [follow.activity ? "docket activity" : null, follow.citations ? "citations" : null].filter(Boolean).join(" + ")].filter(Boolean).join(" · ")}</small>
             </span>
             <UnfollowButton caseId={follow.casePublicId} />
           </li>)}

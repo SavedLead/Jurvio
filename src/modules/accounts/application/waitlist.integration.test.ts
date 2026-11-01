@@ -70,6 +70,22 @@ describe.skipIf(!databaseUrl)("no-sign-in lead waitlist", () => {
     expect(await convertLeads(sql, userId, email)).toEqual({ followed: [], plans: [] });
   });
 
+  it("keeps the follow kinds ticked on the waitlist (citations, or both after a second submission)", async () => {
+    const f = await fixtures!;
+    const email = freshEmail();
+    const oldCase = await f.createCase();
+    const both = await f.createCase();
+    await captureLead(sql, { email, ip: ip(), source: "case_follow", casePublicId: oldCase.publicId, followKindBits: 2 });
+    await captureLead(sql, { email, ip: ip(), source: "case_follow", casePublicId: both.publicId, followKindBits: 1 });
+    await captureLead(sql, { email, ip: ip(), source: "case_follow", casePublicId: both.publicId, followKindBits: 2 });
+    const userId = await f.createUser(email);
+    await convertLeads(sql, userId, email);
+    const rows = await sql<{ caseId: string; activity: boolean; citations: boolean }[]>`
+      SELECT case_id AS "caseId", activity, citations FROM case_follow WHERE user_id = ${userId}`;
+    expect(rows.find((row) => row.caseId === oldCase.id)).toMatchObject({ activity: false, citations: true });
+    expect(rows.find((row) => row.caseId === both.id)).toMatchObject({ activity: true, citations: true });
+  });
+
   it("keeps follow leads over the plan limit for later", async () => {
     const f = await fixtures!;
     const email = freshEmail();

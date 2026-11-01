@@ -20,7 +20,7 @@ export const WAITLIST_SUCCESS = "You're on the list; we'll email you when alerts
  * honeypot.
  */
 export function EmailCaptureForm({
-  action, hidden, buttonLabel, className, inputLabel = "Email address", footnote, initialMessage, children, inputRef,
+  action, hidden, buttonLabel, className, inputLabel = "Email address", footnote, initialMessage, children, inputRef, fieldsBeforeButton,
 }: {
   action: string;
   hidden: Record<string, string>;
@@ -32,6 +32,8 @@ export function EmailCaptureForm({
   /** Extra fields rendered before the email box (e.g. a plan picker); submitted with the form. */
   children?: ReactNode;
   inputRef?: Ref<HTMLInputElement>;
+  /** Extra form fields (e.g. follow-kind checkboxes) rendered after the email box, above the button. */
+  fieldsBeforeButton?: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(initialMessage ?? "");
@@ -71,6 +73,7 @@ export function EmailCaptureForm({
       <label>Company <input type="text" name="company" tabIndex={-1} autoComplete="off" defaultValue="" /></label>
     </span>
     {Object.entries(hidden).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
+    {fieldsBeforeButton}
     <button type="submit" disabled={busy}>{busy ? "Saving…" : buttonLabel}</button>
     {error ? <small className="emailCaptureError" role="alert">{error}</small> : null}
     {footnote ? <small>{footnote}</small> : null}

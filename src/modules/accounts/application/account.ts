@@ -7,6 +7,8 @@ export interface AccountFollow {
   docketNumber: string;
   courtName: string | null;
   followedAt: string;
+  activity: boolean;
+  citations: boolean;
 }
 
 export interface AccountSummary {
@@ -35,7 +37,7 @@ export async function loadAccount(sql: Sql, userId: string): Promise<AccountSumm
   if (!user) return null;
   const follows = await sql<AccountFollow[]>`
     SELECT c.public_id AS "casePublicId", c.caption, c.docket_number AS "docketNumber",
-      court.name AS "courtName", f.created_at::text AS "followedAt"
+      court.name AS "courtName", f.created_at::text AS "followedAt", f.activity, f.citations
     FROM case_follow f
     JOIN legal_case c ON c.id = f.case_id
     LEFT JOIN court ON court.id = c.court_id

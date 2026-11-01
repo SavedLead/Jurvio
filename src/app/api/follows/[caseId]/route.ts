@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { getSessionUser } from "@/modules/accounts/application/sign-in";
-import { followCase, followState, unfollowCase } from "@/modules/accounts/application/follows";
+import { followCase, followState, parseFollowKinds, unfollowCase } from "@/modules/accounts/application/follows";
 import { SESSION_COOKIE, safeCasePublicId } from "@/modules/accounts/domain/tokens";
-import { isSameOriginRequest, noStore } from "@/modules/accounts/http/request";
+import { isSameOriginRequest, noStore, readBody } from "@/modules/accounts/http/request";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +31,11 @@ export async function POST(request: NextRequest, context: Context) {
   const { caseId, sql, user } = await resolve(request, context);
   if (!caseId) return json({ error: "not_found" }, 404);
   if (!user) return json({ signedIn: false, error: "signin_required" }, 401);
-  const result = await followCase(sql, user.userId, caseId);
+  // Body { activity, citations } sets the follow's kinds (Follow box toggles);
+  // an empty body follows docket activity. Both off unfollows.
+  const kinds = parseFollowKinds(await readBody(request));
+  if (!kinds) return json({ signedIn: true, ...(await unfollowCase(sql, user.userId, caseId)) });
+  const result = await followCase(sql, user.userId, caseId, kinds);
   if (result.status === "not_eligible") return json({ signedIn: true, error: "not_eligible" }, 404);
   if (result.status === "limit_reached") return json({ signedIn: true, error: "limit_reached", ...result.state }, 409);
   return json({ signedIn: true, ...result.state });

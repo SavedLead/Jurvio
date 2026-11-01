@@ -91,4 +91,67 @@ describe.skipIf(!databaseUrl)("followed-case alert digests", () => {
       SELECT last_alerted_entry_created_at > now() - interval '30 minutes' AS advanced FROM case_follow WHERE user_id = ${userId}`;
     expect(follow!.advanced).toBe(true);
   });
+
+  it("sends citation alerts only for new edges from newly ingested, recently filed opinions", async () => {
+    const [build] = await sql<{ firstCompletedAt: Date | null }[]>`SELECT first_completed_at AS "firstCompletedAt" FROM citation_edge_build`;
+    await sql`UPDATE citation_edge_build SET first_completed_at = now() - interval '3 hours'`;
+    try {
+      const email = `alerts-cite-${fx.tag}@example.test`;
+      const userId = await fx.createUser(email);
+      const cited = await fx.createCase({ caption: `CITED ${fx.tag} V. OLD` });
+      expect((await followCase(sql, userId, cited.publicId, { activity: false, citations: true })).status).toBe("followed");
+      await sql`UPDATE case_follow SET last_alerted_citation_at = now() - interval '2 hours', created_at = now() - interval '2 hours' WHERE user_id = ${userId}`;
+      const caseNamed = (name: string, extra: Parameters<typeof fx.createCase>[0] = {}) => fx.createCase({ caption: `${name} ${fx.tag}`, ...extra });
+      const fresh = await caseNamed("FRESH CITER V. ONE");
+      await fx.addCitationEdge(fresh.id, cited.id, { firstSeenAt: ago(30) });
+      const sweep = await caseNamed("SWEEP CITER V. TWO");
+      await fx.addCitationEdge(sweep.id, cited.id, { firstSeenAt: ago(240) });
+      const clOnly = await caseNamed("CLMAP CITER V. THREE");
+      await fx.addCitationEdge(clOnly.id, cited.id, { firstSeenAt: ago(30), sources: 2 });
+      const oldDoc = await caseNamed("BACKLOG CITER V. FOUR");
+      await fx.addCitationEdge(oldDoc.id, cited.id, { firstSeenAt: ago(30), documentCreatedAt: ago(60 * 24 * 90) });
+      const oldFiling = await caseNamed("HISTORIC CITER V. FIVE");
+      await fx.addCitationEdge(oldFiling.id, cited.id, { firstSeenAt: ago(30), filedOn: "1999-05-01" });
+      const restricted = await caseNamed("RESTRICTED CITER V. SIX", { restrictedEvent: true });
+      await fx.addCitationEdge(restricted.id, cited.id, { firstSeenAt: ago(30) });
+      const hiddenDoc = await caseNamed("HIDDENDOC CITER V. SEVEN");
+      await fx.addCitationEdge(hiddenDoc.id, cited.id, { firstSeenAt: ago(30), documentDisplayable: false });
+      await fx.addDocketEntry(cited.id, "Docket entry on a citations-only follow", { createdAt: ago(20) });
+
+      const run = capture();
+      await runAlertDigests(sql, deps(run.provider));
+      const mine = run.sent.filter((message) => message.to === email);
+      expect(mine).toHaveLength(1);
+      expect(mine[0]!.subject).toContain("new opinion cites");
+      expect(mine[0]!.text).toContain("FRESH CITER");
+      expect(mine[0]!.text).toContain(`https://jurvio.com/case/${cited.publicId}#cited-by`);
+      for (const hidden of ["SWEEP CITER", "CLMAP CITER", "BACKLOG CITER", "HISTORIC CITER", "RESTRICTED CITER", "HIDDENDOC CITER", "Docket entry on a citations-only follow"]) {
+        expect(mine[0]!.text).not.toContain(hidden);
+      }
+      const [follow] = await sql<{ advanced: boolean }[]>`
+        SELECT last_alerted_citation_at > now() - interval '40 minutes' AS advanced FROM case_follow WHERE user_id = ${userId}`;
+      expect(follow!.advanced).toBe(true);
+    } finally {
+      await sql`UPDATE citation_edge_build SET first_completed_at = ${build?.firstCompletedAt ?? null}`;
+    }
+  });
+
+  it("sends no citation alerts before the first full edge sweep has completed", async () => {
+    const [build] = await sql<{ firstCompletedAt: Date | null }[]>`SELECT first_completed_at AS "firstCompletedAt" FROM citation_edge_build`;
+    await sql`UPDATE citation_edge_build SET first_completed_at = NULL`;
+    try {
+      const email = `alerts-nosweep-${fx.tag}@example.test`;
+      const userId = await fx.createUser(email);
+      const cited = await fx.createCase();
+      await followCase(sql, userId, cited.publicId, { activity: false, citations: true });
+      await sql`UPDATE case_follow SET last_alerted_citation_at = now() - interval '2 hours' WHERE user_id = ${userId}`;
+      const citing = await fx.createCase();
+      await fx.addCitationEdge(citing.id, cited.id, { firstSeenAt: ago(30) });
+      const run = capture();
+      await runAlertDigests(sql, deps(run.provider));
+      expect(run.sent.filter((message) => message.to === email)).toHaveLength(0);
+    } finally {
+      await sql`UPDATE citation_edge_build SET first_completed_at = ${build?.firstCompletedAt ?? null}`;
+    }
+  });
 });

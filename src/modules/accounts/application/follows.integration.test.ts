@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { captionAllowsFollow, caseFollowEligible, followCase, followState, unfollowCase } from "./follows";
+import { captionAllowsFollow, caseFollowEligible, followCase, followState, parseFollowKinds, unfollowCase } from "./follows";
 import { completeSignInIntent } from "./sign-in-intent";
 import { createFixtures } from "./test-fixtures";
 
@@ -63,5 +63,35 @@ describe.skipIf(!databaseUrl)("case follows", () => {
     const sealed = await fx.createCase({ caption: "UNDER SEAL V. X" });
     expect(await completeSignInIntent(sql, { userId, email: "x", sessionToken: "t", redirectPath: "/account", followCasePublicId: sealed.publicId }))
       .toBe(`/case/${sealed.publicId}`);
+  });
+
+  it("keeps activity and citation kinds per follow, one follow slot per case", async () => {
+    const userId = await fx.createUser();
+    const cases = await Promise.all([1, 2, 3, 4].map(() => fx.createCase()));
+    expect((await followCase(sql, userId, cases[0]!.publicId, { activity: false, citations: true })).status).toBe("followed");
+    expect(await followState(sql, userId, cases[0]!.publicId)).toMatchObject({ following: true, activity: false, citations: true, followCount: 1 });
+    const both = await followCase(sql, userId, cases[0]!.publicId, { activity: true, citations: true });
+    expect(both.status).toBe("updated");
+    expect(await followState(sql, userId, cases[0]!.publicId)).toMatchObject({ activity: true, citations: true, followCount: 1 });
+    // Merge (sign-in intent / waitlist) only switches kinds on.
+    expect((await followCase(sql, userId, cases[0]!.publicId, { activity: true, citations: false }, { merge: true })).status).toBe("already_following");
+    // Both off = unfollow.
+    expect((await followCase(sql, userId, cases[0]!.publicId, { activity: false, citations: false })).status).toBe("updated");
+    expect(await followState(sql, userId, cases[0]!.publicId)).toMatchObject({ following: false, activity: false, citations: false, followCount: 0 });
+    // Citation follows count toward the same plan limit.
+    for (const legalCase of cases.slice(0, 3)) await followCase(sql, userId, legalCase.publicId, { activity: false, citations: true });
+    expect((await followCase(sql, userId, cases[3]!.publicId, { activity: false, citations: true })).status).toBe("limit_reached");
+    // Changing kinds on an existing follow is allowed at the limit.
+    expect((await followCase(sql, userId, cases[1]!.publicId, { activity: true, citations: true })).status).toBe("updated");
+  });
+
+  it("parses follow kinds from forms and JSON", () => {
+    expect(parseFollowKinds({})).toEqual({ activity: true, citations: false });
+    expect(parseFollowKinds({ follow_kinds: "1", follow_citations: "on" })).toEqual({ activity: false, citations: true });
+    expect(parseFollowKinds({ follow_kinds: "1", follow_activity: "on", follow_citations: "on" })).toEqual({ activity: true, citations: true });
+    expect(parseFollowKinds({ follow_kinds: "1" })).toBeNull();
+    expect(parseFollowKinds({ activity: true, citations: false })).toEqual({ activity: true, citations: false });
+    expect(parseFollowKinds({ citations: true })).toEqual({ activity: false, citations: true });
+    expect(parseFollowKinds({ activity: false, citations: false })).toBeNull();
   });
 });
