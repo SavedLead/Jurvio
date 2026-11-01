@@ -243,6 +243,25 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/run-live-feeds.mjs", "--source=govinfo"],
   },
   {
+    // Appellate CM/ECF public RSS (orders, opinions, judgments) for the seven
+    // circuits that publish it; one request per court, cross-source deduped.
+    lane: "coa",
+    name: "appellate-pacer-rss",
+    initialDelayMs: 13 * minute,
+    intervalMs: 30 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-live-feeds.mjs", "--source=appellate-rss"],
+  },
+  {
+    // District court website opinion lists (ded, nhd, pamd, vid, wied, wvsd).
+    lane: "coa",
+    name: "court-site-opinions",
+    initialDelayMs: 17 * minute,
+    intervalMs: 3 * 60 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-live-feeds.mjs", "--source=court-site"],
+  },
+  {
     lane: "coa",
     name: "appellate-backfill-report",
     initialDelayMs: 8 * minute,

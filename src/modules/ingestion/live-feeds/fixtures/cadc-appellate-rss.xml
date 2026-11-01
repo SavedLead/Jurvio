@@ -1,0 +1,42 @@
+<?xml version='1.0' encoding='ISO-8859-1'?>
+
+<rss version="2.0" xmlns:blogChannel="http://backend.userland.com/blogChannelModule">
+
+<channel>
+	<title>United States Court of Appeals for District of Columbia Circuit - Recent Entries</title>
+	<link>https://ecf.cadc.uscourts.gov</link>
+	<description>Docket entries of type: orders,opinions,judgments</description>
+	<lastBuildDate>Sat, 31 Oct 2026 23:50:04 EDT</lastBuildDate>
+<item>
+	<title>26-1287 In re: Abd Al-Rahim Hussein Al-Nashiri</title>
+	<link>https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=26-1287</link>
+	<description>[Per Curiam Order Filed (Special Panel)] (&lt;a href='https://ecf.cadc.uscourts.gov/docs1/01208904038'>Document&lt;/a>)</description>
+	<guid isPermaLink="true">https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=26-1287&amp;partId=2201235</guid>
+	<pubDate>Sat, 31 Oct 2026 10:48:10 EDT</pubDate>
+
+</item>
+<item>
+	<title>25-1150 Sierra Club v. EPA</title>
+	<link>https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=25-1150</link>
+	<description>[Opinion Filed for the Court by Judge Pillard] (&lt;a href='https://ecf.cadc.uscourts.gov/docs1/01208903990'>Document&lt;/a>)</description>
+	<guid isPermaLink="true">https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=25-1150&amp;partId=2199001</guid>
+	<pubDate>Fri, 30 Oct 2026 10:05:12 EDT</pubDate>
+</item>
+<item>
+	<title>25-1150 Sierra Club v. EPA</title>
+	<link>https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=25-1150</link>
+	<description>[Judgment Filed] (&lt;a href='https://ecf.cadc.uscourts.gov/docs1/01208903991'>Document&lt;/a>)</description>
+	<guid isPermaLink="true">https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=25-1150&amp;partId=2199001&amp;entry=2</guid>
+	<pubDate>Fri, 30 Oct 2026 10:05:40 EDT</pubDate>
+</item>
+<item>
+	<title>26-3001 In re: Sealed Case</title>
+	<link>https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=26-3001</link>
+	<description>[Order Filed (Special Panel)]</description>
+	<guid isPermaLink="true">https://ecf.cadc.uscourts.gov/n/beam/servlet/TransportRoom?servlet=DocketReportFilter.jsp&amp;caseNum=26-3001&amp;partId=2201300</guid>
+	<pubDate>Fri, 30 Oct 2026 15:00:00 EDT</pubDate>
+</item>
+
+
+</channel>
+</rss>

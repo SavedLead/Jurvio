@@ -15,11 +15,12 @@ import type postgres from "postgres";
 import { isRestrictedDocketText } from "../domain/federal-stream";
 import type { ArtifactStore } from "../application/artifact-store";
 import {
-  baseDocketKey, collectionUrl, nextOffsetMark, parseGovInfoPackage,
+  collectionUrl, nextOffsetMark, parseGovInfoPackage,
   type GovInfoCollectionPage, type ParsedGovInfoPackage,
 } from "../providers/govinfo/uscourts";
-import { insertDocketEntryOnce, matchOrCreateDraftCase, providerId, resolveCourt, storeFeedArtifact } from "./persist";
-import { normalizeDocket } from "./coa-feeds";
+import {
+  findFederalCase, hasEquivalentEntry, insertDocketEntryOnce, matchOrCreateDraftCase, providerId, resolveCourt, storeFeedArtifact,
+} from "./persist";
 import { CourtFetchHttpError, errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
 import { recordSourceWatermark } from "@/modules/operations/application/court-freshness";
 import { CIRCUIT_CODES } from "@/modules/operations/domain/court-sources";
@@ -185,7 +186,7 @@ async function crossCheckPackage(
       outcome = "restricted";
     } else {
       const jurvioCode = pkg.courtType === "district" ? (district?.jurvio_court_code ?? pkg.courtCode) : pkg.courtCode;
-      const existing = await findCase(tx, pkg, jurvioCode);
+      const existing = await findFederalCase(tx, { courtCode: jurvioCode, docketNumber: pkg.docketNumber, district: pkg.courtType === "district" });
       if (existing === "ambiguous") {
         outcome = "ambiguous";
       } else {
@@ -208,7 +209,7 @@ async function crossCheckPackage(
           caseId = match.caseId;
           created = match.kind === "created";
         }
-        if (!created && await otherSourceHasIt(tx, caseId, pkg.dateIssued)) {
+        if (!created && await hasEquivalentEntry(tx, { caseId, filedOn: pkg.dateIssued, kind: "any", ownPrefix: "govinfo:" })) {
           outcome = "matched";
         } else {
           await insertDocketEntryOnce(tx, {
@@ -231,51 +232,4 @@ async function mark(tx: Tx, pkg: ParsedGovInfoPackage, outcome: string, caseId: 
     VALUES (${pkg.packageId}, ${pkg.dateIssued}, ${pkg.courtCode}, ${pkg.docketNumber}, ${outcome}, ${caseId})
     ON CONFLICT (package_id, date_issued) DO NOTHING
   `;
-}
-
-/**
- * The case for this package. Districts: same office, year, case type and number
- * (judge suffixes ignored) via the federal_docket_core index. Circuits: the
- * normalized docket number. Two candidates -> 'ambiguous'.
- */
-async function findCase(tx: Tx, pkg: ParsedGovInfoPackage, jurvioCode: string): Promise<string | null | "ambiguous"> {
-  const rows = pkg.courtType === "district"
-    ? await tx<{ id: string }[]>`
-        SELECT legal_case.id FROM legal_case JOIN court ON court.id = legal_case.court_id
-        WHERE lower(coalesce(court.provider_court_id, '')) = ${jurvioCode.toLowerCase()}
-          AND federal_docket_core(legal_case.docket_number) = federal_docket_core(${pkg.docketNumber})
-          AND legal_case.supreme_court_term IS NULL
-        LIMIT 20`
-    : await tx<{ id: string; docket_number: string }[]>`
-        SELECT legal_case.id FROM legal_case JOIN court ON court.id = legal_case.court_id
-        WHERE lower(coalesce(court.provider_court_id, '')) = ${jurvioCode.toLowerCase()}
-          AND lower(regexp_replace(legal_case.docket_number, '[^a-zA-Z0-9]', '', 'g')) = ${normalizeDocket(pkg.docketNumber)}
-        LIMIT 2`;
-  let candidates = rows.map((row) => row.id);
-  if (pkg.courtType === "district" && rows.length > 0) {
-    const full = await tx<{ id: string; docket_number: string }[]>`
-      SELECT id, docket_number FROM legal_case WHERE id = ANY(${candidates}::uuid[])`;
-    const key = baseDocketKey(pkg.docketNumber);
-    candidates = full.filter((row) => baseDocketKey(row.docket_number) === key).map((row) => row.id);
-  }
-  if (candidates.length > 1) return "ambiguous";
-  return candidates[0] ?? null;
-}
-
-/** Another source already recorded an opinion/order on this case within a day of dateIssued. */
-async function otherSourceHasIt(tx: Tx, caseId: string, dateIssued: string): Promise<boolean> {
-  const [row] = await tx<{ hit: boolean }[]>`
-    SELECT (
-      EXISTS (
-        SELECT 1 FROM docket_entry
-        WHERE case_id = ${caseId} AND provider_entry_id NOT LIKE 'govinfo:%'
-          AND filed_on BETWEEN ${dateIssued}::date - 1 AND ${dateIssued}::date + 1
-          AND (entry_type IN ('opinion', 'order') OR description ~* '(opinion|order|memorandum|judgment|decision)')
-      ) OR EXISTS (
-        SELECT 1 FROM document
-        WHERE case_id = ${caseId} AND filed_on BETWEEN ${dateIssued}::date - 1 AND ${dateIssued}::date + 1
-      )
-    ) AS hit
-  `;
-  return Boolean(row?.hit);
 }

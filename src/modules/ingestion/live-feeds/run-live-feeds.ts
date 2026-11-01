@@ -12,7 +12,7 @@ import { coaEntryDescription, normalizeDocket } from "./coa-feeds";
 import { CIRCUIT_ADAPTERS, circuitAdapter, dedupeAdapterItems, type AdapterItem } from "../providers/appellate/adapters";
 import { FetchBudget, RateLimitedError } from "./polite-fetcher";
 import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
-import { matchOrCreateDraftCase, insertDocketEntryOnce, providerId, resolveCourt, storeFeedArtifact } from "./persist";
+import { matchOrCreateDraftCase, insertDocketEntryOnce, providerId, resolveCourt, storeFeedArtifact, hasEquivalentEntry } from "./persist";
 import {
   DEFAULT_DISCOVERY, discoverSeries, parseScotusCursor, parseScotusDocketJson, scotusDocketJsonUrl, scotusSeries,
   type ScotusCursor, type ScotusDocket,
@@ -30,6 +30,8 @@ export interface SourceRunResult {
   newEntries: number;
   skippedRestricted: number;
   skippedAmbiguous: number;
+  /** Items another source had already recorded (cross-source dedupe). */
+  skippedDuplicate?: number;
   error?: string;
   retryAfterUntil?: string | null;
 }
@@ -237,6 +239,12 @@ async function persistCoaItem(sql: Sql, provider: string, artifactId: string, it
     if (match.kind === "restricted") { result.skippedRestricted += 1; return; }
     if (match.kind === "ambiguous") { result.skippedAmbiguous += 1; return; }
     if (match.kind === "created") result.newCases += 1;
+    // Already listed by another free source (appellate CM/ECF RSS, GovInfo) on that day: do not list it twice.
+    if (match.kind === "existing" && await hasEquivalentEntry(tx, { caseId: match.caseId, filedOn: item.releasedOn,
+      kind: item.kind === "order" ? "order" : "opinion", ownPrefix: "coa-feed:", includeDocuments: false })) {
+      result.skippedDuplicate = (result.skippedDuplicate ?? 0) + 1;
+      return;
+    }
     // One PDF can decide consolidated appeals listed under several dockets, so
     // the entry id carries the docket as well as the document.
     const created = await insertDocketEntryOnce(tx, {

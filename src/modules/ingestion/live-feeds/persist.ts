@@ -136,3 +136,83 @@ export async function insertDocketEntryOnce(sql: Sql, input: {
   `;
   return rows.length > 0;
 }
+
+export type EquivalentKind = "opinion" | "order" | "judgment" | "any";
+
+const KIND_PATTERN: Readonly<Record<EquivalentKind, string>> = {
+  opinion: "(opinion|memorandum)",
+  order: "\\morder\\M",
+  judgment: "judgment",
+  any: "(opinion|order|memorandum|judgment|decision)",
+};
+
+/**
+ * Cross-source dedupe: true when a different source already recorded the same
+ * kind of entry on this case within a day of `filedOn` (court + docket + date +
+ * kind), or, for opinions, an opinion document exists for that date. Each
+ * free source calls this before adding its own entry so one decision is not
+ * listed twice when it arrives by RSS, the court's site, GovInfo or a feed.
+ */
+export async function hasEquivalentEntry(sql: Sql, input: {
+  caseId: string; filedOn: string | null; kind: EquivalentKind; ownPrefix: string;
+  /** Also count opinion documents (the appellate opinion graph). Default true. */
+  includeDocuments?: boolean;
+}): Promise<boolean> {
+  if (!input.filedOn) return false;
+  const pattern = KIND_PATTERN[input.kind];
+  const entryType = input.kind === "any" ? null : input.kind === "judgment" ? "order" : input.kind;
+  const [row] = await sql<{ hit: boolean }[]>`
+    SELECT (
+      EXISTS (
+        SELECT 1 FROM docket_entry
+        WHERE case_id = ${input.caseId} AND coalesce(provider_entry_id, '') NOT LIKE ${`${input.ownPrefix}%`}
+          AND filed_on BETWEEN ${input.filedOn}::date - 1 AND ${input.filedOn}::date + 1
+          AND ((${entryType}::text IS NULL AND entry_type IN ('opinion', 'order')) OR entry_type = ${entryType}
+            OR description ~* ${pattern})
+      ) OR (${(input.includeDocuments ?? true) && (input.kind === "opinion" || input.kind === "any")} AND EXISTS (
+        SELECT 1 FROM document
+        WHERE case_id = ${input.caseId} AND filed_on BETWEEN ${input.filedOn}::date - 1 AND ${input.filedOn}::date + 1
+      ))
+    ) AS hit
+  `;
+  return Boolean(row?.hit);
+}
+
+/**
+ * The case for a federal docket, or 'ambiguous'. Districts: same office (when
+ * both have one), year, number and, when the source gives it, case type; judge
+ * suffixes are ignored (federal_docket_core index). Circuits: the normalized
+ * docket number.
+ */
+export async function findFederalCase(sql: Sql, input: {
+  courtCode: string; docketNumber: string; district: boolean;
+}): Promise<string | null | "ambiguous"> {
+  const code = input.courtCode.toLowerCase();
+  if (!input.district) {
+    const rows = await sql<{ id: string }[]>`
+      SELECT legal_case.id FROM legal_case JOIN court ON court.id = legal_case.court_id
+      WHERE lower(coalesce(court.provider_court_id, '')) = ${code}
+        AND lower(regexp_replace(legal_case.docket_number, '[^a-zA-Z0-9]', '', 'g')) = ${normalizeDocket(input.docketNumber)}
+      LIMIT 2`;
+    return rows.length > 1 ? "ambiguous" : rows[0]?.id ?? null;
+  }
+  const source = /^(?:(\d+):)?(\d{2})-(?:([a-z]{1,5})-)?(\d{1,7})/i.exec(input.docketNumber.trim());
+  if (!source) return null;
+  const [, office, year, type, number] = source;
+  if (number!.length > 5) return null;
+  const core = `${year}${number!.padStart(5, "0").slice(-5)}`;
+  const rows = await sql<{ id: string; docket_number: string }[]>`
+    SELECT legal_case.id, legal_case.docket_number FROM legal_case JOIN court ON court.id = legal_case.court_id
+    WHERE lower(coalesce(court.provider_court_id, '')) = ${code}
+      AND federal_docket_core(legal_case.docket_number) = ${core}
+      AND legal_case.supreme_court_term IS NULL
+    LIMIT 20`;
+  const candidates = rows.filter((row) => {
+    const other = /^(?:(\d+):)?\d{2}-([a-z]{1,5})-/i.exec(row.docket_number.trim());
+    if (!other) return false;
+    if (type && other[2]!.toLowerCase() !== type.toLowerCase()) return false;
+    if (office && other[1] && other[1] !== office) return false;
+    return true;
+  });
+  return candidates.length > 1 ? "ambiguous" : candidates[0]?.id ?? null;
+}
