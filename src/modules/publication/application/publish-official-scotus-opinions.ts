@@ -22,9 +22,38 @@ export function isSameScotusCase(left: string, right: string): boolean {
   return normalizeScotusIdentity(left) === normalizeScotusIdentity(right);
 }
 
-export function expandScotusTermYear(termYear: string): number {
-  if (!/^\d{2}$/.test(termYear)) throw new Error("Supreme Court term must be a two-digit year");
-  return 2000 + Number(termYear);
+/** October Term that a decision date falls in (the term opens in October). */
+export function scotusTermFromDecisionDate(decidedOn: string | null | undefined): number | null {
+  const match = /^(\d{4})-(\d{2})-\d{2}/.exec(decidedOn ?? "");
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  return month >= 10 ? year : year - 1;
+}
+
+/**
+ * Expands an official October Term ("25", "65" or "1965") to a four-digit year.
+ * Bound volumes and LOC reports reach back to the 1700s, so the century comes
+ * from the decision date when there is one (the term closest to the decision
+ * year), never a fixed 20xx (which turned Miranda's 1965 Term into 2065).
+ * Without a date, two-digit years later than next year are read as 19xx.
+ */
+export function expandScotusTermYear(termYear: string, decidedOn?: string | null, now: Date = new Date()): number {
+  if (/^\d{4}$/.test(termYear)) return Number(termYear);
+  if (!/^\d{2}$/.test(termYear)) throw new Error("Supreme Court term must be a two- or four-digit year");
+  const twoDigit = Number(termYear);
+  const decisionYear = /^(\d{4})-/.exec(decidedOn ?? "")?.[1];
+  if (decisionYear) {
+    const year = Number(decisionYear);
+    const century = Math.floor(year / 100) * 100;
+    const closest = [century - 100, century, century + 100]
+      .map((base) => base + twoDigit)
+      .reduce((best, candidate) => Math.abs(candidate - year) < Math.abs(best - year) ? candidate : best);
+    if (Math.abs(closest - year) <= 2) return closest;
+    return scotusTermFromDecisionDate(decidedOn) ?? closest;
+  }
+  return 2000 + twoDigit > now.getUTCFullYear() + 1 ? 1900 + twoDigit : 2000 + twoDigit;
 }
 
 interface Candidate {
@@ -218,7 +247,7 @@ export async function publishVerifiedOfficialScotusOpinions(
             ) VALUES (
               ${createPublicId("case")}, ${court.id}, ${candidate.docket_number},
               ${normalizedCaseName}, NULL, ${candidate.filed_on},
-              ${expandScotusTermYear(candidate.term_year)}, ${officialCitation}, 'verified', 'published',
+              ${expandScotusTermYear(candidate.term_year, candidate.filed_on)}, ${officialCitation}, 'verified', 'published',
               ${candidate.opinion_artifact_id}, now()
             )
             ON CONFLICT (court_id, official_citation, docket_number) WHERE supreme_court_term IS NOT NULL
@@ -247,7 +276,7 @@ export async function publishVerifiedOfficialScotusOpinions(
           await tx`
             UPDATE legal_case
             SET filed_on = NULL, decided_on = ${candidate.filed_on},
-              supreme_court_term = ${expandScotusTermYear(candidate.term_year)},
+              supreme_court_term = ${expandScotusTermYear(candidate.term_year, candidate.filed_on)},
               official_citation = ${officialCitation}, verification = 'verified',
               publication = 'published', source_artifact_id = ${candidate.opinion_artifact_id},
               updated_at = now()
@@ -471,7 +500,7 @@ export async function publishVerifiedOfficialScotusOpinions(
       await tx`
         UPDATE legal_case
         SET decided_on = ${candidate.filed_on},
-          supreme_court_term = ${expandScotusTermYear(candidate.term_year)},
+          supreme_court_term = ${expandScotusTermYear(candidate.term_year, candidate.filed_on)},
           official_citation = ${candidate.citation}, verification = 'verified',
           publication = 'published', updated_at = now()
         WHERE id = ${first.case_id}

@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -73,20 +74,7 @@ export async function listRecentlyUpdatedPublicCases(
             ), false)
         ), legal_case.updated_at)
       )::text AS "activityDate",
-      EXISTS (
-        SELECT 1
-        FROM document
-        WHERE document.case_id = legal_case.id
-          AND document.publication = 'published'
-          AND COALESCE((
-            SELECT decision.displayable
-            FROM publication_decision decision
-            WHERE decision.object_type = 'document'
-              AND decision.object_id = document.id
-            ORDER BY decision.decided_at DESC, decision.id DESC
-            LIMIT 1
-          ), false)
-      ) AS "hasPublicDocument"
+      ${sql.unsafe(readableOpinionExistsSql("legal_case"))} AS "hasPublicDocument"
     FROM candidate
     JOIN legal_case ON legal_case.id = candidate.id
     JOIN court ON court.id = legal_case.court_id
