@@ -31,6 +31,7 @@ import { publicCitationTargets } from "@/modules/citations/application/public-ci
 import { citationCountLine } from "@/modules/citations/domain/citation-summary";
 import { CitedCaseText } from "@/modules/citations/ui/cited-case-text";
 import { CitationCaseList } from "@/modules/citations/ui/citation-case-list";
+import { CitedStubList } from "@/modules/citations/ui/cited-stub-list";
 import { listCaseNews } from "@/modules/case-news/application/list-case-news";
 import { CaseNewsSection } from "@/modules/case-news/ui/case-news-section";
 import { listCaseAgencyItems } from "@/modules/agency-sources/application/public-items";
@@ -425,6 +426,7 @@ export default async function CasePage({ params }: CasePageProps) {
             total={citationCounts.cited}
             summary={citationCounts.cited ? citationCountLine(citationCounts.cited, citationCounts.citedOnJurvio) : undefined}
           />
+          <CitedStubList stubs={citations.stubs ?? []} />
           <CitationCaseList
             title="Cited by"
             cases={citingCases}

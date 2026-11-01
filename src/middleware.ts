@@ -94,6 +94,9 @@ export function middleware(request: NextRequest) {
     headers: request.headers,
   });
   if (edgeCacheControl) response.headers.set("Cache-Control", edgeCacheControl);
-  return withLockdownHeaders(response);
+  const locked = withLockdownHeaders(response);
+  // Cited-case stubs (ADR 0090, C9) are never indexed, even after launch.
+  if (sitePubliclyLaunched() && pathname.startsWith("/cited/")) locked.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+  return locked;
 }
 export const config = { matcher: ["/((?!_next/static|_next/image).*)"] };

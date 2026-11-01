@@ -78,3 +78,16 @@ Publication of these drafts is a separate decision (not automated here).
 `citation-nightly` (citations lane, hourly tick, once per ET day 01:00-05:00)
 re-scans 7 days of live feeds, retries transient live-text failures, re-queues
 unparsed live-text documents, and logs queue sizes.
+
+## C9: cited-case stubs (migration 0175)
+
+`citation_stub_case` holds the name, date and citation labels for CourtListener
+clusters that a Jurvio citation resolved to (`missing_case_citation.state='resolved'`)
+but Jurvio does not hold, copied from `courtlistener_pending_cluster` (unlogged, may
+be pruned). Restricted clusters and sealed-looking names are never stubbed; a
+stub is removed when its cluster becomes restricted or Jurvio imports the case
+(the stub URL then 308s to the case). `/cited/cl-<cluster>` pages are always
+noindex/nofollow (meta + X-Robots-Tag), linked with rel=nofollow, and never in a
+sitemap (sitemaps list legal_case only). Case pages show "Cited cases not yet on
+Jurvio"; stub pages list the published, displayable, non-sealed Jurvio cases that
+cite them. `citation-nightly` refreshes stubs (resumable keyset pass).
