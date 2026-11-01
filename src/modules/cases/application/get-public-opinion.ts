@@ -1,3 +1,4 @@
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
 type Sql = ReturnType<typeof postgres>;
@@ -53,7 +54,7 @@ export async function getPublicOpinion(
         SELECT decision.indexable FROM publication_decision decision
         WHERE decision.object_type = 'document' AND decision.object_id = document.id
         ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false) AS indexable
+      ), false) AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))} AS indexable
     FROM document
     JOIN legal_case ON legal_case.id = document.case_id
     JOIN court ON court.id = legal_case.court_id
