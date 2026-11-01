@@ -39,5 +39,10 @@ describe("court fetch health", () => {
     expect(pacer.every((row) => !row.enabled)).toBe(true);
     const govinfo = rows.filter((row) => row.source === "govinfo" && row.enabled);
     expect(govinfo.map((row) => row.courtCode).sort()).toEqual([...CIRCUIT_CODES, "nyed", "akd"].sort());
+    const appellateRss = rows.filter((row) => row.source === "appellate_pacer_rss");
+    expect(appellateRss).toHaveLength(13);
+    expect(appellateRss.filter((row) => row.enabled).map((row) => row.courtCode).sort())
+      .toEqual(["ca10", "ca11", "ca2", "ca4", "ca6", "cadc", "cafc"]);
+    expect(catalogRows(["ded", "akd"]).filter((row) => row.source === "court_site").map((row) => row.courtCode)).toEqual(["ded"]);
   });
 });

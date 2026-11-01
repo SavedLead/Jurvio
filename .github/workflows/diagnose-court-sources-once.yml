@@ -107,6 +107,8 @@ jobs:
           q "SELECT court_code, count(*), count(*) FILTER (WHERE outcome='matched'), count(*) FILTER (WHERE outcome='entry'), count(*) FILTER (WHERE outcome='new_case'), count(*) FILTER (WHERE outcome='restricted'), count(*) FILTER (WHERE outcome='ambiguous') FROM govinfo_crosscheck WHERE seen_at > now() - interval '7 days' GROUP BY 1 ORDER BY 2 DESC"
           echo "--- 7. GovInfo sweep state (since | offset_mark set | sweeps_completed | updated_at) ---"
           q "SELECT since, offset_mark IS NOT NULL, sweeps_completed, updated_at FROM govinfo_daily_state"
+          echo "--- 8. court-site and appellate RSS items, last 7 days (source | court | items | matched | entry | new_case | restricted | ambiguous | unmatched) ---"
+          q "SELECT source, court_code, count(*), count(*) FILTER (WHERE outcome='matched'), count(*) FILTER (WHERE outcome='entry'), count(*) FILTER (WHERE outcome='new_case'), count(*) FILTER (WHERE outcome='restricted'), count(*) FILTER (WHERE outcome='ambiguous'), count(*) FILTER (WHERE outcome='unmatched') FROM free_source_item WHERE seen_at > now() - interval '7 days' GROUP BY 1, 2 ORDER BY 1, 3 DESC"
           echo "=== done ==="
           REMOTE
       - name: Summary

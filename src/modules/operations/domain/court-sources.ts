@@ -8,6 +8,8 @@
  * Pure data, no I/O.
  */
 import { circuitAdapter } from "@/modules/ingestion/providers/appellate/adapters";
+import { APPELLATE_RSS_COURTS, appellateRssUrl } from "@/modules/ingestion/providers/appellate/pacer-rss";
+import { SITE_OPINION_SOURCES } from "@/modules/ingestion/providers/courts/site-opinions";
 import { APPELLATE_COURT_REGISTRY } from "@/modules/ingestion/providers/appellate/registry";
 
 export type CourtSourceKey =
@@ -52,6 +54,11 @@ export function circuitCatalogRows(): CourtSourceRow[] {
       note: feeds.length > 1 ? `${feeds.length} listings: ${feeds.map((feed) => feed.label).join(", ")}` : null,
     });
     rows.push(govinfoRow(court));
+    const rss = (APPELLATE_RSS_COURTS as readonly string[]).includes(court);
+    rows.push({
+      courtCode: court, source: "appellate_pacer_rss", url: appellateRssUrl(court), available: rss, enabled: rss,
+      note: rss ? "public NextGen RSS: orders, opinions, judgments" : "court answers \"not configured for feed\" (checked 2026-10-31)",
+    });
     const official = APPELLATE_COURT_REGISTRY.find((entry) => entry.code === court);
     rows.push({
       courtCode: court, source: "appellate_official", url: official?.opinionsUrl ?? null,
@@ -76,6 +83,10 @@ function govinfoRow(court: string): CourtSourceRow {
 export function districtCatalogRows(districtCodes: readonly string[]): CourtSourceRow[] {
   return districtCodes.flatMap((court) => [
     govinfoRow(court),
+    ...SITE_OPINION_SOURCES.filter((source) => source.courtCode === court).map((source) => ({
+      courtCode: court, source: "court_site" as const, url: source.url, available: true, enabled: true,
+      note: "court website opinion list",
+    })),
     {
       courtCode: court, source: "pacer_free_opinions" as const,
       url: `https://ecf.${court}.uscourts.gov/cgi-bin/WrtOpRpt.pl`, available: true, enabled: false, note: PACER_LOGIN_NOTE,
