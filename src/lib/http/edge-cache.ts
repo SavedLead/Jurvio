@@ -25,6 +25,10 @@
 
 export const PUBLIC_EDGE_CACHE_CONTROL = "public, s-maxage=300, stale-while-revalidate=600";
 
+// Customer sessions (jurvio_session) are deliberately NOT listed: public pages
+// render identically for signed-in customers (follow state, Account link and
+// pricing buttons load client-side), so they keep sharing the edge cache.
+// /account, /signin and /api/* are never on the allowlist below.
 export const AUTH_COOKIE_NAMES = [
   "jurvio_admin_session", // hosted internal session (INTERNAL_SESSION_COOKIE)
   "CF_Authorization", // Cloudflare Access session
@@ -64,6 +68,8 @@ const PUBLIC_EXACT_PATHS = new Set([
   "/privacy",
   "/public-records-policy",
   "/terms",
+  // Same HTML for everyone; signed-in state and waitlist buttons load in the browser.
+  "/pricing",
 ]);
 
 // Matches the prefix itself and anything below it.

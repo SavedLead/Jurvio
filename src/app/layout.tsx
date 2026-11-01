@@ -14,6 +14,7 @@ const primaryNavigation = [
   ["Professionals", "/attorneys"], ["Judges & Courts", "/judges"],
   ["Supreme Court", "/supreme-court"], ["Explainers", "/explainers"],
   ["News & Trackers", "/government-litigation"],
+  ["Pricing", "/pricing"],
 ] as const;
 
 const footerNavigation = [

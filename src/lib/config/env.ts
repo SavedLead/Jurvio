@@ -38,6 +38,13 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
   EMAIL_POSTAL_ADDRESS: z.string().optional(),
+  // Stripe billing stays off while STRIPE_SECRET_KEY is unset (see
+  // src/modules/accounts/infrastructure/stripe.ts).
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_PRICE_PLUS: z.string().optional(),
+  STRIPE_PRICE_PRO: z.string().optional(),
+  STRIPE_PRICE_TEAM: z.string().optional(),
 });
 
 let cached: z.infer<typeof schema> | undefined;
