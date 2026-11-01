@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { conditionalRequestHeaders, type HttpValidators } from "../http-validators";
 import type { AppellateCourtSource } from "./registry";
+import { CourtFetchHttpError } from "@/modules/operations/application/court-fetch-log";
 
 export interface OfficialAppellateCandidate {
   courtCode:string; docketNumber:string|null; caption:string; decidedOn:string|null;
@@ -58,7 +59,7 @@ export async function fetchOfficialAppellateListing(court: AppellateCourtSource,
   if (response.status === 304) {
     return { notModified: true as const, body: "", retrievedAt, etag, lastModified, candidates: [] };
   }
-  if (!response.ok) throw new Error(`${court.code} opinions listing returned HTTP ${response.status}`);
+  if (!response.ok) throw new CourtFetchHttpError(court.opinionsUrl, response.status, `${court.code} opinions listing`);
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > MAX_LISTING_BYTES) throw new Error("appellate listing exceeds byte cap");
   const body = await response.text();

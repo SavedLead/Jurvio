@@ -5,6 +5,7 @@ import type { ArtifactStore } from "./artifact-store";
 import { shouldCreateCase } from "../domain/direct-court";
 import { fetchCmecfRss } from "../providers/courts/cmecf-rss";
 import type { FederalCourtSource } from "../providers/courts/registry";
+import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -19,9 +20,21 @@ export async function ingestDirectCourtFeed(
   artifactStore: ArtifactStore,
   court: FederalCourtSource,
 ) {
+  const startedAtMs = Date.now();
   try {
-    return await ingestOneDirectCourtFeed(sql, artifactStore, court);
+    const result = await ingestOneDirectCourtFeed(sql, artifactStore, court);
+    await recordCourtFetch(sql, {
+      source: "district_rss", courtCode: court.officialCourtCode, url: court.rssUrl ?? "", startedAtMs,
+      httpStatus: result.notModified ? 304 : 200, ok: true, bytes: result.bytes ?? null,
+      // A 304 parses nothing; leave items null so it does not drag the baseline to 0.
+      items: result.notModified ? null : result.retrieved ?? 0, newItems: result.inserted,
+    });
+    return result;
   } catch (error) {
+    await recordCourtFetch(sql, {
+      source: "district_rss", courtCode: court.officialCourtCode, url: court.rssUrl ?? "", startedAtMs,
+      httpStatus: httpStatusOf(error), ok: false, error: errorText(error),
+    });
     await sql`
       UPDATE direct_court_registry SET health_state = 'degraded',
         consecutive_failures = consecutive_failures + 1, updated_at = now()
@@ -56,6 +69,8 @@ async function ingestOneDirectCourtFeed(
     return {
       court: court.officialCourtCode,
       notModified: true,
+      retrieved: 0,
+      bytes: 0,
       inserted: 0,
       duplicated: 0,
       matched: 0,
@@ -242,7 +257,9 @@ async function ingestOneDirectCourtFeed(
   }
   return {
     court: court.officialCourtCode,
+    notModified: false,
     retrieved: retrieved.events.length,
+    bytes: Buffer.byteLength(retrieved.rawBody),
     inserted,
     duplicated,
     matched,

@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type postgres from "postgres";
 import { fetchOfficialAppellateListing } from "../providers/appellate/official-opinions";
 import type { AppellateCourtSource } from "../providers/appellate/registry";
+import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
+import { recordSourceWatermark } from "@/modules/operations/application/court-freshness";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -11,10 +13,32 @@ export async function discoverOfficialAppellateOpinions(sql: Sql, court: Appella
     FROM appellate_source_registry
     WHERE court_code = ${court.code}
   `;
-  const listing = await fetchOfficialAppellateListing(court, {
-    etag: prior?.listing_etag,
-    lastModified: prior?.listing_last_modified,
-  });
+  const startedAtMs = Date.now();
+  let listing: Awaited<ReturnType<typeof fetchOfficialAppellateListing>>;
+  try {
+    listing = await fetchOfficialAppellateListing(court, {
+      etag: prior?.listing_etag,
+      lastModified: prior?.listing_last_modified,
+    });
+  } catch (error) {
+    // Before this, a 404 or timeout threw before the registry row was touched,
+    // so ca6, ca11 and cadc stayed 'unknown' for months. Record it, then rethrow.
+    await recordCourtFetch(sql, {
+      source: "appellate_official", courtCode: court.code, url: court.opinionsUrl, startedAtMs,
+      httpStatus: httpStatusOf(error), ok: false, error: errorText(error),
+    });
+    await recordSourceWatermark(sql, { source: "appellate_official", courtCode: court.code, ok: false, error: errorText(error) })
+      .catch(() => undefined);
+    await sql`
+      UPDATE appellate_source_registry SET
+        health_state = 'degraded',
+        consecutive_failures = consecutive_failures + 1,
+        next_poll_at = now() + LEAST(interval '60 minutes', interval '5 minutes' * power(2, LEAST(consecutive_failures, 4))),
+        updated_at = now()
+      WHERE court_code = ${court.code}
+    `;
+    throw error;
+  }
   if (listing.notModified) {
     await sql`
       UPDATE appellate_source_registry SET
@@ -27,6 +51,9 @@ export async function discoverOfficialAppellateOpinions(sql: Sql, court: Appella
         updated_at = now()
       WHERE court_code = ${court.code}
     `;
+    await recordCourtFetch(sql, {
+      source: "appellate_official", courtCode: court.code, url: court.opinionsUrl, startedAtMs, httpStatus: 304, ok: true, items: null,
+    });
     return { court: court.code, notModified: true, retrieved: 0, discovered: 0, seen: 0, costCents: 0 };
   }
   const checkpoint = createHash("sha256").update(listing.body).digest("hex");
@@ -79,5 +106,12 @@ export async function discoverOfficialAppellateOpinions(sql: Sql, court: Appella
     `;
     throw error;
   }
+  await recordCourtFetch(sql, {
+    source: "appellate_official", courtCode: court.code, url: court.opinionsUrl, startedAtMs, httpStatus: 200, ok: true,
+    bytes: Buffer.byteLength(listing.body), items: listing.candidates.length, newItems: discovered,
+  });
+  await recordSourceWatermark(sql, {
+    source: "appellate_official", courtCode: court.code, ok: true, itemsFetched: listing.candidates.length, newEntries: discovered,
+  }).catch(() => undefined);
   return { court: court.code, retrieved: listing.candidates.length, discovered, seen, costCents: 0 };
 }
