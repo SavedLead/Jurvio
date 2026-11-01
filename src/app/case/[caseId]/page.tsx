@@ -34,6 +34,8 @@ import { listCaseNews } from "@/modules/case-news/application/list-case-news";
 import { CaseNewsSection } from "@/modules/case-news/ui/case-news-section";
 import { listCaseAgencyItems } from "@/modules/agency-sources/application/public-items";
 import { OfficialAgencySources } from "@/modules/agency-sources/ui/official-agency-sources";
+import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
+import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 
 export const dynamic = "force-dynamic";
 
@@ -104,7 +106,7 @@ export default async function CasePage({ params }: CasePageProps) {
   if (!loaded) notFound();
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents, citations, newsLinks, agencyItems] = await Promise.all([
+  const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
@@ -113,6 +115,10 @@ export default async function CasePage({ params }: CasePageProps) {
     listCaseNews(sql, caseId).catch(() => []),
     // Official agency items that state this case's court + docket (empty until the tables exist).
     listCaseAgencyItems(sql, caseId).catch(() => []),
+    // Never offer following on sealed or restricted cases (the follow API re-checks).
+    captionAllowsFollow(legalCase.caption, legalCase.docketNumber)
+      ? caseFollowEligible(sql, caseId).catch(() => false)
+      : Promise.resolve(false),
   ]);
   const { cited: citedCases, citing: citingCases, counts: citationCounts } = citations;
   const verified = legalCase.verification === "verified";
@@ -280,6 +286,7 @@ export default async function CasePage({ params }: CasePageProps) {
       <div className="caseWorkspace">
         <aside className="caseWorkspaceNav">
           <CaseNav caseId={caseId} />
+          {followEligible ? <FollowCaseBox caseId={caseId} /> : null}
           <div className="caseProvenanceRail" aria-label="Source and record details">
             <section>
               <p className="sectionKicker">Case status</p>
