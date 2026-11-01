@@ -41,6 +41,9 @@ import { agencyTimelineEvents } from "@/modules/agency-sources/domain/timeline";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-english/ui/term-text";
+import { buildCaseStanding } from "@/modules/plain-english/domain/case-standing";
+import { loadCaseStandingSignals } from "@/modules/plain-english/application/case-standing-signals";
+import { CaseStandingSection } from "@/modules/plain-english/ui/case-standing-section";
 
 export const dynamic = "force-dynamic";
 
@@ -249,10 +252,40 @@ export default async function CasePage({ params }: CasePageProps) {
     && Number.isFinite(filedAt)
     && Date.now() - filedAt <= 45 * 24 * 60 * 60 * 1000;
 
-  const narrativeTargets=await publicCitationTargets(sql, [
-    ...caseAnswers.map(answer=>answer.answer), legalCase.backgroundSummary,
-    legalCase.significanceSummary, legalCase.questionPresented, legalCase.exactHolding,
-  ].filter(Boolean).join(" "));
+  // The court's own opinion (not a dissent or concurrence) is the only text the summary reads.
+  const majorityOpinion = readableDocuments.find((document) => document.perCuriam || /majority|lead|combined/i.test(document.opinionType ?? ""))
+    ?? (primaryOpinion && !/dissent|concur|rehearing/i.test(primaryOpinion.opinionType ?? "") ? primaryOpinion : undefined);
+  const [narrativeTargets, standingSignals]=await Promise.all([
+    publicCitationTargets(sql, [
+      ...caseAnswers.map(answer=>answer.answer), legalCase.backgroundSummary,
+      legalCase.significanceSummary, legalCase.questionPresented, legalCase.exactHolding,
+    ].filter(Boolean).join(" ")),
+    loadCaseStandingSignals(sql, caseId, majorityOpinion?.publicId ?? null),
+  ]);
+  const standing = buildCaseStanding({
+    courtKind: legalCase.courtKind ?? "other",
+    courtName: legalCase.courtName,
+    caption,
+    decidedOn: legalCase.decidedOn,
+    filedOn: legalCase.filedOn,
+    terminatedOn: legalCase.terminatedOn ?? null,
+    dispositionScope: legalCase.dispositionScope,
+    verified,
+    exactDisposition: legalCase.exactDisposition,
+    dispositionSourceUrl: legalCase.dispositionSourceUrl,
+    exactHolding: legalCase.exactHolding,
+    holdingSourceUrl: legalCase.holdingSourceUrl,
+    lowerCourtName: legalCase.lowerCourtName,
+    clusterDisposition: standingSignals.clusterDisposition,
+    precedentialStatus: standingSignals.precedentialStatus,
+    opinionTail: standingSignals.opinionTail,
+    opinionPath: majorityOpinion ? `/case/${caseId}/documents/${majorityOpinion.publicId}` : opinionPath,
+    opinionIsMajority: Boolean(majorityOpinion),
+    overruled: standingSignals.overruled,
+    citedByCount: citationCounts.citedBy,
+    docketEntries,
+    docketPath: `/case/${caseId}/docket`,
+  });
   // Citations become links; the plain stretches get dictionary-term tooltips
   // (first mention of each term per section, see createTermMarker).
   const linkedText=(text:string, marker:TermMarker)=><CitedCaseText text={text} targets={narrativeTargets}
@@ -264,6 +297,7 @@ export default async function CasePage({ params }: CasePageProps) {
   const partiesMarker=createTermMarker("parties");
   const statusMarker=createTermMarker("status");
   const holdingMarker=createTermMarker("holding");
+  const standsMarker=createTermMarker("stands");
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
     eventType: "page_view",
@@ -334,6 +368,7 @@ export default async function CasePage({ params }: CasePageProps) {
         </aside>
 
         <div className="caseWorkspaceMain">
+          {standing ? <CaseStandingSection standing={standing} renderText={(text) => marked(text, standsMarker)} /> : null}
           {opinionTextPending ? (
             <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
               <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
