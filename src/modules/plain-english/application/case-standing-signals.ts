@@ -2,7 +2,7 @@ import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
-import { readOverruledParenthetical } from "@/modules/plain-english/domain/case-standing";
+import { readOverruledParenthetical, type OverruledCandidate } from "@/modules/plain-english/domain/case-standing";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -10,15 +10,18 @@ export interface CaseStandingSignals {
   clusterDisposition: string | null;
   precedentialStatus: string | null;
   opinionTail: string | null;
+  /** First ~6,000 characters of the same opinion: its caption block (party roles) and how the case came up. */
+  opinionHead: string | null;
   /** Supreme Court Database vote counts carried on the CourtListener cluster. */
   votes: { majority: number; minority: number } | null;
-  overruled: { text: string; citingCaption: string | null; citingPath: string | null } | null;
+  /** "Overruled by …" parentheticals; the summary keeps only ones naming a court that can overrule the case. */
+  overruled: OverruledCandidate[];
 }
 
 // Passed as a bind parameter: backslashes in a template literal would be eaten.
 const OVERRULED_PATTERN = String.raw`^\s*((expressly|implicitly|partially)\s+)?(overruled|abrogated)\M`;
 
-const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, votes: null, overruled: null };
+const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, opinionHead: null, votes: null, overruled: [] };
 
 /**
  * One indexed round trip for the "Where this case stands" summary:
@@ -33,6 +36,7 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       clusterDisposition: string | null;
       precedentialStatus: string | null;
       opinionTail: string | null;
+      opinionHead: string | null;
       votes: { majority: string | null; minority: string | null } | null;
       overruled: Array<{ text: string; citingCaption: string | null; citingPublicId: string | null }> | null;
     }>>`
@@ -51,10 +55,14 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
           ? sql`(SELECT right(dc.content_text, 1600) FROM document d JOIN document_content dc ON dc.document_id = d.id
                   WHERE d.case_id = c.id AND d.public_id = ${opinionDocumentPublicId} AND d.publication = 'published')`
           : sql`NULL::text`} AS "opinionTail",
+        ${opinionDocumentPublicId
+          ? sql`(SELECT left(dc.content_text, 6000) FROM document d JOIN document_content dc ON dc.document_id = d.id
+                  WHERE d.case_id = c.id AND d.public_id = ${opinionDocumentPublicId} AND d.publication = 'published')`
+          : sql`NULL::text`} AS "opinionHead",
         (SELECT jsonb_agg(jsonb_build_object('text', p.text, 'citingCaption', citing.caption, 'citingPublicId', citing.public_id))
            FROM (SELECT p.text, p.citing_document_id FROM courtlistener_parenthetical p
                   WHERE p.cited_case_id = c.id AND p.text ~* ${OVERRULED_PATTERN}
-                  ORDER BY p.score DESC NULLS LAST LIMIT 5) p
+                  ORDER BY p.score DESC NULLS LAST LIMIT 25) p
            JOIN document d ON d.id = p.citing_document_id AND d.publication = 'published'
            JOIN legal_case citing ON citing.id = d.case_id AND citing.publication = 'published'
           WHERE ${sql.unsafe(latestPublicationColumnSql("displayable", "legal_case", "citing.id"))}
@@ -64,15 +72,21 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       WHERE c.public_id = ${casePublicId} AND c.publication = 'published'
     `;
     if (!row) return EMPTY;
-    const hit = (row.overruled ?? []).map((item) => ({ ...item, text: readOverruledParenthetical(item.text) })).find((item) => item.text);
+    const overruled = (row.overruled ?? [])
+      .map((item) => ({ ...item, text: readOverruledParenthetical(item.text) }))
+      .filter((item): item is typeof item & { text: string } => Boolean(item.text))
+      .map((item) => ({
+        text: item.text,
+        citingCaption: item.citingCaption ? cleanCaseCaption(item.citingCaption) : null,
+        citingPath: item.citingPublicId ? `/case/${item.citingPublicId}` : null,
+      }));
     return {
       clusterDisposition: row.clusterDisposition,
       precedentialStatus: row.precedentialStatus,
       opinionTail: row.opinionTail,
+      opinionHead: row.opinionHead,
       votes: parseVotes(row.votes),
-      overruled: hit?.text
-        ? { text: hit.text, citingCaption: hit.citingCaption ? cleanCaseCaption(hit.citingCaption) : null, citingPath: hit.citingPublicId ? `/case/${hit.citingPublicId}` : null }
-        : null,
+      overruled,
     };
   } catch {
     return EMPTY;

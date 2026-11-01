@@ -6,6 +6,7 @@
  */
 import type { CourtKind } from "@/modules/cases/domain/record-answers";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
+import { displayPartyName, partyRolesFor, ROLE_WORD, sideForName, trialCaptionRoles, type PartyRoles, type PartySide } from "./party-roles";
 
 export type OutcomeKind = "affirmed" | "reversed" | "vacated" | "remanded" | "dismissed" | "mixed" | "review-granted" | "review-denied";
 
@@ -140,6 +141,12 @@ export function readOverruledParenthetical(text: string | null | undefined): str
   return value.length > 260 ? `${value.slice(0, 257).replace(/\s+\S*$/, "")}…` : value;
 }
 
+export interface OverruledCandidate {
+  text: string;
+  citingCaption: string | null;
+  citingPath: string | null;
+}
+
 export interface CaseStandingInput {
   courtKind: CourtKind;
   courtName: string;
@@ -157,11 +164,16 @@ export interface CaseStandingInput {
   lowerCourtName: string | null;
   clusterDisposition: string | null;
   precedentialStatus: string | null;
+  /** First few thousand characters of the court's own opinion (caption block, how the case came up). */
+  opinionHead?: string | null;
   opinionTail: string | null;
   opinionPath: string | null;
   opinionIsMajority: boolean;
-  overruled: { text: string; citingCaption: string | null; citingPath: string | null } | null;
+  /** "Overruled by …" parentheticals from later opinions; only ones naming a court that can overrule this case count. */
+  overruled: OverruledCandidate[] | OverruledCandidate | null;
   citedByCount: number;
+  /** Where the list of citing opinions is (e.g. "#cited-by"). */
+  citedByPath?: string | null;
   /** Supreme Court Database vote counts, when known. */
   votes?: { majority: number; minority: number } | null;
   /** Public docket entries (already filtered for sealed/restricted), any order. */
@@ -170,7 +182,7 @@ export interface CaseStandingInput {
 }
 
 export interface StandingPoint {
-  id: "who-won" | "decided" | "means" | "rule" | "good-law" | "status";
+  id: "who-won" | "decided" | "lower" | "means" | "rule" | "good-law" | "cited" | "status";
   label: string;
   text: string;
   quote?: string;
@@ -193,20 +205,6 @@ const ENUM_LINES: Record<string, string> = {
   affirmed_in_part: "Affirmed in part and reversed in part.",
 };
 
-function firstParty(caption: string) {
-  const parts = caption.split(/\s+v\.?\s+/i);
-  if (parts.length !== 2) return null;
-  const name = (parts[0] ?? "").trim();
-  if (!name || name.length > 60 || /^(?:in re|ex parte|matter of)\b/i.test(name)) return null;
-  return name;
-}
-
-function lowerCourtPhrase(input: CaseStandingInput) {
-  if (input.courtKind === "supreme") return input.lowerCourtName ? `the ${input.lowerCourtName.replace(/^the\s+/i, "")}` : "the lower court";
-  if (input.courtKind === "appellate") return "the lower court";
-  return "the lower court";
-}
-
 function outcomeFor(input: CaseStandingInput): OutcomeReading | null {
   if (input.courtKind === "supreme" && input.verified) {
     const fromRecord = readDispositionLine(input.exactDisposition, "court-record");
@@ -224,59 +222,6 @@ function outcomeFor(input: CaseStandingInput): OutcomeReading | null {
   return null;
 }
 
-function whoWon(input: CaseStandingInput, outcome: OutcomeReading): string {
-  const supreme = input.courtKind === "supreme";
-  const named = supreme ? firstParty(input.caption) : null;
-  const who = supreme ? "the petitioner" : "the side that appealed";
-  const explain = supreme
-    ? ` The petitioner is the side that asked the Supreme Court to take the case, usually the party named first${named ? ` (here, ${named})` : ""}.`
-    : "";
-  const lower = lowerCourtPhrase(input);
-  switch (outcome.kind) {
-    case "reversed":
-    case "vacated":
-      return `${capitalize(who)} won${outcome.remanded ? ", at least for now" : ""}.${explain} The court ruled against ${lower}'s decision.`;
-    case "affirmed":
-      return `The side that won in ${lower} won again. The court left ${lower}'s decision in place.`;
-    case "mixed":
-      return `Neither side won outright. The court agreed with ${lower} on some points and disagreed on others.`;
-    case "dismissed":
-      return `No one won on the merits. The court dismissed the ${supreme ? "case" : "appeal"} without deciding who is right, which usually leaves ${lower}'s decision in place.`;
-    case "remanded":
-      return `No final winner yet. The court sent the case back to ${lower} for more work.`;
-    case "review-granted":
-      return "The challenger won. The court set aside or sent back the agency's decision, at least in part.";
-    case "review-denied":
-      return "The agency won. The court turned down the challenge and left the agency's decision in place.";
-  }
-}
-
-function meaning(input: CaseStandingInput, outcome: OutcomeReading): string {
-  const lower = lowerCourtPhrase(input);
-  const back = outcome.remanded ? ` The case goes back to ${lower} to continue in line with this ruling.` : "";
-  const reach = input.courtKind === "supreme"
-    ? " Supreme Court decisions bind every court in the country on the federal-law questions they decide."
-    : "";
-  switch (outcome.kind) {
-    case "reversed":
-      return `${capitalize(lower)}'s ruling no longer stands.${back}${reach}`;
-    case "vacated":
-      return `${capitalize(lower)}'s ruling was wiped out, as if it had not been issued.${back}${reach}`;
-    case "affirmed":
-      return `${capitalize(lower)}'s ruling stands.${reach}`;
-    case "mixed":
-      return `Parts of ${lower}'s ruling stand and parts do not.${back} Read the opinion to see which.`;
-    case "dismissed":
-      return `The ${input.courtKind === "supreme" ? "Supreme Court" : "appeals court"} did not rule on the merits.`;
-    case "remanded":
-      return `The case continues in ${lower}.`;
-    case "review-granted":
-      return `The agency must revisit its decision.${back}`;
-    case "review-denied":
-      return "The agency's decision stays in effect.";
-  }
-}
-
 function voteText(votes: { majority: number; minority: number }) {
   return votes.minority === 0 ? `${votes.majority}–0 (unanimous)` : `${votes.majority}–${votes.minority}`;
 }
@@ -287,8 +232,8 @@ function capitalize(value: string) {
 
 function precedentLine(status: string | null): string | null {
   const value = (status ?? "").toLowerCase();
-  if (value === "published") return "This is a published opinion, so it is binding precedent for courts in this circuit.";
-  if (value === "unpublished") return "This is an unpublished opinion. It settles this case but usually is not binding precedent for future cases.";
+  if (value === "published") return "This is a published opinion, so it is binding precedent (a ruling other courts in this circuit must follow).";
+  if (value === "unpublished") return "This is an unpublished opinion. It settles this case but usually is not binding precedent (other courts don't have to follow it).";
   return null;
 }
 
@@ -306,65 +251,261 @@ const COURT_NAME: Record<CourtKind, string> = {
   other: "The court",
 };
 
-function headlineFor(input: CaseStandingInput, outcome: OutcomeReading) {
-  const court = COURT_NAME[input.courtKind];
-  const lower = lowerCourtPhrase(input);
-  const remand = outcome.remanded && outcome.kind !== "remanded" ? " and sent the case back" : "";
-  switch (outcome.kind) {
-    case "reversed": return `${court} reversed ${lower}${remand}.`;
-    case "vacated": return `${court} threw out ${lower}'s decision${remand}.`;
-    case "affirmed": return `${court} upheld ${lower}'s decision.`;
-    case "mixed": return `${court} upheld part of ${lower}'s decision and overturned part.`;
-    case "dismissed": return `${court} dismissed the ${input.courtKind === "supreme" ? "case" : "appeal"}.`;
-    case "remanded": return `${court} sent the case back to ${lower}.`;
-    case "review-granted": return `${court} ruled against the agency${remand}.`;
-    case "review-denied": return `${court} upheld the agency's decision.`;
+/** Plain-English meaning of each disposition, keeping the legal word. */
+const ACTION: Record<OutcomeKind, string> = {
+  affirmed: "affirmed (agreed with the lower court and left its ruling in place)",
+  reversed: "reversed (overturned) the lower court's decision",
+  vacated: "vacated (canceled) the lower court's decision",
+  remanded: "remanded the case (sent it back to the lower court for more work)",
+  mixed: "affirmed in part and reversed in part (agreed with some of the lower court's decision and overturned the rest)",
+  dismissed: "dismissed the appeal (ended it without deciding who was right)",
+  "review-granted": "granted the petition for review (ruled that the agency's decision must be set aside or redone, at least in part)",
+  "review-denied": "denied the petition for review (turned down the challenge and left the agency's decision in place)",
+};
+
+const REMAND_TAIL = " and remanded the case (sent it back to the lower court for more proceedings)";
+
+function roleDescription(side: PartySide, courtKind: CourtKind): string {
+  const trial = side.trialRole && side.trialRole !== side.role ? `, and the ${ROLE_WORD[side.trialRole]} in the trial court` : "";
+  switch (side.role) {
+    case "appellant": return `the appellant, the side that appealed${trial}`;
+    case "appellee": return `the appellee, the side that won in the lower court${trial}`;
+    case "petitioner": return courtKind === "supreme"
+      ? "the petitioner, the side that asked the Supreme Court to review the lower court's decision"
+      : `the petitioner, the side that asked the court to review the decision${trial}`;
+    case "respondent": return courtKind === "supreme"
+      ? "the respondent, the side that won in the lower court"
+      : `the respondent, the side defending the decision under review${trial}`;
+    default: return `the ${ROLE_WORD[side.role]}`;
   }
 }
 
+function named(side: PartySide, courtKind: CourtKind) {
+  return `${displayPartyName(side.name)} (${roleDescription(side, courtKind)})`;
+}
+
+function shortName(side: PartySide) {
+  return displayPartyName(side.name);
+}
+
+function actionFor(outcome: OutcomeReading) {
+  const remand = outcome.remanded && outcome.kind !== "remanded" && outcome.kind !== "dismissed" ? REMAND_TAIL : "";
+  return `${ACTION[outcome.kind]}${remand}`;
+}
+
+/** The single side a disposition favors, when it favors one. */
+function favoredSide(kind: OutcomeKind): "up" | "down" | null {
+  switch (kind) {
+    case "affirmed":
+    case "review-denied":
+      return "down";
+    case "reversed":
+    case "vacated":
+    case "review-granted":
+      return "up";
+    default:
+      return null;
+  }
+}
+
+function whoWonText(input: CaseStandingInput, outcome: OutcomeReading, roles: PartyRoles | null): string {
+  const court = COURT_NAME[input.courtKind];
+  const action = actionFor(outcome);
+  const stillOpen = outcome.remanded && outcome.kind !== "affirmed" ? " The case goes back to the lower court, so the final result can still change." : "";
+  if (roles?.cross) {
+    return `Both sides appealed (cross-appeals), so there is no single winner. ${court} ${action}. Read the opinion to see which side won on which issues.`;
+  }
+  const favored = favoredSide(outcome.kind);
+  if (!roles) {
+    const upWord = input.courtKind === "supreme" ? "the petitioner (the side that asked the Supreme Court to review the case)" : outcome.kind.startsWith("review") ? "the petitioner (the side challenging the agency)" : "the appellant (the side that appealed)";
+    const downWord = input.courtKind === "supreme" ? "the respondent (the side that won in the lower court)" : outcome.kind.startsWith("review") ? "the agency" : "the appellee (the side that won in the lower court)";
+    const unknown = " Our records don't say which party is on which side.";
+    if (favored === "down") return `A win for ${downWord}. ${court} ${action}, so ${upWord.replace(/ \(.*/, "")} lost.${unknown}`;
+    if (favored === "up") return `A win for ${upWord}${outcome.remanded ? ", at least for now" : ""}. ${court} ${action}.${stillOpen}${unknown}`;
+    return `${noSingleWinner(outcome)} ${court} ${action}.${stillOpen}`;
+  }
+  const up = roles.up;
+  const down = roles.down;
+  if (favored === "down") {
+    return `A win for ${named(down, input.courtKind)}. ${court} ${action}, so ${named(up, input.courtKind)} lost${outcome.kind === "review-denied" ? " its challenge" : " the appeal"}.`;
+  }
+  if (favored === "up") {
+    return `A win for ${named(up, input.courtKind)}${outcome.remanded ? ", at least for now" : ""}. ${court} ${action}, a loss for ${named(down, input.courtKind)}.${stillOpen}`;
+  }
+  if (outcome.kind === "dismissed") {
+    return `No winner on the merits. ${court} ${action}. The lower court's decision stays in place, so ${named(up, input.courtKind)} did not get the change it asked for.`;
+  }
+  return `${noSingleWinner(outcome)} ${court} ${action}. ${capitalize(shortName(up))} is the ${ROLE_WORD[up.role]}; ${shortName(down)} is the ${ROLE_WORD[down.role]}.${stillOpen}`;
+}
+
+function noSingleWinner(outcome: OutcomeReading) {
+  if (outcome.kind === "mixed") return "Neither side won completely; each won on some points.";
+  if (outcome.kind === "remanded") return "No final winner yet.";
+  return "No winner on the merits.";
+}
+
+function headlineFor(input: CaseStandingInput, outcome: OutcomeReading, roles: PartyRoles | null) {
+  const court = COURT_NAME[input.courtKind];
+  const favored = roles && !roles.cross ? favoredSide(outcome.kind) : null;
+  const winner = favored && roles ? displayPartyName(roles[favored].name) : null;
+  const forWinner = winner ? ` — a win for ${winner}${outcome.remanded && favored === "up" ? ", at least for now" : ""}` : "";
+  switch (outcome.kind) {
+    case "affirmed": return `${court} agreed with the lower court${forWinner}.`;
+    case "reversed": return `${court} overturned the lower court's decision${forWinner}.`;
+    case "vacated": return `${court} canceled the lower court's decision${forWinner}.`;
+    case "mixed": return `${court} agreed with part of the lower court's decision and overturned part.`;
+    case "dismissed": return `${court} ended the ${input.courtKind === "supreme" ? "case" : "appeal"} without deciding who was right.`;
+    case "remanded": return `${court} sent the case back to the lower court for more work.`;
+    case "review-granted": return `${court} ruled against the agency${forWinner}.`;
+    case "review-denied": return `${court} left the agency's decision in place${winner && roles ? ` — a loss for ${displayPartyName(roles.up.name)}` : ""}.`;
+  }
+}
+
+function meaning(input: CaseStandingInput, outcome: OutcomeReading): string {
+  const back = outcome.remanded && outcome.kind !== "remanded" ? " The case goes back to the lower court to continue in line with this ruling." : "";
+  const reach = input.courtKind === "supreme"
+    ? " Supreme Court decisions bind every court in the country on the federal-law questions they decide."
+    : "";
+  switch (outcome.kind) {
+    case "reversed": return `The lower court's ruling no longer stands.${back}${reach}`;
+    case "vacated": return `The lower court's ruling was wiped out, as if it had not been issued.${back}${reach}`;
+    case "affirmed": return `The lower court's ruling stands.${reach}`;
+    case "mixed": return `Parts of the lower court's ruling stand and parts do not.${back} Read the opinion to see which.`;
+    case "dismissed": return `The ${input.courtKind === "supreme" ? "Supreme Court" : "appeals court"} did not rule on who was right, so the lower court's decision stays in place.`;
+    case "remanded": return "The case continues in the lower court.";
+    case "review-granted": return `The agency must revisit its decision.${back}`;
+    case "review-denied": return "The agency's decision stays in effect.";
+  }
+}
+
+/**
+ * A sentence near the top of the opinion that says what the lower court did
+ * ("This is an appeal from a Federal Tort Claims Act judgment in favor of the
+ * plaintiff.", "The Court of Appeals reversed."). Quoted as-is; never inferred.
+ */
+export function readLowerRuling(head: string | null | undefined, courtKind: CourtKind, lowerCourt: string | null = null): string | null {
+  if (!head) return null;
+  const sentences = closingSentences(head.slice(0, 9000));
+  const patterns = courtKind === "supreme"
+    ? [/^(?:The|the)\s+(?:United\s+States\s+)?(?:Court\s+of\s+Appeals|District\s+Court|[A-Z][a-z]+\s+Supreme\s+Court|Supreme\s+Court\s+of\s+[A-Z][a-z]+|state\s+court|trial\s+court)\b[^.]{0,40}?\b(?:affirmed|reversed|held|vacated|granted|denied|dismissed|upheld|ruled|convicted|sentenced|entered)\b/]
+    : [
+      /^This\s+is\s+an?\s+appeal\s+from\s+(?:an?|the)\s+[^.]{0,160}?\b(?:judgment|order|decision|conviction|sentence|dismissal)\b/i,
+      /^(?:The|the)\s+district\s+court\s+(?:then\s+|ultimately\s+|eventually\s+)?(?:granted|entered|denied|dismissed|convicted|sentenced|ruled|held|found|concluded|rejected|awarded)\b/,
+      /^(?:A|The)\s+jury\s+(?:convicted|found|returned|awarded)\b/,
+      /^[A-Z][A-Za-z.'’-]+\s+(?:pleaded|pled)\s+guilty\b/,
+    ];
+  // Supreme Court: the ruling under review is the immediate lower court's (the court named in "CERTIORARI TO …").
+  const lowerKind = courtKind === "supreme" && lowerCourt
+    ? /court of appeals/i.test(lowerCourt) ? /\bCourt\s+of\s+Appeals\b/ : /\bSupreme\s+Court\b|\bCourt\s+of\s+Appeals\b/
+    : null;
+  let fallback: string | null = null;
+  for (const sentence of sentences.slice(0, 80)) {
+    if (sentence.length < 25 || sentence.length > 360) continue;
+    if (MODAL.test(sentence) || NEGATED.test(sentence) || FIRST_PERSON.test(sentence) || /\?$/.test(sentence)) continue;
+    if (!patterns.some((pattern) => pattern.test(sentence))) continue;
+    if (!lowerKind || lowerKind.test(sentence.slice(0, 80))) return sentence;
+    fallback ??= sentence;
+  }
+  return lowerKind ? null : fallback;
+}
+
+/** Courts that can overrule this one, and whether an "overruled by …" parenthetical names one of them. */
+function overrulingCourts(input: CaseStandingInput): { label: string; accepts: (text: string) => boolean } | null {
+  const supremeCite = /\b\d{1,3}\s+U\.\s?S\.\s+\d|\b\d{1,3}\s+S\.\s?Ct\.\s+\d|\bL\.\s?Ed\.\s?(?:2d\s+)?\d/;
+  if (input.courtKind === "supreme") {
+    return { label: "later Supreme Court decision", accepts: (text) => supremeCite.test(text) };
+  }
+  if (input.courtKind === "appellate") {
+    const circuit = /\bfor\s+the\s+(.+?)\s*$/i.exec(input.courtName)?.[1]?.replace(/^the\s+/i, "") ?? null;
+    const full = circuit ? `the full ${circuit} (sitting en banc)` : "the full appeals court (sitting en banc)";
+    return { label: `later decision by the Supreme Court or ${full}`, accepts: (text) => supremeCite.test(text) || /\ben\s+banc\b/i.test(text) };
+  }
+  return null;
+}
+
 function goodLaw(input: CaseStandingInput): StandingPoint | null {
-  if (input.courtKind !== "supreme" && input.courtKind !== "appellate") return null;
-  if (input.overruled) {
+  const courts = overrulingCourts(input);
+  if (!courts || !input.decidedOn) return null;
+  const candidates = input.overruled ? (Array.isArray(input.overruled) ? input.overruled : [input.overruled]) : [];
+  const hit = candidates.find((candidate) => courts.accepts(candidate.text));
+  if (hit) {
     return {
       id: "good-law",
       label: "Is it still good law?",
-      text: "Probably not on the point that was overruled. A later opinion describes this decision as overruled:",
-      quote: input.overruled.text,
-      sourceLabel: input.overruled.citingCaption ? `Quoted in ${input.overruled.citingCaption}` : "Quoted in a later opinion",
-      sourceHref: input.overruled.citingPath,
+      text: "Probably not, at least on the point that was overruled. A later opinion says this decision was overruled:",
+      quote: hit.text,
+      sourceLabel: hit.citingCaption ? `Quoted in ${hit.citingCaption}` : "Quoted in a later opinion",
+      sourceHref: hit.citingPath,
     };
   }
-  if (!input.decidedOn) return null;
-  const cited = input.citedByCount > 0
-    ? ` ${input.citedByCount.toLocaleString("en-US")} later ${input.citedByCount === 1 ? "opinion" : "opinions"} on Jurvio ${input.citedByCount === 1 ? "cites" : "cite"} it.`
-    : "";
+  const who = input.courtKind === "supreme"
+    ? " Only the Supreme Court itself can overrule one of its decisions."
+    : " Only those courts can overrule it.";
   return {
     id: "good-law",
     label: "Is it still good law?",
-    text: `Jurvio has no record of a later decision overruling it.${cited} Our citation records are not complete, so this is not a guarantee.`,
+    text: `We found no ${courts.label} overruling this case in Jurvio's records.${who} Our records may be incomplete, so this is not a guarantee.`,
   };
+}
+
+function citedPoint(input: CaseStandingInput): StandingPoint | null {
+  if (input.courtKind !== "supreme" && input.courtKind !== "appellate") return null;
+  if (!input.citedByCount || input.citedByCount < 1) return null;
+  const count = input.citedByCount.toLocaleString("en-US");
+  return {
+    id: "cited",
+    label: "How often is it cited?",
+    text: `At least ${count} later court ${input.citedByCount === 1 ? "opinion" : "opinions"} on Jurvio ${input.citedByCount === 1 ? "cites" : "cite"} this case. Our citation records aren't complete, so the real number is likely higher. Being cited often shows a case is influential, not that it is still good law.`,
+    sourceLabel: input.citedByPath ? "See the opinions that cite it" : undefined,
+    sourceHref: input.citedByPath ?? null,
+  };
+}
+
+function lowerPoint(input: CaseStandingInput, lowerCourt: string | null): StandingPoint | null {
+  const ruling = readLowerRuling(input.opinionHead, input.courtKind, lowerCourt);
+  const courtLine = lowerCourt ? `The case came from ${lowerCourt.replace(/^The\s/, "the ")}.` : "";
+  if (ruling) {
+    return {
+      id: "lower",
+      label: "What had the lower court decided?",
+      text: `${courtLine}${courtLine ? " " : ""}In the opinion's words:`,
+      quote: ruling,
+      sourceLabel: SOURCE_LABEL.opinion,
+      sourceHref: input.opinionPath,
+    };
+  }
+  if (courtLine) return { id: "lower", label: "Where did the case come from?", text: courtLine };
+  return null;
 }
 
 export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null {
   const points: StandingPoint[] = [];
   const decidedDate = input.decidedOn;
   if (input.courtKind === "supreme" || input.courtKind === "appellate") {
+    const { roles, lowerCourt: parsedLower } = partyRolesFor(input.courtKind, { caption: input.caption, opinionHead: input.opinionHead ?? null, verifiedDocket: input.verified });
+    const lowerCourt = input.courtKind === "supreme" ? (input.lowerCourtName ? `the ${input.lowerCourtName.replace(/^the\s+/i, "")}` : parsedLower) : parsedLower;
     const outcome = outcomeFor(input);
     if (!outcome) {
       if (!decidedDate) return null;
       points.push({
         id: "decided",
         label: "What did the court decide?",
-        text: "Jurvio does not have the court's judgment line for this case yet, so we cannot say who won."
+        text: "The court records we have don't include the line that states the result, so we can't say yet who won."
           + (input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "")
           + (input.opinionPath ? " The opinion is linked below." : ""),
       });
+      const lower = lowerPoint(input, lowerCourt);
+      if (lower) points.push(lower);
       const law = goodLaw(input);
       if (law) points.push(law);
+      const cited = citedPoint(input);
+      if (cited) points.push(cited);
       return { headline: `${COURT_NAME[input.courtKind]} has decided this case.`, points };
     }
     const vote = input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "";
-    points.push({ id: "who-won", label: "Who won?", text: `${whoWon(input, outcome)}${vote}` });
+    points.push({ id: "who-won", label: "Who won?", text: `${whoWonText(input, outcome, roles)}${vote}` });
+    const lower = lowerPoint(input, lowerCourt);
+    if (lower) points.push(lower);
     points.push({
       id: "decided",
       label: "What did the court decide?",
@@ -387,69 +528,84 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
     }
     const law = goodLaw(input);
     if (law) points.push(law);
-    return { headline: headlineFor(input, outcome), points };
+    const cited = citedPoint(input);
+    if (cited) points.push(cited);
+    return { headline: headlineFor(input, outcome, roles), points };
   }
 
   // District, bankruptcy and other trial-level cases: report what the record shows, never a guess.
   if (!input.filedOn && !input.terminatedOn) return null;
+  const roles = trialCaptionRoles(input.caption);
   const docket = readDocketOutcome(input.docketEntries ?? []);
   const dismissal = !docket && input.opinionIsMajority ? readTrialDismissal(input.opinionTail) : null;
+  const closedOn = input.terminatedOn ? formatPublicCaseDate(input.terminatedOn) ?? input.terminatedOn : null;
   points.push({
     id: "status",
     label: "Is the case still open?",
-    text: input.terminatedOn
-      ? `No. The court closed this case on ${formatPublicCaseDate(input.terminatedOn) ?? input.terminatedOn}.`
-      : "Jurvio has no record of the case being closed. Check the docket for the latest activity.",
+    text: closedOn
+      ? `No. The court closed this case on ${closedOn}.`
+      : docket || dismissal
+        ? "Our records don't show a closing date. Check the docket for the latest activity."
+        : "Yes, as far as our records show: the court records we have show no final decision and no closing date. Check the docket for the latest activity.",
   });
   const docketSource = (date: string | null) => `From the court's docket${date ? `, ${formatPublicCaseDate(date) ?? date}` : ""}`;
+  let headline: string;
   if (docket?.kind === "judgment") {
+    const generic = /^(?:the\s+)?(plaintiffs?|defendants?)$/i.exec(docket.winner.trim());
+    const side = roles ? sideForName(roles, docket.winner) : null;
+    const sideText = !generic && side && roles ? ` (${roles[side].role === "prosecution" ? "the prosecution" : `the ${ROLE_WORD[roles[side].role]}`})` : "";
+    const loser = side && roles ? roles[side === "up" ? "down" : "up"] : null;
+    const winnerName = generic ? `the ${generic[1]!.toLowerCase()}` : displayPartyName(docket.winner);
+    const against = loser ? `, against ${displayPartyName(loser.name)}${generic ? ` (the ${roles![side === "up" ? "down" : "up"].role === "prosecution" ? "prosecution" : ROLE_WORD[loser.role]})` : ""}` : "";
     points.push({
       id: "who-won",
       label: "Who won?",
-      text: `The docket records a judgment in favor of ${docket.winner}${docket.winner.endsWith(".") ? "" : "."} In the docket's words:`,
+      text: `${capitalize(winnerName)}${sideText}${/\.$/.test(sideText || winnerName) ? "" : "."} The court entered judgment (its final decision) in favor of ${winnerName}${against}${/\.$/.test(against || winnerName) ? "" : "."} In the docket's words:`,
       quote: docket.quote,
       sourceLabel: docketSource(docket.filedOn),
       sourceHref: input.docketPath ?? null,
     });
+    headline = `The court ruled for ${winnerName}${sideText}${/\.$/.test(sideText || winnerName) ? "" : "."}`;
   } else if (docket?.kind === "voluntary") {
     points.push({
       id: "who-won",
       label: "Who won?",
-      text: "No one won in court. The docket shows the case was voluntarily dismissed, which usually means the plaintiff dropped it or the parties settled. In the docket's words:",
+      text: `No one won in court. The case was voluntarily dismissed (dropped${roles && roles.up.role === "plaintiff" ? ` by ${displayPartyName(roles.up.name)}, the plaintiff,` : " by the plaintiff"} or ended by agreement, often a settlement) without a court decision on who was right. In the docket's words:`,
       quote: docket.quote,
       sourceLabel: docketSource(docket.filedOn),
       sourceHref: input.docketPath ?? null,
     });
+    headline = "The case was dropped or settled without a court ruling.";
   } else if (docket?.kind === "dismissal" || dismissal) {
     const withPrejudice = docket?.kind === "dismissal" ? docket.withPrejudice : dismissal?.withPrejudice ?? null;
+    const against = roles ? ` That is a loss for ${displayPartyName(roles.up.name)} (the ${roles.up.role === "prosecution" ? "prosecution" : "plaintiff"}) on the dismissed claims.` : "";
     points.push({
       id: "decided",
       label: "What did the court decide?",
-      text: withPrejudice === true
-        ? "The court dismissed claims with prejudice, which means they generally cannot be filed again. In the court's words:"
+      text: (withPrejudice === true
+        ? "The court dismissed claims with prejudice (threw them out for good; they generally cannot be filed again)."
         : withPrejudice === false
-          ? "The court dismissed claims without prejudice, which means they can usually be filed again. In the court's words:"
-          : "The court dismissed claims. In the court's words:",
+          ? "The court dismissed claims without prejudice (threw them out for now; they can usually be filed again)."
+          : "The court dismissed claims (threw them out).") + `${against} In the court's words:`,
       quote: docket?.kind === "dismissal" ? docket.quote : dismissal?.quote,
       sourceLabel: docket?.kind === "dismissal" ? docketSource(docket.filedOn) : SOURCE_LABEL.opinion,
       sourceHref: docket?.kind === "dismissal" ? input.docketPath ?? null : input.opinionPath,
     });
+    headline = "The court dismissed the case or some of its claims.";
   } else {
-    const criminal = /^(?:USA|U\.S\.A?\.?|United States(?: of America)?)\s+v\.?\s/i.test(input.caption);
+    const criminal = roles?.up.role === "prosecution";
     points.push({
       id: "who-won",
       label: criminal ? "How did it end?" : "Who won?",
-      text: criminal
-        ? "Jurvio does not have the court's final ruling or judgment for this case, so we cannot say how it ended."
-        : "Jurvio does not have the court's final ruling for this case, so we cannot say who won.",
+      text: closedOn
+        ? `The court records we have don't say how it ended${criminal ? "" : " or who won"}. The docket may have more detail.`
+        : `No one yet. There is no final decision in the court records we have.`,
     });
+    headline = closedOn
+      ? "This case is closed, but the court records we have don't say how it ended."
+      : "This case is still open — no final decision yet.";
   }
-  return {
-    headline: input.terminatedOn
-      ? "This case is closed."
-      : docket || dismissal ? "The court has ruled in this case." : "No final ruling in Jurvio's records.",
-    points,
-  };
+  return { headline, points };
 }
 
 export type DocketOutcome =

@@ -84,28 +84,41 @@ describe("readTrialDismissal", () => {
   });
 });
 
+const ZHAO_HEAD = "Case: 19-3071 Document: 40 Filed: 06/29/2020 Pages: 15 In the United States Court of Appeals For the Seventh Circuit ____________________ No. 19‐3071 YONG JUAN ZHAO, on behalf of her minor son, Plaintiff‐Appellee, v. UNITED STATES OF AMERICA, Defendant‐Appellant. ____________________ Appeal from the United States District Court for the Southern District of Illinois. No. 3:17‐cv‐00454‐NJR‐GCS — Nancy J. Rosenstengel, Chief Judge. ____________________ ARGUED JUNE 5, 2020 — DECIDED JUNE 29, 2020 ____________________ Before EASTERBROOK, HAMILTON, and SCUDDER, Circuit Judges. HAMILTON, Circuit Judge. This is an appeal from a Federal Tort Claims Act judgment in favor of the plaintiff. When plaintiff Yong Juan Zhao gave birth to her son, he suffered an avoidable injury.";
+
+const CELOTEX_HEAD = "477 U.S. 317 (1986) CELOTEX CORP. v. CATRETT, ADMINISTRATRIX OF THE ESTATE OF CATRETT No. 85-198. Supreme Court of United States. Argued April 1, 1986 Decided June 25, 1986 CERTIORARI TO THE UNITED STATES COURT OF APPEALS FOR THE DISTRICT OF COLUMBIA CIRCUIT Leland S. Van Koten argued the cause for petitioner. JUSTICE REHNQUIST delivered the opinion of the Court. The United States District Court for the District of Columbia granted the motion of petitioner Celotex Corporation for summary judgment against respondent Catrett because the latter was unable to produce evidence in support of her allegation. The Court of Appeals for the District of Columbia Circuit reversed, however, holding that petitioner's failure to support its motion with evidence tending to negate such exposure precluded the entry of summary judgment in its favor.";
+
 describe("buildCaseStanding", () => {
-  it("summarizes a reversed Supreme Court case from the verified record", () => {
+  it("summarizes a reversed Supreme Court case from the verified record, naming who won", () => {
     const standing = buildCaseStanding({
       ...base,
       exactDisposition: "The judgment of the Supreme Court of Arizona in No. 759 is reversed.",
       lowerCourtName: "Supreme Court of Arizona",
       exactHolding: "The prosecution may not use statements stemming from custodial interrogation unless it demonstrates procedural safeguards.",
       citedByCount: 12,
+      citedByPath: "#cited-by",
     });
-    expect(standing?.headline).toBe("The Supreme Court reversed the Supreme Court of Arizona.");
+    expect(standing?.headline).toBe("The Supreme Court overturned the lower court's decision — a win for Miranda.");
     const text = standing?.points.map((point) => `${point.label} ${point.text} ${point.quote ?? ""}`).join("\n") ?? "";
-    expect(text).toContain("usually the party named first (here, Miranda)");
+    expect(text).toContain("A win for Miranda (the petitioner, the side that asked the Supreme Court to review the lower court's decision)");
+    expect(text).toContain("reversed (overturned) the lower court's decision, a loss for Arizona (the respondent, the side that won in the lower court)");
+    expect(text).toContain("The case came from the Supreme Court of Arizona.");
     expect(text).toContain("bind every court");
     expect(text).toContain("What rule did it set?");
-    expect(text).toContain("12 later opinions on Jurvio cite it");
-    expect(text).toContain("not a guarantee");
+    const law = standing?.points.find((point) => point.id === "good-law");
+    expect(law?.text).toBe("We found no later Supreme Court decision overruling this case in Jurvio's records. Only the Supreme Court itself can overrule one of its decisions. Our records may be incomplete, so this is not a guarantee.");
+    expect(law?.text).not.toMatch(/\d/);
+    const cited = standing?.points.find((point) => point.id === "cited");
+    expect(cited?.text).toContain("At least 12 later court opinions on Jurvio cite this case.");
+    expect(cited?.text).toContain("aren't complete");
+    expect(cited?.sourceHref).toBe("#cited-by");
   });
 
   it("does not trust unverified enrichment and says plainly when the judgment is unknown", () => {
     const standing = buildCaseStanding({ ...base, verified: false, exactDisposition: "The judgment is reversed." });
     expect(standing?.headline).toBe("The Supreme Court has decided this case.");
-    expect(standing?.points[0]?.text).toContain("cannot say who won");
+    expect(standing?.points[0]?.text).toContain("we can't say yet who won");
+    expect(standing?.points[0]?.text).not.toMatch(/Jurvio/);
   });
 
   it("adds the Supreme Court Database vote when known", () => {
@@ -120,46 +133,92 @@ describe("buildCaseStanding", () => {
     expect(buildCaseStanding({ ...base, courtKind: "district", decidedOn: null })).toBeNull();
   });
 
-  it("uses an appellate opinion's closing line and precedential status, without naming parties", () => {
+  it("Supreme Court from opinion text: cert roles, the lower court's ruling quoted", () => {
+    const standing = buildCaseStanding({
+      ...base, verified: false, caption: "Celotex Corp. v. Catrett", decidedOn: "1986-06-25",
+      clusterDisposition: "Reversed and remanded.", opinionHead: CELOTEX_HEAD, opinionPath: "/case/c/documents/d",
+    });
+    expect(standing?.headline).toBe("The Supreme Court overturned the lower court's decision — a win for Celotex Corp., at least for now.");
+    const won = standing?.points.find((point) => point.id === "who-won")?.text ?? "";
+    expect(won).toContain("A win for Celotex Corp. (the petitioner");
+    expect(won).toContain("and remanded the case (sent it back to the lower court for more proceedings), a loss for Catrett (the respondent, the side that won in the lower court)");
+    const lower = standing?.points.find((point) => point.id === "lower");
+    expect(lower?.text).toContain("The case came from the United States Court of Appeals for the District of Columbia Circuit.");
+    expect(lower?.quote).toMatch(/^The Court of Appeals for the District of Columbia Circuit reversed, however/);
+  });
+
+  it("appeals: names the winner and loser from the opinion's caption block", () => {
+    const standing = buildCaseStanding({
+      ...base, courtKind: "appellate", courtName: "United States Court of Appeals for the Seventh Circuit", caption: "Yong Juan Zhao v. USA",
+      decidedOn: "2020-06-29", opinionHead: ZHAO_HEAD, opinionTail: "The judgment of the district court is AFFIRMED.", opinionPath: "/case/x/documents/y", precedentialStatus: "Published",
+    });
+    expect(standing?.headline).toBe("The appeals court agreed with the lower court — a win for Yong Juan Zhao.");
+    const won = standing?.points.find((point) => point.id === "who-won")?.text;
+    expect(won).toBe("A win for Yong Juan Zhao (the appellee, the side that won in the lower court, and the plaintiff in the trial court). The appeals court affirmed (agreed with the lower court and left its ruling in place), so the United States (the appellant, the side that appealed, and the defendant in the trial court) lost the appeal.");
+    const lower = standing?.points.find((point) => point.id === "lower");
+    expect(lower?.text).toBe("The case came from the United States District Court for the Southern District of Illinois. In the opinion's words:");
+    expect(lower?.quote).toBe("This is an appeal from a Federal Tort Claims Act judgment in favor of the plaintiff.");
+    const law = standing?.points.find((point) => point.id === "good-law");
+    expect(law?.text).toContain("We found no later decision by the Supreme Court or the full Seventh Circuit (sitting en banc) overruling this case");
+    expect(standing?.points.map((point) => point.text).join(" ")).toContain("binding precedent");
+  });
+
+  it("appeals without a caption block: says what we know and that the record doesn't name sides", () => {
     const standing = buildCaseStanding({
       ...base, courtKind: "appellate", caption: "United States v. Smith", decidedOn: "2020-01-02",
-      opinionTail: "For these reasons, we AFFIRM.", opinionPath: "/case/x/documents/y", precedentialStatus: "Published",
+      opinionTail: "For these reasons, we AFFIRM.", opinionPath: "/case/x/documents/y",
     });
-    expect(standing?.headline).toBe("The appeals court upheld the lower court's decision.");
-    const text = standing?.points.map((point) => point.text).join(" ") ?? "";
-    expect(text).toContain("binding precedent");
-    expect(text).not.toContain("United States");
-    expect(standing?.points.find((point) => point.id === "decided")?.sourceHref).toBe("/case/x/documents/y");
+    expect(standing?.headline).toBe("The appeals court agreed with the lower court.");
+    const won = standing?.points.find((point) => point.id === "who-won")?.text ?? "";
+    expect(won).toContain("A win for the appellee (the side that won in the lower court)");
+    expect(won).toContain("Our records don't say which party is on which side.");
+    expect(won).not.toContain("Smith");
+  });
+
+  it("cross-appeals have no single winner", () => {
+    const head = "No. 18-1234 ACME CORP., Plaintiff-Appellant, Cross-Appellee, v. BETA LLC, Defendant-Appellee, Cross-Appellant. Appeal from the United States District Court for the District of Delaware.";
+    const standing = buildCaseStanding({ ...base, courtKind: "appellate", caption: "Acme Corp. v. Beta LLC", opinionHead: head, opinionTail: "AFFIRMED." });
+    expect(standing?.points.find((point) => point.id === "who-won")?.text).toMatch(/^Both sides appealed \(cross-appeals\)/);
+    expect(standing?.headline).toBe("The appeals court agreed with the lower court.");
   });
 
   it("ignores a dissent's closing line", () => {
     const standing = buildCaseStanding({ ...base, courtKind: "appellate", opinionIsMajority: false, opinionTail: "We reverse." });
-    expect(standing?.points[0]?.text).toContain("cannot say who won");
+    expect(standing?.points[0]?.text).toContain("can't say yet who won");
   });
 
-  it("reports overruled signals with attribution", () => {
-    const standing = buildCaseStanding({ ...base, exactDisposition: "Affirmed.", overruled: { text: "overruled by Mapp v. Ohio, 367 U.S. 643 (1961)", citingCaption: "Freeman v. Watkins", citingPath: "/case/jv-1" } });
+  it("counts an overruling only from a court that can overrule the case", () => {
+    const supremeHit = { text: "overruled by Mapp v. Ohio, 367 U.S. 643 (1961)", citingCaption: "Freeman v. Watkins", citingPath: "/case/jv-1" };
+    const lowerCourt = { text: "overruled by Smith v. Jones, 123 F.3d 456 (9th Cir. 1997)", citingCaption: "X v. Y", citingPath: "/case/jv-2" };
+    const standing = buildCaseStanding({ ...base, exactDisposition: "Affirmed.", overruled: [lowerCourt, supremeHit] });
     const point = standing?.points.find((item) => item.id === "good-law");
     expect(point?.text).toContain("Probably not");
+    expect(point?.quote).toBe(supremeHit.text);
     expect(point?.sourceLabel).toBe("Quoted in Freeman v. Watkins");
+    const onlyLower = buildCaseStanding({ ...base, exactDisposition: "Affirmed.", overruled: [lowerCourt] });
+    expect(onlyLower?.points.find((item) => item.id === "good-law")?.text).toMatch(/^We found no later Supreme Court decision overruling this case/);
+    const appellate = buildCaseStanding({ ...base, courtKind: "appellate", courtName: "United States Court of Appeals for the Ninth Circuit", opinionTail: "AFFIRMED.", overruled: [{ ...lowerCourt, text: "overruled by Smith v. Jones, 123 F.3d 456 (9th Cir. 1997) (en banc)" }] });
+    expect(appellate?.points.find((item) => item.id === "good-law")?.text).toContain("Probably not");
   });
 
   it("district: closed date, no guessed winner", () => {
     const standing = buildCaseStanding({ ...base, courtKind: "district", decidedOn: null, filedOn: "2024-01-01", terminatedOn: "2024-06-01" });
-    expect(standing?.headline).toBe("This case is closed.");
+    expect(standing?.headline).toBe("This case is closed, but the court records we have don't say how it ended.");
     expect(standing?.points.map((point) => point.text).join(" ")).toContain("Jun 1, 2024");
-    expect(standing?.points.map((point) => point.text).join(" ")).toContain("cannot say who won");
+    expect(standing?.points.map((point) => point.text).join(" ")).toContain("don't say how it ended or who won");
   });
 
   it("district criminal case: asks how it ended, not who won", () => {
     const standing = buildCaseStanding({ ...base, courtKind: "district", caption: "USA v. Doe", decidedOn: null, filedOn: "2024-01-01" });
     expect(standing?.points.find((point) => point.id === "who-won")?.label).toBe("How did it end?");
-    expect(standing?.headline).toBe("No final ruling in Jurvio's records.");
+    expect(standing?.headline).toBe("This case is still open — no final decision yet.");
   });
 
   it("district: quotes a dismissal from the court's opinion", () => {
-    const standing = buildCaseStanding({ ...base, courtKind: "district", decidedOn: null, filedOn: "2024-01-01", opinionTail: "The complaint is DISMISSED with prejudice.", opinionPath: "/d" });
-    expect(standing?.points.find((point) => point.id === "decided")?.text).toContain("cannot be filed again");
+    const standing = buildCaseStanding({ ...base, courtKind: "district", caption: "Jane Doe v. Acme Corp.", decidedOn: null, filedOn: "2024-01-01", opinionTail: "The complaint is DISMISSED with prejudice.", opinionPath: "/d" });
+    const decided = standing?.points.find((point) => point.id === "decided")?.text;
+    expect(decided).toContain("cannot be filed again");
+    expect(decided).toContain("a loss for Jane Doe (the plaintiff)");
   });
 });
 
@@ -189,9 +248,10 @@ describe("readDocketOutcome", () => {
     expect(readDocketOutcome([{ filedOn: "2024-01-01", description: "NOTICE of Voluntary Dismissal by Jane Doe" }])?.kind).toBe("voluntary");
   });
   it("feeds the district summary", () => {
-    const standing = buildCaseStanding({ ...base, courtKind: "district", decidedOn: null, filedOn: "2024-01-15", terminatedOn: "2024-09-30", docketEntries: entries, docketPath: "/case/x/docket" });
+    const standing = buildCaseStanding({ ...base, courtKind: "district", caption: "Jane Doe v. Acme Corp.", decidedOn: null, filedOn: "2024-01-15", terminatedOn: "2024-09-30", docketEntries: entries, docketPath: "/case/x/docket" });
     const won = standing?.points.find((point) => point.id === "who-won");
-    expect(won?.text).toContain("judgment in favor of Acme Corp. In the docket's words:");
+    expect(won?.text).toBe("Acme Corp. (the defendant). The court entered judgment (its final decision) in favor of Acme Corp., against Jane Doe. In the docket's words:");
+    expect(standing?.headline).toBe("The court ruled for Acme Corp. (the defendant).");
     expect(won?.sourceLabel).toBe("From the court's docket, Sep. 30, 2024");
   });
 });
