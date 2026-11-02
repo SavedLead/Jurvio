@@ -7,7 +7,8 @@
  *   tsx scripts/diagnose-case-stands-coverage.ts sample.jsonl <sampleRatio>
  */
 import { readFileSync } from "node:fs";
-import { buildCaseStanding, readOverruledParenthetical } from "@/modules/plain-english/domain/case-standing";
+import { buildCaseStanding, readOverruledParenthetical, type FjcOutcomeSignal, type ScotusDocketSignal } from "@/modules/plain-english/domain/case-standing";
+import { FJC_IDB_URL } from "@/modules/plain-english/domain/fjc-outcome";
 import { courtKindFromJurisdiction } from "@/modules/cases/domain/record-answers";
 
 interface Row {
@@ -15,7 +16,8 @@ interface Row {
   decidedOn: string | null; filedOn: string | null; terminatedOn: string | null; dispositionScope: string | null;
   verification: string | null; exactDisposition: string | null; exactHolding: string | null; lowerCourtName: string | null;
   clusterDisposition: string | null; precedentialStatus: string | null; votesMajority: string | null; votesMinority: string | null;
-  opinionTail: string | null; overruled: string[] | null; docket: Array<{ filedOn: string | null; description: string }> | null;
+  opinionTail: string | null; opinionHead?: string | null; overruled: string[] | null;
+  scotusDocket?: ScotusDocketSignal | null; fjcOutcome?: FjcOutcomeSignal | null; docket: Array<{ filedOn: string | null; description: string }> | null;
 }
 
 const [file, ratioArg] = process.argv.slice(2);
@@ -25,6 +27,8 @@ type Bucket = Record<string, number>;
 const byKind = new Map<string, Bucket>();
 const examples = new Map<string, string>();
 let total = 0;
+const sources = new Map<string, number>();
+function countSource(kind: string, name: string) { sources.set(`${kind} ${name}`, (sources.get(`${kind} ${name}`) ?? 0) + 1); }
 for (const line of readFileSync(file, "utf8").split("\n")) {
   if (!line.trim().startsWith("{")) continue;
   const row = JSON.parse(line) as Row;
@@ -39,13 +43,16 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
     terminatedOn: row.terminatedOn, dispositionScope: row.dispositionScope, verified: row.verification === "verified",
     exactDisposition: row.exactDisposition, dispositionSourceUrl: null, exactHolding: row.exactHolding, holdingSourceUrl: null,
     lowerCourtName: row.lowerCourtName, clusterDisposition: row.clusterDisposition, precedentialStatus: row.precedentialStatus,
-    opinionTail: row.opinionTail, opinionPath: row.opinionTail ? "/x" : null, opinionIsMajority: Boolean(row.opinionTail),
+    opinionTail: row.opinionTail, opinionHead: row.opinionHead ?? null, opinionPath: row.opinionTail ? "/x" : null, opinionIsMajority: Boolean(row.opinionTail),
     overruled: overruledText ? { text: overruledText, citingCaption: null, citingPath: null } : null,
     votes, citedByCount: 0, docketEntries: row.docket ?? [], docketPath: "/x",
+    scotusDocket: row.scotusDocket ?? null, fjcOutcome: row.fjcOutcome ?? null,
   });
   // outcome = a quoted judgment/docket outcome (who won / what was decided);
   // status-only = shown, but only says decided/closed/open without the outcome; hidden = section not rendered.
-  const hasQuote = standing?.points.some((point) => point.quote && point.id !== "good-law" && point.id !== "rule");
+  const hasQuote = standing?.points.some((point) => (point.quote && point.id !== "good-law" && point.id !== "rule") || point.sourceHref === FJC_IDB_URL);
+  if (standing?.points.some((point) => point.sourceHref === FJC_IDB_URL)) countSource(courtKind, "fjc");
+  if (row.scotusDocket && standing?.points.some((point) => point.sourceHref === row.scotusDocket?.sourceUrl)) countSource(courtKind, `docket-${row.scotusDocket.certStatus}${row.scotusDocket.judgmentEntry ? "+judgment" : ""}`);
   const closed = standing?.points.some((point) => point.id === "status" && /^No\. The court closed/.test(point.text));
   const category = !standing ? "hidden" : hasQuote ? "outcome" : closed ? "closed-only" : "status-only";
   const key = `${courtKind}${row.tier ? ` t${row.tier}` : " t-none"}`;
@@ -66,5 +73,7 @@ for (const [key, bucket] of [...byKind.entries()].sort()) {
   console.log(`${key} | ${bucket.total ?? 0} | ${bucket.outcome ?? 0} | ${bucket["closed-only"] ?? 0} | ${bucket["status-only"] ?? 0} | ${bucket.hidden ?? 0} | ${bucket.overruled ?? 0} || ${scale(bucket.total)} | ${scale(bucket.outcome)} | ${scale(bucket["closed-only"])} | ${scale(bucket["status-only"])} | ${scale(bucket.hidden)}`);
 }
 console.log(`ALL | ${all.total ?? 0} | ${all.outcome ?? 0} | ${all["closed-only"] ?? 0} | ${all["status-only"] ?? 0} | ${all.hidden ?? 0} | ${all.overruled ?? 0} || ${scale(all.total)} | ${scale(all.outcome)} | ${scale(all["closed-only"])} | ${scale(all["status-only"])} | ${scale(all.hidden)}`);
+console.log("--- summaries using an official outcome source (sampled) ---");
+for (const [key, value] of [...sources.entries()].sort()) console.log(`${key}: ${value} (est ${scale(value)})`);
 console.log("--- one example per bucket ---");
 for (const [key, text] of [...examples.entries()].sort()) console.log(`${key}: ${text}`);

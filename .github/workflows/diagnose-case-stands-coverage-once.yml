@@ -4,7 +4,8 @@ name: Diagnose 'Where this case stands' coverage (once, read-only)
 # "Where this case stands" summary. Pulls a deterministic ~1.6% sample of
 # published, displayable cases (hash of public_id) with the same fields the
 # case page reads, then runs the page's own buildCaseStanding() on the runner.
-# Changes nothing: default_transaction_read_only=on, one SELECT.
+# Changes nothing: default_transaction_read_only=on, one SELECT. Needs migration 0185
+# (scotus_docket_status, fjc_idb_case_outcome).
 #
 # Dispatch by hand with confirm=DIAGNOSE.
 
@@ -78,7 +79,22 @@ jobs:
                 AND coalesce(oc.provider_metadata->>'scdb_votes_majority', '') ~ '^[0-9]$' ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1),
             'votesMinority', (SELECT oc.provider_metadata->>'scdb_votes_minority' FROM opinion_cluster oc WHERE oc.case_id = c.id
                 AND coalesce(oc.provider_metadata->>'scdb_votes_majority', '') ~ '^[0-9]$' ORDER BY oc.date_filed DESC NULLS LAST LIMIT 1),
-            'opinionTail', (SELECT right(dc.content_text, 1600) FROM document d
+            'opinionHead', (SELECT left(dc.content_text, 20000) FROM document d
+                JOIN document_content dc ON dc.document_id = d.id
+                LEFT JOIN judicial_opinion j ON j.document_id = d.id
+               WHERE d.case_id = c.id AND d.publication = 'published' AND dc.content_text ~ '\S'
+                 AND COALESCE((SELECT cur.displayable FROM publication_current cur WHERE cur.object_type = 'document' AND cur.object_id = d.id), false)
+                 AND (COALESCE(j.per_curiam, false) OR coalesce(j.opinion_type, '') !~* 'dissent|concur|rehearing')
+               ORDER BY (COALESCE(j.per_curiam, false) OR coalesce(j.opinion_type, '') ~* 'majority|lead|combined') DESC, d.filed_on DESC NULLS LAST LIMIT 1),
+            'scotusDocket', (SELECT json_build_object('certStatus', s.cert_status, 'certStatusOn', s.cert_status_on::text, 'certEntry', s.cert_entry,
+                'judgmentOn', s.judgment_on::text, 'judgmentEntry', s.judgment_entry, 'petitioner', s.petitioner_title, 'respondent', s.respondent_title,
+                'lowerCourt', s.lower_court, 'lowerCourtDecidedOn', s.lower_court_decided_on::text, 'lastEntryOn', s.last_entry_on::text,
+                'fetchedAt', s.fetched_at::text, 'sourceUrl', s.source_url) FROM scotus_docket_status s WHERE s.case_id = c.id),
+            'fjcOutcome', (SELECT json_build_object('terminatedOn', f.date_terminated::text, 'disposition', f.disposition_code, 'judgment', f.judgment_code,
+                'plaintiff', f.plaintiff, 'defendant', f.defendant, 'snapshotDate', f.snapshot_date::text) FROM fjc_idb_case_outcome f WHERE f.case_id = c.id),
+            'opinionTail', (SELECT right(coalesce(left(dc.content_text, strpos(dc.content_text, substring(dc.content_text FROM
+                  '(?:(?:MR\. )?JUSTICE [A-Z][A-Z''’]+(?: [A-Z][A-Z''’]+)?,(?: with whom [^.]{0,250}?)? (?:concurring|dissenting)|[A-Z][A-Za-z''’-]+, (?:Chief |Senior )?(?:Circuit|District) Judge, (?:concurring|dissenting))')) - 1),
+                  dc.content_text), 1600) FROM document d
                 JOIN document_content dc ON dc.document_id = d.id
                 LEFT JOIN judicial_opinion j ON j.document_id = d.id
                WHERE d.case_id = c.id AND d.publication = 'published' AND dc.content_text ~ '\S'

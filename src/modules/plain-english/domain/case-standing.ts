@@ -7,6 +7,25 @@
 import type { CourtKind } from "@/modules/cases/domain/record-answers";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 import { displayPartyName, partyRolesFor, ROLE_WORD, sideForName, trialCaptionRoles, type PartyRoles, type PartySide } from "./party-roles";
+import { FJC_IDB_URL, fjcOutcomeText, type FjcOutcomeSignal } from "./fjc-outcome";
+
+export type { FjcOutcomeSignal } from "./fjc-outcome";
+
+/** What the Supreme Court's own docket page says (scotus_docket_status). */
+export interface ScotusDocketSignal {
+  certStatus: "granted" | "denied" | "dismissed" | "pending";
+  certStatusOn: string | null;
+  certEntry: string | null;
+  judgmentOn: string | null;
+  judgmentEntry: string | null;
+  petitioner: string | null;
+  respondent: string | null;
+  lowerCourt: string | null;
+  lowerCourtDecidedOn: string | null;
+  lastEntryOn: string | null;
+  fetchedAt: string | null;
+  sourceUrl: string;
+}
 
 export type OutcomeKind = "affirmed" | "reversed" | "vacated" | "remanded" | "dismissed" | "mixed" | "review-granted" | "review-denied";
 
@@ -16,7 +35,7 @@ export interface OutcomeReading {
   remanded: boolean;
   /** The exact words the reading came from, quoted on the page. */
   quote: string;
-  source: "court-record" | "opinion" | "case-data" | "syllabus";
+  source: "court-record" | "opinion" | "case-data" | "syllabus" | "official-docket";
 }
 
 const VERBS = "affirm|reverse|vacate|remand|dismiss";
@@ -199,6 +218,10 @@ export interface CaseStandingInput {
   /** Public docket entries (already filtered for sealed/restricted), any order. */
   docketEntries?: Array<{ filedOn: string | null; description: string }>;
   docketPath?: string | null;
+  /** Supreme Court: the Court's own docket page (cert status, judgment line, party titles). */
+  scotusDocket?: ScotusDocketSignal | null;
+  /** District civil cases: the FJC Integrated Database disposition and judgment codes. */
+  fjcOutcome?: FjcOutcomeSignal | null;
 }
 
 export interface StandingPoint {
@@ -226,6 +249,7 @@ const ENUM_LINES: Record<string, string> = {
 };
 
 function outcomeFor(input: CaseStandingInput): OutcomeReading | null {
+  const fromDocket = input.courtKind === "supreme" ? readDispositionLine(input.scotusDocket?.judgmentEntry, "official-docket") : null;
   if (input.courtKind === "supreme" && input.verified) {
     const fromRecord = readDispositionLine(input.exactDisposition, "court-record");
     if (fromRecord) return fromRecord;
@@ -233,6 +257,7 @@ function outcomeFor(input: CaseStandingInput): OutcomeReading | null {
     const fromEnum = readDispositionLine(enumLine, "court-record");
     if (fromEnum) return fromEnum;
   }
+  if (fromDocket) return fromDocket;
   const fromCluster = readDispositionLine(input.clusterDisposition, "case-data");
   if (fromCluster && input.courtKind !== "district") return fromCluster;
   if (input.opinionIsMajority) {
@@ -263,6 +288,7 @@ const SOURCE_LABEL: Record<OutcomeReading["source"], string> = {
   opinion: "From the court's opinion",
   "case-data": "From the court's published disposition",
   syllabus: "From the official syllabus (U.S. Reports)",
+  "official-docket": "From the Supreme Court's official docket",
 };
 
 const COURT_NAME: Record<CourtKind, string> = {
@@ -310,9 +336,10 @@ function shortName(side: PartySide) {
   return displayPartyName(side.name);
 }
 
-function actionFor(outcome: OutcomeReading) {
+function actionFor(outcome: OutcomeReading, courtKind?: CourtKind) {
   const remand = outcome.remanded && outcome.kind !== "remanded" && outcome.kind !== "dismissed" ? REMAND_TAIL : "";
-  return `${ACTION[outcome.kind]}${remand}`;
+  const action = outcome.kind === "dismissed" && courtKind === "supreme" ? "dismissed the case (ended it without deciding who was right)" : ACTION[outcome.kind];
+  return `${action}${remand}`;
 }
 
 /** The single side a disposition favors, when it favors one. */
@@ -332,7 +359,7 @@ function favoredSide(kind: OutcomeKind): "up" | "down" | null {
 
 function whoWonText(input: CaseStandingInput, outcome: OutcomeReading, roles: PartyRoles | null): string {
   const court = COURT_NAME[input.courtKind];
-  const action = actionFor(outcome);
+  const action = actionFor(outcome, input.courtKind);
   const stillOpen = outcome.remanded && outcome.kind !== "affirmed" ? " The case goes back to the lower court, so the final result can still change." : "";
   if (roles?.cross) {
     return `Both sides appealed (cross-appeals), so there is no single winner. ${court} ${action}. Read the opinion to see which side won on which issues.`;
@@ -447,7 +474,7 @@ function overrulingCourts(input: CaseStandingInput): { label: string; accepts: (
 
 function goodLaw(input: CaseStandingInput): StandingPoint | null {
   const courts = overrulingCourts(input);
-  if (!courts || !input.decidedOn) return null;
+  if (!courts || !(input.decidedOn || input.scotusDocket?.judgmentOn)) return null;
   const candidates = input.overruled ? (Array.isArray(input.overruled) ? input.overruled : [input.overruled]) : [];
   const hit = candidates.find((candidate) => courts.accepts(candidate.text));
   if (hit) {
@@ -500,14 +527,105 @@ function lowerPoint(input: CaseStandingInput, lowerCourt: string | null): Standi
   return null;
 }
 
+/** Petitioner / respondent as titled on the Supreme Court's own docket ("Jeffrey Lance Hill, Sr., Petitioner v. …"). */
+function docketRoles(docket: ScotusDocketSignal | null): PartyRoles | null {
+  if (!docket?.petitioner || !docket.respondent) return null;
+  return {
+    up: { name: docket.petitioner, role: "petitioner", trialRole: null },
+    down: { name: docket.respondent, role: "respondent", trialRole: null },
+    cross: false,
+    source: "court-record",
+  };
+}
+
+function dateText(value: string | null | undefined) {
+  return value ? formatPublicCaseDate(value) ?? value : null;
+}
+
+/**
+ * Supreme Court cases the Court did not decide on the merits: review denied or
+ * dismissed (the lower court's ruling stands), or granted and still pending.
+ * Read only from the Court's own docket page; a stale "pending" is not shown.
+ */
+function certStanding(input: CaseStandingInput, docket: ScotusDocketSignal, roles: PartyRoles | null, lowerCourt: string | null): CaseStanding | null {
+  const on = dateText(docket.certStatusOn);
+  const checked = dateText(docket.fetchedAt?.slice(0, 10));
+  const docketLabel = `From the Supreme Court's official docket${on ? `, ${on}` : ""}`;
+  const lowerName = lowerCourt ? lowerCourt.replace(/^The\s/, "the ") : "the lower court";
+  const lowerDecided = dateText(docket.lowerCourtDecidedOn);
+  const points: StandingPoint[] = [];
+  const lowerLine: StandingPoint | null = lowerCourt
+    ? { id: "lower", label: "Where did the case come from?", text: `The case came from ${lowerName}${lowerDecided ? `, which decided it on ${lowerDecided}` : ""}.` }
+    : null;
+  if (docket.certStatus === "denied" || docket.certStatus === "dismissed") {
+    const denied = docket.certStatus === "denied";
+    const action = denied
+      ? `The Supreme Court denied certiorari (refused to review the case)${on ? ` on ${on}` : ""}`
+      : `The Supreme Court dismissed the petition (ended it without reviewing the case)${on ? ` on ${on}` : ""}`;
+    const winner = roles ? named(roles.down, "supreme") : "the side that won in the lower court";
+    const loser = roles ? `${displayPartyName(roles.up.name)} (the petitioner, who asked the Supreme Court to take the case)` : "the petitioner (the side that asked the Supreme Court to take the case)";
+    points.push({
+      id: "who-won",
+      label: "Who won?",
+      text: `A win for ${winner}. ${action}, so the decision of ${lowerName} stands. That is a loss for ${loser}.`,
+    });
+    if (lowerLine) points.push(lowerLine);
+    points.push({ id: "decided", label: "What did the Supreme Court do?", text: "In the Supreme Court's docket:", quote: docket.certEntry ?? (denied ? "Petition DENIED." : "Petition DISMISSED."), sourceLabel: docketLabel, sourceHref: docket.sourceUrl });
+    points.push({
+      id: "means",
+      label: "What does it mean?",
+      text: `${denied ? "Turning down a case" : "Dismissing a petition"} is not a ruling on who was right, and it sets no Supreme Court precedent (other courts don't have to follow it). It only leaves the lower court's decision in place.`,
+    });
+    const cited = citedPoint(input);
+    if (cited) points.push(cited);
+    return {
+      headline: denied
+        ? "The Supreme Court declined to hear this case, so the lower court's ruling stands."
+        : "The Supreme Court dismissed the petition without reviewing the case, so the lower court's ruling stands.",
+      points,
+    };
+  }
+  if (input.decidedOn) return null; // decided, but the result line is missing: the generic "decided" summary applies
+  const recent = docket.lastEntryOn && Date.now() - Date.parse(docket.lastEntryOn) < 2 * 365 * 24 * 3600 * 1000;
+  if (docket.certStatus === "granted") {
+    points.push({
+      id: "status",
+      label: "Has the Supreme Court decided it?",
+      text: `Not as of ${checked ?? "our last check"}. The Supreme Court agreed to hear this case (granted certiorari)${on ? ` on ${on}` : ""}, and its docket shows no decision yet.`,
+      quote: docket.certEntry ?? undefined,
+      sourceLabel: docketLabel,
+      sourceHref: docket.sourceUrl,
+    });
+    if (lowerLine) points.push(lowerLine);
+    return { headline: "The Supreme Court agreed to hear this case and has not decided it yet.", points };
+  }
+  if (docket.certStatus === "pending" && recent) {
+    points.push({
+      id: "status",
+      label: "Will the Supreme Court hear it?",
+      text: `Not decided yet. As of ${checked ?? "our last check"}, the Supreme Court's docket shows no decision on whether it will hear this case.`,
+      sourceLabel: "From the Supreme Court's official docket",
+      sourceHref: docket.sourceUrl,
+    });
+    if (lowerLine) points.push(lowerLine);
+    return { headline: "The Supreme Court has not yet decided whether to hear this case.", points };
+  }
+  return null;
+}
+
 export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null {
   const points: StandingPoint[] = [];
   const decidedDate = input.decidedOn;
   if (input.courtKind === "supreme" || input.courtKind === "appellate") {
-    const { roles, lowerCourt: parsedLower } = partyRolesFor(input.courtKind, { caption: input.caption, opinionHead: input.opinionHead ?? null, verifiedDocket: input.verified });
-    const lowerCourt = input.courtKind === "supreme" ? (input.lowerCourtName ? `the ${input.lowerCourtName.replace(/^the\s+/i, "")}` : parsedLower) : parsedLower;
+    const { roles: parsedRoles, lowerCourt: parsedLower } = partyRolesFor(input.courtKind, { caption: input.caption, opinionHead: input.opinionHead ?? null, verifiedDocket: input.verified });
+    const docket = input.courtKind === "supreme" ? input.scotusDocket ?? null : null;
+    const roles = parsedRoles ?? docketRoles(docket);
+    const officialLower = input.lowerCourtName ?? docket?.lowerCourt ?? null;
+    const lowerCourt = input.courtKind === "supreme" ? (officialLower ? `the ${officialLower.replace(/^the\s+/i, "")}` : parsedLower) : parsedLower;
     const outcome = outcomeFor(input);
     if (!outcome) {
+      const cert = docket ? certStanding(input, docket, roles, lowerCourt) : null;
+      if (cert) return cert;
       if (!decidedDate) return null;
       points.push({
         id: "decided",
@@ -533,8 +651,12 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
       label: "What did the court decide?",
       text: "In the court's words:",
       quote: outcome.quote,
-      sourceLabel: SOURCE_LABEL[outcome.source],
-      sourceHref: outcome.source === "court-record" ? input.dispositionSourceUrl : outcome.source === "opinion" || outcome.source === "syllabus" ? input.opinionPath : null,
+      sourceLabel: outcome.source === "official-docket" && docket?.judgmentOn
+        ? `${SOURCE_LABEL["official-docket"]}, ${formatPublicCaseDate(docket.judgmentOn) ?? docket.judgmentOn}`
+        : SOURCE_LABEL[outcome.source],
+      sourceHref: outcome.source === "court-record" ? input.dispositionSourceUrl
+        : outcome.source === "official-docket" ? docket?.sourceUrl ?? null
+        : outcome.source === "opinion" || outcome.source === "syllabus" ? input.opinionPath : null,
     });
     const precedent = input.courtKind === "appellate" ? precedentLine(input.precedentialStatus) : null;
     points.push({ id: "means", label: "What does it mean?", text: [meaning(input, outcome), precedent].filter(Boolean).join(" ") });
@@ -560,13 +682,15 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
   const roles = trialCaptionRoles(input.caption);
   const docket = readDocketOutcome(input.docketEntries ?? []);
   const dismissal = !docket && input.opinionIsMajority ? readTrialDismissal(input.opinionTail) : null;
-  const closedOn = input.terminatedOn ? formatPublicCaseDate(input.terminatedOn) ?? input.terminatedOn : null;
+  const fjc = !docket && !dismissal && input.fjcOutcome ? fjcOutcomeText(input.fjcOutcome, roles) : null;
+  const closedDate = input.terminatedOn ?? (fjc ? input.fjcOutcome?.terminatedOn ?? null : null);
+  const closedOn = closedDate ? formatPublicCaseDate(closedDate) ?? closedDate : null;
   points.push({
     id: "status",
     label: "Is the case still open?",
     text: closedOn
       ? `No. The court closed this case on ${closedOn}.`
-      : docket || dismissal
+      : docket || dismissal || fjc
         ? "Our records don't show a closing date. Check the docket for the latest activity."
         : "Yes, as far as our records show: the court records we have show no final decision and no closing date. Check the docket for the latest activity.",
   });
@@ -614,6 +738,15 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
       sourceHref: docket?.kind === "dismissal" ? input.docketPath ?? null : input.opinionPath,
     });
     headline = "The court dismissed the case or some of its claims.";
+  } else if (fjc) {
+    points.push({
+      id: "who-won",
+      label: fjc.label,
+      text: `${fjc.text} This comes from the case statistics the court's clerk reports to the Federal Judicial Center, not from the judgment itself; the docket has the court's own orders.`,
+      sourceLabel: `From the Federal Judicial Center's Integrated Database${input.fjcOutcome?.terminatedOn ? ` (case closed ${formatPublicCaseDate(input.fjcOutcome.terminatedOn) ?? input.fjcOutcome.terminatedOn})` : ""}`,
+      sourceHref: FJC_IDB_URL,
+    });
+    headline = fjc.headline;
   } else {
     const criminal = roles?.up.role === "prosecution";
     points.push({
