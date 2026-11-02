@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import type { QuestionsPresented } from "@/modules/plain-english/domain/relief";
 import { readOverruledParenthetical, type FjcOutcomeSignal, type OverruledCandidate, type ScotusDocketSignal } from "@/modules/plain-english/domain/case-standing";
 
 type Sql = ReturnType<typeof postgres>;
@@ -20,6 +21,8 @@ export interface CaseStandingSignals {
   scotusDocket: ScotusDocketSignal | null;
   /** FJC Integrated Database outcome for a district civil case (migration 0185). */
   fjcOutcome: FjcOutcomeSignal | null;
+  /** The petition's questions presented, from supremecourt.gov (migration 0190). */
+  questionsPresented: QuestionsPresented | null;
 }
 
 // Passed as a bind parameter: backslashes in a template literal would be eaten.
@@ -30,7 +33,7 @@ const OVERRULED_PATTERN = String.raw`^\s*((expressly|implicitly|partially)\s+)?(
 // judgment line is read from the text before that point (the earliest marker; ~10 ms on a 150 KB opinion).
 const SEPARATE_OPINION_PATTERN = String.raw`(?:(?:MR\. )?JUSTICE [A-Z][A-Z'’]+(?: [A-Z][A-Z'’]+)?,(?: with whom [^.]{0,250}?)? (?:concurring|dissenting)|[A-Z][A-Za-z'’-]+, (?:Chief |Senior )?(?:Circuit|District) Judge, (?:concurring|dissenting))`;
 
-const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, opinionHead: null, votes: null, overruled: [], scotusDocket: null, fjcOutcome: null };
+const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, opinionHead: null, votes: null, overruled: [], scotusDocket: null, fjcOutcome: null, questionsPresented: null };
 
 /**
  * One indexed round trip for the "Where this case stands" summary:
@@ -81,7 +84,7 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       WHERE c.public_id = ${casePublicId} AND c.publication = 'published'
     `;
     if (!row) return EMPTY;
-    const sources = await loadOutcomeSources(sql, casePublicId);
+    const [sources, questionsPresented] = await Promise.all([loadOutcomeSources(sql, casePublicId), loadQuestionsPresented(sql, casePublicId)]);
     const overruled = (row.overruled ?? [])
       .map((item) => ({ ...item, text: readOverruledParenthetical(item.text) }))
       .filter((item): item is typeof item & { text: string } => Boolean(item.text))
@@ -98,6 +101,7 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       votes: parseVotes(row.votes),
       overruled,
       ...sources,
+      questionsPresented,
     };
   } catch {
     return EMPTY;
@@ -127,6 +131,23 @@ async function loadOutcomeSources(sql: Sql, casePublicId: string): Promise<Pick<
     };
   } catch {
     return { scotusDocket: null, fjcOutcome: null };
+  }
+}
+
+/** Its own query so a database without migration 0190 only hides the questions. */
+async function loadQuestionsPresented(sql: Sql, casePublicId: string): Promise<QuestionsPresented | null> {
+  try {
+    const [row] = await sql<Array<{ questions: unknown; grantedLimitedTo: number[] | null; grantedQuestion: string | null; sourceUrl: string }>>`
+      SELECT q.questions, q.granted_limited_to AS "grantedLimitedTo", q.granted_question AS "grantedQuestion", q.source_url AS "sourceUrl"
+      FROM scotus_question_presented q JOIN legal_case c ON c.id = q.case_id
+      WHERE c.public_id = ${casePublicId} AND c.publication = 'published'
+    `;
+    if (!row || !/^https:\/\/www\.supremecourt\.gov\/qp\//.test(row.sourceUrl)) return null;
+    const questions = Array.isArray(row.questions) ? row.questions.filter((item): item is string => typeof item === "string" && item.length > 0).slice(0, 8) : [];
+    if (questions.length === 0) return null;
+    return { questions, grantedLimitedTo: row.grantedLimitedTo?.map(Number) ?? null, grantedQuestion: row.grantedQuestion, sourceUrl: row.sourceUrl };
+  } catch {
+    return null;
   }
 }
 

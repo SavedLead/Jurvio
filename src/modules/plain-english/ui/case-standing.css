@@ -52,10 +52,58 @@
   line-height: 1.5;
 }
 
-.caseStandsItem .caseStandsSource {
+.caseStandsItem .caseStandsSource,
+.caseStandsQuote figcaption.caseStandsSource {
   margin-top: 6px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.caseStandsAsks {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.caseStandsAsks li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  line-height: 1.4;
+}
+
+.caseStandsAskBy {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.caseStandsBadge {
+  flex: none;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #34465d;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.caseStandsAsks li[data-result="granted"] .caseStandsBadge { background: #e3f4e8; color: #1d6b37; }
+.caseStandsAsks li[data-result="denied"] .caseStandsBadge { background: #fbe9e7; color: #9a2a1c; }
+.caseStandsAsks li[data-result="partly"] .caseStandsBadge { background: #fff4d6; color: #7a5600; }
+
+.caseStandsQuote {
+  margin: 0;
+}
+
+.caseStandsQuote figcaption {
+  margin-top: 6px;
 }
 
 .caseStandsNote {

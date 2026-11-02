@@ -8,6 +8,7 @@ import type { CourtKind } from "@/modules/cases/domain/record-answers";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 import { displayPartyName, partyRolesFor, ROLE_WORD, sideForName, trialCaptionRoles, type PartyRoles, type PartySide } from "./party-roles";
 import { FJC_IDB_URL, fjcOutcomeText, type FjcOutcomeSignal } from "./fjc-outcome";
+import { buildAppealRelief, buildDocketRelief, buildSupremeRelief, RESULT_BADGE, type DocketEntryInput, type QuestionsPresented, type ReliefQuote, type ReliefResult, type ReliefSummary } from "./relief";
 
 export type { FjcOutcomeSignal } from "./fjc-outcome";
 
@@ -216,21 +217,46 @@ export interface CaseStandingInput {
   /** Supreme Court Database vote counts, when known. */
   votes?: { majority: number; minority: number } | null;
   /** Public docket entries (already filtered for sealed/restricted), any order. */
-  docketEntries?: Array<{ filedOn: string | null; description: string }>;
+  docketEntries?: DocketEntryInput[];
   docketPath?: string | null;
   /** Supreme Court: the Court's own docket page (cert status, judgment line, party titles). */
   scotusDocket?: ScotusDocketSignal | null;
   /** District civil cases: the FJC Integrated Database disposition and judgment codes. */
   fjcOutcome?: FjcOutcomeSignal | null;
+  /** Supreme Court: the petition's questions presented (supremecourt.gov). */
+  questionsPresented?: QuestionsPresented | null;
+}
+
+export interface StandingPointItem {
+  /** Plain-English request, capitalized ("Throw out the conviction"). */
+  label: string;
+  askedBy: string | null;
+  result: ReliefResult;
+  /** Short result word ("Won", "Lost", "Record doesn't say"). */
+  badge: string;
+  outcome: string;
 }
 
 export interface StandingPoint {
-  id: "who-won" | "decided" | "lower" | "means" | "rule" | "good-law" | "cited" | "status";
+  id: "who-won" | "asked" | "decided" | "lower" | "means" | "rule" | "good-law" | "cited" | "status";
   label: string;
   text: string;
   quote?: string;
   sourceLabel?: string;
   sourceHref?: string | null;
+  /** "What did each side ask for": one line per request, with the result. */
+  items?: StandingPointItem[];
+  /** Extra quotes with their own sources (the request and the ruling). */
+  quotes?: ReliefQuote[];
+}
+
+const ASKED_LABEL = "What did each side ask for, and what did they get?";
+
+function reliefPoint(summary: ReliefSummary): StandingPoint {
+  const items = summary.items.length >= 2
+    ? summary.items.map((item) => ({ label: capitalize(item.asked), askedBy: item.askedBy, result: item.result, badge: RESULT_BADGE[item.result], outcome: item.outcome }))
+    : undefined;
+  return { id: "asked", label: ASKED_LABEL, text: summary.text, items, quotes: summary.quotes.length ? summary.quotes : undefined };
 }
 
 export interface CaseStanding {
@@ -569,6 +595,7 @@ function certStanding(input: CaseStandingInput, docket: ScotusDocketSignal, role
       label: "Who won?",
       text: `A win for ${winner}. ${action}, so the decision of ${lowerName} stands. That is a loss for ${loser}.`,
     });
+    points.push(reliefPoint(buildSupremeRelief({ roles, lowerCourt, questions: input.questionsPresented ?? null, status: denied ? "denied" : "dismissed", outcome: null })));
     if (lowerLine) points.push(lowerLine);
     points.push({ id: "decided", label: "What did the Supreme Court do?", text: "In the Supreme Court's docket:", quote: docket.certEntry ?? (denied ? "Petition DENIED." : "Petition DISMISSED."), sourceLabel: docketLabel, sourceHref: docket.sourceUrl });
     points.push({
@@ -596,6 +623,7 @@ function certStanding(input: CaseStandingInput, docket: ScotusDocketSignal, role
       sourceLabel: docketLabel,
       sourceHref: docket.sourceUrl,
     });
+    points.push(reliefPoint(buildSupremeRelief({ roles, lowerCourt, questions: input.questionsPresented ?? null, status: "granted-pending", outcome: null })));
     if (lowerLine) points.push(lowerLine);
     return { headline: "The Supreme Court agreed to hear this case and has not decided it yet.", points };
   }
@@ -634,6 +662,9 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
           + (input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "")
           + (input.opinionPath ? " The opinion is linked below." : ""),
       });
+      if (input.courtKind === "supreme" && input.questionsPresented) {
+        points.push(reliefPoint(buildSupremeRelief({ roles, lowerCourt, questions: input.questionsPresented, status: "decided", outcome: null })));
+      }
       const lower = lowerPoint(input, lowerCourt);
       if (lower) points.push(lower);
       const law = goodLaw(input);
@@ -644,6 +675,18 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
     }
     const vote = input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "";
     points.push({ id: "who-won", label: "Who won?", text: `${whoWonText(input, outcome, roles)}${vote}` });
+    points.push(reliefPoint(input.courtKind === "supreme"
+      ? buildSupremeRelief({ roles, lowerCourt, questions: input.questionsPresented ?? null, status: "decided", outcome: outcome.kind })
+      : buildAppealRelief({
+        courtKind: input.courtKind,
+        roles,
+        outcome: outcome.kind,
+        // The judgment words already quoted below, plus the majority's own closing when it is a different sentence.
+        closing: [outcome.quote, outcome.source !== "opinion" && input.opinionIsMajority ? readOpinionClosing(input.opinionTail)?.quote : null].filter(Boolean).join(" "),
+        closingSource: null,
+        opinionHead: input.opinionHead ?? null,
+        opinionPath: input.opinionPath,
+      })));
     const lower = lowerPoint(input, lowerCourt);
     if (lower) points.push(lower);
     points.push({
@@ -759,6 +802,16 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
     headline = closedOn
       ? "This case is closed, but the court records we have don't say how it ended."
       : "This case is still open — no final decision yet.";
+  }
+  const relief = buildDocketRelief({ entries: input.docketEntries ?? [], roles, docketPath: input.docketPath ?? null });
+  if (relief) {
+    points.splice(2, 0, reliefPoint(relief));
+  } else if (docket || dismissal || fjc) {
+    points.splice(2, 0, {
+      id: "asked",
+      label: ASKED_LABEL,
+      text: "The court records we have don't show the requests each side made (such as motions) or the court's ruling on each one, so we can't list wins and losses point by point.",
+    });
   }
   return { headline, points };
 }

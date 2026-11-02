@@ -344,3 +344,60 @@ describe("official outcome sources", () => {
     expect(standing?.points.find((point) => point.id === "who-won")?.sourceHref).not.toBe("https://www.fjc.gov/research/idb");
   });
 });
+
+describe("phase 6: what each side asked for, and what they got", () => {
+  const appeal: CaseStandingInput = {
+    ...base, courtKind: "appellate", courtName: "United States Court of Appeals for the Seventh Circuit", caption: "United States v. Smith",
+    decidedOn: "2020-05-01", verified: false, dispositionScope: null,
+    opinionHead: "UNITED STATES OF AMERICA, Plaintiff-Appellee, v. JOHN SMITH, Defendant-Appellant. Appeal from the United States District Court. John Smith appeals his conviction for wire fraud. He asks us to set aside his conviction and order a new trial.",
+    opinionTail: "For these reasons, we AFFIRM Smith's conviction. Because the jury was misinstructed on forfeiture, we REMAND for a new trial on the forfeiture count.",
+    opinionPath: "/case/jv-a/documents/jv-b",
+  };
+
+  it("appeals: lists the request and the ruling on each point, right after who won", () => {
+    const standing = buildCaseStanding(appeal);
+    const ids = standing?.points.map((point) => point.id);
+    expect(ids?.indexOf("asked")).toBe(ids!.indexOf("who-won") + 1);
+    const asked = standing?.points.find((point) => point.id === "asked");
+    expect(asked?.text).toContain("Smith (the appellant) asked the court to throw out the conviction and order a new trial.");
+    expect(asked?.text).toContain("The court ordered a new trial but refused to throw out the conviction.");
+    expect(asked?.items?.map((item) => [item.label, item.badge])).toEqual([["Throw out the conviction", "Lost"], ["Order a new trial", "Won"]]);
+    expect(asked?.quotes?.[0]?.text).toBe("He asks us to set aside his conviction and order a new trial.");
+  });
+
+  it("district: motions and rulings from the public docket; sealed entries are never read", () => {
+    const standing = buildCaseStanding({
+      ...base, courtKind: "district", courtName: "District Court, N.D. Ill.", caption: "Jane Doe v. Acme Corp.", decidedOn: null, filedOn: "2023-01-01", terminatedOn: "2024-03-02",
+      verified: false, opinionIsMajority: false, docketPath: "/case/jv-d/docket",
+      docketEntries: [
+        { entryNumber: "40", filedOn: "2024-03-02", description: "ORDER granting 12 Motion to Dismiss. Civil case terminated." },
+        { entryNumber: "15", filedOn: "2024-01-10", description: "SEALED MOTION for Preliminary Injunction by Jane Doe." },
+        { entryNumber: "12", filedOn: "2024-01-05", description: "MOTION to Dismiss for Failure to State a Claim by Acme Corp." },
+      ],
+    });
+    const asked = standing?.points.find((point) => point.id === "asked");
+    expect(asked?.text).toBe("Acme Corp. (the defendant) asked the court to dismiss the case (a motion to dismiss). The court granted it.");
+    expect(JSON.stringify(standing)).not.toMatch(/SEALED|Preliminary Injunction/i);
+  });
+
+  it("district with an outcome but no motions says so plainly", () => {
+    const standing = buildCaseStanding({
+      ...base, courtKind: "district", courtName: "District Court, D. Mass.", caption: "Jane Doe v. Acme Corp.", decidedOn: null, filedOn: "2023-01-01", terminatedOn: "2024-03-02",
+      verified: false, opinionIsMajority: false,
+      docketEntries: [{ entryNumber: 30, filedOn: "2024-03-02", description: "JUDGMENT entered in favor of Acme Corp. against Jane Doe." }],
+    });
+    expect(standing?.points.find((point) => point.id === "asked")?.text).toMatch(/^The court records we have don't show the requests each side made/);
+  });
+
+  it("Supreme Court: questions presented and the Court's answer to the request", () => {
+    const standing = buildCaseStanding({
+      ...base, caption: "Loper Bright Enterprises v. Raimondo", exactDisposition: "Judgment VACATED and case REMANDED.",
+      questionsPresented: { questions: ["Whether the MSA implicitly grants NMFS the power …", "Whether the Court should overrule Chevron …"], grantedLimitedTo: [2], sourceUrl: "https://www.supremecourt.gov/qp/22-00451qp.pdf" },
+      scotusDocket: { certStatus: "granted", certStatusOn: "2023-05-01", certEntry: null, judgmentOn: "2024-06-28", judgmentEntry: null, petitioner: "Loper Bright Enterprises, et al.", respondent: "Gina Raimondo, Secretary of Commerce, et al.", lowerCourt: "United States Court of Appeals for the District of Columbia Circuit", lowerCourtDecidedOn: null, lastEntryOn: null, fetchedAt: null, sourceUrl: "https://www.supremecourt.gov/docket" },
+    });
+    const asked = standing?.points.find((point) => point.id === "asked");
+    expect(asked?.text).toContain("asked the Supreme Court to review and overturn the decision of the United States Court of Appeals for the District of Columbia Circuit");
+    expect(asked?.text).toContain("agreed to decide only question 2");
+    expect(asked?.quotes?.map((quote) => quote.sourceHref)).toEqual(["https://www.supremecourt.gov/qp/22-00451qp.pdf", "https://www.supremecourt.gov/qp/22-00451qp.pdf"]);
+  });
+});

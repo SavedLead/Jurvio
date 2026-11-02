@@ -8,7 +8,10 @@ name: Backfill official case outcome sources (once, resumable)
 #             Fetched from the builder, one request at a time with a delay
 #             (robots.txt Crawl-delay 1), identifying User-Agent, gzip cache in
 #             ~/.cache/jurvio/scotus-dockets so re-dispatching resumes; cases
-#             checked in the last 30 days are skipped.
+#             checked in the last 30 days are skipped. For granted cases it
+#             also reads the Court's "questions presented" PDF (pdftotext on
+#             the builder) into scotus_question_presented (migration 0190), so
+#             the page can say what the petitioner asked the Court to decide.
 #   fjc     - fjc_idb_case_outcome: how published federal district civil cases
 #             ended per the FJC Integrated Database (CourtListener's free bulk
 #             file, streamed and decompressed on the builder; never stored).
@@ -119,7 +122,9 @@ jobs:
           LEFT JOIN scotus_docket_status s ON s.case_id = c.id
           WHERE c.publication = 'published'
             AND btrim(c.docket_number) ~ '^(0[0-9]|1[0-9]|2[0-9])(-[0-9]{1,5}|A[0-9]{1,4})$'
-            AND (s.case_id IS NULL OR s.fetched_at < now() - interval '30 days')
+            AND (s.case_id IS NULL OR s.fetched_at < now() - interval '30 days'
+              OR (s.cert_status = 'granted' AND to_regclass('scotus_question_presented') IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM scotus_question_presented q WHERE q.case_id = c.id)))
           ORDER BY (c.decided_on IS NULL) DESC,
             (SELECT t.tier FROM publication_tier_release t WHERE t.case_id = c.id AND t.state = 'published' ORDER BY t.tier LIMIT 1) NULLS LAST,
             c.docket_number DESC;
@@ -128,7 +133,7 @@ jobs:
           echo "::notice title=Supreme Court cases to check::$(wc -l < "$work/cases.tsv")"
           INGESTION_USER_AGENT="Jurvio/0.1 (+https://jurvio.com; public court records)" \
             pnpm exec tsx scripts/backfill-scotus-docket-status.ts --input "$work/cases.tsv" \
-              --cache-dir "$HOME/.cache/jurvio/scotus-dockets" --out "$work/status.tsv" \
+              --cache-dir "$HOME/.cache/jurvio/scotus-dockets" --out "$work/status.tsv" --qp-out "$work/questions.tsv" \
               --delay-ms "$DELAY_MS" --budget-minutes "$BUDGET_MINUTES" | tee "$work/stats.json"
           echo "::notice title=Supreme Court docket stats::$(cat "$work/stats.json")"
           rows="$(wc -l < "$work/status.tsv")"
@@ -166,6 +171,38 @@ jobs:
           } > "$work/load.sql"
           vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/load.sql" | tee "$work/after.txt"
           { echo '### scotus_docket_status'; echo '```'; cat "$work/stats.json" "$work/after.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          qrows="$(wc -l < "$work/questions.tsv")"
+          if [ "$qrows" -gt 0 ]; then
+            { cat <<'SQL'
+          \set ON_ERROR_STOP on
+          DO $$ BEGIN IF to_regclass('scotus_question_presented') IS NULL THEN RAISE EXCEPTION 'scotus_question_presented missing; release migration 0190 first'; END IF; END $$;
+          BEGIN;
+          SET LOCAL statement_timeout = '300s';
+          SET LOCAL lock_timeout = '10s';
+          CREATE TEMP TABLE incoming_qp (LIKE scotus_question_presented INCLUDING DEFAULTS) ON COMMIT DROP;
+          ALTER TABLE incoming_qp DROP COLUMN updated_at;
+          COPY incoming_qp (case_id, docket_number, source_url, fetched_at, content_hash, parser_version,
+            questions, granted_limited_to, granted_question) FROM STDIN;
+          SQL
+              cat "$work/questions.tsv"; printf '\\.\n'
+              cat <<'SQL'
+          INSERT INTO scotus_question_presented (case_id, docket_number, source_url, fetched_at, content_hash, parser_version,
+            questions, granted_limited_to, granted_question, updated_at)
+          SELECT i.case_id, i.docket_number, i.source_url, i.fetched_at, i.content_hash, i.parser_version,
+            i.questions, i.granted_limited_to, i.granted_question, now()
+          FROM incoming_qp i JOIN legal_case c ON c.id = i.case_id
+          ON CONFLICT (case_id) DO UPDATE SET docket_number = EXCLUDED.docket_number, source_url = EXCLUDED.source_url,
+            fetched_at = EXCLUDED.fetched_at, content_hash = EXCLUDED.content_hash, parser_version = EXCLUDED.parser_version,
+            questions = EXCLUDED.questions, granted_limited_to = EXCLUDED.granted_limited_to,
+            granted_question = EXCLUDED.granted_question, updated_at = now();
+          COMMIT;
+          SELECT 'questions_presented', count(*), count(granted_limited_to) AS limited FROM scotus_question_presented;
+          SQL
+            } > "$work/load-qp.sql"
+            vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/load-qp.sql" | tee "$work/after-qp.txt" \
+              || echo "::warning::questions presented not loaded (is migration 0190 released?)"
+            { echo '### scotus_question_presented'; echo '```'; cat "$work/after-qp.txt" 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: FJC Integrated Database district outcomes
         if: ${{ inputs.source == 'fjc' || inputs.source == 'both' }}

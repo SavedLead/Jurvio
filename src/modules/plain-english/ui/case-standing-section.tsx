@@ -19,7 +19,27 @@ export function CaseStandingSection({ standing, renderText }: CaseStandingSectio
             <dt>{point.label}</dt>
             <dd>
               <p>{renderText(point.text)}</p>
+              {point.items ? (
+                <ul className="caseStandsAsks">
+                  {point.items.map((item) => (
+                    <li key={item.label} data-result={item.result}>
+                      <span className="caseStandsAsk">{renderText(item.label)}{item.askedBy ? <span className="caseStandsAskBy"> — asked by {item.askedBy}</span> : null}</span>
+                      <span className="caseStandsBadge">{item.badge}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {point.quote ? <blockquote>“{point.quote}”</blockquote> : null}
+              {point.quotes?.map((quote, index) => (
+                <figure className="caseStandsQuote" key={`${index}-${quote.text.slice(0, 24)}`}>
+                  <blockquote>“{quote.text}”</blockquote>
+                  <figcaption className="caseStandsSource">
+                    {quote.sourceHref
+                      ? <a href={quote.sourceHref} rel={quote.sourceHref.startsWith("/") ? undefined : "nofollow noopener"}>{quote.sourceLabel}</a>
+                      : quote.sourceLabel}
+                  </figcaption>
+                </figure>
+              ))}
               {point.sourceLabel ? (
                 <p className="caseStandsSource">
                   {point.sourceHref

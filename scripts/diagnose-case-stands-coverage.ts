@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import { buildCaseStanding, readOverruledParenthetical, type FjcOutcomeSignal, type ScotusDocketSignal } from "@/modules/plain-english/domain/case-standing";
 import { FJC_IDB_URL } from "@/modules/plain-english/domain/fjc-outcome";
+import type { QuestionsPresented } from "@/modules/plain-english/domain/relief";
 import { courtKindFromJurisdiction } from "@/modules/cases/domain/record-answers";
 
 interface Row {
@@ -17,7 +18,8 @@ interface Row {
   verification: string | null; exactDisposition: string | null; exactHolding: string | null; lowerCourtName: string | null;
   clusterDisposition: string | null; precedentialStatus: string | null; votesMajority: string | null; votesMinority: string | null;
   opinionTail: string | null; opinionHead?: string | null; overruled: string[] | null;
-  scotusDocket?: ScotusDocketSignal | null; fjcOutcome?: FjcOutcomeSignal | null; docket: Array<{ filedOn: string | null; description: string }> | null;
+  scotusDocket?: ScotusDocketSignal | null; fjcOutcome?: FjcOutcomeSignal | null; docket: Array<{ entryNumber?: number | string | null; filedOn: string | null; description: string }> | null;
+  questionsPresented?: QuestionsPresented | null;
 }
 
 const [file, ratioArg] = process.argv.slice(2);
@@ -46,13 +48,23 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
     opinionTail: row.opinionTail, opinionHead: row.opinionHead ?? null, opinionPath: row.opinionTail ? "/x" : null, opinionIsMajority: Boolean(row.opinionTail),
     overruled: overruledText ? { text: overruledText, citingCaption: null, citingPath: null } : null,
     votes, citedByCount: 0, docketEntries: row.docket ?? [], docketPath: "/x",
-    scotusDocket: row.scotusDocket ?? null, fjcOutcome: row.fjcOutcome ?? null,
+    scotusDocket: row.scotusDocket ?? null, fjcOutcome: row.fjcOutcome ?? null, questionsPresented: row.questionsPresented ?? null,
   });
   // outcome = a quoted judgment/docket outcome (who won / what was decided);
   // status-only = shown, but only says decided/closed/open without the outcome; hidden = section not rendered.
   const hasQuote = standing?.points.some((point) => (point.quote && point.id !== "good-law" && point.id !== "rule") || point.sourceHref === FJC_IDB_URL);
   if (standing?.points.some((point) => point.sourceHref === FJC_IDB_URL)) countSource(courtKind, "fjc");
   if (row.scotusDocket && standing?.points.some((point) => point.sourceHref === row.scotusDocket?.sourceUrl)) countSource(courtKind, `docket-${row.scotusDocket.certStatus}${row.scotusDocket.judgmentEntry ? "+judgment" : ""}`);
+  // Phase 6: what each side asked for, by where the request came from.
+  const asked = standing?.points.find((point) => point.id === "asked");
+  if (asked) {
+    const from = asked.quotes?.some((quote) => /supremecourt\.gov\/qp\//.test(quote.sourceHref ?? "")) ? "questions-presented"
+      : asked.quotes?.some((quote) => /^What was asked/.test(quote.sourceLabel)) ? "opinion-request"
+      : asked.quotes?.some((quote) => /^The request, from the court's docket/.test(quote.sourceLabel)) ? "docket-motions"
+      : asked.items?.length ? "point-rulings-only"
+      : /don't (?:show|say|spell out)|don't have the petition/.test(asked.text) ? "not-in-record" : "role-only";
+    countSource(courtKind, `asked-${from}`);
+  }
   const closed = standing?.points.some((point) => point.id === "status" && /^No\. The court closed/.test(point.text));
   const category = !standing ? "hidden" : hasQuote ? "outcome" : closed ? "closed-only" : "status-only";
   const key = `${courtKind}${row.tier ? ` t${row.tier}` : " t-none"}`;
