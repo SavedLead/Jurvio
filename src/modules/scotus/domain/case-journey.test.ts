@@ -30,3 +30,15 @@ describe("case journey", () => {
     expect(daysBetween("2024-03-04", "2024-01-03")).toBeNull();
   });
 });
+
+describe("case journey grant step", () => {
+  it("does not show a grant dated from the judgment line", () => {
+    const steps = buildCaseJourney({ ...base, certStatus: "granted", certStatusOn: "2024-03-04", certEntry: "Judgment REVERSED and case REMANDED. Kavanaugh, J., delivered the opinion." });
+    expect(steps.map((step) => step.key)).toEqual(["lower-decided", "docketed", "argued", "judgment"]);
+  });
+  it("keeps a summary GRANTED-and-vacated order", () => {
+    const steps = buildCaseJourney({ ...base, entries: [], certStatusOn: "2024-03-04", certEntry: "Petition GRANTED. Judgment VACATED, and case REMANDED." });
+    expect(steps.map((step) => step.key)).toContain("cert");
+  });
+});
+

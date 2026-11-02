@@ -78,15 +78,20 @@ export function buildCaseJourney(input: JourneyInput): JourneyStep[] {
       quote: null, ...docket, jurvioPath: null,
     });
   }
-  if (!application && input.certStatusOn && input.certStatus && input.certStatus !== "pending") {
+  const argued = input.entries.filter((entry) => entry.filedOn && ARGUED.test(entry.description.trim()))
+    .sort((a, b) => (a.filedOn ?? "").localeCompare(b.filedOn ?? ""))[0];
+  // The docket parser marks a case "granted" from its judgment line when no grant entry was read; that is the
+  // judgment, not the grant, so show no grant step rather than a wrong date (also never a grant after argument).
+  const grantFromJudgment = input.certStatus === "granted" && (
+    (input.judgmentOn !== null && input.certStatusOn === input.judgmentOn && !/\bGRANTED\b/.test(input.certEntry ?? ""))
+    || (argued?.filedOn !== undefined && argued.filedOn !== null && input.certStatusOn !== null && input.certStatusOn > argued.filedOn));
+  if (!application && !grantFromJudgment && input.certStatusOn && input.certStatus && input.certStatus !== "pending") {
     const title = input.certStatus === "granted" ? "The Court agreed to hear it" : input.certStatus === "denied" ? "The Court declined to hear it" : "The case was dismissed";
     const plain = input.certStatus === "granted" ? "Certiorari granted: the Court took the case for full review."
       : input.certStatus === "denied" ? "Certiorari denied: the lower court's decision stands. A denial is not a ruling on who was right."
       : "The case left the Court without a decision on the merits.";
     steps.push({ key: "cert", date: input.certStatusOn, title, plain, quote: clip(input.certEntry), ...docket, jurvioPath: null });
   }
-  const argued = input.entries.filter((entry) => entry.filedOn && ARGUED.test(entry.description.trim()))
-    .sort((a, b) => (a.filedOn ?? "").localeCompare(b.filedOn ?? ""))[0];
   if (argued?.filedOn) {
     steps.push({ key: "argued", date: argued.filedOn, title: "Oral argument",
       plain: "Lawyers for each side answered the Justices' questions in the courtroom.", quote: clip(argued.description), ...docket, jurvioPath: null });
