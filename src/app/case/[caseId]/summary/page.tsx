@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { briefExcerpt, isBlankish } from "@/modules/cases/domain/reporter-text";
 import type { Route } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -39,12 +40,16 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   return <div style={{ display: "grid", gap: 2 }}><dt style={{ ...muted, fontSize: ".8rem", textTransform: "uppercase", letterSpacing: ".04em" }}>{label}</dt><dd style={{ margin: 0, fontWeight: 600 }}>{children}</dd></div>;
 }
 
-function Sourced({ title, text, sourceUrl }: { title: string; text: string | null | undefined; sourceUrl: string | null | undefined }) {
-  if (!text) return null;
+function Sourced({ title, text, sourceUrl, moreHref }: { title: string; text: string | null | undefined; sourceUrl: string | null | undefined; moreHref: string }) {
+  if (!text || isBlankish(text)) return null;
+  const brief = briefExcerpt(text, 700);
   return <section style={{ margin: "18px 0" }}>
     <h2 style={{ fontSize: "1.05rem", margin: "0 0 6px" }}>{title}</h2>
-    <p style={{ margin: 0, lineHeight: 1.6 }}>{text}</p>
-    {sourceUrl ? <p style={{ ...muted, margin: "4px 0 0" }}><a href={sourceUrl} rel="noopener noreferrer" target="_blank">Source ↗</a></p> : null}
+    <p style={{ margin: 0, lineHeight: 1.6 }}>{brief.text}</p>
+    <p style={{ ...muted, margin: "4px 0 0" }}>
+      {brief.truncated ? <><a href={moreHref}>Shortened here; full text on the case page →</a>{sourceUrl ? " · " : null}</> : null}
+      {sourceUrl ? <a href={sourceUrl} rel="noopener noreferrer" target="_blank">Source ↗</a> : null}
+    </p>
   </section>;
 }
 
@@ -74,10 +79,10 @@ export default async function CaseSummaryPage({ params }: { params: Promise<{ ca
     </dl>
     <div className="caseSummaryTools"><PublicCaseTools permanentUrl={permanentUrl} shareTitle={`${caption}: one-page summary`} citation={legalCase.officialCitation} /></div>
     {verified ? <>
-      <Sourced title="What happened" text={legalCase.backgroundSummary ?? legalCase.statusExplanation} sourceUrl={legalCase.backgroundSourceUrl} />
-      <Sourced title="The question" text={legalCase.questionPresented} sourceUrl={legalCase.questionSourceUrl} />
-      <Sourced title="The ruling" text={legalCase.exactHolding} sourceUrl={legalCase.holdingSourceUrl ?? legalCase.dispositionSourceUrl} />
-      <Sourced title="Why it matters" text={legalCase.significanceSummary} sourceUrl={legalCase.significanceSourceUrl} />
+      <Sourced title="What happened" text={legalCase.backgroundSummary ?? legalCase.statusExplanation} sourceUrl={legalCase.backgroundSourceUrl} moreHref={`/case/${caseId}`} />
+      <Sourced title="The question" text={legalCase.questionPresented} sourceUrl={legalCase.questionSourceUrl} moreHref={`/case/${caseId}`} />
+      <Sourced title="The ruling" text={legalCase.exactHolding} sourceUrl={legalCase.holdingSourceUrl ?? legalCase.dispositionSourceUrl} moreHref={`/case/${caseId}`} />
+      <Sourced title="Why it matters" text={legalCase.significanceSummary} sourceUrl={legalCase.significanceSourceUrl} moreHref={`/case/${caseId}`} />
     </> : <p style={{ ...muted, margin: "18px 0" }}>Jurvio has not verified a written summary of this case, so this page lists only facts from the court record.</p>}
     {keyDates.length ? <section style={{ margin: "18px 0" }}>
       <h2 style={{ fontSize: "1.05rem", margin: "0 0 6px" }}>Key dates ahead</h2>

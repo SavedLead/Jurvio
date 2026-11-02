@@ -4,6 +4,8 @@
  * own sentences that say so. Fixed patterns only; no sentence, no claim.
  */
 
+import { joinLineBreakHyphens, splitSentences } from "@/modules/cases/domain/reporter-text";
+
 export interface CircuitSplitSentence { sentence: string; circuits: string[] }
 
 const SPLIT = new RegExp([
@@ -35,15 +37,10 @@ export function circuitsNamed(text: string): string[] {
   return [...found].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }
 
-function sentences(text: string): string[] {
-  // Do not break after legal abbreviations ("D. C.", "U. S.", "v.", "No.", "F. 4th", "App.").
-  return text.replace(/\s+/g, " ").split(/(?<=[.?!])(?<!\b(?:[A-Z]|v|No|Nos|Inc|Co|Corp|St|Mr|Ms|Dr|al|Cf|e\.g|i\.e|App|Supp|Cir|Stat|ed|ibid|id|Id)\.)\s+(?=[A-Z(“"])/);
-}
-
 /** Up to `limit` sentences that say the courts of appeals disagree, with the next sentence when it names the circuits. */
 export function readCircuitSplit(text: string | null | undefined, limit = 2): CircuitSplitSentence[] {
   if (!text) return [];
-  const all = sentences(text.slice(0, 60_000));
+  const all = splitSentences(joinLineBreakHyphens(text.slice(0, 60_000)));
   const out: CircuitSplitSentence[] = [];
   for (let index = 0; index < all.length && out.length < limit; index += 1) {
     const sentence = all[index]!;
