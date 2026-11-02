@@ -4,5 +4,5 @@ COPY (
   FROM judge_service_term t
   JOIN judge j ON j.id = t.judge_id
   JOIN court c ON c.id = t.court_id
-  WHERE t.source_system = 'fjc' AND c.provider_court_id ~* '^ca([0-9]+|dc|fed)$'
+  WHERE t.source_system = 'fjc' AND c.provider_court_id ~* '^ca([0-9]+|dc|fed|fc)$'
 ) TO STDOUT;
