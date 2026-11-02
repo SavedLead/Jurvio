@@ -1,0 +1,157 @@
+name: Backfill court of appeals panels and outcomes (once, resumable)
+
+# Fills appeals_panel_seat and appeals_case_outcome (migration 0192) for judge
+# pages: each judge name printed on a published court of appeals opinion is
+# matched by fixed rules to a Federal Judicial Center judge who served on that
+# court on the decision date, and each appeal's result is read by fixed word
+# rules from the reporter disposition or the opinion's own closing words.
+#
+# Runs on the builder, never on a web host. The database sees small read-only
+# keyset exports (with pauses between batches) and short load transactions.
+# No network fetches, no AI. Nothing is published. Dispatch by hand with
+# confirm=BACKFILL_APPEALS_JUDGES; re-dispatch to resume (finished cases are
+# skipped by the closings pass; the seats pass is idempotent).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKFILL_APPEALS_JUDGES to run this workflow against production"
+        required: true
+        type: string
+      passes:
+        description: "seats, closings, or both"
+        required: true
+        default: "both"
+        type: string
+      budget_minutes:
+        description: "Stop starting new closing batches after this many minutes (1-200)"
+        required: true
+        default: "90"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backfill-appeals-judges
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 240
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      PASSES: ${{ inputs.passes }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes }}
+    steps:
+      - name: Require confirm=BACKFILL_APPEALS_JUDGES and validate inputs
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "BACKFILL_APPEALS_JUDGES" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_APPEALS_JUDGES."
+            exit 1
+          fi
+          case "$PASSES" in seats|closings|both) ;; *) echo "::error::passes must be seats, closings or both"; exit 1;; esac
+          case "$BUDGET_MINUTES" in ''|*[!0-9]*) echo "::error::budget_minutes must be an integer"; exit 1;; esac
+          if [ "$BUDGET_MINUTES" -lt 1 ] || [ "$BUDGET_MINUTES" -gt 200 ]; then echo "::error::budget_minutes must be 1-200"; exit 1; fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Write database helpers
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/db.sh" <<'HELPERS'
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          PG_FIND='pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo postgres missing >&2; exit 1; }'
+          # db_read FILE [psql -v args...]: run a read-only SQL file, COPY output on stdout.
+          db_read() {
+            local file="$1"; shift
+            local vars=""; for v in "$@"; do vars="$vars -v $(printf %q "$v")"; done
+            vpc_ssh "$INGESTION_USER@$DB_HOST" "$PG_FIND; sudo -n docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=120s' \"\$pg\" psql -U jurvio -d jurvio -q -X -v ON_ERROR_STOP=1 $vars" < "$file"
+          }
+          # db_write: run SQL from stdin (load transactions).
+          db_write() {
+            vpc_ssh "$INGESTION_USER@$DB_HOST" "$PG_FIND; sudo -n docker exec -i \"\$pg\" psql -U jurvio -d jurvio -q -X -At -F ' | ' -v ON_ERROR_STOP=1"
+          }
+          HELPERS
+
+      - name: Check migration 0192 is applied
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/db.sh"
+          printf 'SELECT count(*) FROM appeals_panel_seat;\n' | db_write \
+            || { echo "::error::appeals_panel_seat missing; release migration 0192 with deploy-production.yml first"; exit 1; }
+
+      - name: Seats pass (panel names and authors)
+        if: inputs.passes != 'closings'
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/db.sh"
+          work="$RUNNER_TEMP/appeals"; mkdir -p "$work"
+          db_read scripts/sql/appeals-roster.sql > "$work/roster.tsv"
+          echo "::notice title=FJC appeals roster rows::$(wc -l < "$work/roster.tsv")"
+          after=00000000-0000-0000-0000-000000000000; batches=0
+          : > "$work/seat-stats.jsonl"
+          while :; do
+            db_read scripts/sql/appeals-cases.sql "after=$after" "batch=20000" > "$work/cases.tsv"
+            rows=$(wc -l < "$work/cases.tsv"); [ "$rows" -gt 0 ] || break
+            after=$(tail -n1 "$work/cases.tsv" | cut -f1)
+            pnpm exec tsx scripts/backfill-appeals-judge-record.ts seats --roster "$work/roster.tsv" --cases "$work/cases.tsv" \
+              --seats-out "$work/seats.tsv" --outcomes-out "$work/outcomes.tsv" --stats "$work/stats.json" >/dev/null
+            cat "$work/stats.json" >> "$work/seat-stats.jsonl"; echo >> "$work/seat-stats.jsonl"
+            { cat scripts/sql/appeals-load-seats.sql; cat "$work/seats.tsv"; printf '\\.\n'; cat scripts/sql/appeals-load-seats-finish.sql; } | db_write
+            { cat scripts/sql/appeals-load-outcomes.sql; cat "$work/outcomes.tsv"; printf '\\.\n'; cat scripts/sql/appeals-load-outcomes-finish.sql; } | db_write
+            batches=$((batches + 1)); sleep 2
+            [ "$rows" -ge 20000 ] || break
+          done
+          node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean).map(JSON.parse);const t={};for(const s of l)for(const[k,v]of Object.entries(s))if(k!=="rosterRows")t[k]=(t[k]||0)+v;console.log(JSON.stringify(t))' "$work/seat-stats.jsonl" | tee "$work/seat-total.json"
+          echo "::notice title=Seats pass ($batches batches)::$(cat "$work/seat-total.json")"
+
+      - name: Closings pass (outcome from the opinion's own words)
+        if: inputs.passes != 'seats'
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/db.sh"
+          work="$RUNNER_TEMP/appeals"; mkdir -p "$work"
+          deadline=$(( $(date +%s) + BUDGET_MINUTES * 60 ))
+          after=00000000-0000-0000-0000-000000000000; tails=0; outcomes=0; batches=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            db_read scripts/sql/appeals-tails.sql "after=$after" "batch=500" > "$work/tails.tsv"
+            rows=$(wc -l < "$work/tails.tsv"); [ "$rows" -gt 0 ] || break
+            after=$(tail -n1 "$work/tails.tsv" | cut -f1)
+            pnpm exec tsx scripts/backfill-appeals-judge-record.ts closings --tails "$work/tails.tsv" \
+              --outcomes-out "$work/outcomes.tsv" --stats "$work/stats.json" >/dev/null
+            tails=$((tails + rows)); outcomes=$((outcomes + $(wc -l < "$work/outcomes.tsv")))
+            { cat scripts/sql/appeals-load-outcomes.sql; cat "$work/outcomes.tsv"; printf '\\.\n'; cat scripts/sql/appeals-load-outcomes-finish.sql; } | db_write
+            batches=$((batches + 1)); sleep 3
+          done
+          echo "::notice title=Closings pass::batches=$batches tails=$tails outcomes=$outcomes stopped_for_budget=$([ "$(date +%s)" -ge "$deadline" ] && echo yes || echo no)"
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/db.sh"
+          db_write <<'SQL' | tee "$RUNNER_TEMP/summary.txt"
+          SELECT 'seats', role, match_status, count(*), count(DISTINCT case_id) FROM appeals_panel_seat GROUP BY 2, 3 ORDER BY 2, 3;
+          SELECT 'judges with appeals', count(DISTINCT judge_id) FROM appeals_panel_seat WHERE judge_id IS NOT NULL;
+          SELECT 'outcomes', source, outcome, count(*) FROM appeals_case_outcome GROUP BY 2, 3 ORDER BY 2, 3;
+          SQL
+          { echo '### appeals panels and outcomes'; echo '```'; cat "$RUNNER_TEMP/summary.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
