@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Metadata, Route } from "next";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
@@ -22,7 +23,10 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { casePageIndexable } from "@/modules/cases/application/get-public-case";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
-import { CaseNav } from "@/modules/cases/ui/case-nav";
+import { caseSections } from "@/modules/cases/ui/case-nav";
+import { CaseGlossary, CaseSection, CaseSourceList, CaseSources, CaseSummaryCard, SourceRef } from "@/modules/cases/ui/case-declutter";
+import { CaseSectionOpener } from "@/modules/cases/ui/case-section-opener";
+import { keyDate as pickKeyDate, summaryFromStanding } from "@/modules/cases/domain/case-summary";
 import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import "./case-intelligence.css";
@@ -38,13 +42,16 @@ import { listCaseAgencyItems } from "@/modules/agency-sources/application/public
 import { OfficialAgencySources } from "@/modules/agency-sources/ui/official-agency-sources";
 import { agencyTimelineEvents } from "@/modules/agency-sources/domain/timeline";
 import { loadCaseLineup } from "@/modules/scotus/application/justice-analytics";
-import { CaseScdbLineup } from "@/modules/scotus/ui/case-scdb-lineup";
+import { SCDB_DIRECTION_DOC, SCDB_HOME } from "@/modules/scotus/ui/justice-ui";
 import { loadCaseJusticeNotes } from "@/modules/scotus/application/justice-notes";
-import { CaseJusticeNotesSection } from "@/modules/scotus/ui/case-justice-notes";
+import { noteLabel, RULE_OF_FOUR_SOURCE } from "@/modules/scotus/ui/case-justice-notes";
+import { CaseJusticesVoted, justicesHint } from "@/modules/scotus/ui/case-justices-voted";
+import { buildCaseJourney } from "@/modules/scotus/domain/case-journey";
+import { termsInText, type PlainTerm } from "@/modules/plain-english/domain/term-index";
 import { loadCitationReach } from "@/modules/scotus/application/ramifications";
 import { readSyllabusHeld } from "@/modules/scotus/domain/ramifications";
 import { CaseRamificationsSection, type RamificationsHolding } from "@/modules/scotus/ui/case-ramifications";
-import { circuitJusticeFor, circuitJusticeForCircuit, circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
+import { ALLOTMENT_SOURCE_URL, APPLICATIONS_GUIDE_URL, circuitJusticeFor, circuitJusticeForCircuit, circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
 import { CircuitJusticeBox } from "@/modules/scotus/ui/circuit-justice-box";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
@@ -354,6 +361,7 @@ export default async function CasePage({ params }: CasePageProps) {
   const statusMarker=createTermMarker("status");
   const holdingMarker=createTermMarker("holding");
   const standsMarker=createTermMarker("stands");
+  const summaryMarker=createTermMarker("summary");
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
     eventType: "page_view",
@@ -364,6 +372,96 @@ export default async function CasePage({ params }: CasePageProps) {
     targetType: "case",
     targetPublicId: caseId,
   });
+
+  // One numbered Sources list for every outside source and official link on the page (sections point into it).
+  const sources = new CaseSourceList();
+  for (const point of standing?.points ?? []) {
+    // Quotes from one document share its source line ("Question 1, from the questions presented" → "The questions presented").
+    for (const quote of point.quotes ?? []) sources.add(quote.sourceLabel.replace(/^Question \d+, from the questions/i, "The questions"), quote.sourceHref);
+    sources.add(point.sourceLabel, point.sourceHref);
+  }
+  const journeySteps = journey ? buildCaseJourney(journey) : [];
+  for (const step of journeySteps) sources.add(step.sourceLabel, step.sourceUrl);
+  const shownNotes = justiceNotes?.notes ?? [];
+  if (justiceNotes && shownNotes.length) {
+    sources.add(`Supreme Court docket, No. ${justiceNotes.docketNumber}`, justiceNotes.sourceUrl);
+    for (const note of shownNotes) sources.add(`${note.name}: ${noteLabel(note.kind, note.context).toLowerCase()} (PDF)`, note.opinionUrl);
+    sources.add("Supreme Court 101 (how the Court picks cases; the Rule of Four)", RULE_OF_FOUR_SOURCE);
+  }
+  if (scdbLineup) {
+    sources.add("Supreme Court Database (vote lineup)", SCDB_HOME);
+    sources.add("Supreme Court Database: how decision direction is coded", SCDB_DIRECTION_DOC);
+  }
+  sources.add("What happened: official source", legalCase.backgroundSourceUrl);
+  sources.add("Question presented: official petition", legalCase.questionSourceUrl);
+  sources.add("Why it matters: official source", legalCase.significanceSourceUrl);
+  sources.add("Holding: official source", legalCase.holdingSourceUrl);
+  sources.add("Disposition: official source", legalCase.dispositionSourceUrl);
+  if (decidedSupremeCourt) sources.add("The opinion: official copy", ramificationsHolding?.officialUrl);
+  if (opinionNotice) sources.add(opinionNotice.linkLabel, opinionNotice.href);
+  for (const document of documents) sources.add(`${publicDocumentType(document.documentType)}: ${document.title} (official copy)`, document.sourceDownloadUrl);
+  for (const item of agencyItems) sources.add(`${item.publisher}: ${item.title}`, item.sourceUrl);
+  if (ownCircuitJustice ?? belowCircuitJustice) {
+    sources.add("Circuit Justice: Supreme Court allotment order", ALLOTMENT_SOURCE_URL);
+    sources.add("Circuit Justice: the Court's guide to applications (PDF)", APPLICATIONS_GUIDE_URL);
+  }
+  const ref = (href: string) => <SourceRef n={sources.number(href) ?? sources.add(null, href)} />;
+
+  // The summary card: the stands headline and points, re-used (no new claims).
+  const summary = summaryFromStanding(standing);
+  const whatHappened = summary.whatHappened ?? shownAnswers.find((item) => item.id === "what-happened")?.answer ?? caption;
+  const keyDate = pickKeyDate({
+    courtKind: legalCase.courtKind ?? "other",
+    decidedOn: legalCase.decidedOn,
+    terminatedOn: legalCase.terminatedOn ?? null,
+    filedOn: legalCase.filedOn,
+    fjcClosedOn,
+    certStatus: standingSignals.scotusDocket?.certStatus ?? justiceNotes?.certStatus ?? null,
+    certStatusOn: standingSignals.scotusDocket?.certStatusOn ?? justiceNotes?.certStatusOn ?? null,
+  });
+  const summaryFacts: Array<[string, ReactNode]> = [
+    ...(legalCase.hasReadableOpinion && opinionPath ? [["Opinion", <Link key="o" href={opinionPath as Route}>Read on Jurvio</Link>] as [string, ReactNode]]
+      : opinionNotice ? [["Opinion", <>Official copy{ref(opinionNotice.href)}</>] as [string, ReactNode]] : []),
+  ];
+
+  // The opinion record's lineup (author, opinion type, vote), shown only when it has something to say.
+  const decisionLineup = legalCase.decisionLineup;
+  const decisionDetail = decisionLabel || opinionType || decisionLineup?.voteBreakdown?.label || decisionLineup?.justiceVotes?.length
+    || decisionLineup?.joins?.length || decisionLineup?.separateOpinions?.length ? (
+    <div className="cdDecisionLineup">
+      <h3 className="cdSub" id="decision-lineup">Decision lineup, from the opinion record</h3>
+      {decisionLabel ? <p className="verifiedDetail">Written by: {marked(decisionLabel, lineupMarker)}</p> : null}
+      {opinionType ? <p className="verifiedDetail">Opinion type: {marked(opinionType, lineupMarker)}</p> : null}
+      {decisionLineup?.voteBreakdown?.label ? <p className="verifiedDetail">Final vote: {decisionLineup.voteBreakdown.label}</p> : null}
+      {decisionLineup?.justiceVotes?.length ? (
+        <dl className="caseStatusGrid justiceVoteGrid" aria-label="Justice votes">
+          {decisionLineup.justiceVotes.map((vote) => (
+            <div key={vote.justice}><dt>{formatJusticeName(vote.justice)}</dt><dd>{marked(formatJusticePosition(vote.position), lineupMarker)}</dd></div>
+          ))}
+        </dl>
+      ) : (
+        <>
+          {decisionLineup?.joins?.length ? <p className="verifiedDetail">Joined by: {decisionLineup.joins.map(formatJusticeName).join(", ")}</p> : null}
+          {decisionLineup?.separateOpinions?.map((opinion) => <p className="verifiedDetail" key={opinion.author + opinion.type}>{formatJusticeName(opinion.author)}: {marked(formatJusticePosition(opinion.type), lineupMarker)}</p>)}
+        </>
+      )}
+    </div>
+  ) : null;
+  const hasJustices = isSupremeCourt && (shownNotes.length > 0 || Boolean(scdbLineup) || Boolean(decisionDetail));
+  const citationTotal = citationCounts.cited + citationCounts.citedBy + citedCases.length + citingCases.length + (citations.stubs?.length ?? 0);
+  const shownQuickAnswers = shownAnswers.filter((item) => item.available);
+  // The case record repeats a summary only when the quick answers above it don't already say it word for word.
+  const quickAnswerTexts = new Set<string>(shownQuickAnswers.map((item) => item.answer));
+
+  // One glossary for the terms the page uses; the inline tooltips stay on first mention.
+  const glossary: PlainTerm[] = [...new Map(termsInText([
+    whatHappened, summary.whoWon, summary.goingForward,
+    ...(standing?.points ?? []).flatMap((point) => [point.text, point.label, ...(point.items ?? []).map((item) => item.label)]),
+    ...shownNotes.flatMap((note) => [note.sentence, noteLabel(note.kind, note.context)]),
+    ...motionGuide.flatMap((motion) => Object.values(motion).filter((value): value is string => typeof value === "string")),
+    ...shownQuickAnswers.map((item) => item.answer), legalCase.statusExplanation, outcome, opinionType,
+    ...timelineEvents.map((event) => event.label), ...availableDocumentTypes, ...parties.map((party) => publicPartyRole(party.role)),
+  ].filter(Boolean).join(" \n ")).map((term) => [term.key, term])).values()].sort((left, right) => left.term.localeCompare(right.term));
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -380,253 +478,184 @@ export default async function CasePage({ params }: CasePageProps) {
     isPartOf: { "@type": "WebSite", name: "Jurvio", url: "https://jurvio.com" },
   };
 
+  const circuitJustice = ownCircuitJustice ?? belowCircuitJustice;
   return (
-    <main className="shell caseShell scotusCaseShell">
+    <main className="shell caseShell scotusCaseShell cdShell">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }} />
-      <CaseHeader
-        caseId={caseId}
-        caption={caption}
-        courtName={legalCase.courtName}
-        docketNumber={legalCase.docketNumber}
-        filedOn={legalCase.filedOn}
-        decidedOn={legalCase.decidedOn}
-        supremeCourtTerm={legalCase.supremeCourtTerm}
-        officialCitation={legalCase.officialCitation}
-        courtCode={legalCase.courtCode}
-        showNavigation={false}
-      />
+      <CaseSectionOpener />
+      <div className="cdLayout">
+        <CaseHeader
+          caseId={caseId}
+          caption={caption}
+          courtName={legalCase.courtName}
+          docketNumber={legalCase.docketNumber}
+          filedOn={legalCase.filedOn}
+          decidedOn={legalCase.decidedOn}
+          supremeCourtTerm={legalCase.supremeCourtTerm}
+          officialCitation={legalCase.officialCitation}
+          courtCode={legalCase.courtCode}
+          showNavigation={false}
+        />
+        <nav className="cdLinks" aria-label="Case sections">
+          {caseSections.filter(([, suffix]) => suffix).map(([label, suffix]) => <Link key={label} href={`/case/${caseId}${suffix}` as Route}>{label}</Link>)}
+          {sources.links.length ? <a href="#sources-section">Sources</a> : null}
+          {glossary.length ? <a href="#glossary-section">Glossary</a> : null}
+        </nav>
 
-      <div className="caseWorkspace">
-        <aside className="caseWorkspaceNav">
-          <CaseNav caseId={caseId} />
-          {followEligible ? <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /> : null}
-          <div className="caseProvenanceRail" aria-label="Source and record details">
-            <section>
-              <p className="sectionKicker">Case status</p>
-              <dl className="railFacts">
-                {legalCase.hasReadableOpinion
-                  ? <div><dt>Opinion text</dt><dd>Available on Jurvio</dd></div>
-                  : opinionNotice ? <div><dt>Opinion</dt><dd><a href={opinionNotice.href} rel="nofollow noopener">Official copy</a></dd></div> : null}
-                {legalCase.decidedOn ? <div><dt>Decision date</dt><dd><time dateTime={legalCase.decidedOn}>{formatPublicCaseDate(legalCase.decidedOn) ?? legalCase.decidedOn}</time></dd></div> : null}
-                {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
-                {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
-              </dl>
-            </section>
-            {sourceDocument ? (
-              <section>
-                <p className="sectionKicker">Official source</p>
-                <p>Read the original document from the court.</p>
-                <a href={sourceDocument.sourceDownloadUrl ?? undefined} rel="nofollow noopener">View official court document</a>
-              </section>
-            ) : null}
-          </div>
-          {ownCircuitJustice || belowCircuitJustice ? (
-            <CircuitJusticeBox compact
-              justice={(ownCircuitJustice ?? belowCircuitJustice)!}
-              relation={ownCircuitJustice ? (legalCase.courtKind === "appellate" ? "circuit" : "court-in-circuit") : "court-below"} />
-          ) : null}
-          <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
-        </aside>
+        <CaseSummaryCard
+          whatHappened={marked(whatHappened, summaryMarker)}
+          whoWon={summary.whoWon ? marked(summary.whoWon, summaryMarker) : null}
+          goingForward={summary.goingForward ? marked(summary.goingForward, summaryMarker) : null}
+          goingForwardLabel={summary.goingForwardLabel}
+          keyDate={keyDate ? { ...keyDate, display: formatPublicCaseDate(keyDate.date) ?? keyDate.date } : null}
+          facts={summaryFacts}
+          follow={followEligible ? <details className="cdFollow" id="follow"><summary>Follow this case</summary>
+            <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /></details> : null}
+          tools={<PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />}
+          note={standing ? <><strong>Plain-English summary, not legal advice.</strong> Generated from the court record by fixed rules; quotes are the court&apos;s own words. If the record doesn&apos;t say, we say so instead of guessing.</> : null}
+        />
 
-        <div className="caseWorkspaceMain">
-          {standing ? <CaseStandingSection standing={standing} renderText={(text) => marked(text, standsMarker)} /> : null}
-          {justiceNotes ? <CaseJusticeNotesSection data={justiceNotes} /> : null}
-          {motionGuide.length ? <CaseMotionsSection motions={motionGuide} caseId={caseId} scanned={docketEntries.length} /> : null}
-          {opinionNotice ? (
-            <section className="opinionPendingNotice" aria-labelledby="opinion-official-source">
-              <h2 id="opinion-official-source">{opinionNotice.heading}</h2>
-              <p>{opinionNotice.body} <a href={opinionNotice.href} rel="nofollow noopener">{opinionNotice.linkLabel}</a></p>
-            </section>
-          ) : null}
-          <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
-            <p className="sectionKicker">Quick answers</p>
-            <h2 id="case-answers-title">{recentlyFiled ? "This case was recently filed" : "What the court record tells us"}</h2>
-            <p className="caseAnswerIntro">
-              {recentlyFiled
-                ? "This case is new. More details, documents, and updates will appear here as the court record grows."
-                : "Short answers drawn from the court record. If the record doesn't say, we leave it out rather than guess."}
-            </p>
-            <div className="caseAnswerGrid">
-              {shownAnswers.filter((item) => item.available).map((item) => (
-                <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
-                  <h3>{item.question}</h3>
-                  <p>{linkedText(item.answer, createTermMarker(`answer-${item.id}`))}</p>
-                  <footer>
-                    <span>{item.sourceUrl ? "Source-backed answer" : "From the court record"}</span>
-                    {item.sourceUrl ? <a href={item.sourceUrl} rel="nofollow noopener">View source</a> : null}
-                  </footer>
-                </article>
-              ))}
-            </div>
-          </section>
-          <section className="caseLeadSection caseFeatureSection" aria-labelledby="understand-case">
-            <div className="featureHeading">
-              <div><p className="sectionKicker">Understand this case</p><h2 id="understand-case">Case record</h2></div>
-            </div>
-            {verified && legalCase.statusExplanation ? (
-              <p className="statusExplanation">{linkedText(legalCase.statusExplanation, statusMarker)}</p>
-            ) : (
-              <p className="verifiedFactSummary">
-                <strong><BrandedCaseCaption caption={caption} /></strong> is {legalCase.courtName} case number {legalCase.docketNumber}.
-                {readableDocuments.length > 0
-                    ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.`
-                    : ""}
-              </p>
-            )}
-            {legalCase.backgroundSummary ? <div className="verifiedNarrative"><h3>What happened</h3><p>{linkedText(legalCase.backgroundSummary, createTermMarker("background"))}</p>{legalCase.backgroundSourceUrl ? <a href={legalCase.backgroundSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
-            {legalCase.significanceSummary ? <div className="verifiedNarrative"><h3>Why it matters</h3><p>{linkedText(legalCase.significanceSummary, createTermMarker("significance"))}</p>{legalCase.significanceSourceUrl ? <a href={legalCase.significanceSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
-            {supportingStatusDetails.length > 0 ? (
-              <dl className="caseStatusGrid">
-                {supportingStatusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{marked(value, statusMarker)}</dd></div>)}
-              </dl>
-            ) : null}
-          </section>
+        {standing ? <CaseSection id="stands" title="Where this case stands" open hint={`${standing.points.length} questions answered from the record`}>
+          <CaseStandingSection standing={standing} compact sourceRef={ref} renderText={(text) => marked(text, standsMarker)} />
+        </CaseSection> : null}
 
-          {legalCase.questionPresented ? (
-            <section className="contentSection caseFeatureSection" aria-labelledby="question-presented">
-              <div className="featureHeading"><h2 id="question-presented">Question presented</h2></div>
-              <p>{linkedText(legalCase.questionPresented, createTermMarker("question"))}</p>
-              {legalCase.questionSourceUrl ? <a className="sectionLink" href={legalCase.questionSourceUrl} rel="nofollow noopener">Read the official petition →</a> : null}
-            </section>
-          ) : null}
+        {decidedSupremeCourt ? <CaseSection id="going-forward" title="What this means going forward" hint={citationCounts.citedBy ? `Cited by ${citationCounts.citedBy.toLocaleString("en-US")} on Jurvio` : undefined}>
+          <CaseRamificationsSection holding={ramificationsHolding} reach={citationReach} citedByCount={citationCounts.citedBy} />
+        </CaseSection> : null}
 
-          {outcome || legalCase.exactHolding ? (
-            <section className="contentSection caseFeatureSection" aria-labelledby="case-outcome">
-              <div className="featureHeading">
-                  <h2 id="case-outcome">Holding and outcome</h2>
-              </div>
-              {outcome ? <div className="outcomeCallout"><strong>{marked(outcome, holdingMarker)}.</strong></div> : null}
-              {legalCase.exactHolding ? <div className="verifiedNarrative"><h3>The holding, quoted from the court</h3><p>{linkedText(legalCase.exactHolding, holdingMarker)}</p>{legalCase.holdingSourceUrl ? <a href={legalCase.holdingSourceUrl} rel="nofollow noopener">Official source</a> : null}</div> : null}
-            </section>
-          ) : null}
-
-          {decisionLabel || opinionType || legalCase.decisionLineup ? (
-            <section className="contentSection caseFeatureSection" aria-labelledby="decision-lineup">
-              <div className="featureHeading decisionHeading">
-                <h2 id="decision-lineup">Decision lineup</h2>
-                {decisionLabel ? <strong className="decisionLabel">{marked(decisionLabel, lineupMarker)}</strong> : null}
-              </div>
-              {opinionType ? <p className="verifiedDetail">Opinion type: <strong>{marked(opinionType, lineupMarker)}</strong></p> : null}
-              {legalCase.decisionLineup?.voteBreakdown?.label ? (
-                <p className="verifiedDetail">Final vote: <strong>{legalCase.decisionLineup.voteBreakdown.label}</strong></p>
-              ) : null}
-              {legalCase.decisionLineup?.justiceVotes?.length ? (
-                <dl className="caseStatusGrid justiceVoteGrid" aria-label="Justice votes">
-                  {legalCase.decisionLineup.justiceVotes.map((vote) => (
-                    <div key={vote.justice}>
-                      <dt>{formatJusticeName(vote.justice)}</dt>
-                      <dd>{marked(formatJusticePosition(vote.position), lineupMarker)}</dd>
-                    </div>
-                  ))}
-                </dl>
-              ) : (
-                <>
-                  {legalCase.decisionLineup?.joins?.length ? <p className="verifiedDetail">Joined by: <strong>{legalCase.decisionLineup.joins.map(formatJusticeName).join(", ")}</strong></p> : null}
-                  {legalCase.decisionLineup?.separateOpinions?.map((opinion) => <p className="verifiedDetail" key={opinion.author + opinion.type}>{formatJusticeName(opinion.author)}: <strong>{marked(formatJusticePosition(opinion.type), lineupMarker)}</strong></p>)}
-                </>
-              )}
-            </section>
-          ) : null}
-
-          {scdbLineup ? <CaseScdbLineup lineup={scdbLineup} /> : null}
-
-          {journey ? <CaseJourneySection journey={journey} benchmarks={journeyBenchmarks} /> : null}
+        {journeySteps.length || onwardSupremeCourt.length ? <CaseSection id="journey" title="Case journey"
+          hint={journeySteps.length ? `${journeySteps.length} steps, from the court below to the Supreme Court` : "This case went on to the Supreme Court"}>
+          {journey && journeySteps.length ? <CaseJourneySection journey={journey} benchmarks={journeyBenchmarks} sourceRef={ref} /> : null}
           {onwardSupremeCourt.length ? <OnwardSupremeCourtSection cases={onwardSupremeCourt} /> : null}
-          {decidedSupremeCourt ? <CaseRamificationsSection holding={ramificationsHolding} reach={citationReach} citedByCount={citationCounts.citedBy} /> : null}
+        </CaseSection> : null}
 
-          <CitationCaseList
-            title="Cases cited"
-            cases={citedCases}
-            total={citationCounts.cited}
-            summary={citationCounts.cited ? citationCountLine(citationCounts.cited, citationCounts.citedOnJurvio) : undefined}
-          />
+        {hasJustices ? <CaseSection id="justices" title="How the justices voted" hint={justicesHint(justiceNotes, scdbLineup) ?? undefined}>
+          <CaseJusticesVoted notes={justiceNotes} lineup={scdbLineup} extra={decisionDetail} />
+        </CaseSection> : null}
+
+        {motionGuide.length ? <CaseSection id="motions" title="Motions" hint={`${motionGuide.length} ${motionGuide.length === 1 ? "motion" : "motions"} in plain English`}>
+          <CaseMotionsSection motions={motionGuide} caseId={caseId} scanned={docketEntries.length} />
+        </CaseSection> : null}
+
+        {citationTotal > 0 ? <CaseSection id="citations" title="Citations"
+          hint={[citationCounts.cited || citedCases.length ? `Cites ${Math.max(citationCounts.cited, citedCases.length).toLocaleString("en-US")}` : null, citationCounts.citedBy ? `cited by ${citationCounts.citedBy.toLocaleString("en-US")}` : null].filter(Boolean).join(" · ") || undefined}>
+          <CitationCaseList title="Cases cited" cases={citedCases} total={citationCounts.cited}
+            summary={citationCounts.cited ? citationCountLine(citationCounts.cited, citationCounts.citedOnJurvio) : undefined} />
           <CitedStubList stubs={citations.stubs ?? []} />
-          <CitationCaseList
-            id="cited-by"
-            title="Cited by"
-            cases={citingCases}
-            total={citationCounts.citedBy}
-            summary={citationCounts.citedBy ? `At least ${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio ${citationCounts.citedBy === 1 ? "cites" : "cite"} this case` : undefined}
-          />
+          <CitationCaseList id="cited-by" title="Cited by" cases={citingCases} total={citationCounts.citedBy}
+            summary={citationCounts.citedBy ? `At least ${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio ${citationCounts.citedBy === 1 ? "cites" : "cite"} this case` : undefined} />
+        </CaseSection> : null}
 
+        {timelineEvents.length > 0 ? <CaseSection id="docket" title="Docket & timeline"
+          hint={`${timelineEvents.length.toLocaleString("en-US")} dated ${timelineEvents.length === 1 ? "event" : "events"}${latestEvent ? `, latest ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}` : ""}`}>
+          <ol className="caseMilestones" id="case-timeline">
+            {timelineEvents.map((event) => (
+              <li key={event.date + event.label}>
+                <time dateTime={event.date}>{formatPublicCaseDate(event.date) ?? event.date}</time>
+                <span>{marked(event.label, timelineMarker)}</span>
+              </li>
+            ))}
+          </ol>
+          {docketEntries.length > 0 ? <p className="cdMore"><Link href={`/case/${caseId}/docket` as Route}>Full docket →</Link> · <Link href={`/case/${caseId}/timeline` as Route}>View complete available timeline →</Link></p> : null}
+        </CaseSection> : null}
+
+        {documents.length > 0 || opinionNotice || opinionPath || (!isSupremeCourt && decisionDetail) ? <CaseSection id="documents" title="Opinion & documents"
+          hint={documents.length ? `${documents.length.toLocaleString("en-US")} ${documents.length === 1 ? "document" : "documents"}` : undefined}>
+          {opinionNotice ? <p className="cdLead" id="opinion-official-source">{opinionNotice.heading}. {opinionNotice.body} {opinionNotice.linkLabel}{ref(opinionNotice.href)}</p> : null}
+          {opinionPath ? <nav className="opinionQuickLinks" aria-label="Opinion reading tools" id="read-opinion">
+            <Link href={opinionPath as Route}>Read the opinion</Link>
+            <Link href={`${opinionPath}#opinion-reader-tools` as Route}>Search</Link>
+            <Link href={`${opinionPath}#opinion-reader-tools` as Route}>Contents</Link>
+            {opinionType ? <Link href={`${opinionPath}#opinion-text` as Route}>{opinionType}</Link> : null}
+            {primaryOpinion?.hasReportersNote ? <Link href={`${opinionPath}#reporters-note-heading` as Route}>Reporter’s Note</Link> : null}
+          </nav> : null}
+          {!isSupremeCourt ? decisionDetail : null}
+          {documents.length > 0 ? <>
+            <ul className="cdDocs" id="available-documents">
+              {documents.map((document) => (
+                <li key={document.publicId}>
+                  <span className="cdDocType">{marked(publicDocumentType(document.documentType), documentsMarker)}{document.filedOn ? <> · <time dateTime={document.filedOn}>{formatPublicCaseDate(document.filedOn) ?? document.filedOn}</time></> : null}</span>
+                  <span className="cdDocTitle">{document.hasReadableContent ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>{document.title}</Link> : document.title}
+                    {document.sourceDownloadUrl ? <> · official copy{ref(document.sourceDownloadUrl)}</> : null}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="cdMore"><Link href={`/case/${caseId}/documents` as Route}>View available documents →</Link></p>
+          </> : null}
+        </CaseSection> : null}
+
+        {parties.length > 0 ? <CaseSection id="parties" title="Parties" hint={`${parties.length.toLocaleString("en-US")} named in the record`}>
+          <p className="cdMuted">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
+          <ul className="cdParties" id="named-parties">
+            {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><span>{party.displayName}</span> <span className="cdMuted">{marked(publicPartyRole(party.role), partiesMarker)}</span></li>)}
+          </ul>
+          <p className="cdMore"><Link href={`/case/${caseId}/parties` as Route}>View all parties →</Link></p>
+        </CaseSection> : null}
+
+        <CaseSection id="record" title={recentlyFiled ? "This case was recently filed" : "What the court record tells us"} hint="Quick answers, the question presented and the holding">
+          <p className="cdMuted">
+            {recentlyFiled
+              ? "This case is new. More details, documents, and updates will appear here as the court record grows."
+              : "Short answers drawn from the court record. If the record doesn't say, we leave it out rather than guess."}
+          </p>
+          <dl className="cdAnswers" id="case-answers">
+            {shownQuickAnswers.map((item) => (
+              <div id={item.id} key={item.id}>
+                <dt>{item.question}</dt>
+                <dd>{linkedText(item.answer, createTermMarker(`answer-${item.id}`))}{item.sourceUrl ? ref(item.sourceUrl) : <span className="cdMuted"> (from the court record)</span>}</dd>
+              </div>
+            ))}
+          </dl>
+          <h3 className="cdSub" id="understand-case">Case record</h3>
+          {verified && legalCase.statusExplanation ? (
+            <p className="statusExplanation">{linkedText(legalCase.statusExplanation, statusMarker)}</p>
+          ) : (
+            <p className="verifiedFactSummary">
+              <BrandedCaseCaption caption={caption} /> is {legalCase.courtName} case number {legalCase.docketNumber}.
+              {readableDocuments.length > 0
+                ? ` Jurvio currently provides ${readableDocuments.length.toLocaleString()} readable court ${readableDocuments.length === 1 ? "document" : "documents"} for this case.`
+                : ""}
+            </p>
+          )}
+          {legalCase.backgroundSummary && !quickAnswerTexts.has(legalCase.backgroundSummary) ? <><h3 className="cdSub">What happened</h3><p>{linkedText(legalCase.backgroundSummary, createTermMarker("background"))}{legalCase.backgroundSourceUrl ? ref(legalCase.backgroundSourceUrl) : null}</p></> : null}
+          {legalCase.significanceSummary && !quickAnswerTexts.has(legalCase.significanceSummary) ? <><h3 className="cdSub">Why it matters</h3><p>{linkedText(legalCase.significanceSummary, createTermMarker("significance"))}{legalCase.significanceSourceUrl ? ref(legalCase.significanceSourceUrl) : null}</p></> : null}
+          {supportingStatusDetails.length > 0 ? (
+            <dl className="caseStatusGrid">
+              {supportingStatusDetails.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{marked(value, statusMarker)}</dd></div>)}
+            </dl>
+          ) : null}
+          {legalCase.questionPresented ? <>
+            <h3 className="cdSub" id="question-presented">Question presented</h3>
+            <p>{linkedText(legalCase.questionPresented, createTermMarker("question"))}{legalCase.questionSourceUrl ? ref(legalCase.questionSourceUrl) : null}</p>
+          </> : null}
+          {outcome || (legalCase.exactHolding && !quickAnswerTexts.has(legalCase.exactHolding)) ? <>
+            <h3 className="cdSub" id="case-outcome">Holding and outcome</h3>
+            {outcome ? <p>{marked(outcome, holdingMarker)}.</p> : null}
+            {legalCase.exactHolding && !quickAnswerTexts.has(legalCase.exactHolding) ? <p><span className="cdMuted">The holding, quoted from the court: </span>{linkedText(legalCase.exactHolding, holdingMarker)}{legalCase.holdingSourceUrl ? ref(legalCase.holdingSourceUrl) : null}</p> : null}
+          </> : null}
+        </CaseSection>
+
+        {newsLinks.length ? <CaseSection id="news" title="In the news" hint={`${newsLinks.length} ${newsLinks.length === 1 ? "article" : "articles"}`}>
           <CaseNewsSection links={newsLinks} />
+        </CaseSection> : null}
 
-          {timelineEvents.length > 0 ? (
-            <section className="contentSection caseFeatureSection" aria-labelledby="case-timeline">
-              <div className="featureHeading">
-                <h2 id="case-timeline">Case timeline</h2>
-              </div>
-              <ol className="caseMilestones">
-                {timelineEvents.map((event) => (
-                  <li key={event.date + event.label}>
-                    <time dateTime={event.date}>{formatPublicCaseDate(event.date) ?? event.date}</time>
-                    <span>{marked(event.label, timelineMarker)}</span>
-                  </li>
-                ))}
-              </ol>
-              {docketEntries.length > 0 ? <Link className="sectionLink" href={`/case/${caseId}/timeline` as Route}>View complete available timeline →</Link> : null}
-            </section>
-          ) : null}
-
-          {documents.length > 0 ? (
-            <section className="contentSection availableDocuments caseFeatureSection" aria-labelledby="available-documents">
-              <div className="featureHeading">
-                <div><p className="sectionKicker">Available court materials</p><h2 id="available-documents">Documents and argument</h2></div>
-              </div>
-              <div className="availableDocumentTypes" aria-label="Available document types">
-                {availableDocumentTypes.map((type) => <span key={type}>{marked(type, documentsMarker)}</span>)}
-              </div>
-              <p className="sectionIntroduction">Court documents for this case.</p>
-              <ul className="documentCards">
-                {documents.map((document) => (
-                  <li key={document.publicId}>
-                    <div>
-                      <span className="documentType">{marked(publicDocumentType(document.documentType), documentsMarker)}</span>
-                      <h3>{document.title}</h3>
-                      {document.filedOn ? <time dateTime={document.filedOn}>{formatPublicCaseDate(document.filedOn) ?? document.filedOn}</time> : null}
-                    </div>
-                    <div className="documentActions">
-                      {document.hasReadableContent ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>Read on Jurvio</Link> : null}
-                      {document.sourceDownloadUrl ? <a href={document.sourceDownloadUrl} rel="nofollow noopener">Official source</a> : null}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              <Link className="sectionLink" href={`/case/${caseId}/documents` as Route}>View available documents →</Link>
-            </section>
-          ) : null}
-
+        {agencyItems.length ? <CaseSection id="agency" title="Official agency sources" hint={`${agencyItems.length} ${agencyItems.length === 1 ? "item" : "items"}`}>
           <OfficialAgencySources items={agencyItems} />
+        </CaseSection> : null}
 
-          {opinionPath ? (
-            <section className="contentSection caseFeatureSection" aria-labelledby="read-opinion">
-              <div className="featureHeading">
-                <h2 id="read-opinion">Read the opinion</h2>
-              </div>
-              <nav className="opinionQuickLinks" aria-label="Opinion reading tools">
-                <Link href={`${opinionPath}#opinion-reader-tools` as Route}>Search</Link>
-                <Link href={`${opinionPath}#opinion-reader-tools` as Route}>Contents</Link>
-                {opinionType ? <Link href={`${opinionPath}#opinion-text` as Route}>{opinionType}</Link> : null}
-                {primaryOpinion?.hasReportersNote ? <Link href={`${opinionPath}#reporters-note-heading` as Route}>Reporter’s Note</Link> : null}
-              </nav>
-            </section>
-          ) : null}
+        {circuitJustice ? <CaseSection id="circuit-justice" title="Circuit Justice" hint={`${circuitJustice.title} ${circuitJustice.justiceName}`}>
+          <CircuitJusticeBox justice={circuitJustice}
+            relation={ownCircuitJustice ? (legalCase.courtKind === "appellate" ? "circuit" : "court-in-circuit") : "court-below"} />
+        </CaseSection> : null}
 
-          {parties.length > 0 ? (
-            <section className="contentSection" aria-labelledby="named-parties">
-              <p className="sectionKicker">Named in the record</p>
-              <h2 id="named-parties">Parties</h2>
-              <p className="sourceNote">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
-              <ul className="recordList">
-                {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><strong>{party.displayName}</strong><p>{marked(publicPartyRole(party.role), partiesMarker)}</p></li>)}
-              </ul>
-              <Link className="sectionLink" href={`/case/${caseId}/parties` as Route}>View all parties →</Link>
-            </section>
-          ) : null}
-        </div>
+        {sources.links.length ? <CaseSection id="sources" title="Sources" hint={`${sources.links.length} official ${sources.links.length === 1 ? "source" : "sources"} and links`}>
+          <CaseSources links={sources.links} />
+        </CaseSection> : null}
 
+        {glossary.length ? <CaseSection id="glossary" title="Glossary" hint={`${glossary.length} ${glossary.length === 1 ? "term" : "terms"} used on this page`}>
+          <CaseGlossary terms={glossary} />
+        </CaseSection> : null}
       </div>
     </main>
   );
 }
-

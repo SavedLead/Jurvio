@@ -1,0 +1,95 @@
+/* Case page, decluttered: one column, a summary card, then collapsible sections. Mobile first. */
+.cdLayout { max-width: 820px; margin: 0 auto; display: grid; gap: 0; }
+.cdLayout .caseHeader { margin-bottom: 8px; }
+.cdLinks { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 16px; padding: 0; font-size: .9rem; }
+.cdLinks a { color: #304bd4; text-decoration: none; }
+.cdLinks a:hover { text-decoration: underline; }
+
+.cdSummary { margin: 0 0 18px; padding: 18px 18px 16px; border-radius: 14px; background: #fff; box-shadow: 0 1px 0 #e4e8f0, 0 0 0 1px #e9ecf3; }
+.cdSummaryHeadline { margin: 0 0 12px; font-size: 1.3rem; line-height: 1.35; font-weight: 650; letter-spacing: -.01em; }
+.cdSummaryList { display: grid; gap: 10px; margin: 0; }
+.cdSummaryList div { display: grid; gap: 2px; }
+.cdSummaryList dt, .cdFacts dt { color: #5e687e; font-size: .78rem; font-weight: 500; letter-spacing: .02em; text-transform: uppercase; }
+.cdSummaryList dd { margin: 0; font-size: 1rem; line-height: 1.5; }
+.cdFacts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 14px 0 0; padding-top: 12px; border-top: 1px solid #eceff5; }
+.cdFacts dd { margin: 2px 0 0; font-size: .92rem; }
+.cdActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.cdActions .publicCaseTools { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.cdActions .publicCaseTools button { padding: 6px 10px; border: 1px solid #dfe3ec; border-radius: 8px; background: #fff; color: #3d4862; font-size: .85rem; font-weight: 500; }
+.cdFollow { width: 100%; }
+.cdFollow > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 16px; border-radius: 8px; background: #0f1a3a; color: #fff; font-weight: 600; font-size: .92rem; cursor: pointer; list-style: none; }
+.cdFollow > summary::-webkit-details-marker { display: none; }
+.cdFollow[open] > summary { background: #2b3657; }
+.cdFollow > .followCaseBox, .cdFollow > * + * { margin-top: 10px; }
+.cdNote { margin: 12px 0 0; color: #6b7489; font-size: .8rem; line-height: 1.5; }
+.cdNote strong { font-weight: 600; }
+
+.cdSection { border-top: 1px solid #e4e8f0; }
+.cdSection:last-of-type { border-bottom: 1px solid #e4e8f0; }
+.cdSection > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 16px 28px 16px 0; position: relative; cursor: pointer; list-style: none; }
+.cdSection > summary::-webkit-details-marker { display: none; }
+.cdSection > summary::after { content: "+"; position: absolute; right: 4px; top: 14px; color: #5e687e; font-size: 1.3rem; line-height: 1; }
+.cdSection[open] > summary::after { content: "–"; }
+.cdSectionTitle { margin: 0; font-size: 1.08rem; font-weight: 600; letter-spacing: 0; }
+.cdHint { color: #5e687e; font-size: .88rem; }
+.cdBody { padding: 0 0 22px; }
+
+/* Sections reused inside a collapsible lose their own card, borders and repeated heading. */
+.cdBody > section, .cdBody .contentSection, .cdBody .caseFeatureSection, .cdBody .caseStands, .cdBody .caseAnswerPanel, .cdBody .caseLeadSection,
+.cdBody .opinionPendingNotice { margin: 0 0 14px; padding: 0; border: 0 !important; border-radius: 0; background: none !important; box-shadow: none !important; }
+.cdBody > section > .featureHeading:first-child h2, .cdBody > section > .featureHeading:first-child .sectionKicker,
+.cdBody > section > .sectionKicker:first-child, .cdBody .caseStands > h2, .cdBody > section > h2:first-child,
+.cdBody > section > .featureHeading:first-child > div > h2, .cdBody > section > .featureHeading:first-child > div > .sectionKicker { display: none; }
+.cdBody > section > .featureHeading:first-child { margin: 0 0 6px; }
+.cdBody .featureHeading h3, .cdBody h3 { font-size: 1rem; font-weight: 600; }
+.cdBody strong, .cdBody b { font-weight: 600; }
+.cdBody .caseStandsList > div { border: 0; padding: 10px 0; }
+.cdBody .caseStandsList dt { font-weight: 600; }
+.cdBody .caseAnswerGrid { display: grid; gap: 12px; }
+.cdBody .caseAnswerCard { padding: 0; border: 0; background: none; box-shadow: none; }
+.cdBody .caseAnswerCard footer { font-size: .78rem; }
+.cdSub { margin: 18px 0 6px; font-size: 1rem; font-weight: 600; }
+
+.cdRef { margin-left: 3px; color: #304bd4; font-size: .78rem; text-decoration: none; vertical-align: 1px; }
+.cdSources { margin: 0; padding-left: 22px; display: grid; gap: 6px; font-size: .9rem; line-height: 1.5; overflow-wrap: anywhere; }
+.cdSources a { color: #304bd4; }
+.cdSources li:target { background: #fff7d6; }
+.cdGlossary { display: grid; gap: 10px; margin: 0; }
+.cdGlossary dt { font-weight: 600; }
+.cdGlossary dd { margin: 2px 0 0; color: #3d4862; line-height: 1.55; }
+.cdGlossary a { color: #304bd4; font-size: .88rem; }
+
+@media (min-width: 761px) {
+  .cdSummary { padding: 24px 26px 20px; }
+  .cdSummaryHeadline { font-size: 1.5rem; }
+  .cdSummaryList { grid-template-columns: 1fr 1fr; column-gap: 28px; }
+  .cdSummaryList div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .cdFollow { width: auto; }
+  .cdFollow[open] { width: 100%; }
+}
+@media print { .cdSection > .cdBody { display: block; } .cdActions { display: none; } }
+
+.cdMuted { color: #5e687e; font-size: .9rem; }
+.cdMore { margin: 10px 0 0; font-size: .92rem; }
+.cdMore a, .cdBody a { color: #304bd4; }
+.cdLead { margin: 0 0 12px; line-height: 1.55; }
+.cdDocs, .cdParties { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
+.cdDocs li { display: grid; gap: 2px; }
+.cdDocType { color: #5e687e; font-size: .82rem; }
+.cdDocTitle { line-height: 1.45; }
+.cdAnswers { display: grid; gap: 12px; margin: 8px 0 0; }
+.cdAnswers dt { font-weight: 600; }
+.cdAnswers dd { margin: 2px 0 0; line-height: 1.55; }
+.cdBody .caseMilestones { margin-top: 4px; }
+.cdBody .opinionQuickLinks { margin: 0 0 12px; }
+.cdBody .verifiedDetail { margin: 4px 0; }
+.cdShell .caseHeader nav, .cdShell .caseHeaderNav { display: none; }
+.cdBody > aside[data-circuit] { margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
+.cdBody > aside[data-circuit] > p:first-child { display: none; }
+.cdBody > aside[data-circuit] h3, .cdBody > aside[data-circuit] h2 { font-size: 1rem; font-weight: 500; }
+.cdBody .opinionQuickLinks { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.cdBody .opinionQuickLinks a { padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; font-size: .92rem; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.cdShell .cdActions .publicCaseTools { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.cdShell .cdActions .publicCaseTools button { flex: 0 0 auto; min-height: 44px; padding: 6px 12px; border-radius: 8px; }
+.cdShell .cdActions .publicCaseTools span:empty { display: none; }
+.cdShell .cdActions .publicCaseTools span { flex-basis: 100%; }

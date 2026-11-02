@@ -27,12 +27,13 @@ describe("SCOTUS responsive layout contract", () => {
   });
 
   it("renders approved sections only when verified inputs exist", () => {
-    expect(casePage).toContain("{outcome || legalCase.exactHolding ? (");
-    expect(casePage).toContain("{decisionLabel || opinionType || legalCase.decisionLineup ? (");
-    expect(casePage).toContain("{timelineEvents.length > 0 ? (");
-    expect(casePage).toContain("{documents.length > 0 ? (");
-    expect(casePage).toContain("{opinionPath ? (");
-    expect(casePage).toContain("{legalCase.questionPresented ? (");
+    // Decluttered layout: each block renders only when its verified input exists (no empty headings).
+    expect(casePage).toContain("{outcome || (legalCase.exactHolding && !quickAnswerTexts.has(legalCase.exactHolding)) ? <>");
+    expect(casePage).toContain("const decisionDetail = decisionLabel || opinionType || decisionLineup?.voteBreakdown?.label");
+    expect(casePage).toContain("{timelineEvents.length > 0 ? <CaseSection");
+    expect(casePage).toContain("{documents.length > 0 ? <>");
+    expect(casePage).toContain("{opinionPath ? <nav");
+    expect(casePage).toContain("{legalCase.questionPresented ? <>");
     expect(casePage).toContain("Question presented");
     expect(casePage).not.toContain("Syllabus</");
     expect(casePage).not.toContain("Transcript</");
