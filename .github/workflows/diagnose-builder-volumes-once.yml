@@ -1,10 +1,17 @@
-name: Diagnose builder Docker volumes (once, read-only)
+name: Diagnose builder Docker volumes (once; read-only unless action=prune-unused)
 
 # Read-only inventory of the Docker volumes, images, build cache and other big
 # disk users on the builder host (jurvio-builder-01, shared by builder-02/-03).
 # Answers "what are the ~527 unused volumes and is anything worth keeping?".
 # It lists, inspects and stats only. It does NOT prune, delete, mount, start
 # containers, or post anything. Dispatch by hand with confirm=DIAGNOSE.
+#
+# action=prune-unused (approved by David Rosenberg 2026-11-01, confirm
+# PRUNE_UNUSED_VOLUMES) then removes only DANGLING volumes (no container,
+# running or stopped, references them), anonymous 64-hex names only unless
+# include_named=true, minus the comma-separated keep list. `docker volume rm`
+# refuses any volume a container still uses, so an active CI job's Postgres
+# volume is never touched.
 
 on:
   workflow_dispatch:
@@ -12,6 +19,20 @@ on:
       confirm:
         description: "Type DIAGNOSE to run this read-only report"
         required: true
+        default: ""
+      action:
+        description: "inventory (read-only) or prune-unused"
+        required: true
+        default: inventory
+        type: choice
+        options: [inventory, prune-unused]
+      include_named:
+        description: "prune-unused: also remove dangling NAMED volumes (default: anonymous only)"
+        required: false
+        default: "false"
+      keep:
+        description: "prune-unused: comma-separated volume names to keep"
+        required: false
         default: ""
 
 permissions:
@@ -26,12 +47,14 @@ jobs:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     timeout-minutes: 25
     steps:
-      - name: Require confirm=DIAGNOSE
+      - name: Require confirm
         env:
           CONFIRM: ${{ inputs.confirm }}
+          ACTION: ${{ inputs.action }}
         run: |
-          if [ "$CONFIRM" != "DIAGNOSE" ]; then
-            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+          if [ "$ACTION" = "prune-unused" ]; then want=PRUNE_UNUSED_VOLUMES; else want=DIAGNOSE; fi
+          if [ "$CONFIRM" != "$want" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=$want."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -86,3 +109,40 @@ jobs:
           echo "=== big files (>500MB) on / ==="
           $SUDO $LOW find / -xdev -type f -size +500M -printf '%s %TY-%Tm-%Td %p\n' 2>/dev/null | sort -rn | head -20 | awk '{printf "%.1fGB %s %s\n", $1/1e9, $2, $3}'
           rm -rf "$W"
+      - name: Remove unused (dangling) volumes
+        if: inputs.action == 'prune-unused'
+        env:
+          INCLUDE_NAMED: ${{ inputs.include_named }}
+          KEEP: ${{ inputs.keep }}
+        run: |
+          set -u
+          SUDO=""
+          if [ "$(id -u)" != "0" ] && sudo -n true 2>/dev/null; then SUDO="sudo -n"; fi
+          D="docker"
+          docker info >/dev/null 2>&1 || D="$SUDO docker"
+          free_pct() { df -P / | awk 'NR==2 {printf "%.1f", $4 * 100 / $2}'; }
+          before="$(free_pct)"
+          echo "free_before=${before}%"
+          $D system df
+          L="$RUNNER_TEMP/prune-$GITHUB_RUN_ID.txt"
+          $D volume ls -q --filter dangling=true > "$L"
+          echo "dangling volumes: $(wc -l < "$L")"
+          if [ "$INCLUDE_NAMED" != "true" ]; then
+            grep -E '^[0-9a-f]{64}$' "$L" > "$L.f" || true; mv "$L.f" "$L"
+          fi
+          if [ -n "$KEEP" ]; then
+            printf '%s\n' "$KEEP" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' > "$L.keep"
+            echo "keeping: $(tr '\n' ' ' < "$L.keep")"
+            grep -v -x -F -f "$L.keep" "$L" > "$L.f" || true; mv "$L.f" "$L"
+          fi
+          echo "candidates: $(wc -l < "$L")"
+          removed=0; refused=0
+          while read -r v; do
+            [ -n "$v" ] || continue
+            if $D volume rm "$v" >/dev/null 2>&1; then removed=$((removed+1)); else refused=$((refused+1)); echo "kept (in use or error): $v"; fi
+          done < "$L"
+          rm -f "$L" "$L.keep"
+          after="$(free_pct)"
+          echo "removed=$removed refused=$refused free_before=${before}% free_after=${after}%"
+          $D system df
+          echo "### Builder volumes: removed $removed unused volumes, free ${before}% -> ${after}%" >> "$GITHUB_STEP_SUMMARY"
