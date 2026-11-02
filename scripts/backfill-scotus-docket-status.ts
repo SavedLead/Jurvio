@@ -20,7 +20,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import {
   DOCKET_STATUS_PARSER_VERSION,
@@ -53,6 +53,20 @@ const delayMs = Math.max(1100, Number(option("delay-ms", "1500")));
 const budgetMs = Math.max(1, Number(option("budget-minutes", "300"))) * 60_000;
 const userAgent = process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 (+https://jurvio.com; public court records)";
 const MAX_BYTES = 4 * 1024 * 1024;
+/**
+ * Where pdftotext runs. On the builder it is not installed, so the workflow starts the
+ * Jurvio app image (which ships poppler-utils) as a network-less container with the
+ * QP cache mounted read-only at /qp and passes its name here.
+ */
+const pdftotextContainer = process.env.PDFTOTEXT_CONTAINER?.trim() || null;
+const CONTAINER_QP_DIR = "/qp";
+
+function runPdftotext(args: string[], pdfPath?: string) {
+  const options = { maxBuffer: 4 * 1024 * 1024, timeout: 60_000 };
+  if (!pdftotextContainer) return execFileAsync("pdftotext", pdfPath ? [...args, pdfPath, "-"] : args, options);
+  const inside = pdfPath ? [...args, `${CONTAINER_QP_DIR}/${basename(pdfPath)}`, "-"] : args;
+  return execFileAsync("docker", ["exec", pdftotextContainer, "pdftotext", ...inside], options);
+}
 
 mkdirSync(cacheDir, { recursive: true });
 writeFileSync(out, "");
@@ -61,11 +75,14 @@ if (qpOut) {
   mkdirSync(join(cacheDir, "qp"), { recursive: true });
   // Without pdftotext every PDF would "fail to convert"; stop before fetching anything.
   try {
-    await execFileAsync("pdftotext", ["-v"], { timeout: 10_000 });
+    await runPdftotext(["-v"]);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      console.error("pdftotext is not installed (poppler-utils); refusing to fetch questions-presented PDFs");
+    const failure = error as NodeJS.ErrnoException & { stderr?: string };
+    // `pdftotext -v` prints its version on stderr and exits 0 (99 on some builds); only a missing binary/container is fatal.
+    if (failure.code === "ENOENT" || (pdftotextContainer && !/pdftotext version/i.test(failure.stderr ?? ""))) {
+      console.error(pdftotextContainer
+        ? `pdftotext is not runnable in container ${pdftotextContainer}; refusing to fetch questions-presented PDFs`
+        : "pdftotext is not installed (poppler-utils); refusing to fetch questions-presented PDFs");
       process.exit(2);
     }
   }
@@ -130,7 +147,7 @@ async function questionsPresentedText(url: string, slug: string): Promise<{ text
   const pdfPath = join(cacheDir, "qp", `${slug}.tmp.pdf`);
   writeFileSync(pdfPath, bytes);
   try {
-    const { stdout } = await execFileAsync("pdftotext", ["-layout", "-l", "4", pdfPath, "-"], { maxBuffer: 4 * 1024 * 1024, timeout: 60_000 });
+    const { stdout } = await runPdftotext(["-layout", "-l", "4"], pdfPath);
     const fetchedAt = new Date().toISOString();
     const hash = createHash("sha256").update(bytes).digest("hex");
     writeFileSync(cached, gzipSync(stdout));
