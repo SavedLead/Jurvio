@@ -15,8 +15,7 @@ import { buildCaseTitle } from "@/modules/cases/domain/case-title";
 import { publicDocumentType, publicOpinionType, publicPartyRole } from "@/modules/cases/domain/public-labels";
 import { formatPublicCaseDate, formatVerifiedOutcome, visibleCaseStatusDetails } from "@/modules/cases/domain/scotus-display";
 import {
-  OPINION_TEXT_PENDING_BODY,
-  OPINION_TEXT_PENDING_HEADING,
+  officialOpinionNotice,
   opinionTextIsPending,
 } from "@/modules/cases/domain/opinion-availability";
 import { robotsFor } from "@/lib/seo/indexing";
@@ -148,6 +147,8 @@ export default async function CasePage({ params }: CasePageProps) {
     && Boolean(legalCase.decidedOn)
     && (legalCase.courtKind === "supreme" || legalCase.courtKind === "appellate");
   const sourceDocument = documents.find((document) => document.sourceDownloadUrl);
+  // No opinion text to show: link the official copy, or say nothing.
+  const opinionNotice = opinionTextPending ? officialOpinionNotice(sourceDocument?.sourceDownloadUrl) : null;
   const primaryOpinion = readableDocuments.find((document) => document.opinionType || document.documentType.includes("opinion")) ?? readableDocuments[0];
   const opinionPath = primaryOpinion ? `/case/${caseId}/documents/${primaryOpinion.publicId}` : null;
   const decisionLabel = primaryOpinion?.perCuriam ? "Per curiam" : primaryOpinion?.authorName;
@@ -283,11 +284,13 @@ export default async function CasePage({ params }: CasePageProps) {
     clusterDisposition: standingSignals.clusterDisposition,
     precedentialStatus: standingSignals.precedentialStatus,
     opinionTail: standingSignals.opinionTail,
+    opinionHead: standingSignals.opinionHead,
     opinionPath: majorityOpinion ? `/case/${caseId}/documents/${majorityOpinion.publicId}` : opinionPath,
     opinionIsMajority: Boolean(majorityOpinion),
     overruled: standingSignals.overruled,
     votes: standingSignals.votes,
     citedByCount: citationCounts.citedBy,
+    citedByPath: citationCounts.citedBy ? "#cited-by" : null,
     docketEntries,
     docketPath: `/case/${caseId}/docket`,
   });
@@ -355,7 +358,7 @@ export default async function CasePage({ params }: CasePageProps) {
               <dl className="railFacts">
                 {legalCase.hasReadableOpinion
                   ? <div><dt>Opinion text</dt><dd>Available on Jurvio</dd></div>
-                  : opinionTextPending ? <div><dt>Opinion text</dt><dd>Not on Jurvio yet</dd></div> : null}
+                  : opinionNotice ? <div><dt>Opinion</dt><dd><a href={opinionNotice.href} rel="nofollow noopener">Official copy</a></dd></div> : null}
                 {legalCase.decidedOn ? <div><dt>Decision date</dt><dd><time dateTime={legalCase.decidedOn}>{formatPublicCaseDate(legalCase.decidedOn) ?? legalCase.decidedOn}</time></dd></div> : null}
                 {legalCase.supremeCourtTerm ? <div><dt>Term</dt><dd>{legalCase.supremeCourtTerm}</dd></div> : null}
                 {legalCase.officialCitation ? <div><dt>Official citation</dt><dd>{legalCase.officialCitation}</dd></div> : null}
@@ -374,10 +377,10 @@ export default async function CasePage({ params }: CasePageProps) {
 
         <div className="caseWorkspaceMain">
           {standing ? <CaseStandingSection standing={standing} renderText={(text) => marked(text, standsMarker)} /> : null}
-          {opinionTextPending ? (
-            <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
-              <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
-              <p>{OPINION_TEXT_PENDING_BODY}</p>
+          {opinionNotice ? (
+            <section className="opinionPendingNotice" aria-labelledby="opinion-official-source">
+              <h2 id="opinion-official-source">{opinionNotice.heading}</h2>
+              <p>{opinionNotice.body} <a href={opinionNotice.href} rel="nofollow noopener">{opinionNotice.linkLabel}</a></p>
             </section>
           ) : null}
           <section className="caseAnswerPanel" aria-labelledby="case-answers-title">
@@ -484,7 +487,7 @@ export default async function CasePage({ params }: CasePageProps) {
             title="Cited by"
             cases={citingCases}
             total={citationCounts.citedBy}
-            summary={citationCounts.citedBy ? `${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio cite this case` : undefined}
+            summary={citationCounts.citedBy ? `At least ${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio ${citationCounts.citedBy === 1 ? "cites" : "cite"} this case` : undefined}
           />
 
           <CaseNewsSection links={newsLinks} />
@@ -514,7 +517,7 @@ export default async function CasePage({ params }: CasePageProps) {
               <div className="availableDocumentTypes" aria-label="Available document types">
                 {availableDocumentTypes.map((type) => <span key={type}>{marked(type, documentsMarker)}</span>)}
               </div>
-              <p className="sectionIntroduction">Court documents Jurvio has for this case. More will appear here as we add them.</p>
+              <p className="sectionIntroduction">Court documents for this case.</p>
               <ul className="documentCards">
                 {documents.map((document) => (
                   <li key={document.publicId}>

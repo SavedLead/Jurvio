@@ -8,8 +8,7 @@ import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/u
 import { listPublicDocuments } from "@/modules/cases/application/list-public-case-sections";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import {
-  OPINION_TEXT_PENDING_BODY,
-  OPINION_TEXT_PENDING_HEADING,
+  officialOpinionNotice,
   opinionTextIsPending,
 } from "@/modules/cases/domain/opinion-availability";
 import { robotsFor } from "@/lib/seo/indexing";
@@ -50,6 +49,11 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
   const { caseId, legalCase } = loaded;
   const sql = db();
   const records = await listPublicDocuments(sql, caseId);
+  // No opinion text to show: link the official copy, or say nothing.
+  const opinionNotice = opinionTextIsPending(legalCase.hasReadableOpinion) && legalCase.decidedOn
+    && (legalCase.courtKind === "supreme" || legalCase.courtKind === "appellate")
+    ? officialOpinionNotice(records.find((document) => document.sourceDownloadUrl)?.sourceDownloadUrl)
+    : null;
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
     eventType: "page_view", userAgent: requestHeaders.get("user-agent"),
@@ -62,18 +66,17 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn}
         decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode} />
-      {opinionTextIsPending(legalCase.hasReadableOpinion) && legalCase.decidedOn
-        && (legalCase.courtKind === "supreme" || legalCase.courtKind === "appellate") ? (
-        <section className="opinionPendingNotice" aria-labelledby="opinion-text-pending">
-          <h2 id="opinion-text-pending">{OPINION_TEXT_PENDING_HEADING}</h2>
-          <p>{OPINION_TEXT_PENDING_BODY}</p>
+      {opinionNotice ? (
+        <section className="opinionPendingNotice" aria-labelledby="opinion-official-source">
+          <h2 id="opinion-official-source">{opinionNotice.heading}</h2>
+          <p>{opinionNotice.body} <a href={opinionNotice.href} rel="nofollow noopener">{opinionNotice.linkLabel}</a></p>
         </section>
       ) : null}
       {records.length > 0 ? (
         <section className="contentSection availableDocuments">
           <p className="sectionKicker">Available court materials</p>
           <h2>Documents currently available</h2>
-          <p className="sectionIntroduction">Court documents Jurvio has for this case. This may not be every document the court has on file.</p>
+          <p className="sectionIntroduction">Court documents for this case. This may not be every document the court has on file.</p>
           <ul className="documentCards">{records.map((document) => (
             <li key={document.publicId}>
               <div>

@@ -1,5 +1,5 @@
 // Single source of truth for customer plans: prices, follow limits and alert
-// cadence (David Rosenberg, 2026-11-01). Product configuration, not
+// cadence (approved 2026-11-01). Product configuration, not
 // authorization logic: code asks `planLimits(plan)` instead of comparing plan
 // names. Changing a price here does not change anything in Stripe; the Stripe
 // price ids come from env (STRIPE_PRICE_PLUS / _PRO / _TEAM).
@@ -7,6 +7,8 @@
 export const PLAN_IDS = ["free", "plus", "pro", "team"] as const;
 export type PlanId = (typeof PLAN_IDS)[number];
 
+// "instant" is an internal key only: it means the 10-minute alert tick, never
+// literally instant delivery. Customer-facing copy must say "every 10 minutes".
 export type AlertCadence = "daily" | "hourly" | "instant";
 
 export interface PlanDefinition {
@@ -44,18 +46,18 @@ export const PLANS: Readonly<Record<PlanId, PlanDefinition>> = {
     id: "pro", name: "Pro", monthlyPriceUsd: 59, seats: 1, followLimit: 500, alertCadence: "instant",
     monitors: true, available: true,
     tagline: "For attorneys and professionals who need it fast.",
-    features: ["Follow up to 500 cases", "Instant alerts", "Monitors for parties, firms and topics (coming soon)", "Everything in Plus"],
+    features: ["Follow up to 500 cases", "Email alerts every 10 minutes", "Monitors for parties, firms and topics (coming soon)", "Everything in Plus"],
   },
   team: {
     // Follow limit for Team is provisional (5 seats x Pro's 500) until Team ships.
     id: "team", name: "Team", monthlyPriceUsd: 199, seats: 5, followLimit: 2500, alertCadence: "instant",
     monitors: true, available: false,
     tagline: "For firms and newsrooms. Five seats.",
-    features: ["5 seats", "Shared follows and monitors", "Instant alerts", "Everything in Pro"],
+    features: ["5 seats", "Shared follows and monitors", "Email alerts every 10 minutes", "Everything in Pro"],
   },
 };
 
-/** Minimum time between digests for each cadence. Instant runs on the 10-minute job tick. */
+/** Minimum time between digests for each cadence. "instant" runs on the 10-minute job tick. */
 export const CADENCE_INTERVAL_MS: Readonly<Record<AlertCadence, number>> = {
   daily: 24 * 60 * 60_000,
   hourly: 60 * 60_000,

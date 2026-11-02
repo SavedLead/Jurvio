@@ -7,7 +7,8 @@ import { followEligibleSql } from "./follows";
 
 // Docket-entry and citation alert digests for followed cases. Runs every 10 minutes from
 // the production scheduler; each user is emailed at most once per their plan
-// cadence (Free daily, Plus hourly, Pro/Team "instant" = every 10 minutes).
+// cadence (Free daily, Plus hourly, Pro/Team every 10 minutes; the internal
+// cadence key is "instant", but customer copy never promises instant alerts).
 // No provider or no postal address configured = the whole run is a no-op and
 // nothing is marked as sent, so the first digest after email is turned on
 // still covers what was filed.
@@ -133,7 +134,7 @@ export function buildDigestEmail(input: {
   const caseUrl = (id: string) => new URL(`/case/${id}/docket`, input.siteUrl).toString();
   const accountUrl = new URL("/account", input.siteUrl).toString();
   const unsubscribe = unsubscribeUrl(input.siteUrl, input.unsubscribeToken);
-  const cadenceLine = { daily: "daily digest", hourly: "hourly alerts", instant: "instant alerts" }[input.cadence];
+  const cadenceLine = { daily: "daily digest", hourly: "hourly alerts", instant: "10-minute alerts" }[input.cadence];
 
   const textBlocks: string[] = [];
   const htmlBlocks: string[] = [];

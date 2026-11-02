@@ -15,7 +15,7 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-const CADENCE_LABEL = { daily: "Daily digest", hourly: "Hourly alerts", instant: "Instant alerts" } as const;
+const CADENCE_LABEL = { daily: "Daily digest", hourly: "Hourly alerts", instant: "Alerts every 10 minutes" } as const;
 
 export default async function AccountPage() {
   const user = await currentUser();
