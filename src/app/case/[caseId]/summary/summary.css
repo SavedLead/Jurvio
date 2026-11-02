@@ -1,0 +1,5 @@
+/* One-page summary: tools in a row, hidden when printed. */
+.caseSummaryTools .publicCaseTools { grid-template-columns: repeat(auto-fit, minmax(110px, max-content)); }
+@media print {
+  .caseSummaryTools { display: none; }
+}
