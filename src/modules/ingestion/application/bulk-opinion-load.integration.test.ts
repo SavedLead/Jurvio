@@ -8,6 +8,14 @@ import { openBulkCsv } from "../providers/courtlistener/bulk";
 import { readBulkOpinions } from "../providers/courtlistener/bulk-opinions";
 import { BULK_OPINION_HOLD_REASON, bulkOpinionStreamName, loadCourtListenerBulkOpinions } from "./bulk-opinion-load";
 
+// These tests cover merge/checkpoint logic, not the disk floor (bulk-disk-floor.test.ts
+// covers that). Without this they read the real free disk of whatever box runs them, and
+// fail with stop: "disk" whenever the shared CI builder sits under the 30% floor.
+vi.mock("./bulk-disk-floor", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./bulk-disk-floor")>()),
+  checkBulkDiskFloor: async () => ({ ok: true, freeDiskRatio: 0.9, rootFreeRatio: 0.9, volumeFreeRatio: null, volumeCounted: false }),
+}));
+
 const databaseUrl = process.env.DATABASE_URL;
 
 function csvCell(value: string): string {
