@@ -731,7 +731,9 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
   }
 
   // District, bankruptcy and other trial-level cases: report what the record shows, never a guess.
-  if (!input.filedOn && !input.terminatedOn) return null;
+  // An FJC IDB match is a source-backed outcome with its own closing date, so it is
+  // enough even when our case record lacks filed/terminated dates.
+  if (!input.filedOn && !input.terminatedOn && !input.fjcOutcome) return null;
   const roles = trialCaptionRoles(input.caption);
   const docket = readDocketOutcome(input.docketEntries ?? []);
   const dismissal = !docket && input.opinionIsMajority ? readTrialDismissal(input.opinionTail) : null;
