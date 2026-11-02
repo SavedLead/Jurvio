@@ -338,6 +338,11 @@ describe("official outcome sources", () => {
     expect(buildCaseStanding({ ...fjcBase, filedOn: null, terminatedOn: null })).toBeNull();
   });
 
+  it("district: a dateless record with an FJC row that yields no outcome stays hidden (never 'still open')", () => {
+    expect(buildCaseStanding({ ...fjcBase, caption: "United States v. Dobson", filedOn: null, terminatedOn: null, fjcOutcome: { ...fjc, judgment: 2, disposition: 6 } })).toBeNull();
+    expect(buildCaseStanding({ ...fjcBase, filedOn: null, terminatedOn: null, fjcOutcome: { ...fjc, disposition: null } })).toBeNull();
+  });
+
   it("district: settlement, and names withheld when the IDB parties don't match the caption", () => {
     expect(buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, disposition: 13, judgment: null } })?.headline).toBe("The case was settled.");
     const unmatched = buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, judgment: 2, plaintiff: "SOMEONE ELSE", defendant: "OTHER PARTY" } });
