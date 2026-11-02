@@ -22,6 +22,11 @@ const cache = new Map<string, { at: number; value: SimilarCase[] }>();
  * more than shared landmark ones) and at most 500 citing cases per authority, under a 2.5 s statement
  * timeout; cached 30 minutes. Empty (never throws) when it times out or the edge table is missing.
  */
+/** Captions the source uses when the real name is withheld or missing. */
+export function isPlaceholderCaption(caption: string): boolean {
+  return /\bunavailable\b|^\s*case name\b|^\s*(?:sealed|redacted)\b|^\s*unknown\b/i.test(caption);
+}
+
 export async function loadSimilarCases(sql: Sql, casePublicId: string, limit = 5): Promise<SimilarCase[]> {
   const hit = cache.get(casePublicId);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
@@ -48,8 +53,19 @@ export async function loadSimilarCases(sql: Sql, casePublicId: string, limit = 5
           pairs.shared, pairs.authority_ids::text[] AS "authorityIds"
         FROM pairs JOIN legal_case lc ON lc.id = pairs.other_id JOIN court ON court.id = lc.court_id
         WHERE ${tx.unsafe(citationCaseVisibleSql("lc"))}
-        ORDER BY pairs.shared DESC, lc.decided_on DESC NULLS LAST LIMIT ${limit}
+        ORDER BY pairs.shared DESC, lc.decided_on DESC NULLS LAST LIMIT ${limit * 4}
       `;
+      // Skip placeholder captions ("Case Name in Immigration Case - Unavailable") and repeats of the
+      // same caption, court and date (one dispute often has several case records).
+      const seen = new Set<string>();
+      const kept = rows.filter((row) => {
+        if (isPlaceholderCaption(row.caption)) return false;
+        const key = `${row.caption.trim().toLowerCase()}|${row.courtName}|${row.decidedOn ?? ""}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, limit);
+      rows.length = 0; rows.push(...kept);
       if (!rows.length) return [];
       const ids = [...new Set(rows.flatMap((row) => row.authorityIds.slice(0, 3)))];
       const authorities = await tx<Array<{ id: string; publicId: string; caption: string }>>`
