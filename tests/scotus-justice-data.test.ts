@@ -40,10 +40,13 @@ describe("Supreme Court justice analytics data", () => {
       "scripts/import-scdb.ts",
       "data/scotus/justices.json",
       ...readdirSync(path.join(root, "src/modules/scotus"), { recursive: true }).map(String)
-        .filter((f) => f.endsWith(".ts")).map((f) => `src/modules/scotus/${f}`),
+        .filter((f) => /\.tsx?$/.test(f)).map((f) => `src/modules/scotus/${f}`),
+      ...readdirSync(path.join(root, "src/app/justices"), { recursive: true }).map(String)
+        .filter((f) => f.endsWith(".tsx")).map((f) => `src/app/justices/${f}`),
     ];
     for (const file of files) {
       if (!statSync(path.join(root, file)).isFile()) continue;
+      // Explanations may say direction is "not ... party"; they must never name one.
       expect(read(file).toString(), file).not.toMatch(/republican|democrat/i);
     }
   });
