@@ -12,7 +12,7 @@ SELECT court.jurisdiction, count(DISTINCT oc.id) AS clusters, count(DISTINCT oc.
 FROM opinion_cluster oc JOIN legal_case lc ON lc.id = oc.case_id JOIN court ON court.id = lc.court_id
 WHERE court.jurisdiction IN ('FD', 'Federal District', 'F', 'FS') GROUP BY 1 ORDER BY 2 DESC;
 SELECT court.jurisdiction, count(*) AS opinions, count(*) FILTER (WHERE coalesce(btrim(jo.author_name), '') <> '') AS with_author
-FROM judicial_opinion jo JOIN legal_case lc ON lc.id = jo.case_id JOIN court ON court.id = lc.court_id
+FROM judicial_opinion jo JOIN opinion_cluster oc ON oc.id = jo.cluster_id JOIN legal_case lc ON lc.id = oc.case_id JOIN court ON court.id = lc.court_id
 WHERE court.jurisdiction IN ('FD', 'Federal District', 'F', 'FS') GROUP BY 1 ORDER BY 2 DESC;
 \echo '== sample district judges lines'
 SELECT court.provider_court_id, left(oc.judges, 80) AS judges FROM opinion_cluster oc JOIN legal_case lc ON lc.id = oc.case_id JOIN court ON court.id = lc.court_id
