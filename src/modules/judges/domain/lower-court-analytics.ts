@@ -68,27 +68,34 @@ export function parsePanelSurnames(text: string | null | undefined): string[] {
   return out;
 }
 
-export type AppellateDisposition = "affirmed" | "reversed" | "vacated" | "mixed" | "dismissed" | "other";
+export type AppealsOutcome = "affirmed" | "reversed" | "vacated" | "mixed" | "dismissed" | "remanded" | "review_granted" | "review_denied";
 
-/**
- * Classify the outcome line of a court of appeals decision by fixed rules.
- * "Reversed" in this module means the appeals court reversed or vacated the
- * decision below, in whole. Partial results are "mixed".
- */
-export function classifyAppellateDisposition(text: string | null | undefined): AppellateDisposition {
-  const value = (text ?? "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (!value) return "other";
-  const affirmed = /\baffirm(?:ed|s|ing)?\b/.test(value);
-  const reversed = /\brevers(?:ed|es|ing|al)?\b/.test(value);
-  const vacated = /\bvacat(?:ed|es|ing|ur)?\b/.test(value);
-  const partial = /\bin part\b/.test(value);
-  const dismissed = /\bdismiss(?:ed|al)?\b/.test(value);
-  if ((affirmed && (reversed || vacated)) || (partial && (affirmed || reversed || vacated))) return "mixed";
-  if (reversed) return "reversed";
-  if (vacated) return "vacated";
-  if (affirmed) return "affirmed";
-  if (dismissed) return "dismissed";
-  return "other";
+/** Map the shared plain-English outcome reading to the stored appeals outcome. */
+export function appealsOutcomeOf(kind: string): AppealsOutcome | null {
+  switch (kind) {
+    case "affirmed": case "reversed": case "vacated": case "mixed": case "dismissed": case "remanded": return kind;
+    case "review-granted": return "review_granted";
+    case "review-denied": return "review_denied";
+    default: return null;
+  }
+}
+
+/** Surname keys a reporter name could match: "jackson-akiwumi" also matches "akiwumi". */
+export function observedKeys(surname: string): string[] {
+  const keys = new Set([surname]);
+  if (surname.includes("-")) { keys.add(surname.split("-").at(-1)!); keys.add(surname.replace(/-/g, "")); }
+  return [...keys].filter((key) => key.length > 1);
+}
+
+/** Keys an FJC normalized name answers to: last word, and last two words hyphenated or joined. */
+export function rosterKeys(normalizedName: string): string[] {
+  const parts = normalizedName.toLowerCase().replace(/[^a-z' -]/g, " ").split(/\s+/).filter((part) => part && !/^(jr|sr|ii|iii|iv)$/.test(part));
+  const last = parts.at(-1);
+  if (!last) return [];
+  const keys = new Set([last]);
+  const prev = parts.at(-2);
+  if (prev && parts.length >= 3) { keys.add(`${prev}-${last}`); keys.add(`${prev}${last}`); }
+  return [...keys];
 }
 
 /** Median of a list of non-negative day counts, or null when empty. */

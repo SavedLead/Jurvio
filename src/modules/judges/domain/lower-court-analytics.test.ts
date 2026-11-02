@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  appointingParty, appointmentPhrase, classifyAppellateDisposition, medianDays, parsePanelSurnames, percentOf, plainDuration,
+  appealsOutcomeOf, appointingParty, appointmentPhrase, medianDays, observedKeys, rosterKeys, parsePanelSurnames, percentOf, plainDuration,
 } from "./lower-court-analytics";
 
 describe("appointing party", () => {
@@ -29,14 +29,16 @@ describe("panel names", () => {
   });
 });
 
-describe("appellate disposition", () => {
-  it("classifies by fixed rules", () => {
-    expect(classifyAppellateDisposition("AFFIRMED.")).toBe("affirmed");
-    expect(classifyAppellateDisposition("Reversed and remanded")).toBe("reversed");
-    expect(classifyAppellateDisposition("VACATED and REMANDED")).toBe("vacated");
-    expect(classifyAppellateDisposition("Affirmed in part, reversed in part")).toBe("mixed");
-    expect(classifyAppellateDisposition("Appeal dismissed")).toBe("dismissed");
-    expect(classifyAppellateDisposition(null)).toBe("other");
+describe("matching keys and outcomes", () => {
+  it("handles hyphenated surnames and suffixes", () => {
+    expect(rosterKeys("candace rae jackson akiwumi")).toEqual(["akiwumi", "jackson-akiwumi", "jacksonakiwumi"]);
+    expect(rosterKeys("michael yale scudder jr")).toEqual(["scudder", "yale-scudder", "yalescudder"]);
+    expect(observedKeys("jackson-akiwumi")).toContain("jackson-akiwumi");
+  });
+  it("maps outcome kinds", () => {
+    expect(appealsOutcomeOf("review-denied")).toBe("review_denied");
+    expect(appealsOutcomeOf("affirmed")).toBe("affirmed");
+    expect(appealsOutcomeOf("nonsense")).toBeNull();
   });
 });
 

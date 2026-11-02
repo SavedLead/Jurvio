@@ -1,8 +1,6 @@
 import type postgres from "postgres";
-import {
-  appointingParty, classifyAppellateDisposition, medianDays, parsePanelSurnames, percentOf,
-  type AppellateDisposition, type AppointingParty,
-} from "@/modules/judges/domain/lower-court-analytics";
+import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
+import { appointingParty, percentOf, type AppealsOutcome, type AppointingParty } from "@/modules/judges/domain/lower-court-analytics";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -22,203 +20,177 @@ export interface FjcServiceRecord {
 }
 
 export interface PanelMix {
-  /** Opinions by this judge whose reporter line names the panel. */
-  opinionsWithPanel: number;
-  /** Co-panelist name slots read from those lines (this judge excluded). */
+  /** Colleague seats on panels this judge sat on (this judge excluded). */
   colleagueSlots: number;
-  /** Slots matched to exactly one FJC judge serving on this court that day. */
+  /** Of those, linked to exactly one FJC judge. */
   matchedSlots: number;
   byParty: Record<AppointingParty, number>;
+}
+
+export interface AppealsRecord {
+  panelCases: number;
+  authoredCases: number;
+  outcomes: Record<AppealsOutcome, number>;
+  outcomeSample: number;
+  /** Reversed or vacated in whole, of panel cases with an affirmed/reversed/vacated/mixed outcome. */
+  reversedOrVacatedPercent: number | null;
+  reversalBase: number;
+  firstDecided: string | null;
+  lastDecided: string | null;
+  panel: PanelMix;
+  /** Match rates for names printed on this judge's court(s). */
+  courtMatch: { slots: number; matched: number; ambiguous: number; unmatched: number } | null;
+  examples: Array<{ publicId: string; caption: string; decidedOn: string | null; outcome: AppealsOutcome | null }>;
 }
 
 export interface LowerCourtProfile {
   fjcProfileUrl: string | null;
   services: FjcServiceRecord[];
   kind: "appeals" | "district" | "other";
-  authoredOpinions: number;
-  dispositions: Record<AppellateDisposition, number>;
-  dispositionSample: number;
-  /** Reversed or vacated in whole, as a share of opinions with a readable outcome. */
-  reversedOrVacatedPercent: number | null;
-  medianDaysToDecision: number | null;
-  timingSample: number;
-  panel: PanelMix;
-  /** Of opinions on this judge's court(s) that name an author, how many Jurvio linked to a judge identity. */
-  courtAuthorMatch: { observed: number; accepted: number; needsReview: number; unmatched: number } | null;
+  appeals: AppealsRecord | null;
 }
 
 const CACHE_MS = 30 * 60_000;
 const cache = new Map<string, { at: number; value: LowerCourtProfile | null }>();
+const courtCache = new Map<string, { at: number; value: AppealsRecord["courtMatch"] }>();
 
-function surnameOf(normalizedName: string): string {
-  const parts = normalizedName.toLowerCase().split(/\s+/).filter((part) => part && !/^(jr|sr|ii|iii|iv)$/.test(part));
-  return (parts.at(-1) ?? "").replace(/[^a-z'-]/g, "");
+const emptyParty = (): Record<AppointingParty, number> => ({ republican: 0, democratic: 0, other: 0, none: 0, unknown: 0 });
+const emptyOutcomes = (): Record<AppealsOutcome, number> => ({ affirmed: 0, reversed: 0, vacated: 0, mixed: 0, dismissed: 0, remanded: 0, review_granted: 0, review_denied: 0 });
+
+function isMissingRelation(error: unknown) {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "42P01";
 }
 
-const matchCache = new Map<string, { at: number; value: LowerCourtProfile["courtAuthorMatch"] }>();
+async function loadServices(tx: Sql, judgeId: string): Promise<FjcServiceRecord[]> {
+  const terms = await tx<Array<Omit<FjcServiceRecord, "party" | "seniorStatusOn"> & { startedOn: string | null }>>`
+    SELECT court.name AS "courtName", court.public_id AS "courtPublicId", term.court_category AS "courtCategory",
+      term.service_type AS "serviceType", term.commission_date::text AS "commissionDate",
+      term.started_on::text AS "startedOn", term.ended_on::text AS "endedOn",
+      term.termination_reason AS "terminationReason", term.appointing_president AS "appointingPresident",
+      term.appointing_president_party AS "appointingPartyRaw", term.source_url AS "sourceUrl"
+    FROM judge_service_term term JOIN court ON court.id = term.court_id
+    WHERE term.judge_id = ${judgeId} AND term.source_system = 'fjc'
+    ORDER BY term.started_on NULLS LAST, term.service_type
+  `;
+  const services: FjcServiceRecord[] = [];
+  for (const term of terms) {
+    if (term.serviceType === "article_iii_senior") {
+      const active = services.find((service) => service.courtName === term.courtName && service.serviceType !== "article_iii_senior");
+      if (active) { active.seniorStatusOn = term.startedOn; active.endedOn = term.endedOn; continue; }
+    }
+    services.push({
+      courtName: term.courtName, courtPublicId: term.courtPublicId, courtCategory: term.courtCategory,
+      serviceType: term.serviceType, commissionDate: term.commissionDate, seniorStatusOn: null,
+      endedOn: term.endedOn, terminationReason: term.terminationReason,
+      appointingPresident: term.appointingPresident, appointingPartyRaw: term.appointingPartyRaw,
+      party: appointingParty(term.appointingPartyRaw), sourceUrl: term.sourceUrl,
+    });
+  }
+  return services;
+}
 
-/** How often opinion authors on these courts were linked to a judge identity (own timeout; null on timeout). */
-async function courtAuthorMatch(sql: Sql, courtIds: string[]): Promise<LowerCourtProfile["courtAuthorMatch"]> {
-  if (!courtIds.length) return null;
-  const key = [...courtIds].sort().join(",");
-  const hit = matchCache.get(key);
+async function loadAppeals(sql: Sql, judgeId: string): Promise<AppealsRecord | null> {
+  try {
+    return await sql.begin(async (tx) => {
+      await tx`SET LOCAL statement_timeout = '3000ms'`;
+      const [summary] = await tx<Array<{ panelCases: number; authoredCases: number; firstDecided: string | null; lastDecided: string | null }>>`
+        SELECT count(DISTINCT s.case_id) FILTER (WHERE s.role = 'panel')::int AS "panelCases",
+          count(DISTINCT s.case_id) FILTER (WHERE s.role = 'author')::int AS "authoredCases",
+          min(s.decided_on)::text AS "firstDecided", max(s.decided_on)::text AS "lastDecided"
+        FROM appeals_panel_seat s JOIN legal_case lc ON lc.id = s.case_id AND lc.publication = 'published'
+        WHERE s.judge_id = ${judgeId}
+      `;
+      if (!summary || (!summary.panelCases && !summary.authoredCases)) return null;
+      const outcomeRows = await tx<Array<{ outcome: AppealsOutcome; cases: number }>>`
+        SELECT o.outcome, count(DISTINCT o.case_id)::int AS cases
+        FROM (SELECT DISTINCT case_id FROM appeals_panel_seat WHERE judge_id = ${judgeId}) mine
+        JOIN appeals_case_outcome o ON o.case_id = mine.case_id
+        JOIN legal_case lc ON lc.id = o.case_id AND lc.publication = 'published'
+        GROUP BY o.outcome
+      `;
+      const colleagueRows = await tx<Array<{ party: string | null; status: string; seats: number }>>`
+        SELECT other.appointing_party AS party, other.match_status AS status, count(*)::int AS seats
+        FROM (SELECT DISTINCT case_id FROM appeals_panel_seat WHERE judge_id = ${judgeId} AND role = 'panel') mine
+        JOIN appeals_panel_seat other ON other.case_id = mine.case_id AND other.role = 'panel'
+          AND other.judge_id IS DISTINCT FROM ${judgeId}
+        GROUP BY 1, 2
+      `;
+      const examples = await tx<AppealsRecord["examples"]>`
+        SELECT lc.public_id AS "publicId", lc.caption, s.decided_on::text AS "decidedOn", o.outcome
+        FROM (SELECT DISTINCT ON (case_id) case_id, decided_on FROM appeals_panel_seat WHERE judge_id = ${judgeId}
+              ORDER BY case_id) s
+        JOIN legal_case lc ON lc.id = s.case_id AND lc.publication = 'published'
+          AND NOT ${tx.unsafe(searchExcludedCaseSql("lc"))}
+        LEFT JOIN appeals_case_outcome o ON o.case_id = s.case_id
+        ORDER BY s.decided_on DESC NULLS LAST LIMIT 8
+      `;
+      const outcomes = emptyOutcomes();
+      for (const row of outcomeRows) outcomes[row.outcome] = row.cases;
+      const panel: PanelMix = { colleagueSlots: 0, matchedSlots: 0, byParty: emptyParty() };
+      for (const row of colleagueRows) {
+        panel.colleagueSlots += row.seats;
+        if (row.status === "matched") { panel.matchedSlots += row.seats; panel.byParty[appointingParty(row.party)] += row.seats; }
+      }
+      const reversalBase = outcomes.affirmed + outcomes.reversed + outcomes.vacated + outcomes.mixed;
+      return {
+        ...summary, outcomes, outcomeSample: outcomeRows.reduce((sum, row) => sum + row.cases, 0),
+        reversedOrVacatedPercent: percentOf(outcomes.reversed + outcomes.vacated, reversalBase), reversalBase,
+        panel, courtMatch: null, examples,
+      };
+    });
+  } catch (error) {
+    if (!isMissingRelation(error)) console.warn("appeals record unavailable", (error as Error).message);
+    return null;
+  }
+}
+
+async function loadCourtMatch(sql: Sql, judgeId: string): Promise<AppealsRecord["courtMatch"]> {
+  const hit = courtCache.get(judgeId);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
-  let value: LowerCourtProfile["courtAuthorMatch"] = null;
+  let value: AppealsRecord["courtMatch"] = null;
   try {
     const [row] = await sql.begin(async (tx) => {
-      await tx`SET LOCAL statement_timeout = '2000ms'`;
-      return tx<Array<{ observed: number; accepted: number; needsReview: number; unmatched: number }>>`
-        WITH per_opinion AS (
-          SELECT case_id, source_artifact_id,
-            bool_or(status = 'accepted') AS accepted, bool_or(status = 'needs_review') AS review
-          FROM judge_match_candidate WHERE court_id = ANY(${courtIds}::uuid[])
-          GROUP BY case_id, source_artifact_id
-        )
-        SELECT count(*)::int AS observed, count(*) FILTER (WHERE accepted)::int AS accepted,
-          count(*) FILTER (WHERE NOT accepted AND review)::int AS "needsReview",
-          count(*) FILTER (WHERE NOT accepted AND NOT review)::int AS unmatched
-        FROM per_opinion
+      await tx`SET LOCAL statement_timeout = '2500ms'`;
+      return tx<Array<{ slots: number; matched: number; ambiguous: number; unmatched: number }>>`
+        SELECT count(*)::int AS slots, count(*) FILTER (WHERE s.match_status = 'matched')::int AS matched,
+          count(*) FILTER (WHERE s.match_status = 'ambiguous')::int AS ambiguous,
+          count(*) FILTER (WHERE s.match_status = 'unmatched')::int AS unmatched
+        FROM appeals_panel_seat s
+        WHERE s.role = 'panel' AND s.court_id IN (SELECT DISTINCT court_id FROM appeals_panel_seat WHERE judge_id = ${judgeId})
       `;
     });
-    value = row && row.observed ? row : null;
+    value = row && row.slots ? row : null;
   } catch {
     value = null;
   }
-  matchCache.set(key, { at: Date.now(), value });
+  courtCache.set(judgeId, { at: Date.now(), value });
   return value;
 }
 
-const APPEALS_RE = /^ca([0-9]{1,2}|dc|fed)$/i;
-
-function emptyParty(): Record<AppointingParty, number> {
-  return { republican: 0, democratic: 0, other: 0, none: 0, unknown: 0 };
-}
-
-function emptyDisposition(): Record<AppellateDisposition, number> {
-  return { affirmed: 0, reversed: 0, vacated: 0, mixed: 0, dismissed: 0, other: 0 };
-}
-
 /**
- * Lower-court analytics for one public judge: FJC appointment record, authored
- * opinion counts, outcome mix (court of appeals), time to decision, panel mix
- * by appointing president's party, and honest match rates. Read-only, under a
- * statement timeout, cached per process for 30 minutes. Returns null rather
- * than throwing so the page simply omits the section.
+ * Lower-court analytics for one public judge: the FJC appointment record and,
+ * for court of appeals judges, panels, outcomes, colleagues by appointing
+ * party, and match rates, from the tables the appeals backfill writes.
+ * Read-only, short timeouts, cached 30 minutes; null rather than throwing.
  */
 export async function loadLowerCourtProfile(sql: Sql, judgePublicId: string): Promise<LowerCourtProfile | null> {
   const hit = cache.get(judgePublicId);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
   let value: LowerCourtProfile | null = null;
   try {
-    value = await sql.begin(async (tx): Promise<(LowerCourtProfile & { courtIds: string[] }) | null> => {
-      await tx`SET LOCAL statement_timeout = '3000ms'`;
-      const [judge] = await tx<Array<{ id: string; officialProfileUrl: string | null; fjcNid: string | null }>>`
-        SELECT id, official_profile_url AS "officialProfileUrl", fjc_nid AS "fjcNid" FROM judge WHERE public_id = ${judgePublicId} LIMIT 1
-      `;
-      if (!judge) return null;
-      const terms = await tx<Array<Omit<FjcServiceRecord, "party" | "seniorStatusOn"> & { courtId: string; providerCourtId: string | null; startedOn: string | null }>>`
-        SELECT court.name AS "courtName", court.public_id AS "courtPublicId", court.id AS "courtId",
-          court.provider_court_id AS "providerCourtId", term.court_category AS "courtCategory",
-          term.service_type AS "serviceType", term.commission_date::text AS "commissionDate",
-          term.started_on::text AS "startedOn", term.ended_on::text AS "endedOn",
-          term.termination_reason AS "terminationReason", term.appointing_president AS "appointingPresident",
-          term.appointing_president_party AS "appointingPartyRaw", term.source_url AS "sourceUrl"
-        FROM judge_service_term term JOIN court ON court.id = term.court_id
-        WHERE term.judge_id = ${judge.id} AND term.source_system = 'fjc'
-        ORDER BY term.started_on NULLS LAST, term.service_type
-      `;
-      const services: FjcServiceRecord[] = [];
-      for (const term of terms) {
-        if (term.serviceType === "article_iii_senior") {
-          const active = services.find((service) => service.courtName === term.courtName && service.serviceType !== "article_iii_senior");
-          if (active) { active.seniorStatusOn = term.startedOn; continue; }
-        }
-        services.push({
-          courtName: term.courtName, courtPublicId: term.courtPublicId, courtCategory: term.courtCategory,
-          serviceType: term.serviceType, commissionDate: term.commissionDate, seniorStatusOn: null,
-          endedOn: term.endedOn, terminationReason: term.terminationReason,
-          appointingPresident: term.appointingPresident, appointingPartyRaw: term.appointingPartyRaw,
-          party: appointingParty(term.appointingPartyRaw), sourceUrl: term.sourceUrl,
-        });
-      }
-
-      const opinions = await tx<Array<{ caseId: string; courtId: string; providerCourtId: string | null; filedOn: string | null; decidedOn: string | null; panel: string | null; disposition: string | null }>>`
-        SELECT DISTINCT ON (lc.id) lc.id AS "caseId", lc.court_id AS "courtId", court.provider_court_id AS "providerCourtId",
-          lc.filed_on::text AS "filedOn", COALESCE(oc.date_filed, lc.decided_on)::text AS "decidedOn",
-          oc.judges AS panel, NULLIF(btrim(oc.provider_metadata->>'disposition'), '') AS disposition
-        FROM judge_case_assignment a
-        JOIN legal_case lc ON lc.id = a.case_id AND lc.publication = 'published'
-        JOIN court ON court.id = lc.court_id
-        LEFT JOIN opinion_cluster oc ON oc.case_id = lc.id
-        WHERE a.judge_id = ${judge.id} AND a.assignment_role = 'opinion_author'
-        ORDER BY lc.id, oc.date_filed DESC NULLS LAST
-        LIMIT 20000
-      `;
-      const appealsCount = opinions.filter((row) => APPEALS_RE.test(row.providerCourtId ?? "")).length;
-      const kind: LowerCourtProfile["kind"] = appealsCount > opinions.length / 2 || services.some((s) => s.courtCategory === "appeals")
-        ? "appeals" : services.some((s) => s.courtCategory === "district") ? "district" : "other";
-
-      const dispositions = emptyDisposition();
-      let dispositionSample = 0;
-      const timings: number[] = [];
-      for (const row of opinions) {
-        if (row.disposition) {
-          const outcome = classifyAppellateDisposition(row.disposition);
-          dispositions[outcome] += 1;
-          if (outcome !== "other") dispositionSample += 1;
-        }
-        if (row.filedOn && row.decidedOn) {
-          const days = Math.round((Date.parse(row.decidedOn) - Date.parse(row.filedOn)) / 86_400_000);
-          if (days >= 0 && days < 365 * 15) timings.push(days);
-        }
-      }
-      const readable = dispositionSample - dispositions.dismissed;
-
-      // Panel mix: match reporter surnames to FJC judges serving on the same court that day.
-      const courtIds = [...new Set(opinions.map((row) => row.courtId))];
-      const rosterRows = courtIds.length ? await tx<Array<{ judgeId: string; courtId: string; normalizedName: string; startedOn: string | null; endedOn: string | null; party: string | null }>>`
-        SELECT term.judge_id AS "judgeId", term.court_id AS "courtId", j.normalized_name AS "normalizedName",
-          term.started_on::text AS "startedOn", term.ended_on::text AS "endedOn",
-          term.appointing_president_party AS party
-        FROM judge_service_term term JOIN judge j ON j.id = term.judge_id
-        WHERE term.court_id = ANY(${courtIds}::uuid[]) AND term.source_system = 'fjc'
-      ` : [];
-      const roster = rosterRows.map((row) => ({ ...row, surname: surnameOf(row.normalizedName) }));
-      const ownSurnames = new Set(roster.filter((row) => row.judgeId === judge.id).map((row) => row.surname));
-      const panel: PanelMix = { opinionsWithPanel: 0, colleagueSlots: 0, matchedSlots: 0, byParty: emptyParty() };
-      for (const row of opinions) {
-        const names = parsePanelSurnames(row.panel).filter((name) => !ownSurnames.has(name));
-        if (!row.panel || !parsePanelSurnames(row.panel).length) continue;
-        panel.opinionsWithPanel += 1;
-        for (const name of names) {
-          panel.colleagueSlots += 1;
-          const day = row.decidedOn;
-          const matches = new Map<string, string | null>();
-          for (const member of roster) {
-            if (member.courtId !== row.courtId || member.surname !== name || member.judgeId === judge.id) continue;
-            if (day && member.startedOn && member.startedOn > day) continue;
-            if (day && member.endedOn && member.endedOn < day) continue;
-            matches.set(member.judgeId, member.party);
-          }
-          if (matches.size === 1) {
-            panel.matchedSlots += 1;
-            panel.byParty[appointingParty([...matches.values()][0])] += 1;
-          }
-        }
-      }
-
-
-      return {
+    const [judge] = await sql<Array<{ id: string; officialProfileUrl: string | null; fjcNid: string | null }>>`
+      SELECT id, official_profile_url AS "officialProfileUrl", fjc_nid AS "fjcNid" FROM judge WHERE public_id = ${judgePublicId} LIMIT 1
+    `;
+    if (judge) {
+      const services = await loadServices(sql, judge.id);
+      const kind: LowerCourtProfile["kind"] = services.some((s) => s.courtCategory === "appeals") ? "appeals"
+        : services.some((s) => s.courtCategory === "district") ? "district" : "other";
+      const appeals = kind === "appeals" ? await loadAppeals(sql, judge.id) : null;
+      if (appeals) appeals.courtMatch = await loadCourtMatch(sql, judge.id);
+      value = {
         fjcProfileUrl: judge.officialProfileUrl ?? (judge.fjcNid ? `https://www.fjc.gov/node/${encodeURIComponent(judge.fjcNid)}` : null),
-        services, kind, authoredOpinions: opinions.length, dispositions, dispositionSample,
-        reversedOrVacatedPercent: percentOf(dispositions.reversed + dispositions.vacated, readable),
-        medianDaysToDecision: medianDays(timings), timingSample: timings.length,
-        panel, courtAuthorMatch: null, courtIds,
+        services, kind, appeals,
       };
-    });
-    if (value) {
-      const { courtIds, ...rest } = value as LowerCourtProfile & { courtIds: string[] };
-      value = { ...rest, courtAuthorMatch: await courtAuthorMatch(sql, courtIds) };
     }
   } catch {
     value = null;
