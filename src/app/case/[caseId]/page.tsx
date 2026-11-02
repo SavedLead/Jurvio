@@ -41,6 +41,9 @@ import { loadCaseLineup } from "@/modules/scotus/application/justice-analytics";
 import { CaseScdbLineup } from "@/modules/scotus/ui/case-scdb-lineup";
 import { loadCaseJusticeNotes } from "@/modules/scotus/application/justice-notes";
 import { CaseJusticeNotesSection } from "@/modules/scotus/ui/case-justice-notes";
+import { loadCitationReach } from "@/modules/scotus/application/ramifications";
+import { readSyllabusHeld } from "@/modules/scotus/domain/ramifications";
+import { CaseRamificationsSection, type RamificationsHolding } from "@/modules/scotus/ui/case-ramifications";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-english/ui/term-text";
@@ -265,13 +268,23 @@ export default async function CasePage({ params }: CasePageProps) {
   // The court's own opinion (not a dissent or concurrence) is the only text the summary reads.
   const majorityOpinion = readableDocuments.find((document) => document.perCuriam || /majority|lead|combined/i.test(document.opinionType ?? ""))
     ?? (primaryOpinion && !/dissent|concur|rehearing/i.test(primaryOpinion.opinionType ?? "") ? primaryOpinion : undefined);
-  const [narrativeTargets, standingSignals]=await Promise.all([
+  const decidedSupremeCourt = legalCase.courtKind === "supreme" && Boolean(legalCase.decidedOn);
+  const [narrativeTargets, standingSignals, citationReach]=await Promise.all([
     publicCitationTargets(sql, [
       ...caseAnswers.map(answer=>answer.answer), legalCase.backgroundSummary,
       legalCase.significanceSummary, legalCase.questionPresented, legalCase.exactHolding,
     ].filter(Boolean).join(" ")),
     loadCaseStandingSignals(sql, caseId, majorityOpinion?.publicId ?? null),
+    decidedSupremeCourt && citationCounts.citedBy > 0 ? loadCitationReach(sql, caseId) : Promise.resolve(null),
   ]);
+  // "What this means going forward": the syllabus "Held:" point, else the verified holding quote.
+  const syllabusHeld = decidedSupremeCourt ? readSyllabusHeld(standingSignals.opinionHead) : null;
+  const ramificationsHolding: RamificationsHolding | null = syllabusHeld
+    ? { kind: "syllabus", holding: syllabusHeld, readPath: majorityOpinion ? `/case/${caseId}/documents/${majorityOpinion.publicId}` : opinionPath,
+        officialUrl: (majorityOpinion ?? primaryOpinion)?.sourceDownloadUrl ?? sourceDocument?.sourceDownloadUrl ?? null }
+    : legalCase.exactHolding
+      ? { kind: "verified", holding: { text: legalCase.exactHolding, truncated: false }, readPath: null, officialUrl: legalCase.holdingSourceUrl }
+      : null;
   // Federal district cases the docket shows as open but the FJC statistics show as closed: say so in the quick answer too.
   const fjcClosedOn = !legalCase.terminatedOn ? standingSignals.fjcOutcome?.terminatedOn ?? null : null;
   const shownAnswers = caseAnswers.map((item) => fjcClosedOn && item.id === "what-happened"
@@ -489,6 +502,8 @@ export default async function CasePage({ params }: CasePageProps) {
           ) : null}
 
           {scdbLineup ? <CaseScdbLineup lineup={scdbLineup} /> : null}
+
+          {decidedSupremeCourt ? <CaseRamificationsSection holding={ramificationsHolding} reach={citationReach} citedByCount={citationCounts.citedBy} /> : null}
 
           <CitationCaseList
             title="Cases cited"
