@@ -301,6 +301,7 @@ export default async function CasePage({ params }: CasePageProps) {
     docketPath: `/case/${caseId}/docket`,
     scotusDocket: standingSignals.scotusDocket,
     fjcOutcome: standingSignals.fjcOutcome,
+    questionsPresented: standingSignals.questionsPresented,
   });
   // Citations become links; the plain stretches get dictionary-term tooltips
   // (first mention of each term per section, see createTermMarker).

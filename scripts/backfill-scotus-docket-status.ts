@@ -5,15 +5,21 @@
 //
 //   tsx scripts/backfill-scotus-docket-status.ts --input cases.tsv \
 //     --cache-dir ~/.cache/jurvio/scotus-dockets --out status.tsv \
-//     [--delay-ms 1500] [--budget-minutes 300]
+//     [--delay-ms 1500] [--budget-minutes 300] [--qp-out questions.tsv]
+//
+// With --qp-out, a granted docket whose page links the Court's "questions
+// presented" PDF also gets that PDF fetched (same delay and cache rules),
+// converted with pdftotext, and parsed into one scotus_question_presented row.
 //
 // cases.tsv: case_id <TAB> docket_number, one per line.
 // Polite and resumable: one request at a time with a delay (supremecourt.gov
 // robots.txt asks for Crawl-delay 1), an identifying User-Agent, every page
 // cached on disk gzipped (a re-run fetches only what is missing), a stop after the
 // time budget. Missing dockets are cached as such and not retried.
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { promisify } from "node:util";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import {
@@ -21,6 +27,12 @@ import {
   officialDocketPageUrl,
   parseDocketStatus,
 } from "@/modules/ingestion/providers/scotus/docket-status";
+import {
+  parseQuestionsPresented,
+  QUESTION_PRESENTED_PARSER_VERSION,
+  questionsPresentedUrlFor,
+  readQuestionsPresentedUrl,
+} from "@/modules/ingestion/providers/scotus/question-presented";
 
 function option(name: string, fallback?: string): string {
   const prefixed = `--${name}=`;
@@ -35,6 +47,8 @@ function option(name: string, fallback?: string): string {
 const input = option("input");
 const cacheDir = option("cache-dir");
 const out = option("out");
+const qpOut = process.argv.some((value) => value === "--qp-out" || value.startsWith("--qp-out=")) ? option("qp-out") : null;
+const execFileAsync = promisify(execFile);
 const delayMs = Math.max(1100, Number(option("delay-ms", "1500")));
 const budgetMs = Math.max(1, Number(option("budget-minutes", "300"))) * 60_000;
 const userAgent = process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 (+https://jurvio.com; public court records)";
@@ -42,6 +56,10 @@ const MAX_BYTES = 4 * 1024 * 1024;
 
 mkdirSync(cacheDir, { recursive: true });
 writeFileSync(out, "");
+if (qpOut) {
+  writeFileSync(qpOut, "");
+  mkdirSync(join(cacheDir, "qp"), { recursive: true });
+}
 
 function copyValue(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "\\N";
@@ -71,8 +89,48 @@ async function fetchPage(url: string): Promise<{ status: number; body: string | 
   return { status: 0, body: null };
 }
 
+/** pdftotext output of a questions-presented PDF, cached gzipped; null when missing or unreadable. */
+async function questionsPresentedText(url: string, slug: string): Promise<{ text: string; fetchedAt: string; hash: string } | null> {
+  const cached = join(cacheDir, "qp", `${slug}.txt.gz`);
+  const missing = join(cacheDir, "qp", `${slug}.missing`);
+  if (existsSync(missing)) return null;
+  if (existsSync(cached)) {
+    return { text: gunzipSync(readFileSync(cached)).toString("utf8"), fetchedAt: readFileSync(`${cached}.fetched`, "utf8").trim(), hash: readFileSync(`${cached}.sha256`, "utf8").trim() };
+  }
+  if (Date.now() - started > budgetMs) { stats.stoppedForBudget = true; return null; }
+  await sleep(delayMs);
+  let bytes: Buffer | null = null;
+  try {
+    const response = await fetch(url, { headers: { "user-agent": userAgent, accept: "application/pdf" }, redirect: "follow", signal: AbortSignal.timeout(30_000) });
+    if (response.status === 404) { writeFileSync(missing, "404"); return null; }
+    if (!response.ok || new URL(response.url).origin !== "https://www.supremecourt.gov") return null;
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > MAX_BYTES || buffer.subarray(0, 5).toString("latin1") !== "%PDF-") { writeFileSync(missing, "not-pdf"); return null; }
+    bytes = buffer;
+  } catch {
+    return null;
+  }
+  const pdfPath = join(cacheDir, "qp", `${slug}.tmp.pdf`);
+  writeFileSync(pdfPath, bytes);
+  try {
+    const { stdout } = await execFileAsync("pdftotext", ["-layout", "-l", "4", pdfPath, "-"], { maxBuffer: 4 * 1024 * 1024, timeout: 60_000 });
+    const fetchedAt = new Date().toISOString();
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    writeFileSync(cached, gzipSync(stdout));
+    writeFileSync(`${cached}.fetched`, fetchedAt);
+    writeFileSync(`${cached}.sha256`, hash);
+    stats.qpFetched += 1;
+    return { text: stdout, fetchedAt, hash };
+  } catch {
+    writeFileSync(missing, "pdftotext-failed");
+    return null;
+  } finally {
+    try { unlinkSync(pdfPath); } catch { /* already gone */ }
+  }
+}
+
 const started = Date.now();
-const stats = { cases: 0, cached: 0, fetched: 0, missing: 0, failed: 0, written: 0, noUrl: 0, granted: 0, denied: 0, dismissed: 0, pending: 0, judgment: 0, stoppedForBudget: false };
+const stats = { cases: 0, cached: 0, fetched: 0, missing: 0, failed: 0, written: 0, noUrl: 0, granted: 0, denied: 0, dismissed: 0, pending: 0, judgment: 0, qpLinked: 0, qpFetched: 0, qpWritten: 0, qpUnparsed: 0, stoppedForBudget: false };
 const lines = readFileSync(input, "utf8").split("\n").filter(Boolean);
 for (const line of lines) {
   const [caseId, docketNumber] = line.split("\t");
@@ -120,5 +178,21 @@ for (const line of lines) {
     status.lastEntryOn, status.entryCount,
   ].map(copyValue).join("\t") + "\n");
   stats.written += 1;
+  if (qpOut && status.certStatus === "granted") {
+    const qpUrl = readQuestionsPresentedUrl(html) ?? questionsPresentedUrlFor(status.docketNumber);
+    if (!qpUrl) continue;
+    stats.qpLinked += 1;
+    const qp = await questionsPresentedText(qpUrl, slug);
+    if (!qp) continue;
+    const parsed = parseQuestionsPresented(qp.text);
+    if (!parsed) { stats.qpUnparsed += 1; continue; }
+    appendFileSync(qpOut, [
+      caseId, status.docketNumber, qpUrl, qp.fetchedAt, qp.hash, QUESTION_PRESENTED_PARSER_VERSION,
+      JSON.stringify(parsed.questions),
+      parsed.grantedLimitedTo ? `{${parsed.grantedLimitedTo.join(",")}}` : null,
+      parsed.grantedQuestion,
+    ].map(copyValue).join("\t") + "\n");
+    stats.qpWritten += 1;
+  }
 }
 console.log(JSON.stringify(stats));
