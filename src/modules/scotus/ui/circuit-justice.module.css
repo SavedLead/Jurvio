@@ -1,0 +1,7 @@
+.box { margin: 18px 0; padding: 14px 16px; border: 1px solid #dfe3ec; border-left: 4px solid #304bd4; border-radius: 12px; background: #f7f8fc; color: #2d3650; font-size: .9rem; line-height: 1.55; }
+.box h2, .box h3 { margin: 0 0 4px; font-size: 1rem; }
+.kicker { margin: 0 0 2px; color: #304bd4; font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.box p { margin: 4px 0 0; }
+.box a { color: #304bd4; font-weight: 600; text-decoration: none; }
+.sources { color: #5f6980; font-size: .8rem; }
+.compact { margin: 0; padding: 10px 12px; font-size: .84rem; }
