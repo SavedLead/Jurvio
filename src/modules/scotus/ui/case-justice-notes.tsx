@@ -66,6 +66,7 @@ export function CaseJusticeNotesSection({ data }: { data: CaseJusticeNotes }) {
   }
   const hasDenial = data.notes.some((note) => note.context === "cert_denied");
   const publicNames = [...new Set(data.notes.filter((note) => note.context === "cert_denied" && note.kind !== "recused").map((note) => note.name))];
+  const hasQuotes = data.notes.some((note) => note.opinionOpening || note.opinionReason);
   return <section className="contentSection caseFeatureSection" aria-labelledby="justice-notes" id="justice-notes">
     <div className="featureHeading decisionHeading">
       <h2 id="justice-notes">{hasDenial ? "Justices who spoke up about turning this case away" : "What individual justices put on the record"}</h2>
@@ -90,7 +91,7 @@ export function CaseJusticeNotesSection({ data }: { data: CaseJusticeNotes }) {
     })}
     <aside className={styles.explain}>
       <p><strong>Reading this:</strong> a <em>dissent</em> means the justice disagreed with what the Court did; a <em>statement</em> explains a justice’s view without necessarily disagreeing; “would grant” means the justice would have taken the case. Taking a case needs four of the nine justices to vote yes (the “Rule of Four”; <a className={styles.link} href={RULE_OF_FOUR_SOURCE} rel="noopener">Supreme Court explainer, PDF</a>), so when a case is turned away we know fewer than four voted to hear it, but not who.</p>
-      <p>Quotes are the opening lines of the justice’s own writing and, where one is found by a fixed rule, the sentence where they say why. They are not a summary written by Jurvio.</p>
+      {hasQuotes ? <p>Quotes are the opening lines of the justice’s own writing and, where one is found by a fixed rule, the sentence where they say why. They are not a summary written by Jurvio.</p> : null}
     </aside>
   </section>;
 }
