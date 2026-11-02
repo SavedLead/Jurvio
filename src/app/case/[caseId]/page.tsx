@@ -26,7 +26,7 @@ import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { caseSections } from "@/modules/cases/ui/case-nav";
 import { CaseGlossary, CaseSection, CaseSourceList, CaseSources, CaseSummaryCard, SourceRef } from "@/modules/cases/ui/case-declutter";
 import { CaseSectionOpener } from "@/modules/cases/ui/case-section-opener";
-import { keyDate as pickKeyDate, summaryFromStanding } from "@/modules/cases/domain/case-summary";
+import { keyDate as pickKeyDate, standingAfterSummary, summaryFromStanding, type CardLineSource } from "@/modules/cases/domain/case-summary";
 import { CaseCardActions } from "@/modules/cases/ui/case-card-actions";
 import { CaseSectionBar, type SectionChip } from "@/modules/cases/ui/case-section-bar";
 import { BackToTop } from "@/modules/cases/ui/back-to-top";
@@ -136,6 +136,14 @@ function formatJusticePosition(value: string) {
     not_participating: "Did not participate",
   };
   return labels[value] ?? value.replaceAll("_", " ");
+}
+
+/** "Inside: where the case came from, what the court did and 2 more" (the collapsed stands section's hint). */
+function standsHint(inside: string[]): string {
+  const shown = inside.slice(0, 3);
+  const more = inside.length - shown.length;
+  const list = shown.length > 1 ? `${shown.slice(0, -1).join(", ")}${more ? ", " : " and "}${shown.at(-1)}` : shown[0] ?? "";
+  return `Inside: ${list}${more ? ` and ${more} more` : ""}`;
 }
 
 export default async function CasePage({ params }: CasePageProps) {
@@ -426,6 +434,12 @@ export default async function CasePage({ params }: CasePageProps) {
 
   // The summary card: the stands headline and points, re-used (no new claims).
   const summary = summaryFromStanding(standing);
+  // Each fact once: "Where this case stands" keeps only what the card doesn't already say.
+  const stands = standingAfterSummary(standing);
+  const cardSource = (source: CardLineSource | null) => !source ? null
+    : source.href.startsWith("/") || source.href.startsWith("#")
+      ? <span className="cdLineSource"> <a href={source.href}>{source.label}</a></span>
+      : <SourceRef n={sources.number(source.href) ?? sources.add(source.label, source.href)} />;
   const whatHappened = summary.whatHappened ?? shownAnswers.find((item) => item.id === "what-happened")?.answer ?? caption;
   const keyDate = pickKeyDate({
     courtKind: legalCase.courtKind ?? "other",
@@ -436,6 +450,9 @@ export default async function CasePage({ params }: CasePageProps) {
     certStatus: standingSignals.scotusDocket?.certStatus ?? justiceNotes?.certStatus ?? null,
     certStatusOn: standingSignals.scotusDocket?.certStatusOn ?? justiceNotes?.certStatusOn ?? null,
   });
+  // The key date row is left out when the status line above it already states that date ("closed this case on May 22, 2019").
+  const keyDateDisplay = keyDate ? formatPublicCaseDate(keyDate.date) ?? keyDate.date : null;
+  const keyDateShown = keyDate && keyDateDisplay && !(summary.goingForward ?? "").includes(keyDateDisplay) ? { ...keyDate, display: keyDateDisplay } : null;
   const summaryFacts: Array<[string, ReactNode]> = [
     ...(legalCase.hasReadableOpinion && opinionPath ? [["Opinion", <Link key="o" href={opinionPath as Route}>Read on Jurvio</Link>] as [string, ReactNode]]
       : opinionNotice ? [["Opinion", <>Official copy{ref(opinionNotice.href)}</>] as [string, ReactNode]] : []),
@@ -498,7 +515,7 @@ export default async function CasePage({ params }: CasePageProps) {
   const circuitJustice = ownCircuitJustice ?? belowCircuitJustice;
   // Which sections render (the chip bar lists exactly these, in page order).
   const show = {
-    stands: Boolean(standing),
+    stands: Boolean(stands?.standing.points.length),
     datesAhead: keyDatesAhead.length > 0,
     forward: decidedSupremeCourt || Boolean(circuitSplit),
     journey: journeySteps.length > 0 || onwardSupremeCourt.length > 0,
@@ -549,10 +566,11 @@ export default async function CasePage({ params }: CasePageProps) {
         <aside className="cdRail" aria-label="Case summary">
           <CaseSummaryCard
             whatHappened={marked(whatHappened, summaryMarker)}
-            whoWon={summary.whoWon ? marked(summary.whoWon, summaryMarker) : null}
-            goingForward={summary.goingForward ? marked(summary.goingForward, summaryMarker) : null}
+            whoWon={summary.whoWon ? <>{marked(summary.whoWon, summaryMarker)}{cardSource(stands?.whoWonSource ?? null)}</> : null}
+            goingForward={summary.goingForward ? <>{marked(summary.goingForward, summaryMarker)}{cardSource(stands?.goingForwardSource ?? null)}</> : null}
             goingForwardLabel={summary.goingForwardLabel}
-            keyDate={keyDate ? { ...keyDate, display: formatPublicCaseDate(keyDate.date) ?? keyDate.date } : null}
+            whoWonLabel={(standing?.points.find((point) => point.id === "who-won")?.label ?? "Who won?").replace(/\?$/, "").replace(/^How did it end$/, "How it ended")}
+            keyDate={keyDateShown}
             facts={summaryFacts}
             follow={followEligible ? <details className="cdFollow" id="follow"><summary>Follow this case</summary>
               <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /></details> : null}
@@ -564,8 +582,8 @@ export default async function CasePage({ params }: CasePageProps) {
         <div className="cdMain">
         <CaseSectionBar chips={chips} />
 
-        {show.stands && standing ? <CaseSection id="stands" title="Where this case stands" open hint={`${standing.points.length} questions answered from the record`}>
-          <CaseStandingSection standing={standing} compact sourceRef={ref} renderText={(text) => marked(text, standsMarker)} />
+        {show.stands && stands ? <CaseSection id="stands" title="Where this case stands" open hint={standsHint(stands.inside)}>
+          <CaseStandingSection standing={stands.standing} compact sourceRef={ref} renderText={(text) => marked(text, standsMarker)} />
         </CaseSection> : null}
 
         {show.datesAhead ? <CaseSection id="dates-ahead" title="Key dates ahead" open hint={`${keyDatesAhead.length} upcoming ${keyDatesAhead.length === 1 ? "date" : "dates"} from the docket`} hideHeading>

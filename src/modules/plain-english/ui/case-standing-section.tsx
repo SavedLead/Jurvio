@@ -29,7 +29,7 @@ export function CaseStandingSection({ standing, renderText, compact = false, sou
           <div className="caseStandsItem" key={point.id} data-point={point.id}>
             <dt>{point.label}</dt>
             <dd>
-              <p>{renderText(point.text)}</p>
+              {point.text ? <p>{renderText(point.text)}</p> : null}
               {point.items ? (
                 <ul className="caseStandsAsks">
                   {point.items.map((item) => (

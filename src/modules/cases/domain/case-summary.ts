@@ -56,3 +56,68 @@ export function keyDate(input: KeyDateInput): { label: string; date: string } | 
   if (input.filedOn) return { label: "Filed", date: input.filedOn };
   return null;
 }
+
+type Point = CaseStanding["points"][number];
+
+/** What the card shows for a stands point it took over entirely: its source, so the source still sits next to the fact. */
+export interface CardLineSource { label: string; href: string }
+
+export interface StandingAfterSummary {
+  /** "Where this case stands" without what the summary card already says. */
+  standing: CaseStanding;
+  /** Sources of points the card took over completely (null when the point had none, or it stays below with its rest). */
+  whoWonSource: CardLineSource | null;
+  goingForwardSource: CardLineSource | null;
+  /** Short names of the rows left, for the collapsed section's hint. */
+  inside: string[];
+}
+
+const REST_LABEL: Partial<Record<Point["id"], string>> = {
+  "who-won": "More on the outcome",
+  means: "More on what it means",
+  status: "More on the case status",
+};
+
+const SHORT_NAME: Record<Point["id"], string> = {
+  "who-won": "more on the outcome",
+  asked: "what each side asked for and got",
+  decided: "what the court did",
+  lower: "where the case came from",
+  means: "more on what it means",
+  rule: "the rule it set",
+  "good-law": "whether it is still good law",
+  cited: "how often it is cited",
+  status: "case status",
+};
+
+/**
+ * Each fact once: the card shows the stands headline and the first sentence of "Who won?" and of "What does it
+ * mean?" (or of the open/closed status), so those leave "Where this case stands". A point keeps a row only for what
+ * the card does not show: its remaining sentences, quotes, request lines and their sources.
+ */
+export function standingAfterSummary(standing: CaseStanding | null): StandingAfterSummary | null {
+  if (!standing) return null;
+  const means = standing.points.some((point) => point.id === "means");
+  const forwardId: Point["id"] = means ? "means" : "status";
+  let whoWonSource: CardLineSource | null = null;
+  let goingForwardSource: CardLineSource | null = null;
+  const points: Point[] = [];
+  for (const point of standing.points) {
+    if (point.id !== "who-won" && point.id !== forwardId) { points.push(point); continue; }
+    const text = point.id === "status" ? point.text.replace(/^(No|Yes)\.\s+/, "") : point.text;
+    const rest = text.slice(firstSentence(text).length).trim();
+    const extra = Boolean(point.quote || point.items?.length || point.quotes?.length);
+    if (rest || extra) {
+      points.push({ ...point, label: REST_LABEL[point.id] ?? point.label, text: rest });
+      continue;
+    }
+    const source = point.sourceLabel && point.sourceHref ? { label: point.sourceLabel, href: point.sourceHref } : null;
+    if (point.id === "who-won") whoWonSource = source; else goingForwardSource = source;
+  }
+  return {
+    standing: { headline: standing.headline, points },
+    whoWonSource,
+    goingForwardSource,
+    inside: points.map((point) => SHORT_NAME[point.id]),
+  };
+}

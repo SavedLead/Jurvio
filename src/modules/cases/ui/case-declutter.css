@@ -207,3 +207,5 @@ html:has(.cdShell) { scroll-padding-top: calc(var(--cd-header-h, 72px) + 60px); 
 .cdBody details:not([class]) > summary::-webkit-details-marker { display: none; }
 .cdBody details:not([class]) > summary::before { content: "▸"; }
 .cdBody details:not([class])[open] > summary::before { content: "▾"; }
+.cdLineSource { font-size: .82rem; }
+.cdLineSource a { display: inline-block; padding: 13px 0; margin: -13px 0; color: var(--cd-link); text-decoration: underline; text-underline-offset: 2px; }

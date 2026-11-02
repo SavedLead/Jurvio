@@ -32,6 +32,7 @@ export function SourceRef({ n }: { n: number | null }) {
 interface SummaryCardProps {
   whatHappened: ReactNode;
   whoWon?: ReactNode;
+  whoWonLabel?: string;
   goingForward?: ReactNode;
   goingForwardLabel?: string;
   keyDate?: { label: string; date: string; display: string } | null;
@@ -42,11 +43,11 @@ interface SummaryCardProps {
 }
 
 /** The short card at the top: what happened, who won, what it means, the key date, and Follow. */
-export function CaseSummaryCard({ whatHappened, whoWon, goingForward, goingForwardLabel = "Going forward", keyDate, facts, follow, tools, note }: SummaryCardProps) {
+export function CaseSummaryCard({ whatHappened, whoWon, whoWonLabel = "Who won", goingForward, goingForwardLabel = "Going forward", keyDate, facts, follow, tools, note }: SummaryCardProps) {
   return <section className="cdSummary" aria-labelledby="case-summary-title" id="case-summary">
     <h2 id="case-summary-title" className="cdSummaryHeadline">{whatHappened}</h2>
     {whoWon || goingForward || keyDate ? <dl className="cdSummaryList">
-      {whoWon ? <div><dt>Who won</dt><dd>{whoWon}</dd></div> : null}
+      {whoWon ? <div><dt>{whoWonLabel}</dt><dd>{whoWon}</dd></div> : null}
       {goingForward ? <div><dt>{goingForwardLabel}</dt><dd>{goingForward}</dd></div> : null}
       {keyDate ? <div><dt>{keyDate.label}</dt><dd><time dateTime={keyDate.date}>{keyDate.display}</time></dd></div> : null}
     </dl> : null}
