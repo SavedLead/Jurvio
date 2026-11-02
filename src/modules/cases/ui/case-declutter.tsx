@@ -60,8 +60,12 @@ export function CaseSummaryCard({ whatHappened, whoWon, goingForward, goingForwa
 }
 
 /** One collapsible detail section with a clear title and a one-line hint of what is inside. */
-export function CaseSection({ id, title, hint, open = false, children }: { id: string; title: string; hint?: ReactNode; open?: boolean; children: ReactNode }) {
-  return <details className="cdSection" id={`${id}-section`} open={open} data-section={id}>
+export function CaseSection({ id, title, hint, open = false, hideHeading = false, children }: {
+  id: string; title: string; hint?: ReactNode; open?: boolean;
+  /** The one component inside repeats the section title: hide its own kicker and heading. */
+  hideHeading?: boolean; children: ReactNode;
+}) {
+  return <details className="cdSection" id={`${id}-section`} open={open} data-section={id} data-hide-heading={hideHeading ? "" : undefined}>
     <summary><h2 className="cdSectionTitle">{title}</h2>{hint ? <span className="cdHint">{hint}</span> : null}</summary>
     <div className="cdBody">{children}</div>
   </details>;

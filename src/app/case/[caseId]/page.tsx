@@ -59,6 +59,11 @@ import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-eng
 import { buildCaseStanding } from "@/modules/plain-english/domain/case-standing";
 import { loadCaseStandingSignals } from "@/modules/plain-english/application/case-standing-signals";
 import { CaseStandingSection } from "@/modules/plain-english/ui/case-standing-section";
+import { readKeyDatesAhead } from "@/modules/case-intelligence/domain/key-dates";
+import { CircuitSplitSection, KeyDatesAheadSection, SimilarCasesSection } from "@/modules/case-intelligence/ui/case-extras";
+import { loadSimilarCases } from "@/modules/citations/application/similar-cases";
+import { loadCaseCircuitSplit } from "@/modules/scotus/application/circuit-split";
+import { readCircuitSplit } from "@/modules/scotus/domain/circuit-split";
 import { buildMotionGuide } from "@/modules/plain-english/domain/motion-guide";
 import { CaseMotionsSection } from "@/modules/plain-english/ui/case-motions";
 import { loadCaseJourney, loadJourneyBenchmarks, loadOnwardSupremeCourt } from "@/modules/scotus/application/case-journey";
@@ -293,14 +298,24 @@ export default async function CasePage({ params }: CasePageProps) {
     ? buildMotionGuide(docketEntries.map((entry) => ({ entryNumber: entry.entryNumber, filedOn: entry.filedOn, description: entry.description, publicId: entry.publicId })))
     : [];
   const decidedSupremeCourt = legalCase.courtKind === "supreme" && Boolean(legalCase.decidedOn);
-  const [narrativeTargets, standingSignals, citationReach]=await Promise.all([
+  const [narrativeTargets, standingSignals, citationReach, similarCases, opinionSplit]=await Promise.all([
     publicCitationTargets(sql, [
       ...caseAnswers.map(answer=>answer.answer), legalCase.backgroundSummary,
       legalCase.significanceSummary, legalCase.questionPresented, legalCase.exactHolding,
     ].filter(Boolean).join(" ")),
     loadCaseStandingSignals(sql, caseId, majorityOpinion?.publicId ?? null),
     decidedSupremeCourt && citationCounts.citedBy > 0 ? loadCitationReach(sql, caseId) : Promise.resolve(null),
+    // Cases like this: shared, less-often-cited authorities (only when this case cites something on Jurvio).
+    citedCases.length > 0 ? loadSimilarCases(sql, caseId).catch(() => []) : Promise.resolve([]),
+    // Circuit split sentences from the Court's own opinion (Supreme Court cases).
+    isSupremeCourt && majorityOpinion ? loadCaseCircuitSplit(sql, caseId, majorityOpinion.publicId).catch(() => null) : Promise.resolve(null),
   ]);
+  const todayNewYork = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const keyDatesAhead = readKeyDatesAhead(docketEntries.map((entry) => ({ publicId: entry.publicId, entryNumber: entry.entryNumber, filedOn: entry.filedOn, description: entry.description })), todayNewYork, 6, legalCase.terminatedOn ?? legalCase.decidedOn ?? null);
+  const questionSplit = isSupremeCourt && !opinionSplit ? readCircuitSplit(legalCase.questionPresented) : [];
+  const circuitSplit = opinionSplit
+    ? { sentences: opinionSplit.sentences, sourcePath: `/case/${caseId}/documents/${opinionSplit.documentPublicId}`, sourceLabel: "the Court’s opinion" }
+    : questionSplit.length ? { sentences: questionSplit, sourcePath: legalCase.questionSourceUrl ?? `/case/${caseId}`, sourceLabel: "the question presented" } : null;
   // "What this means going forward": the syllabus "Held:" point, else the verified holding quote.
   const syllabusHeld = decidedSupremeCourt ? readSyllabusHeld(standingSignals.opinionHead) : null;
   const ramificationsHolding: RamificationsHolding | null = syllabusHeld
@@ -511,7 +526,8 @@ export default async function CasePage({ params }: CasePageProps) {
           facts={summaryFacts}
           follow={followEligible ? <details className="cdFollow" id="follow"><summary>Follow this case</summary>
             <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /></details> : null}
-          tools={<PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />}
+          tools={<><PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
+            <Link className="cdSummaryLink" href={`/case/${caseId}/summary` as Route}>One-page summary to share or print →</Link></>}
           note={standing ? <><strong>Plain-English summary, not legal advice.</strong> Generated from the court record by fixed rules; quotes are the court&apos;s own words. If the record doesn&apos;t say, we say so instead of guessing.</> : null}
         />
 
@@ -519,11 +535,16 @@ export default async function CasePage({ params }: CasePageProps) {
           <CaseStandingSection standing={standing} compact sourceRef={ref} renderText={(text) => marked(text, standsMarker)} />
         </CaseSection> : null}
 
-        {decidedSupremeCourt ? <CaseSection id="going-forward" title="What this means going forward" hint={citationCounts.citedBy ? `Cited by ${citationCounts.citedBy.toLocaleString("en-US")} on Jurvio` : undefined}>
-          <CaseRamificationsSection holding={ramificationsHolding} reach={citationReach} citedByCount={citationCounts.citedBy} />
+        {keyDatesAhead.length ? <CaseSection id="dates-ahead" title="Key dates ahead" open hint={`${keyDatesAhead.length} upcoming ${keyDatesAhead.length === 1 ? "date" : "dates"} from the docket`} hideHeading>
+          <KeyDatesAheadSection dates={keyDatesAhead} caseId={caseId} today={todayNewYork} />
         </CaseSection> : null}
 
-        {journeySteps.length || onwardSupremeCourt.length ? <CaseSection id="journey" title="Case journey"
+        {decidedSupremeCourt || circuitSplit ? <CaseSection id="going-forward" title="What this means going forward" hideHeading={!circuitSplit} hint={citationCounts.citedBy ? `Cited by ${citationCounts.citedBy.toLocaleString("en-US")} on Jurvio` : undefined}>
+          {decidedSupremeCourt ? <CaseRamificationsSection holding={ramificationsHolding} reach={citationReach} citedByCount={citationCounts.citedBy} /> : null}
+          {circuitSplit ? <CircuitSplitSection {...circuitSplit} /> : null}
+        </CaseSection> : null}
+
+        {journeySteps.length || onwardSupremeCourt.length ? <CaseSection id="journey" title="Case journey" hideHeading={!onwardSupremeCourt.length}
           hint={journeySteps.length ? `${journeySteps.length} steps, from the court below to the Supreme Court` : "This case went on to the Supreme Court"}>
           {journey && journeySteps.length ? <CaseJourneySection journey={journey} benchmarks={journeyBenchmarks} sourceRef={ref} /> : null}
           {onwardSupremeCourt.length ? <OnwardSupremeCourtSection cases={onwardSupremeCourt} /> : null}
@@ -533,17 +554,18 @@ export default async function CasePage({ params }: CasePageProps) {
           <CaseJusticesVoted notes={justiceNotes} lineup={scdbLineup} extra={decisionDetail} />
         </CaseSection> : null}
 
-        {motionGuide.length ? <CaseSection id="motions" title="Motions" hint={`${motionGuide.length} ${motionGuide.length === 1 ? "motion" : "motions"} in plain English`}>
+        {motionGuide.length ? <CaseSection id="motions" title="Motions" hideHeading hint={`${motionGuide.length} ${motionGuide.length === 1 ? "motion" : "motions"} in plain English`}>
           <CaseMotionsSection motions={motionGuide} caseId={caseId} scanned={docketEntries.length} />
         </CaseSection> : null}
 
-        {citationTotal > 0 ? <CaseSection id="citations" title="Citations"
+        {citationTotal > 0 || similarCases.length ? <CaseSection id="citations" title="Citations"
           hint={[citationCounts.cited || citedCases.length ? `Cites ${Math.max(citationCounts.cited, citedCases.length).toLocaleString("en-US")}` : null, citationCounts.citedBy ? `cited by ${citationCounts.citedBy.toLocaleString("en-US")}` : null].filter(Boolean).join(" · ") || undefined}>
           <CitationCaseList title="Cases cited" cases={citedCases} total={citationCounts.cited}
             summary={citationCounts.cited ? citationCountLine(citationCounts.cited, citationCounts.citedOnJurvio) : undefined} />
           <CitedStubList stubs={citations.stubs ?? []} />
           <CitationCaseList id="cited-by" title="Cited by" cases={citingCases} total={citationCounts.citedBy}
             summary={citationCounts.citedBy ? `At least ${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio ${citationCounts.citedBy === 1 ? "cites" : "cite"} this case` : undefined} />
+          <SimilarCasesSection cases={similarCases} />
         </CaseSection> : null}
 
         {timelineEvents.length > 0 ? <CaseSection id="docket" title="Docket & timeline"
@@ -635,11 +657,11 @@ export default async function CasePage({ params }: CasePageProps) {
           </> : null}
         </CaseSection>
 
-        {newsLinks.length ? <CaseSection id="news" title="In the news" hint={`${newsLinks.length} ${newsLinks.length === 1 ? "article" : "articles"}`}>
+        {newsLinks.length ? <CaseSection id="news" title="In the news" hideHeading hint={`${newsLinks.length} ${newsLinks.length === 1 ? "article" : "articles"}`}>
           <CaseNewsSection links={newsLinks} />
         </CaseSection> : null}
 
-        {agencyItems.length ? <CaseSection id="agency" title="Official agency sources" hint={`${agencyItems.length} ${agencyItems.length === 1 ? "item" : "items"}`}>
+        {agencyItems.length ? <CaseSection id="agency" title="Official agency sources" hideHeading hint={`${agencyItems.length} ${agencyItems.length === 1 ? "item" : "items"}`}>
           <OfficialAgencySources items={agencyItems} />
         </CaseSection> : null}
 

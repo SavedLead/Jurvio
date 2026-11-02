@@ -37,10 +37,15 @@
 /* Sections reused inside a collapsible lose their own card, borders and repeated heading. */
 .cdBody > section, .cdBody .contentSection, .cdBody .caseFeatureSection, .cdBody .caseStands, .cdBody .caseAnswerPanel, .cdBody .caseLeadSection,
 .cdBody .opinionPendingNotice { margin: 0 0 14px; padding: 0; border: 0 !important; border-radius: 0; background: none !important; box-shadow: none !important; }
-.cdBody > section > .featureHeading:first-child h2, .cdBody > section > .featureHeading:first-child .sectionKicker,
-.cdBody > section > .sectionKicker:first-child, .cdBody .caseStands > h2, .cdBody > section > h2:first-child,
-.cdBody > section > .featureHeading:first-child > div > h2, .cdBody > section > .featureHeading:first-child > div > .sectionKicker { display: none; }
+.cdSection[data-hide-heading] > .cdBody > section > .featureHeading:first-child h2,
+.cdSection[data-hide-heading] > .cdBody > section > .featureHeading:first-child .sectionKicker,
+.cdSection[data-hide-heading] > .cdBody > section > .sectionKicker:first-child,
+.cdSection[data-hide-heading] > .cdBody > section > h2:first-child,
+.cdSection[data-hide-heading] > .cdBody > section > .sectionKicker:first-child + h2 { display: none; }
 .cdBody > section > .featureHeading:first-child { margin: 0 0 6px; }
+.cdBody > section h2 { font-size: 1rem; font-weight: 600; }
+.cdBody > section .sectionKicker { display: none; }
+.cdSummaryLink { flex-basis: 100%; font-size: .88rem; color: #304bd4; }
 .cdBody .featureHeading h3, .cdBody h3 { font-size: 1rem; font-weight: 600; }
 .cdBody strong, .cdBody b { font-weight: 600; }
 .cdBody .caseStandsList > div { border: 0; padding: 10px 0; }
