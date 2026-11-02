@@ -131,6 +131,13 @@ jobs:
           SQL
           REMOTE
           echo "::notice title=Supreme Court cases to check::$(wc -l < "$work/cases.tsv")"
+          # Questions-presented PDFs need pdftotext on the builder (same as the official
+          # Supreme Court ingest). Install poppler-utils once if it is missing.
+          if ! command -v pdftotext >/dev/null; then
+            echo "::notice::pdftotext missing on the builder; installing poppler-utils"
+            sudo -n apt-get update -qq && sudo -n apt-get install -y -qq poppler-utils
+          fi
+          pdftotext -v 2>&1 | head -n1
           INGESTION_USER_AGENT="Jurvio/0.1 (+https://jurvio.com; public court records)" \
             pnpm exec tsx scripts/backfill-scotus-docket-status.ts --input "$work/cases.tsv" \
               --cache-dir "$HOME/.cache/jurvio/scotus-dockets" --out "$work/status.tsv" --qp-out "$work/questions.tsv" \
