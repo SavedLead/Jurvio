@@ -8,7 +8,9 @@
 # Needs: SSH to $INGESTION_USER@$DB_HOST already configured (SSH_CONFIG_FILE or ~/.ssh), GH_TOKEN with
 # packages:read (to pull the image), docker on the runner.
 # Optional: JOB_CPUS (default 1.25), JOB_MEMORY (default 2500m),
-#   JOB_ENV_KEYS (extra env names copied from the worker, space separated).
+#   JOB_ENV_KEYS (extra env names copied from the worker, space separated),
+#   JOB_MOUNT (a directory on the runner mounted read-only at /job, for a job
+#   bundled from the checked-out commit plus its data files).
 #
 # Secrets: the worker's DATABASE_URL (and any JOB_ENV_KEYS) are read over SSH
 # straight into a mode-600 env file, masked, never printed, and deleted on exit.
@@ -89,8 +91,9 @@ printf '%s' "$GH_TOKEN" | docker login ghcr.io -u SavedLead --password-stdin >/d
 docker pull -q "$image" >/dev/null
 echo "=== running $job $* on $(hostname) (cpus=$JOB_CPUS mem=$JOB_MEMORY)"
 set +e
+mount=(); [ -n "${JOB_MOUNT:-}" ] && mount=(-v "$JOB_MOUNT:/job:ro")
 docker run --rm --network host --cpus "$JOB_CPUS" --memory "$JOB_MEMORY" --cpu-shares 256 \
-  --env-file "$work/job.env" -e NODE_ENV=production -e TZ=America/New_York \
+  "${mount[@]}" --env-file "$work/job.env" -e NODE_ENV=production -e TZ=America/New_York \
   -e JURVIO_ARTIFACT_ROOT=/tmp/artifacts -e RAW_ARTIFACT_DIR=/tmp/artifacts \
   "$image" node "$job" "$@"
 rc=$?

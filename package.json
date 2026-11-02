@@ -51,7 +51,8 @@
     "ingest:fjc:parties": "tsx scripts/ingest-fjc-idb-parties.ts",
     "diagnose:parties": "tsx scripts/diagnose-parties-coverage.ts",
     "news:cases": "tsx scripts/run-case-news.ts",
-    "alerts:accounts": "tsx scripts/run-account-alerts.ts"
+    "alerts:accounts": "tsx scripts/run-account-alerts.ts",
+    "scotus:import-scdb": "tsx scripts/import-scdb.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
