@@ -52,6 +52,8 @@ import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-eng
 import { buildCaseStanding } from "@/modules/plain-english/domain/case-standing";
 import { loadCaseStandingSignals } from "@/modules/plain-english/application/case-standing-signals";
 import { CaseStandingSection } from "@/modules/plain-english/ui/case-standing-section";
+import { loadCaseJourney, loadJourneyBenchmarks, loadOnwardSupremeCourt } from "@/modules/scotus/application/case-journey";
+import { CaseJourneySection, OnwardSupremeCourtSection } from "@/modules/scotus/ui/case-journey";
 
 export const dynamic = "force-dynamic";
 
@@ -144,6 +146,13 @@ export default async function CasePage({ params }: CasePageProps) {
     legalCase.supremeCourtTerm !== null ? loadCaseLineup(sql, caseId).catch(() => null) : Promise.resolve(null),
     // Justice notes from the official docket (dissents from denial, would-grant, statements); optional like news.
     isSupremeCourt ? loadCaseJusticeNotes(sql, caseId).catch(() => null) : Promise.resolve(null),
+  ]);
+  // Case journey: Supreme Court docket steps (with typical times), or, on an appeals case, the Supreme Court case it went on to.
+  const journeyEntries = docketEntries.map((entry) => ({ filedOn: entry.filedOn, description: entry.description }));
+  const [journey, journeyBenchmarks, onwardSupremeCourt] = await Promise.all([
+    isSupremeCourt ? loadCaseJourney(sql, caseId, journeyEntries).catch(() => null) : Promise.resolve(null),
+    isSupremeCourt ? loadJourneyBenchmarks(sql).catch(() => null) : Promise.resolve(null),
+    legalCase.courtKind === "appellate" ? loadOnwardSupremeCourt(sql, legalCase.courtCode ?? null, legalCase.docketNumber ?? null).catch(() => []) : Promise.resolve([]),
   ]);
   const { cited: citedCases, citing: citingCases, counts: citationCounts } = citations;
   const verified = legalCase.verification === "verified";
@@ -514,6 +523,8 @@ export default async function CasePage({ params }: CasePageProps) {
 
           {scdbLineup ? <CaseScdbLineup lineup={scdbLineup} /> : null}
 
+          {journey ? <CaseJourneySection journey={journey} benchmarks={journeyBenchmarks} /> : null}
+          {onwardSupremeCourt.length ? <OnwardSupremeCourtSection cases={onwardSupremeCourt} /> : null}
           {decidedSupremeCourt ? <CaseRamificationsSection holding={ramificationsHolding} reach={citationReach} citedByCount={citationCounts.citedBy} /> : null}
 
           <CitationCaseList
