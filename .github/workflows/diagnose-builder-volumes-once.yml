@@ -1,0 +1,88 @@
+name: Diagnose builder Docker volumes (once, read-only)
+
+# Read-only inventory of the Docker volumes, images, build cache and other big
+# disk users on the builder host (jurvio-builder-01, shared by builder-02/-03).
+# Answers "what are the ~527 unused volumes and is anything worth keeping?".
+# It lists, inspects and stats only. It does NOT prune, delete, mount, start
+# containers, or post anything. Dispatch by hand with confirm=DIAGNOSE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DIAGNOSE to run this read-only report"
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-builder-volumes
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 25
+    steps:
+      - name: Require confirm=DIAGNOSE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DIAGNOSE" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DIAGNOSE."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/diag
+      - name: Read-only builder disk and volume inventory
+        run: |
+          set -u
+          SUDO=""
+          if [ "$(id -u)" != "0" ] && sudo -n true 2>/dev/null; then SUDO="sudo -n"; fi
+          D="docker"
+          docker info >/dev/null 2>&1 || D="$SUDO docker"
+          LOW="nice -n 19 ionice -c3"
+          W="$RUNNER_TEMP/bvol-$GITHUB_RUN_ID"
+          mkdir -p "$W"
+          echo "host=$(hostname) runner=$RUNNER_NAME user=$(id -un) sudo=${SUDO:+yes} at $(date -u +%FT%TZ)"
+          echo "=== df ==="
+          df -h / ; df -i / | tail -1
+          echo "=== docker system df ==="
+          $D system df
+          $D system df -v > "$W/sysdf.txt" 2>&1
+          $D volume ls -q > "$W/names.txt"
+          echo "volume ls count: $(wc -l < "$W/names.txt")"
+          : > "$W/inspect.tsv"
+          xargs -r -n 100 $D volume inspect --format '{{.Name}}|{{.CreatedAt}}|{{json .Labels}}|{{.Mountpoint}}' < "$W/names.txt" >> "$W/inspect.tsv"
+          $D ps -a --no-trunc --format '{{.Names}}|{{.Status}}|{{.Image}}|{{.CreatedAt}}|{{.Mounts}}' > "$W/mounts.tsv"
+          echo "=== containers (all) ==="
+          cut -d'|' -f1-4 "$W/mounts.tsv"
+          echo "=== volume report ==="
+          $SUDO python3 scripts/diag/builder-volumes.py "$W" 2>&1 || echo "(python report failed)"
+          echo "=== images ==="
+          $D image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}} created={{.CreatedSince}}'
+          echo "=== build cache (system df -v section, first 15 rows) ==="
+          sed -n '/^Build cache usage/,$p' "$W/sysdf.txt" | head -16
+          echo "=== buildx builders ==="
+          $D buildx ls 2>/dev/null | head -10 || true
+          echo "=== /var/lib/docker breakdown ==="
+          $SUDO $LOW du -xsh /var/lib/docker/* 2>/dev/null | sort -rh | head -12
+          echo "=== top-level disk users on / ==="
+          $SUDO $LOW du -xh -d1 / 2>/dev/null | sort -rh | head -15
+          echo "=== second level of big dirs ==="
+          for d in /home /opt /tmp /var /var/tmp /data /mnt /srv /root /var/lib/jurvio /var/log; do
+            [ -d "$d" ] || continue
+            echo "--- $d"
+            $SUDO $LOW du -xh -d1 "$d" 2>/dev/null | sort -rh | head -8
+          done
+          echo "=== runner temp/work and tool cache ==="
+          for d in /opt/actions-runner/_work /home/*/actions-runner-*/_work; do
+            [ -d "$d" ] || continue
+            $SUDO $LOW du -xh -d1 "$d" 2>/dev/null | sort -rh | head -6
+          done
+          echo "=== big files (>500MB) on / ==="
+          $SUDO $LOW find / -xdev -type f -size +500M -printf '%s %TY-%Tm-%Td %p\n' 2>/dev/null | sort -rn | head -20 | awk '{printf "%.1fGB %s %s\n", $1/1e9, $2, $3}'
+          rm -rf "$W"
