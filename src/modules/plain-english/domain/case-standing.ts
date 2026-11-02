@@ -673,9 +673,7 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
       if (cited) points.push(cited);
       return { headline: `${COURT_NAME[input.courtKind]} has decided this case.`, points };
     }
-    const vote = input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "";
-    points.push({ id: "who-won", label: "Who won?", text: `${whoWonText(input, outcome, roles)}${vote}` });
-    points.push(reliefPoint(input.courtKind === "supreme"
+    const relief = input.courtKind === "supreme"
       ? buildSupremeRelief({ roles, lowerCourt, questions: input.questionsPresented ?? null, status: "decided", outcome: outcome.kind })
       : buildAppealRelief({
         courtKind: input.courtKind,
@@ -686,7 +684,16 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
         closingSource: null,
         opinionHead: input.opinionHead ?? null,
         opinionPath: input.opinionPath,
-      })));
+      });
+    // The point-by-point rulings show the appealing side won some requests and lost others: no single winner.
+    const asked = relief.items.filter((item) => item.askedBy);
+    const split = outcome.kind !== "mixed" && asked.some((item) => item.result === "granted") && asked.some((item) => item.result === "denied");
+    const vote = input.courtKind === "supreme" && input.votes ? ` The Justices voted ${voteText(input.votes)}, according to the Supreme Court Database.` : "";
+    const whoWon = split
+      ? `Neither side won completely. ${COURT_NAME[input.courtKind]} ${actionFor(outcome, input.courtKind)}, but on the specific requests ${asked[0]!.askedBy} won some and lost others (listed below).`
+      : whoWonText(input, outcome, roles);
+    points.push({ id: "who-won", label: "Who won?", text: `${whoWon}${vote}` });
+    points.push(reliefPoint(relief));
     const lower = lowerPoint(input, lowerCourt);
     if (lower) points.push(lower);
     points.push({
@@ -702,7 +709,10 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
         : outcome.source === "opinion" || outcome.source === "syllabus" ? input.opinionPath : null,
     });
     const precedent = input.courtKind === "appellate" ? precedentLine(input.precedentialStatus) : null;
-    points.push({ id: "means", label: "What does it mean?", text: [meaning(input, outcome), precedent].filter(Boolean).join(" ") });
+    const meant = split
+      ? `Part of the lower court's ruling stands and part was changed; the list above shows which.${outcome.remanded ? " The case goes back to the lower court to continue in line with this ruling." : ""}`
+      : meaning(input, outcome);
+    points.push({ id: "means", label: "What does it mean?", text: [meant, precedent].filter(Boolean).join(" ") });
     if (input.exactHolding) {
       points.push({
         id: "rule",
@@ -717,7 +727,7 @@ export function buildCaseStanding(input: CaseStandingInput): CaseStanding | null
     if (law) points.push(law);
     const cited = citedPoint(input);
     if (cited) points.push(cited);
-    return { headline: headlineFor(input, outcome, roles), points };
+    return { headline: split ? `${COURT_NAME[input.courtKind]} gave each side part of what it wanted.` : headlineFor(input, outcome, roles), points };
   }
 
   // District, bankruptcy and other trial-level cases: report what the record shows, never a guess.

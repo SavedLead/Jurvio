@@ -363,6 +363,10 @@ describe("phase 6: what each side asked for, and what they got", () => {
     expect(asked?.text).toContain("The court ordered a new trial but refused to throw out the conviction.");
     expect(asked?.items?.map((item) => [item.label, item.badge])).toEqual([["Throw out the conviction", "Lost"], ["Order a new trial", "Won"]]);
     expect(asked?.quotes?.[0]?.text).toBe("He asks us to set aside his conviction and order a new trial.");
+    // Won one request, lost the other: the summary does not call it a plain affirmance.
+    expect(standing?.headline).toBe("The appeals court gave each side part of what it wanted.");
+    expect(standing?.points.find((point) => point.id === "who-won")?.text).toMatch(/^Neither side won completely/);
+    expect(standing?.points.find((point) => point.id === "means")?.text).toMatch(/^Part of the lower court's ruling stands and part was changed/);
   });
 
   it("district: motions and rulings from the public docket; sealed entries are never read", () => {
