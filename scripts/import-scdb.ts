@@ -34,7 +34,8 @@ const MQ = {
 
 async function load(relative: string): Promise<DataFile> {
   const full = path.isAbsolute(relative) ? relative : path.join(dataDir, relative);
-  return { path: path.relative(process.cwd(), full), bytes: await readFile(full) };
+  // Stable provenance name ("data/<relative>") whatever the working directory.
+  return { path: `data/${path.relative(dataDir, full).split(path.sep).join("/")}`, bytes: await readFile(full) };
 }
 async function exists(p: string) { try { await access(p); return true; } catch { return false; } }
 

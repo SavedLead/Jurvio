@@ -242,22 +242,28 @@ COMMENT ON TABLE martin_quinn_score IS
 
 CREATE MATERIALIZED VIEW scotus_justice_direction_mv AS
 WITH v AS (
-  SELECT v.scdb_justice_id, c.term, c.issue_area, v.direction, scope.scope
+  SELECT v.scdb_justice_id, c.term, c.issue_area, v.direction, v.vote, scope.scope
   FROM scdb_vote v
   JOIN scdb_case c ON c.scdb_case_id = v.scdb_case_id
   CROSS JOIN LATERAL (VALUES ('all'), ('argued')) AS scope(scope)
-  WHERE v.direction IS NOT NULL
-    AND (scope.scope = 'all' OR c.decision_type IN (1, 6, 7))
+  WHERE scope.scope = 'all' OR c.decision_type IN (1, 6, 7)
 )
+-- Ledger columns: rows_on_record = every SCDB row for the justice in scope;
+-- votes_participating = rows with a coded vote; votes_with_direction = the
+-- denominator of the shares; votes_without_direction = participating votes the
+-- SCDB left without a liberal/conservative code (unknowns, excluded).
 SELECT scope,
        scdb_justice_id,
        CASE WHEN GROUPING(term) = 1 THEN 0 ELSE term END::smallint AS term_key,
        CASE WHEN GROUPING(issue_area) = 1 THEN 0 ELSE coalesce(issue_area, -1) END::smallint AS issue_area_key,
-       count(*)::integer AS votes_with_direction,
+       count(*)::integer AS rows_on_record,
+       count(*) FILTER (WHERE vote IS NOT NULL)::integer AS votes_participating,
+       count(*) FILTER (WHERE direction IS NOT NULL)::integer AS votes_with_direction,
+       count(*) FILTER (WHERE vote IS NOT NULL AND direction IS NULL)::integer AS votes_without_direction,
        count(*) FILTER (WHERE direction = 2)::integer AS scdb_liberal_votes,
        count(*) FILTER (WHERE direction = 1)::integer AS scdb_conservative_votes,
-       round(count(*) FILTER (WHERE direction = 2)::numeric / count(*), 4) AS scdb_liberal_share,
-       round(count(*) FILTER (WHERE direction = 1)::numeric / count(*), 4) AS scdb_conservative_share
+       round(count(*) FILTER (WHERE direction = 2)::numeric / nullif(count(*) FILTER (WHERE direction IS NOT NULL), 0), 4) AS scdb_liberal_share,
+       round(count(*) FILTER (WHERE direction = 1)::numeric / nullif(count(*) FILTER (WHERE direction IS NOT NULL), 0), 4) AS scdb_conservative_share
 FROM v
 GROUP BY GROUPING SETS (
   (scope, scdb_justice_id),
@@ -271,14 +277,17 @@ COMMENT ON MATERIALIZED VIEW scotus_justice_direction_mv IS
   'Share of each justice''s votes that are liberal / conservative as coded by the Supreme Court Database. term_key 0 = all terms; issue_area_key 0 = all issue areas, -1 = SCDB issue area missing.';
 
 -- Two justices agree when both are in the majority or both dissent (SCDB
--- "majority" variable). Cases where either did not participate (NULL) are left out.
+-- "majority" variable). Ledger: cases_both_on_record = cases where the SCDB has a
+-- row for both; cases_together (the denominator) = both have a majority/dissent
+-- code; cases_excluded = on record but at least one did not participate or has
+-- no code.
 CREATE MATERIALIZED VIEW scotus_justice_pair_agreement_mv AS
 WITH v AS (
   SELECT v.scdb_case_id, v.scdb_justice_id, v.majority, c.term, c.decision_type
   FROM scdb_vote v JOIN scdb_case c ON c.scdb_case_id = v.scdb_case_id
-  WHERE v.majority IS NOT NULL
 ), pairs AS (
   SELECT scope.scope, a.term, a.scdb_justice_id AS justice_a, b.scdb_justice_id AS justice_b,
+         (a.majority IS NOT NULL AND b.majority IS NOT NULL) AS both_coded,
          (a.majority = b.majority) AS agreed
   FROM v a
   JOIN v b ON b.scdb_case_id = a.scdb_case_id AND b.scdb_justice_id > a.scdb_justice_id
@@ -287,9 +296,11 @@ WITH v AS (
 )
 SELECT scope, justice_a, justice_b,
        CASE WHEN GROUPING(term) = 1 THEN 0 ELSE term END::smallint AS term_key,
-       count(*)::integer AS cases_together,
-       count(*) FILTER (WHERE agreed)::integer AS cases_agreed,
-       round(count(*) FILTER (WHERE agreed)::numeric / count(*), 4) AS agreement_rate
+       count(*)::integer AS cases_both_on_record,
+       count(*) FILTER (WHERE both_coded)::integer AS cases_together,
+       count(*) FILTER (WHERE NOT both_coded)::integer AS cases_excluded,
+       count(*) FILTER (WHERE both_coded AND agreed)::integer AS cases_agreed,
+       round(count(*) FILTER (WHERE both_coded AND agreed)::numeric / nullif(count(*) FILTER (WHERE both_coded), 0), 4) AS agreement_rate
 FROM pairs
 GROUP BY GROUPING SETS ((scope, justice_a, justice_b), (scope, justice_a, justice_b, term));
 CREATE UNIQUE INDEX scotus_justice_pair_agreement_mv_key
@@ -352,5 +363,56 @@ SELECT term, majority_coalition,
 FROM scotus_five_four_decision_v
 WHERE majority_coalition IS NOT NULL
 GROUP BY term, majority_coalition;
+
+-- Per justice per term: the facts a justice page lists, with Martin-Quinn.
+CREATE VIEW scotus_justice_term_profile_v AS
+SELECT v.scdb_justice_id, c.term,
+       count(*)::integer AS cases_on_record,
+       count(*) FILTER (WHERE v.vote IS NOT NULL)::integer AS votes_participating,
+       count(*) FILTER (WHERE v.majority = 2)::integer AS votes_in_majority,
+       count(*) FILTER (WHERE v.majority = 1)::integer AS votes_in_dissent,
+       count(*) FILTER (WHERE v.vote IN (3, 4))::integer AS concurrences,
+       count(*) FILTER (WHERE v.opinion IN (2, 3))::integer AS opinions_written,
+       count(*) FILTER (WHERE c.maj_opin_writer = v.scdb_justice_id)::integer AS majority_opinions_written,
+       mq.post_mn AS martin_quinn_post_mn, mq.post_025 AS martin_quinn_post_025, mq.post_975 AS martin_quinn_post_975
+FROM scdb_vote v
+JOIN scdb_case c ON c.scdb_case_id = v.scdb_case_id
+LEFT JOIN martin_quinn_score mq ON mq.scdb_justice_id = v.scdb_justice_id AND mq.term = c.term
+GROUP BY v.scdb_justice_id, c.term, mq.post_mn, mq.post_025, mq.post_975;
+
+-- Coverage meter per term: what the SCDB covers, what is unknown, what links to Jurvio.
+CREATE VIEW scotus_term_coverage_v AS
+SELECT c.term,
+       count(*)::integer AS scdb_cases,
+       count(*) FILTER (WHERE c.decision_type IN (1, 6, 7))::integer AS argued_cases,
+       count(*) FILTER (WHERE c.decision_direction IN (1, 2))::integer AS cases_with_direction,
+       count(*) FILTER (WHERE c.decision_direction = 3 OR c.decision_direction IS NULL)::integer AS cases_direction_unspecifiable_or_missing,
+       count(*) FILTER (WHERE c.maj_votes = 5 AND c.min_votes = 4)::integer AS five_four_cases,
+       count(*) FILTER (WHERE c.legal_case_id IS NOT NULL)::integer AS cases_linked_to_jurvio,
+       (SELECT count(*) FROM martin_quinn_score mq WHERE mq.term = c.term)::integer AS martin_quinn_justices,
+       max(r.version) AS scdb_version
+FROM scdb_case c
+JOIN scotus_dataset_release r ON r.id = c.release_id
+GROUP BY c.term;
+
+-- "Unusual alignments" (Jurvio analysis, rule stated, no score): for each 5-4
+-- decision, the pair inside the majority that agreed least often over the whole
+-- term. A low value means the majority joined justices who usually split.
+CREATE VIEW scotus_unusual_alignment_v AS
+SELECT f.scdb_case_id, f.term, f.decided_on, f.case_name, f.us_cite, f.legal_case_id,
+       f.majority_coalition, f.dissenting_coalition,
+       low.justice_a, low.justice_b, low.agreement_rate AS lowest_majority_pair_term_agreement,
+       low.cases_together AS lowest_pair_cases_together
+FROM scotus_five_four_decision_v f
+CROSS JOIN LATERAL (
+  SELECT p.justice_a, p.justice_b, p.agreement_rate, p.cases_together
+  FROM scotus_justice_pair_agreement_mv p
+  JOIN scotus_justice ja ON ja.scdb_justice_id = p.justice_a
+  JOIN scotus_justice jb ON jb.scdb_justice_id = p.justice_b
+  WHERE p.scope = 'all' AND p.term_key = f.term
+    AND ja.scdb_code = ANY (f.majority_coalition) AND jb.scdb_code = ANY (f.majority_coalition)
+  ORDER BY p.agreement_rate ASC NULLS LAST, p.justice_a, p.justice_b
+  LIMIT 1
+) low;
 
 COMMIT;

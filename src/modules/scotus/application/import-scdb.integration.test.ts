@@ -110,6 +110,21 @@ describe.skipIf(!databaseUrl)("SCDB import, Jurvio matching and justice analytic
         const argued = pairs.find((p) => p.scope === "argued" && p.justice_a === 901 && p.justice_b === 903);
         expect(argued).toMatchObject({ cases_together: 2, cases_agreed: 1, agreement_rate: "0.5000" });
 
+        const [ledger] = await tx<{ cases_both_on_record: number; cases_excluded: number; votes_without_direction: number; votes_participating: number }[]>`
+          SELECT p.cases_both_on_record, p.cases_excluded, d.votes_without_direction, d.votes_participating
+          FROM scotus_justice_pair_agreement_mv p
+          JOIN scotus_justice_direction_mv d ON d.scope = 'all' AND d.scdb_justice_id = 901 AND d.term_key = 2190 AND d.issue_area_key = 0
+          WHERE p.scope = 'all' AND p.term_key = 2190 AND p.justice_a = 901 AND p.justice_b = 902`;
+        expect(ledger).toEqual({ cases_both_on_record: 3, cases_excluded: 0, votes_without_direction: 1, votes_participating: 3 });
+
+        const [coverage] = await tx<{ scdb_cases: number; argued_cases: number; cases_with_direction: number; five_four_cases: number; cases_linked_to_jurvio: number }[]>`
+          SELECT scdb_cases, argued_cases, cases_with_direction, five_four_cases, cases_linked_to_jurvio FROM scotus_term_coverage_v WHERE term = 2190`;
+        expect(coverage).toEqual({ scdb_cases: 3, argued_cases: 2, cases_with_direction: 2, five_four_cases: 1, cases_linked_to_jurvio: 2 });
+
+        const [unusual] = await tx<{ scdb_case_id: string; justice_a: number; justice_b: number; lowest_majority_pair_term_agreement: string }[]>`
+          SELECT scdb_case_id, justice_a, justice_b, lowest_majority_pair_term_agreement::text FROM scotus_unusual_alignment_v WHERE term = 2190`;
+        expect(unusual).toEqual({ scdb_case_id: "2190-003", justice_a: 901, justice_b: 902, lowest_majority_pair_term_agreement: "1.0000" });
+
         const direction = await tx<{ scdb_justice_id: number; votes_with_direction: number; scdb_liberal_share: string }[]>`
           SELECT scdb_justice_id, votes_with_direction, scdb_liberal_share::text FROM scotus_justice_direction_mv
           WHERE scope = 'all' AND term_key = 2190 AND issue_area_key = 0 AND scdb_justice_id >= 901 ORDER BY 1`;
