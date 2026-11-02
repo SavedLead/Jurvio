@@ -46,6 +46,10 @@ on:
 
 permissions:
   contents: read
+  # Pull the released Jurvio app image (it ships poppler-utils) to run pdftotext
+  # for the questions-presented PDFs; nothing is installed on the builder.
+  actions: read
+  packages: read
 
 concurrency:
   group: jurvio-backfill-case-outcome-sources
@@ -104,6 +108,34 @@ jobs:
             || { echo "::error::tables missing; release migration 0185 with deploy-production.yml first"; exit 1; }
           REMOTE
 
+      - name: Log in to GHCR (read the released app image)
+        if: ${{ inputs.source == 'scotus' || inputs.source == 'both' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start pdftotext in the released app image (no network, cache read-only)
+        if: ${{ inputs.source == 'scotus' || inputs.source == 'both' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The image of the last successful Deploy production run is the one in production.
+          sha="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/deploy-production.yml/runs?status=success&per_page=1" \
+            | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const r=JSON.parse(d).workflow_runs?.[0];if(!r)process.exit(1);process.stdout.write(r.head_sha)})')"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$sha"
+          qp="$HOME/.cache/jurvio/scotus-dockets/qp"; mkdir -p "$qp"
+          name="jurvio-qp-$GITHUB_RUN_ID"
+          docker pull -q "$image"
+          docker run -d --rm --name "$name" --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            -v "$qp:/qp:ro" --entrypoint sleep "$image" 25000 >/dev/null
+          docker exec "$name" pdftotext -v 2>&1 | head -n1
+          echo "PDFTOTEXT_CONTAINER=$name" >> "$GITHUB_ENV"
+          echo "::notice title=pdftotext::running in $image as container $name"
+
       - name: Supreme Court official dockets
         if: ${{ inputs.source == 'scotus' || inputs.source == 'both' }}
         run: |
@@ -131,13 +163,8 @@ jobs:
           SQL
           REMOTE
           echo "::notice title=Supreme Court cases to check::$(wc -l < "$work/cases.tsv")"
-          # Questions-presented PDFs need pdftotext on the builder (same as the official
-          # Supreme Court ingest). Install poppler-utils once if it is missing.
-          if ! command -v pdftotext >/dev/null; then
-            echo "::notice::pdftotext missing on the builder; installing poppler-utils"
-            sudo -n apt-get update -qq && sudo -n apt-get install -y -qq poppler-utils
-          fi
-          pdftotext -v 2>&1 | head -n1
+          # Questions-presented PDFs are converted by pdftotext inside $PDFTOTEXT_CONTAINER
+          # (started above from the released app image); the script refuses to fetch if it can't run.
           INGESTION_USER_AGENT="Jurvio/0.1 (+https://jurvio.com; public court records)" \
             pnpm exec tsx scripts/backfill-scotus-docket-status.ts --input "$work/cases.tsv" \
               --cache-dir "$HOME/.cache/jurvio/scotus-dockets" --out "$work/status.tsv" --qp-out "$work/questions.tsv" \
@@ -274,3 +301,7 @@ jobs:
           } > "$work/load.sql"
           vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/load.sql" | tee "$work/after.txt"
           { echo '### fjc_idb_case_outcome'; echo '```'; cat "$work/stats.json" "$work/after.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop the pdftotext container
+        if: ${{ always() && env.PDFTOTEXT_CONTAINER != '' }}
+        run: docker rm -f "$PDFTOTEXT_CONTAINER" >/dev/null 2>&1 || true

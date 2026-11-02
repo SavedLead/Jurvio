@@ -8,6 +8,8 @@ import { canIndexDirectoryProfile, getPublicCourt } from "@/modules/directory/ap
 import styles from "@/modules/directory/ui/directory.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { circuitJusticeFor, circuitOfCourt } from "@/modules/scotus/domain/circuit-justice";
+import { CircuitJusticeBox } from "@/modules/scotus/ui/circuit-justice-box";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ courtId: string }> }
@@ -27,6 +29,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 export default async function CourtPage({ params }: Props) {
   const court = await load(params); if (!court) notFound();
+  const circuitJustice = circuitJusticeFor(court.providerCourtId);
+  const isCircuit = circuitJustice !== null && circuitOfCourt(court.providerCourtId) === (court.providerCourtId ?? "").toLowerCase();
   const jsonLd = { "@context": "https://schema.org", "@type": "GovernmentOrganization", name: court.name,
     identifier: court.publicId, url: `https://jurvio.com/courts/${court.publicId}` };
   return <main className={styles.page}><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }} />
@@ -35,6 +39,7 @@ export default async function CourtPage({ params }: Props) {
       <p>{court.shortName ? `${court.shortName}. ` : ""}Published case information connected to this court.</p>
       <dl className={styles.facts}><div><dt>Jurvio ID</dt><dd>{court.publicId}</dd></div><div><dt>Jurisdiction</dt><dd>{court.jurisdiction ?? "Unavailable"}</dd></div>
         <div><dt>Public cases</dt><dd>{court.caseCount.toLocaleString()}</dd></div><div><dt>Verification</dt><dd>{court.verification.replaceAll("_", " ")}</dd></div></dl></header>
+    {circuitJustice ? <CircuitJusticeBox justice={circuitJustice} relation={isCircuit ? "circuit" : "court-in-circuit"} /> : null}
     {court.sourceUrl ? <p><a className={styles.sourceLink} href={court.sourceUrl} rel="nofollow noopener">View official/source court information</a></p> : null}
     <section className={styles.section}><h2>Recent published cases</h2><ol className={styles.caseList}>{court.cases.map((legalCase) => <li key={legalCase.publicId}>
       <Link href={`/case/${legalCase.publicId}` as Route}><div><h3>{cleanCaseCaption(legalCase.caption)}</h3><p>Docket {legalCase.docketNumber}</p></div><time>{legalCase.filedOn ?? "Date unavailable"}</time></Link>

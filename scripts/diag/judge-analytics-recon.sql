@@ -31,3 +31,24 @@ SELECT state, count(*), count(published_case_id) FROM appellate_ingestion_item G
 SELECT lc.public_id, court.name, lc.docket_number, lc.judgment_state, lc.disposition_scope, lc.decided_on, left(lc.status_explanation,160)
 FROM appellate_ingestion_item i JOIN legal_case lc ON lc.id=i.published_case_id JOIN court ON court.id=lc.court_id
 ORDER BY i.decided_on DESC NULLS LAST LIMIT 8;
+\echo '== opinion clusters: panel names and metadata keys (by court kind)'
+SELECT CASE WHEN court.provider_court_id ~ '^ca[0-9dcf]+$' THEN 'appeals' WHEN court.provider_court_id = 'scotus' THEN 'scotus' ELSE coalesce(court.jurisdiction,'?') END AS kind,
+  count(*) AS clusters, count(*) FILTER (WHERE nullif(btrim(oc.judges),'') IS NOT NULL) AS with_judges,
+  count(*) FILTER (WHERE nullif(btrim(oc.procedural_history),'') IS NOT NULL) AS with_history
+FROM opinion_cluster oc JOIN legal_case lc ON lc.id = oc.case_id JOIN court ON court.id = lc.court_id GROUP BY 1 ORDER BY 2 DESC;
+\echo '== cluster provider_metadata keys'
+SELECT k, count(*) FROM (SELECT jsonb_object_keys(provider_metadata) k FROM opinion_cluster TABLESAMPLE SYSTEM (5) WHERE jsonb_typeof(provider_metadata)='object' LIMIT 50000) x GROUP BY 1 ORDER BY 2 DESC LIMIT 60;
+\echo '== opinion provider_metadata keys'
+SELECT k, count(*) FROM (SELECT jsonb_object_keys(provider_metadata) k FROM judicial_opinion TABLESAMPLE SYSTEM (5) WHERE jsonb_typeof(provider_metadata)='object' LIMIT 50000) x GROUP BY 1 ORDER BY 2 DESC LIMIT 60;
+\echo '== sample appeals clusters'
+SELECT court.provider_court_id, oc.date_filed, left(oc.judges,120) AS judges, left(oc.provider_metadata::text,400) AS meta
+FROM opinion_cluster oc JOIN legal_case lc ON lc.id = oc.case_id JOIN court ON court.id = lc.court_id
+WHERE court.provider_court_id ~ '^ca[0-9dcf]+$' ORDER BY oc.date_filed DESC NULLS LAST LIMIT 8;
+\echo '== assignment judges with FJC appointment party by court kind'
+SELECT t.court_category, t.appointing_president_party, count(DISTINCT a.judge_id) AS judges, count(DISTINCT a.case_id) AS cases
+FROM judge_case_assignment a JOIN judge_service_term t ON t.judge_id = a.judge_id AND t.service_type = 'article_iii_active'
+GROUP BY 1,2 ORDER BY 4 DESC LIMIT 30;
+\echo '== docket entries mentioning appeal mandate/affirmed/reversed (1% block sample, to keep load low)'
+SELECT count(*) FILTER (WHERE description ~* 'mandate') AS mandate, count(*) FILTER (WHERE description ~* '\maffirm') AS affirmed,
+  count(*) FILTER (WHERE description ~* '\mrevers') AS reversed, count(*) FILTER (WHERE description ~* 'notice of appeal') AS notice_of_appeal
+FROM docket_entry TABLESAMPLE SYSTEM (1);
