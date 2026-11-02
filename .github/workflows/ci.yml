@@ -65,6 +65,16 @@ jobs:
     steps:
       - name: Point DATABASE_URL at the Postgres service port
         run: echo "DATABASE_URL=postgresql://jurvio:jurvio@localhost:${{ job.services.postgres.ports['5432'] }}/jurvio" >> "$GITHUB_ENV"
+      # The postgres image declares VOLUME /var/lib/postgresql/data, so every
+      # service container gets an anonymous volume (~110 MB), and the runner
+      # removes the container without -v. 531 of them (35.9 GB) filled
+      # builder-01 to its 30% floor by 2026-11-01. Remove the dangling ones left
+      # by earlier jobs. `docker volume prune` never touches a volume a running
+      # or stopped container still uses (this job's own Postgres included), and
+      # the label filter limits it to anonymous volumes. Never fails the job.
+      - name: Remove anonymous volumes left by earlier CI jobs
+        run: |
+          docker volume prune -f --filter label=com.docker.volume.anonymous 2>&1 | tail -n 1 || true
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
