@@ -1,0 +1,3588 @@
+{
+ "sources": {
+  "scdbCodebook": "https://scdb.la.psu.edu/online-codebook/majority-opinion-writer/",
+  "fjcService": "https://www.fjc.gov/sites/default/files/history/federal-judicial-service.csv",
+  "fjcDemographics": "https://www.fjc.gov/sites/default/files/history/demographics.csv"
+ },
+ "justices": [
+  {
+   "scdbJusticeId": 1,
+   "scdbCode": "JJay",
+   "scdbName": "Jay, John",
+   "scdbServiceStart": "1789-10-19",
+   "scdbServiceEnd": "1795-06-29",
+   "fjcNid": "1382771",
+   "fullName": "John Jay",
+   "birthDate": "1745-12-12",
+   "birthYear": 1745,
+   "birthPlace": "New York, NY",
+   "deathDate": "1829-05-17",
+   "deathYear": 1829,
+   "deathPlace": "Bedford, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1789-09-24",
+     "confirmationDate": "1789-09-26",
+     "commissionDate": "1789-09-26",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1795-06-29"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 2,
+   "scdbCode": "JRutledge1",
+   "scdbName": "Rutledge, John",
+   "scdbServiceStart": "1790-02-15",
+   "scdbServiceEnd": "1791-03-05",
+   "fjcNid": "1387271",
+   "fullName": "John Rutledge",
+   "birthDate": "1739-09-18",
+   "birthYear": 1739,
+   "birthPlace": "Charleston, SC",
+   "deathDate": "1800-06-21",
+   "deathYear": 1800,
+   "deathPlace": "Charleston, SC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1789-09-24",
+     "confirmationDate": "1789-09-26",
+     "commissionDate": "1789-09-26",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1791-03-05"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 3,
+   "scdbCode": "WCushing",
+   "scdbName": "Cushing, William",
+   "scdbServiceStart": "1790-02-02",
+   "scdbServiceEnd": "1810-09-13",
+   "fjcNid": "1379701",
+   "fullName": "William Cushing",
+   "birthDate": "1732-03-01",
+   "birthYear": 1732,
+   "birthPlace": "Scituate, MA",
+   "deathDate": "1810-09-13",
+   "deathYear": 1810,
+   "deathPlace": "Scituate, MA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1789-09-24",
+     "confirmationDate": "1789-09-26",
+     "commissionDate": "1789-09-27",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1810-09-13"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 4,
+   "scdbCode": "JWilson",
+   "scdbName": "Wilson, James",
+   "scdbServiceStart": "1789-10-05",
+   "scdbServiceEnd": "1798-08-21",
+   "fjcNid": "1389896",
+   "fullName": "James Wilson",
+   "birthDate": "1742-09-14",
+   "birthYear": 1742,
+   "birthPlace": "Carskerdo, Scotland",
+   "deathDate": "1798-08-21",
+   "deathYear": 1798,
+   "deathPlace": "Edenton, NC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1789-09-24",
+     "confirmationDate": "1789-09-26",
+     "commissionDate": "1789-09-29",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1798-08-21"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 5,
+   "scdbCode": "JBlair",
+   "scdbName": "Blair, John",
+   "scdbServiceStart": "1790-02-02",
+   "scdbServiceEnd": "1796-01-27",
+   "fjcNid": "1377911",
+   "fullName": "John Blair, Jr.",
+   "birthDate": null,
+   "birthYear": 1732,
+   "birthPlace": "Williamsburg, VA",
+   "deathDate": "1800-08-31",
+   "deathYear": 1800,
+   "deathPlace": "Williamsburg, VA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1789-09-24",
+     "confirmationDate": "1789-09-26",
+     "commissionDate": "1789-09-30",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1795-10-25"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 6,
+   "scdbCode": "JIredell",
+   "scdbName": "Iredell, James",
+   "scdbServiceStart": "1790-05-12",
+   "scdbServiceEnd": "1799-10-20",
+   "fjcNid": "1382676",
+   "fullName": "James Iredell",
+   "birthDate": "1751-10-05",
+   "birthYear": 1751,
+   "birthPlace": "Lewes, England",
+   "deathDate": "1799-10-20",
+   "deathYear": 1799,
+   "deathPlace": "Edenton, NC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1790-02-08",
+     "confirmationDate": "1790-02-10",
+     "commissionDate": "1790-02-10",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1799-10-20"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 7,
+   "scdbCode": "TJohnson",
+   "scdbName": "Johnson, Thomas",
+   "scdbServiceStart": "1791-09-19",
+   "scdbServiceEnd": "1793-02-22",
+   "fjcNid": "1382861",
+   "fullName": "Thomas Johnson",
+   "birthDate": "1732-11-04",
+   "birthYear": 1732,
+   "birthPlace": "Calvert County, MD",
+   "deathDate": "1819-10-26",
+   "deathYear": 1819,
+   "deathPlace": "Frederick, MD",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1791-10-31",
+     "confirmationDate": "1791-11-07",
+     "commissionDate": "1791-11-07",
+     "recessAppointmentDate": "1791-08-05",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1793-01-16"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 8,
+   "scdbCode": "WPaterson",
+   "scdbName": "Paterson, William",
+   "scdbServiceStart": "1793-03-11",
+   "scdbServiceEnd": "1806-09-09",
+   "fjcNid": "1386141",
+   "fullName": "William Paterson",
+   "birthDate": "1745-12-24",
+   "birthYear": 1745,
+   "birthPlace": "County Antrim, Ireland (now Northern Ireland)",
+   "deathDate": "1806-09-09",
+   "deathYear": 1806,
+   "deathPlace": "Albany, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1793-03-04",
+     "confirmationDate": "1793-03-04",
+     "commissionDate": "1793-03-04",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1806-09-09"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 9,
+   "scdbCode": "JRutledge2",
+   "scdbName": "Rutledge, John",
+   "scdbServiceStart": "1795-08-12",
+   "scdbServiceEnd": "1795-12-15",
+   "fjcNid": "1387271",
+   "fullName": "John Rutledge",
+   "birthDate": "1739-09-18",
+   "birthYear": 1739,
+   "birthPlace": "Charleston, SC",
+   "deathDate": "1800-06-21",
+   "deathYear": 1800,
+   "deathPlace": "Charleston, SC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1795-12-10",
+     "confirmationDate": null,
+     "commissionDate": null,
+     "recessAppointmentDate": "1795-07-01",
+     "senateVoteType": "Roll Call",
+     "senateVote": "10//14",
+     "terminationReason": "Recess Appointment-Not Confirmed",
+     "terminationDate": "1795-12-28"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 10,
+   "scdbCode": "SChase",
+   "scdbName": "Chase, Samuel",
+   "scdbServiceStart": "1796-02-04",
+   "scdbServiceEnd": "1811-06-19",
+   "fjcNid": "1379031",
+   "fullName": "Samuel Chase",
+   "birthDate": "1741-04-17",
+   "birthYear": 1741,
+   "birthPlace": "Somerset County, MD",
+   "deathDate": "1811-06-19",
+   "deathYear": 1811,
+   "deathPlace": "Baltimore, MD",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1796-01-26",
+     "confirmationDate": "1796-01-27",
+     "commissionDate": "1796-01-27",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1811-06-19"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 11,
+   "scdbCode": "OEllsworth",
+   "scdbName": "Ellsworth, Oliver",
+   "scdbServiceStart": "1796-03-08",
+   "scdbServiceEnd": "1800-12-15",
+   "fjcNid": "1380476",
+   "fullName": "Oliver Ellsworth",
+   "birthDate": "1745-04-29",
+   "birthYear": 1745,
+   "birthPlace": "Windsor, CT",
+   "deathDate": "1807-11-26",
+   "deathYear": 1807,
+   "deathPlace": "Windsor, CT",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "George Washington",
+     "nominationDate": "1796-03-03",
+     "confirmationDate": "1796-03-04",
+     "commissionDate": "1796-03-04",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "21/1",
+     "terminationReason": "Resignation",
+     "terminationDate": "1800-12-15"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 12,
+   "scdbCode": "BWashington",
+   "scdbName": "Washington, Bushrod",
+   "scdbServiceStart": "1798-11-09",
+   "scdbServiceEnd": "1829-11-26",
+   "fjcNid": "1389416",
+   "fullName": "Bushrod Washington",
+   "birthDate": "1762-06-05",
+   "birthYear": 1762,
+   "birthPlace": "Westmoreland County, VA",
+   "deathDate": "1829-11-26",
+   "deathYear": 1829,
+   "deathPlace": "Philadelphia, PA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "John Adams",
+     "nominationDate": "1798-12-19",
+     "confirmationDate": "1798-12-20",
+     "commissionDate": "1798-12-20",
+     "recessAppointmentDate": "1798-09-29",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1829-11-26"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 13,
+   "scdbCode": "AMoore",
+   "scdbName": "Moore, Alfred",
+   "scdbServiceStart": "1800-04-21",
+   "scdbServiceEnd": "1804-01-26",
+   "fjcNid": "1385281",
+   "fullName": "Alfred Moore",
+   "birthDate": "1755-05-21",
+   "birthYear": 1755,
+   "birthPlace": "New Hanover County, NC",
+   "deathDate": "1810-10-15",
+   "deathYear": 1810,
+   "deathPlace": "Bladen County, NC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "John Adams",
+     "nominationDate": "1799-12-04",
+     "confirmationDate": "1799-12-10",
+     "commissionDate": "1799-12-10",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1804-01-26"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 14,
+   "scdbCode": "JMarshall",
+   "scdbName": "Marshall, John",
+   "scdbServiceStart": "1801-02-04",
+   "scdbServiceEnd": "1835-07-06",
+   "fjcNid": "1384351",
+   "fullName": "John Marshall",
+   "birthDate": "1755-09-24",
+   "birthYear": 1755,
+   "birthPlace": "Prince William County, VA",
+   "deathDate": "1835-07-06",
+   "deathYear": 1835,
+   "deathPlace": "Philadelphia, PA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "John Adams",
+     "nominationDate": "1801-01-20",
+     "confirmationDate": "1801-01-27",
+     "commissionDate": "1801-01-31",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1835-07-06"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 15,
+   "scdbCode": "WJohnson",
+   "scdbName": "Johnson, William",
+   "scdbServiceStart": "1804-05-07",
+   "scdbServiceEnd": "1834-08-04",
+   "fjcNid": "1382871",
+   "fullName": "William Johnson, Jr.",
+   "birthDate": "1771-12-27",
+   "birthYear": 1771,
+   "birthPlace": "St. James Goose Creek, SC",
+   "deathDate": "1834-08-04",
+   "deathYear": 1834,
+   "deathPlace": "Brooklyn, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Thomas Jefferson",
+     "nominationDate": "1804-03-22",
+     "confirmationDate": "1804-03-24",
+     "commissionDate": "1804-03-26",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1834-08-04"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 16,
+   "scdbCode": "HBLivingston",
+   "scdbName": "Livingston, Henry",
+   "scdbServiceStart": "1807-01-20",
+   "scdbServiceEnd": "1823-03-18",
+   "fjcNid": "1383961",
+   "fullName": "Henry Brockholst Livingston",
+   "birthDate": "1757-11-25",
+   "birthYear": 1757,
+   "birthPlace": "New York, NY",
+   "deathDate": "1823-03-18",
+   "deathYear": 1823,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Thomas Jefferson",
+     "nominationDate": "1806-12-13",
+     "confirmationDate": "1806-12-17",
+     "commissionDate": "1807-01-16",
+     "recessAppointmentDate": "1806-11-10",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1823-03-18"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 17,
+   "scdbCode": "TTodd",
+   "scdbName": "Todd, Thomas",
+   "scdbServiceStart": "1807-05-04",
+   "scdbServiceEnd": "1826-02-07",
+   "fjcNid": "1388851",
+   "fullName": "Thomas Todd",
+   "birthDate": "1765-01-23",
+   "birthYear": 1765,
+   "birthPlace": "King and Queen County, VA",
+   "deathDate": "1826-02-07",
+   "deathYear": 1826,
+   "deathPlace": "Frankfort, KY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Thomas Jefferson",
+     "nominationDate": "1807-02-28",
+     "confirmationDate": "1807-03-02",
+     "commissionDate": "1807-03-03",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1826-02-07"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 18,
+   "scdbCode": "GDuvall",
+   "scdbName": "Duvall, Gabriel",
+   "scdbServiceStart": "1811-11-23",
+   "scdbServiceEnd": "1835-01-14",
+   "fjcNid": "1380306",
+   "fullName": "Gabriel Duvall",
+   "birthDate": "1752-12-06",
+   "birthYear": 1752,
+   "birthPlace": "Prince George`s County, MD",
+   "deathDate": "1844-03-06",
+   "deathYear": 1844,
+   "deathPlace": "Prince George`s County, MD",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "James Madison",
+     "nominationDate": "1811-11-15",
+     "confirmationDate": "1811-11-18",
+     "commissionDate": "1811-11-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1835-01-12"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 19,
+   "scdbCode": "JStory",
+   "scdbName": "Story, Joseph",
+   "scdbServiceStart": "1812-02-03",
+   "scdbServiceEnd": "1845-09-10",
+   "fjcNid": "1388386",
+   "fullName": "Joseph Story",
+   "birthDate": "1779-09-18",
+   "birthYear": 1779,
+   "birthPlace": "Marblehead, MA",
+   "deathDate": "1845-09-10",
+   "deathYear": 1845,
+   "deathPlace": "Cambridge, MA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "James Madison",
+     "nominationDate": "1811-11-15",
+     "confirmationDate": "1811-11-18",
+     "commissionDate": "1811-11-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1845-09-10"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 20,
+   "scdbCode": "SThompson",
+   "scdbName": "Thompson, Smith",
+   "scdbServiceStart": "1823-09-01",
+   "scdbServiceEnd": "1843-12-18",
+   "fjcNid": "1388776",
+   "fullName": "Smith Thompson",
+   "birthDate": "1768-01-17",
+   "birthYear": 1768,
+   "birthPlace": "Amenia, NY",
+   "deathDate": "1843-12-18",
+   "deathYear": 1843,
+   "deathPlace": "Poughkeepsie, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "James Monroe",
+     "nominationDate": "1823-12-05",
+     "confirmationDate": "1823-12-09",
+     "commissionDate": "1823-12-09",
+     "recessAppointmentDate": "1823-09-01",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1843-12-18"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 21,
+   "scdbCode": "RTrimble",
+   "scdbName": "Trimble, Robert",
+   "scdbServiceStart": "1826-06-16",
+   "scdbServiceEnd": "1828-08-25",
+   "fjcNid": "1388941",
+   "fullName": "Robert Trimble",
+   "birthDate": "1776-11-17",
+   "birthYear": 1776,
+   "birthPlace": "Augusta County, VA",
+   "deathDate": "1828-08-25",
+   "deathYear": 1828,
+   "deathPlace": "Paris, KY",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "John Quincy Adams",
+     "nominationDate": "1826-04-11",
+     "confirmationDate": "1826-05-09",
+     "commissionDate": "1826-05-09",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "27/5",
+     "terminationReason": "Death",
+     "terminationDate": "1828-08-25"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 22,
+   "scdbCode": "JMcLean",
+   "scdbName": "McLean, John",
+   "scdbServiceStart": "1830-01-11",
+   "scdbServiceEnd": "1861-04-04",
+   "fjcNid": "1384821",
+   "fullName": "John McLean",
+   "birthDate": "1785-03-11",
+   "birthYear": 1785,
+   "birthPlace": "Morris County, NJ",
+   "deathDate": "1861-04-04",
+   "deathYear": 1861,
+   "deathPlace": "Cincinnati, OH",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Andrew Jackson",
+     "nominationDate": "1829-03-06",
+     "confirmationDate": "1829-03-07",
+     "commissionDate": "1829-03-07",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1861-04-04"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 23,
+   "scdbCode": "HBaldwin",
+   "scdbName": "Baldwin, Henry",
+   "scdbServiceStart": "1830-01-18",
+   "scdbServiceEnd": "1844-04-21",
+   "fjcNid": "1377386",
+   "fullName": "Henry Baldwin",
+   "birthDate": "1780-01-14",
+   "birthYear": 1780,
+   "birthPlace": "New Haven, CT",
+   "deathDate": "1844-04-21",
+   "deathYear": 1844,
+   "deathPlace": "Philadelphia, PA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Andrew Jackson",
+     "nominationDate": "1830-01-04",
+     "confirmationDate": "1830-01-06",
+     "commissionDate": "1830-01-06",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "41/2",
+     "terminationReason": "Death",
+     "terminationDate": "1844-04-21"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 24,
+   "scdbCode": "JMWayne",
+   "scdbName": "Wayne, James",
+   "scdbServiceStart": "1835-01-14",
+   "scdbServiceEnd": "1867-07-05",
+   "fjcNid": "1389471",
+   "fullName": "James Moore Wayne",
+   "birthDate": null,
+   "birthYear": 1790,
+   "birthPlace": "Savannah, GA",
+   "deathDate": "1867-07-05",
+   "deathYear": 1867,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Andrew Jackson",
+     "nominationDate": "1835-01-06",
+     "confirmationDate": "1835-01-09",
+     "commissionDate": "1835-01-09",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1867-07-05"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 25,
+   "scdbCode": "RBTaney",
+   "scdbName": "Taney, Roger",
+   "scdbServiceStart": "1836-03-28",
+   "scdbServiceEnd": "1864-10-12",
+   "fjcNid": "1388556",
+   "fullName": "Roger Brooke Taney",
+   "birthDate": "1777-03-17",
+   "birthYear": 1777,
+   "birthPlace": "Calvert County, MD",
+   "deathDate": "1864-10-12",
+   "deathYear": 1864,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Andrew Jackson",
+     "nominationDate": "1835-12-28",
+     "confirmationDate": "1836-03-15",
+     "commissionDate": "1836-03-15",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "29/15",
+     "terminationReason": "Death",
+     "terminationDate": "1864-10-12"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 26,
+   "scdbCode": "PPBarbour",
+   "scdbName": "Barbour, Philip",
+   "scdbServiceStart": "1836-05-12",
+   "scdbServiceEnd": "1841-02-25",
+   "fjcNid": "1377421",
+   "fullName": "Philip Pendleton Barbour",
+   "birthDate": "1783-05-25",
+   "birthYear": 1783,
+   "birthPlace": "Orange County, VA",
+   "deathDate": "1841-02-25",
+   "deathYear": 1841,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Andrew Jackson",
+     "nominationDate": "1835-12-28",
+     "confirmationDate": "1836-03-15",
+     "commissionDate": "1836-03-15",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "30/11",
+     "terminationReason": "Death",
+     "terminationDate": "1841-02-25"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 27,
+   "scdbCode": "JCatron",
+   "scdbName": "Catron, John",
+   "scdbServiceStart": "1837-05-01",
+   "scdbServiceEnd": "1865-05-30",
+   "fjcNid": "1378956",
+   "fullName": "John Catron",
+   "birthDate": null,
+   "birthYear": 1786,
+   "birthPlace": "PA",
+   "deathDate": "1865-05-30",
+   "deathYear": 1865,
+   "deathPlace": "Nashville, TN",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Andrew Jackson",
+     "nominationDate": "1837-03-03",
+     "confirmationDate": "1837-03-08",
+     "commissionDate": "1837-03-08",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "28/15",
+     "terminationReason": "Death",
+     "terminationDate": "1865-05-30"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 28,
+   "scdbCode": "JMcKinley",
+   "scdbName": "McKinley, John",
+   "scdbServiceStart": "1837-04-22",
+   "scdbServiceEnd": "1852-07-19",
+   "fjcNid": "1384766",
+   "fullName": "John McKinley",
+   "birthDate": "1780-05-01",
+   "birthYear": 1780,
+   "birthPlace": "Culpeper County, VA",
+   "deathDate": "1852-07-19",
+   "deathYear": 1852,
+   "deathPlace": "Louisville, KY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Martin Van Buren",
+     "nominationDate": "1837-09-18",
+     "confirmationDate": "1837-09-25",
+     "commissionDate": "1837-09-25",
+     "recessAppointmentDate": "1837-04-22",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1852-07-19"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 29,
+   "scdbCode": "PVDaniel",
+   "scdbName": "Daniel, Peter",
+   "scdbServiceStart": "1842-01-10",
+   "scdbServiceEnd": "1860-05-31",
+   "fjcNid": "1379746",
+   "fullName": "Peter Vivian Daniel",
+   "birthDate": "1784-04-24",
+   "birthYear": 1784,
+   "birthPlace": "Stafford County, VA",
+   "deathDate": "1860-05-31",
+   "deathYear": 1860,
+   "deathPlace": "Richmond, VA",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Martin Van Buren",
+     "nominationDate": "1841-02-26",
+     "confirmationDate": "1841-03-02",
+     "commissionDate": "1841-03-03",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "22/5",
+     "terminationReason": "Death",
+     "terminationDate": "1860-05-31"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 30,
+   "scdbCode": "SNelson",
+   "scdbName": "Nelson, Samuel",
+   "scdbServiceStart": "1845-02-27",
+   "scdbServiceEnd": "1872-11-28",
+   "fjcNid": "1385636",
+   "fullName": "Samuel Nelson",
+   "birthDate": "1792-11-10",
+   "birthYear": 1792,
+   "birthPlace": "Hebron, NY",
+   "deathDate": "1873-12-13",
+   "deathYear": 1873,
+   "deathPlace": "Cooperstown, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "John Tyler",
+     "nominationDate": "1845-02-04",
+     "confirmationDate": "1845-02-14",
+     "commissionDate": "1845-02-13",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1872-11-28"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 31,
+   "scdbCode": "LWoodbury",
+   "scdbName": "Woodbury, Levi",
+   "scdbServiceStart": "1845-09-23",
+   "scdbServiceEnd": "1851-09-04",
+   "fjcNid": "1390061",
+   "fullName": "Levi Woodbury",
+   "birthDate": "1789-12-22",
+   "birthYear": 1789,
+   "birthPlace": "Francestown, NH",
+   "deathDate": "1851-09-04",
+   "deathYear": 1851,
+   "deathPlace": "Portsmouth, NH",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "James K. Polk",
+     "nominationDate": "1845-12-23",
+     "confirmationDate": "1846-01-03",
+     "commissionDate": "1846-01-03",
+     "recessAppointmentDate": "1845-09-20",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1851-09-04"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 32,
+   "scdbCode": "RCGrier",
+   "scdbName": "Grier, Robert",
+   "scdbServiceStart": "1846-08-10",
+   "scdbServiceEnd": "1870-01-31",
+   "fjcNid": "1381521",
+   "fullName": "Robert Cooper Grier",
+   "birthDate": "1794-03-05",
+   "birthYear": 1794,
+   "birthPlace": "Cumberland County, PA",
+   "deathDate": "1870-09-25",
+   "deathYear": 1870,
+   "deathPlace": "Philadelphia, PA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "James K. Polk",
+     "nominationDate": "1846-08-03",
+     "confirmationDate": "1846-08-04",
+     "commissionDate": "1846-08-04",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1870-01-31"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 33,
+   "scdbCode": "BRCurtis",
+   "scdbName": "Curtis, Benjamin",
+   "scdbServiceStart": "1851-10-10",
+   "scdbServiceEnd": "1857-09-30",
+   "fjcNid": "1379691",
+   "fullName": "Benjamin Robbins Curtis",
+   "birthDate": "1809-11-04",
+   "birthYear": 1809,
+   "birthPlace": "Watertown, MA",
+   "deathDate": "1874-09-15",
+   "deathYear": 1874,
+   "deathPlace": "Newport, RI",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Millard Fillmore",
+     "nominationDate": "1851-12-11",
+     "confirmationDate": "1851-12-20",
+     "commissionDate": "1851-12-20",
+     "recessAppointmentDate": "1851-09-22",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1857-09-30"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 34,
+   "scdbCode": "JACampbell",
+   "scdbName": "Campbell, John",
+   "scdbServiceStart": "1853-04-11",
+   "scdbServiceEnd": "1861-04-30",
+   "fjcNid": "1378771",
+   "fullName": "John Archibald Campbell",
+   "birthDate": "1811-06-24",
+   "birthYear": 1811,
+   "birthPlace": "Washington, GA",
+   "deathDate": "1889-03-12",
+   "deathYear": 1889,
+   "deathPlace": "Baltimore, MD",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin Pierce",
+     "nominationDate": "1853-03-21",
+     "confirmationDate": "1853-03-22",
+     "commissionDate": "1853-03-22",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1861-04-30"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 35,
+   "scdbCode": "NClifford",
+   "scdbName": "Clifford, Nathan",
+   "scdbServiceStart": "1858-01-21",
+   "scdbServiceEnd": "1881-07-25",
+   "fjcNid": "1379256",
+   "fullName": "Nathan Clifford",
+   "birthDate": "1803-08-18",
+   "birthYear": 1803,
+   "birthPlace": "Rumney, NH",
+   "deathDate": "1881-07-25",
+   "deathYear": 1881,
+   "deathPlace": "Cornish, ME",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "James Buchanan",
+     "nominationDate": "1857-12-09",
+     "confirmationDate": "1858-01-12",
+     "commissionDate": "1858-01-12",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "26/23",
+     "terminationReason": "Death",
+     "terminationDate": "1881-07-25"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 36,
+   "scdbCode": "NHSwayne",
+   "scdbName": "Swayne, Noah",
+   "scdbServiceStart": "1862-01-27",
+   "scdbServiceEnd": "1881-01-24",
+   "fjcNid": "1388486",
+   "fullName": "Noah Haynes Swayne",
+   "birthDate": "1804-12-07",
+   "birthYear": 1804,
+   "birthPlace": "Frederick County, VA",
+   "deathDate": "1884-06-08",
+   "deathYear": 1884,
+   "deathPlace": "New York, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Abraham Lincoln",
+     "nominationDate": "1862-01-21",
+     "confirmationDate": "1862-01-24",
+     "commissionDate": "1862-01-24",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "38/1",
+     "terminationReason": "Retirement",
+     "terminationDate": "1881-01-24"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 37,
+   "scdbCode": "SFMiller",
+   "scdbName": "Miller, Samuel",
+   "scdbServiceStart": "1862-07-21",
+   "scdbServiceEnd": "1890-10-13",
+   "fjcNid": "1385166",
+   "fullName": "Samuel Freeman Miller",
+   "birthDate": "1816-04-05",
+   "birthYear": 1816,
+   "birthPlace": "Richmond, KY",
+   "deathDate": "1890-10-13",
+   "deathYear": 1890,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Abraham Lincoln",
+     "nominationDate": "1862-07-16",
+     "confirmationDate": "1862-07-16",
+     "commissionDate": "1862-07-16",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1890-10-13"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 38,
+   "scdbCode": "DDavis",
+   "scdbName": "Davis, David",
+   "scdbServiceStart": "1862-10-17",
+   "scdbServiceEnd": "1877-03-04",
+   "fjcNid": "1379821",
+   "fullName": "David Davis",
+   "birthDate": "1815-03-09",
+   "birthYear": 1815,
+   "birthPlace": "Cecil County, MD",
+   "deathDate": "1886-06-26",
+   "deathYear": 1886,
+   "deathPlace": "Bloomington, IL",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Abraham Lincoln",
+     "nominationDate": "1862-12-01",
+     "confirmationDate": "1862-12-08",
+     "commissionDate": "1862-12-08",
+     "recessAppointmentDate": "1862-10-17",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1877-03-04"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 39,
+   "scdbCode": "SJField",
+   "scdbName": "Field, Stephen",
+   "scdbServiceStart": "1863-05-20",
+   "scdbServiceEnd": "1897-12-01",
+   "fjcNid": "1380706",
+   "fullName": "Stephen Johnson Field",
+   "birthDate": "1816-11-04",
+   "birthYear": 1816,
+   "birthPlace": "Haddam, CT",
+   "deathDate": "1899-04-09",
+   "deathYear": 1899,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Abraham Lincoln",
+     "nominationDate": "1863-03-06",
+     "confirmationDate": "1863-03-10",
+     "commissionDate": "1863-03-10",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1897-12-01"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 40,
+   "scdbCode": "SPChase",
+   "scdbName": "Chase, Salmon",
+   "scdbServiceStart": "1864-12-15",
+   "scdbServiceEnd": "1873-05-07",
+   "fjcNid": "1379026",
+   "fullName": "Salmon Portland Chase",
+   "birthDate": "1808-01-13",
+   "birthYear": 1808,
+   "birthPlace": "Cornish, NH",
+   "deathDate": "1873-05-07",
+   "deathYear": 1873,
+   "deathPlace": "New York, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Abraham Lincoln",
+     "nominationDate": "1864-12-06",
+     "confirmationDate": "1864-12-06",
+     "commissionDate": "1864-12-06",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1873-05-07"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 41,
+   "scdbCode": "WStrong",
+   "scdbName": "Strong, William",
+   "scdbServiceStart": "1870-03-14",
+   "scdbServiceEnd": "1880-12-14",
+   "fjcNid": "1388411",
+   "fullName": "William Strong",
+   "birthDate": "1808-05-06",
+   "birthYear": 1808,
+   "birthPlace": "Somers, CT",
+   "deathDate": "1895-08-19",
+   "deathYear": 1895,
+   "deathPlace": "Lake Minnewassa, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Ulysses Grant",
+     "nominationDate": "1870-02-07",
+     "confirmationDate": "1870-02-18",
+     "commissionDate": "1870-02-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1880-12-14"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 42,
+   "scdbCode": "JPBradley",
+   "scdbName": "Bradley, Joseph",
+   "scdbServiceStart": "1870-03-21",
+   "scdbServiceEnd": "1892-01-22",
+   "fjcNid": "1378156",
+   "fullName": "Joseph P. Bradley",
+   "birthDate": "1813-03-14",
+   "birthYear": 1813,
+   "birthPlace": "Berne, NY",
+   "deathDate": "1892-01-22",
+   "deathYear": 1892,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Ulysses Grant",
+     "nominationDate": "1870-02-07",
+     "confirmationDate": "1870-03-21",
+     "commissionDate": "1870-03-21",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "46/9",
+     "terminationReason": "Death",
+     "terminationDate": "1892-01-22"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 43,
+   "scdbCode": "WHunt",
+   "scdbName": "Hunt, Ward",
+   "scdbServiceStart": "1873-01-09",
+   "scdbServiceEnd": "1882-01-27",
+   "fjcNid": "1382556",
+   "fullName": "Ward Hunt",
+   "birthDate": "1810-06-14",
+   "birthYear": 1810,
+   "birthPlace": "Utica, NY",
+   "deathDate": "1886-03-24",
+   "deathYear": 1886,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Ulysses Grant",
+     "nominationDate": "1872-12-03",
+     "confirmationDate": "1872-12-11",
+     "commissionDate": "1872-12-11",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1882-01-27"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 44,
+   "scdbCode": "MRWaite",
+   "scdbName": "Waite, Morrison",
+   "scdbServiceStart": "1874-03-04",
+   "scdbServiceEnd": "1888-04-03",
+   "fjcNid": "1389241",
+   "fullName": "Morrison Remick Waite",
+   "birthDate": "1816-11-29",
+   "birthYear": 1816,
+   "birthPlace": "Lyme, CT",
+   "deathDate": "1888-03-23",
+   "deathYear": 1888,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Ulysses Grant",
+     "nominationDate": "1874-01-19",
+     "confirmationDate": "1874-01-21",
+     "commissionDate": "1874-01-21",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "63/0",
+     "terminationReason": "Death",
+     "terminationDate": "1888-03-23"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 45,
+   "scdbCode": "JHarlan1",
+   "scdbName": "Harlan, John",
+   "scdbServiceStart": "1877-12-10",
+   "scdbServiceEnd": "1911-10-14",
+   "fjcNid": "1381826",
+   "fullName": "John Marshall Harlan",
+   "birthDate": "1833-06-01",
+   "birthYear": 1833,
+   "birthPlace": "Boyle County, KY",
+   "deathDate": "1911-10-14",
+   "deathYear": 1911,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Rutherford B. Hayes",
+     "nominationDate": "1877-10-16",
+     "confirmationDate": "1877-11-29",
+     "commissionDate": "1877-11-29",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1911-10-14"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 46,
+   "scdbCode": "WBWoods",
+   "scdbName": "Woods, William",
+   "scdbServiceStart": "1881-01-05",
+   "scdbServiceEnd": "1887-05-14",
+   "fjcNid": "1390106",
+   "fullName": "William Burnham Woods",
+   "birthDate": "1824-08-03",
+   "birthYear": 1824,
+   "birthPlace": "Newark, OH",
+   "deathDate": "1887-05-14",
+   "deathYear": 1887,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Rutherford B. Hayes",
+     "nominationDate": "1880-12-15",
+     "confirmationDate": "1880-12-21",
+     "commissionDate": "1880-12-21",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "39/8",
+     "terminationReason": "Death",
+     "terminationDate": "1887-05-14"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 47,
+   "scdbCode": "SMatthews",
+   "scdbName": "Matthews, Stanley",
+   "scdbServiceStart": "1881-05-17",
+   "scdbServiceEnd": "1889-03-22",
+   "fjcNid": "1384456",
+   "fullName": "Stanley Matthews",
+   "birthDate": "1824-07-21",
+   "birthYear": 1824,
+   "birthPlace": "Cincinnati, OH",
+   "deathDate": "1889-03-22",
+   "deathYear": 1889,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "James A. Garfield",
+     "nominationDate": "1881-03-14",
+     "confirmationDate": "1881-05-12",
+     "commissionDate": "1881-05-12",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "24/23",
+     "terminationReason": "Death",
+     "terminationDate": "1889-03-22"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 48,
+   "scdbCode": "HGray",
+   "scdbName": "Gray, Horace",
+   "scdbServiceStart": "1882-01-09",
+   "scdbServiceEnd": "1902-09-15",
+   "fjcNid": "1381461",
+   "fullName": "Horace Gray",
+   "birthDate": "1828-03-24",
+   "birthYear": 1828,
+   "birthPlace": "Boston, MA",
+   "deathDate": "1902-09-15",
+   "deathYear": 1902,
+   "deathPlace": "Nahant, MA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Chester A. Arthur",
+     "nominationDate": "1881-12-19",
+     "confirmationDate": "1881-12-20",
+     "commissionDate": "1881-12-20",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "51/5",
+     "terminationReason": "Death",
+     "terminationDate": "1902-09-15"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 49,
+   "scdbCode": "SBlatchford",
+   "scdbName": "Blatchford, Samuel",
+   "scdbServiceStart": "1882-04-03",
+   "scdbServiceEnd": "1893-07-07",
+   "fjcNid": "1377926",
+   "fullName": "Samuel M. Blatchford",
+   "birthDate": "1820-03-09",
+   "birthYear": 1820,
+   "birthPlace": "New York, NY",
+   "deathDate": "1893-07-07",
+   "deathYear": 1893,
+   "deathPlace": "Newport, RI",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Chester A. Arthur",
+     "nominationDate": "1882-03-13",
+     "confirmationDate": "1882-03-22",
+     "commissionDate": "1882-03-22",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1893-07-07"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 50,
+   "scdbCode": "LQLamar",
+   "scdbName": "Lamar, Lucius",
+   "scdbServiceStart": "1888-01-18",
+   "scdbServiceEnd": "1893-01-23",
+   "fjcNid": "1383581",
+   "fullName": "Lucius Quintus Cincinnatus Lamar",
+   "birthDate": "1825-09-17",
+   "birthYear": 1825,
+   "birthPlace": "Eatonton, GA",
+   "deathDate": "1893-01-23",
+   "deathYear": 1893,
+   "deathPlace": "Macon, GA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Grover Cleveland",
+     "nominationDate": "1887-12-06",
+     "confirmationDate": "1888-01-16",
+     "commissionDate": "1888-01-16",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "32/28",
+     "terminationReason": "Death",
+     "terminationDate": "1893-01-23"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 51,
+   "scdbCode": "MWFuller",
+   "scdbName": "Fuller, Melville",
+   "scdbServiceStart": "1888-10-08",
+   "scdbServiceEnd": "1910-07-04",
+   "fjcNid": "1380971",
+   "fullName": "Melville Weston Fuller",
+   "birthDate": "1833-02-11",
+   "birthYear": 1833,
+   "birthPlace": "Augusta, ME",
+   "deathDate": "1910-07-04",
+   "deathYear": 1910,
+   "deathPlace": "Sorrento, ME",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Grover Cleveland",
+     "nominationDate": "1888-04-30",
+     "confirmationDate": "1888-07-20",
+     "commissionDate": "1888-07-20",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "41/20",
+     "terminationReason": "Death",
+     "terminationDate": "1910-07-04"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 52,
+   "scdbCode": "DJBrewer",
+   "scdbName": "Brewer, David",
+   "scdbServiceStart": "1890-01-06",
+   "scdbServiceEnd": "1910-03-28",
+   "fjcNid": "1378221",
+   "fullName": "David Josiah Brewer",
+   "birthDate": "1837-06-20",
+   "birthYear": 1837,
+   "birthPlace": "Smyrna (now \u0130zmir), Asia Minor (now Turkey)",
+   "deathDate": "1910-03-28",
+   "deathYear": 1910,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Benjamin Harrison",
+     "nominationDate": "1889-12-04",
+     "confirmationDate": "1889-12-18",
+     "commissionDate": "1889-12-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "53/11",
+     "terminationReason": "Death",
+     "terminationDate": "1910-03-28"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 53,
+   "scdbCode": "HBBrown",
+   "scdbName": "Brown, Henry",
+   "scdbServiceStart": "1891-01-05",
+   "scdbServiceEnd": "1906-05-28",
+   "fjcNid": "1378386",
+   "fullName": "Henry Billings Brown",
+   "birthDate": "1836-03-02",
+   "birthYear": 1836,
+   "birthPlace": "South Lee, MA",
+   "deathDate": "1913-09-04",
+   "deathYear": 1913,
+   "deathPlace": "Bronxville, NY",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Benjamin Harrison",
+     "nominationDate": "1890-12-23",
+     "confirmationDate": "1890-12-29",
+     "commissionDate": "1890-12-29",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1906-05-28"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 54,
+   "scdbCode": "GShiras",
+   "scdbName": "Shiras, George",
+   "scdbServiceStart": "1892-10-10",
+   "scdbServiceEnd": "1903-02-23",
+   "fjcNid": "1387781",
+   "fullName": "George Shiras, Jr.",
+   "birthDate": "1832-01-26",
+   "birthYear": 1832,
+   "birthPlace": "Pittsburgh, PA",
+   "deathDate": "1924-08-02",
+   "deathYear": 1924,
+   "deathPlace": "Pittsburgh, PA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Benjamin Harrison",
+     "nominationDate": "1892-07-19",
+     "confirmationDate": "1892-07-26",
+     "commissionDate": "1892-07-26",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1903-02-23"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 55,
+   "scdbCode": "HEJackson",
+   "scdbName": "Jackson, Howell",
+   "scdbServiceStart": "1893-03-04",
+   "scdbServiceEnd": "1895-08-08",
+   "fjcNid": "1382711",
+   "fullName": "Howell Edmunds Jackson",
+   "birthDate": "1832-04-08",
+   "birthYear": 1832,
+   "birthPlace": "Paris, TN",
+   "deathDate": "1895-08-08",
+   "deathYear": 1895,
+   "deathPlace": "West Meade, TN",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Benjamin Harrison",
+     "nominationDate": "1893-02-02",
+     "confirmationDate": "1893-02-18",
+     "commissionDate": "1893-02-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1895-08-08"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 56,
+   "scdbCode": "EDEWhite",
+   "scdbName": "White, Edward",
+   "scdbServiceStart": "1894-03-12",
+   "scdbServiceEnd": "1921-05-19",
+   "fjcNid": "1389696",
+   "fullName": "Edward Douglass White",
+   "birthDate": "1845-11-03",
+   "birthYear": 1845,
+   "birthPlace": "Lafourche Parish, LA",
+   "deathDate": "1921-05-19",
+   "deathYear": 1921,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Grover Cleveland",
+     "nominationDate": "1894-02-19",
+     "confirmationDate": "1894-02-19",
+     "commissionDate": "1894-02-19",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Appointment to Another Judicial Position",
+     "terminationDate": "1910-12-19"
+    },
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "William H. Taft",
+     "nominationDate": "1910-12-12",
+     "confirmationDate": "1910-12-12",
+     "commissionDate": "1910-12-12",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1921-05-19"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 57,
+   "scdbCode": "RWPeckham",
+   "scdbName": "Peckham, Rufus",
+   "scdbServiceStart": "1896-01-06",
+   "scdbServiceEnd": "1909-10-24",
+   "fjcNid": "1386206",
+   "fullName": "Rufus Wheeler Peckham",
+   "birthDate": "1838-11-08",
+   "birthYear": 1838,
+   "birthPlace": "Albany, NY",
+   "deathDate": "1909-10-24",
+   "deathYear": 1909,
+   "deathPlace": "Altamont, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Grover Cleveland",
+     "nominationDate": "1895-12-03",
+     "confirmationDate": "1895-12-09",
+     "commissionDate": "1895-12-09",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1909-10-24"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 58,
+   "scdbCode": "JMcKenna",
+   "scdbName": "McKenna, Joseph",
+   "scdbServiceStart": "1898-01-26",
+   "scdbServiceEnd": "1925-01-05",
+   "fjcNid": "1384746",
+   "fullName": "Joseph McKenna",
+   "birthDate": "1843-08-10",
+   "birthYear": 1843,
+   "birthPlace": "Philadelphia, PA",
+   "deathDate": "1926-11-21",
+   "deathYear": 1926,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William McKinley",
+     "nominationDate": "1897-12-16",
+     "confirmationDate": "1898-01-21",
+     "commissionDate": "1898-01-21",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1925-01-05"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 59,
+   "scdbCode": "OWHolmes",
+   "scdbName": "Holmes, Oliver",
+   "scdbServiceStart": "1902-08-11",
+   "scdbServiceEnd": "1932-01-12",
+   "fjcNid": "1382341",
+   "fullName": "Oliver Wendell Holmes, Jr.",
+   "birthDate": "1841-03-08",
+   "birthYear": 1841,
+   "birthPlace": "Boston, MA",
+   "deathDate": "1935-03-06",
+   "deathYear": 1935,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Theodore Roosevelt",
+     "nominationDate": "1902-12-02",
+     "confirmationDate": "1902-12-04",
+     "commissionDate": "1902-12-04",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1932-01-12"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 60,
+   "scdbCode": "WRDay",
+   "scdbName": "Day, William",
+   "scdbServiceStart": "1903-03-02",
+   "scdbServiceEnd": "1922-11-13",
+   "fjcNid": "1379896",
+   "fullName": "William Rufus Day",
+   "birthDate": "1849-04-17",
+   "birthYear": 1849,
+   "birthPlace": "Ravenna, OH",
+   "deathDate": "1923-07-09",
+   "deathYear": 1923,
+   "deathPlace": "Mackinac Island, MI",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Theodore Roosevelt",
+     "nominationDate": "1903-02-19",
+     "confirmationDate": "1903-02-23",
+     "commissionDate": "1903-02-23",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Retirement",
+     "terminationDate": "1922-11-13"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 61,
+   "scdbCode": "WHMoody",
+   "scdbName": "Moody, William",
+   "scdbServiceStart": "1906-12-17",
+   "scdbServiceEnd": "1910-11-20",
+   "fjcNid": "1385276",
+   "fullName": "William Henry Moody",
+   "birthDate": "1853-12-23",
+   "birthYear": 1853,
+   "birthPlace": "Newbury, MA",
+   "deathDate": "1917-07-02",
+   "deathYear": 1917,
+   "deathPlace": "Haverhill, MA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Theodore Roosevelt",
+     "nominationDate": "1906-12-03",
+     "confirmationDate": "1906-12-12",
+     "commissionDate": "1906-12-12",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1910-11-19"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 62,
+   "scdbCode": "HHLurton",
+   "scdbName": "Lurton, Horace",
+   "scdbServiceStart": "1910-01-03",
+   "scdbServiceEnd": "1914-07-12",
+   "fjcNid": "1384126",
+   "fullName": "Horace Harmon Lurton",
+   "birthDate": "1844-02-26",
+   "birthYear": 1844,
+   "birthPlace": "Newport, KY",
+   "deathDate": "1914-07-12",
+   "deathYear": 1914,
+   "deathPlace": "Atlantic City, NJ",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William H. Taft",
+     "nominationDate": "1909-12-13",
+     "confirmationDate": "1909-12-20",
+     "commissionDate": "1909-12-20",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1914-07-12"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 63,
+   "scdbCode": "CEHughes1",
+   "scdbName": "Hughes, Charles",
+   "scdbServiceStart": "1910-10-10",
+   "scdbServiceEnd": "1916-06-10",
+   "fjcNid": "1382496",
+   "fullName": "Charles Evans Hughes",
+   "birthDate": "1862-04-11",
+   "birthYear": 1862,
+   "birthPlace": "Glens Falls, NY",
+   "deathDate": "1948-08-27",
+   "deathYear": 1948,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William H. Taft",
+     "nominationDate": "1910-04-25",
+     "confirmationDate": "1910-05-02",
+     "commissionDate": "1910-05-02",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1916-06-10"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 64,
+   "scdbCode": "WVanDevanter",
+   "scdbName": "Van Devanter, Willis",
+   "scdbServiceStart": "1911-01-03",
+   "scdbServiceEnd": "1937-06-02",
+   "fjcNid": "1389071",
+   "fullName": "Willis Van Devanter",
+   "birthDate": "1859-04-17",
+   "birthYear": 1859,
+   "birthPlace": "Marion, IN",
+   "deathDate": "1941-02-08",
+   "deathYear": 1941,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William H. Taft",
+     "nominationDate": "1910-12-12",
+     "confirmationDate": "1910-12-15",
+     "commissionDate": "1910-12-16",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1941-02-08"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 65,
+   "scdbCode": "JRLamar",
+   "scdbName": "Lamar, Joseph",
+   "scdbServiceStart": "1911-01-03",
+   "scdbServiceEnd": "1916-01-02",
+   "fjcNid": "1383576",
+   "fullName": "Joseph Rucker Lamar",
+   "birthDate": "1857-10-14",
+   "birthYear": 1857,
+   "birthPlace": "Cedar Grove, GA",
+   "deathDate": "1916-01-02",
+   "deathYear": 1916,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William H. Taft",
+     "nominationDate": "1910-12-12",
+     "confirmationDate": "1910-12-15",
+     "commissionDate": "1910-12-17",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1916-01-02"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 66,
+   "scdbCode": "MPitney",
+   "scdbName": "Pitney, Mahlon",
+   "scdbServiceStart": "1912-03-18",
+   "scdbServiceEnd": "1922-12-31",
+   "fjcNid": "1386361",
+   "fullName": "Mahlon Pitney",
+   "birthDate": "1858-02-05",
+   "birthYear": 1858,
+   "birthPlace": "Morristown, NJ",
+   "deathDate": "1924-12-09",
+   "deathYear": 1924,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William H. Taft",
+     "nominationDate": "1912-02-19",
+     "confirmationDate": "1912-03-13",
+     "commissionDate": "1912-03-13",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "50/26",
+     "terminationReason": "Resignation",
+     "terminationDate": "1922-12-31"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 67,
+   "scdbCode": "JCMcReynolds",
+   "scdbName": "McReynolds, James",
+   "scdbServiceStart": "1914-10-12",
+   "scdbServiceEnd": "1941-01-31",
+   "fjcNid": "1384926",
+   "fullName": "James Clark McReynolds",
+   "birthDate": "1862-02-03",
+   "birthYear": 1862,
+   "birthPlace": "Elkton, KY",
+   "deathDate": "1946-08-24",
+   "deathYear": 1946,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Woodrow Wilson",
+     "nominationDate": "1914-08-19",
+     "confirmationDate": "1914-08-29",
+     "commissionDate": "1914-08-29",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "44/6",
+     "terminationReason": "Death",
+     "terminationDate": "1946-08-24"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 68,
+   "scdbCode": "LDBrandeis",
+   "scdbName": "Brandeis, Louis",
+   "scdbServiceStart": "1916-06-05",
+   "scdbServiceEnd": "1939-02-13",
+   "fjcNid": "1378171",
+   "fullName": "Louis Dembitz Brandeis",
+   "birthDate": "1856-11-13",
+   "birthYear": 1856,
+   "birthPlace": "Louisville, KY",
+   "deathDate": "1941-10-05",
+   "deathYear": 1941,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Woodrow Wilson",
+     "nominationDate": "1916-01-28",
+     "confirmationDate": "1916-06-01",
+     "commissionDate": "1916-06-01",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "47/22",
+     "terminationReason": "Death",
+     "terminationDate": "1941-10-05"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 69,
+   "scdbCode": "JHClarke",
+   "scdbName": "Clarke, John",
+   "scdbServiceStart": "1916-10-09",
+   "scdbServiceEnd": "1922-09-18",
+   "fjcNid": "1379186",
+   "fullName": "John Hessin Clarke",
+   "birthDate": "1857-09-18",
+   "birthYear": 1857,
+   "birthPlace": "New Lisbon, OH",
+   "deathDate": "1945-03-22",
+   "deathYear": 1945,
+   "deathPlace": "San Diego, CA",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Woodrow Wilson",
+     "nominationDate": "1916-07-14",
+     "confirmationDate": "1916-07-24",
+     "commissionDate": "1916-07-24",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1922-09-18"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 70,
+   "scdbCode": "WHTaft",
+   "scdbName": "Taft, William",
+   "scdbServiceStart": "1921-07-11",
+   "scdbServiceEnd": "1930-02-03",
+   "fjcNid": "1388531",
+   "fullName": "William Howard Taft",
+   "birthDate": "1857-09-15",
+   "birthYear": 1857,
+   "birthPlace": "Cincinnati, OH",
+   "deathDate": "1930-03-08",
+   "deathYear": 1930,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Warren G. Harding",
+     "nominationDate": "1921-06-30",
+     "confirmationDate": "1921-06-30",
+     "commissionDate": "1921-06-30",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Unknown",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1930-02-03"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 71,
+   "scdbCode": "GSutherland",
+   "scdbName": "Sutherland, George",
+   "scdbServiceStart": "1922-10-02",
+   "scdbServiceEnd": "1938-01-17",
+   "fjcNid": "1388456",
+   "fullName": "George Sutherland",
+   "birthDate": "1862-03-25",
+   "birthYear": 1862,
+   "birthPlace": "Buckinghamshire, England",
+   "deathDate": "1942-07-18",
+   "deathYear": 1942,
+   "deathPlace": "Stockbridge, MA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Warren G. Harding",
+     "nominationDate": "1922-09-05",
+     "confirmationDate": "1922-09-05",
+     "commissionDate": "1922-09-05",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1942-07-18"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 72,
+   "scdbCode": "PButler",
+   "scdbName": "Butler, Pierce",
+   "scdbServiceStart": "1923-01-02",
+   "scdbServiceEnd": "1939-11-16",
+   "fjcNid": "1378641",
+   "fullName": "Pierce Butler",
+   "birthDate": "1866-03-17",
+   "birthYear": 1866,
+   "birthPlace": "Dakota County, MN",
+   "deathDate": "1939-11-16",
+   "deathYear": 1939,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Warren G. Harding",
+     "nominationDate": "1922-12-05",
+     "confirmationDate": "1922-12-21",
+     "commissionDate": "1922-12-21",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "61/8",
+     "terminationReason": "Death",
+     "terminationDate": "1939-11-16"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 73,
+   "scdbCode": "ETSanford",
+   "scdbName": "Sanford, Edward",
+   "scdbServiceStart": "1923-02-19",
+   "scdbServiceEnd": "1930-03-08",
+   "fjcNid": "1387371",
+   "fullName": "Edward Terry Sanford",
+   "birthDate": "1865-07-23",
+   "birthYear": 1865,
+   "birthPlace": "Knoxville, TN",
+   "deathDate": "1930-03-08",
+   "deathYear": 1930,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Warren G. Harding",
+     "nominationDate": "1923-01-24",
+     "confirmationDate": "1923-01-29",
+     "commissionDate": "1923-01-29",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1930-03-08"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 74,
+   "scdbCode": "HFStone",
+   "scdbName": "Stone, Harlan",
+   "scdbServiceStart": "1925-03-02",
+   "scdbServiceEnd": "1946-04-22",
+   "fjcNid": "1388371",
+   "fullName": "Harlan Fiske Stone",
+   "birthDate": "1872-10-11",
+   "birthYear": 1872,
+   "birthPlace": "Chesterfield, NH",
+   "deathDate": "1946-04-22",
+   "deathYear": 1946,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Calvin Coolidge",
+     "nominationDate": "1925-01-05",
+     "confirmationDate": "1925-02-05",
+     "commissionDate": "1925-02-05",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "71/6",
+     "terminationReason": "Appointment to Another Judicial Position",
+     "terminationDate": "1941-07-03"
+    },
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1941-06-12",
+     "confirmationDate": "1941-06-27",
+     "commissionDate": "1941-07-03",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1946-04-22"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 75,
+   "scdbCode": "CEHughes2",
+   "scdbName": "Hughes, Charles",
+   "scdbServiceStart": "1930-02-24",
+   "scdbServiceEnd": "1941-07-01",
+   "fjcNid": "1382496",
+   "fullName": "Charles Evans Hughes",
+   "birthDate": "1862-04-11",
+   "birthYear": 1862,
+   "birthPlace": "Glens Falls, NY",
+   "deathDate": "1948-08-27",
+   "deathYear": 1948,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Herbert Hoover",
+     "nominationDate": "1930-02-03",
+     "confirmationDate": "1930-02-13",
+     "commissionDate": "1930-02-13",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "52/26",
+     "terminationReason": "Death",
+     "terminationDate": "1948-08-27"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 76,
+   "scdbCode": "OJRoberts",
+   "scdbName": "Roberts, Owen",
+   "scdbServiceStart": "1930-06-02",
+   "scdbServiceEnd": "1945-07-31",
+   "fjcNid": "1387006",
+   "fullName": "Owen Josephus Roberts",
+   "birthDate": "1875-05-02",
+   "birthYear": 1875,
+   "birthPlace": "Philadelphia, PA",
+   "deathDate": "1955-05-17",
+   "deathYear": 1955,
+   "deathPlace": "West Vincent Township, PA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Herbert Hoover",
+     "nominationDate": "1930-05-09",
+     "confirmationDate": "1930-05-20",
+     "commissionDate": "1930-05-20",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1945-07-31"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 77,
+   "scdbCode": "BNCardozo",
+   "scdbName": "Cardozo, Benjamin",
+   "scdbServiceStart": "1932-03-14",
+   "scdbServiceEnd": "1938-07-09",
+   "fjcNid": "1378836",
+   "fullName": "Benjamin Nathan Cardozo",
+   "birthDate": "1870-05-24",
+   "birthYear": 1870,
+   "birthPlace": "New York, NY",
+   "deathDate": "1938-07-09",
+   "deathYear": 1938,
+   "deathPlace": "Port Chester, Long Island, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Herbert Hoover",
+     "nominationDate": "1932-02-15",
+     "confirmationDate": "1932-02-24",
+     "commissionDate": "1932-03-02",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1938-07-09"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 78,
+   "scdbCode": "HLBlack",
+   "scdbName": "Black, Hugo",
+   "scdbServiceStart": "1937-08-19",
+   "scdbServiceEnd": "1971-09-17",
+   "fjcNid": "1377871",
+   "fullName": "Hugo Lafayette Black",
+   "birthDate": "1886-02-27",
+   "birthYear": 1886,
+   "birthPlace": "Clay County, AL",
+   "deathDate": "1971-09-25",
+   "deathYear": 1971,
+   "deathPlace": "Bethesda, MD",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1937-08-12",
+     "confirmationDate": "1937-08-17",
+     "commissionDate": "1937-08-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "63/16",
+     "terminationReason": "Death",
+     "terminationDate": "1971-09-25"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 79,
+   "scdbCode": "SFReed",
+   "scdbName": "Reed, Stanley",
+   "scdbServiceStart": "1938-01-31",
+   "scdbServiceEnd": "1957-02-25",
+   "fjcNid": "1386811",
+   "fullName": "Stanley Forman Reed",
+   "birthDate": "1884-12-31",
+   "birthYear": 1884,
+   "birthPlace": "Minerva, KY",
+   "deathDate": "1980-04-02",
+   "deathYear": 1980,
+   "deathPlace": "Huntington, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1938-01-15",
+     "confirmationDate": "1938-01-25",
+     "commissionDate": "1938-01-27",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1980-04-02"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 80,
+   "scdbCode": "FFrankfurter",
+   "scdbName": "Frankfurter, Felix",
+   "scdbServiceStart": "1939-01-30",
+   "scdbServiceEnd": "1962-08-28",
+   "fjcNid": "1380901",
+   "fullName": "Felix Frankfurter",
+   "birthDate": "1882-11-15",
+   "birthYear": 1882,
+   "birthPlace": "Vienna, Austria-Hungary (now Austria)",
+   "deathDate": "1965-02-22",
+   "deathYear": 1965,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1939-01-05",
+     "confirmationDate": "1939-01-17",
+     "commissionDate": "1939-01-20",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1965-02-22"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 81,
+   "scdbCode": "WODouglas",
+   "scdbName": "Douglas, William",
+   "scdbServiceStart": "1939-04-17",
+   "scdbServiceEnd": "1975-11-12",
+   "fjcNid": "1380151",
+   "fullName": "William Orville Douglas",
+   "birthDate": "1898-10-16",
+   "birthYear": 1898,
+   "birthPlace": "Maine, MN",
+   "deathDate": "1980-01-19",
+   "deathYear": 1980,
+   "deathPlace": "Bethesda, MD",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1939-03-20",
+     "confirmationDate": "1939-04-04",
+     "commissionDate": "1939-04-15",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "62/4",
+     "terminationReason": "Death",
+     "terminationDate": "1980-01-19"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 82,
+   "scdbCode": "FMurphy",
+   "scdbName": "Murphy, Francis",
+   "scdbServiceStart": "1940-02-05",
+   "scdbServiceEnd": "1949-07-19",
+   "fjcNid": "1385526",
+   "fullName": "Frank Murphy",
+   "birthDate": "1890-04-13",
+   "birthYear": 1890,
+   "birthPlace": "Sand Beach, MI",
+   "deathDate": "1949-07-19",
+   "deathYear": 1949,
+   "deathPlace": "Detroit, MI",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1940-01-04",
+     "confirmationDate": "1940-01-16",
+     "commissionDate": "1940-01-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1949-07-19"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 83,
+   "scdbCode": "JFByrnes",
+   "scdbName": "Byrnes, James",
+   "scdbServiceStart": "1941-07-08",
+   "scdbServiceEnd": "1942-10-03",
+   "fjcNid": "1378676",
+   "fullName": "James Francis Byrnes",
+   "birthDate": "1882-05-02",
+   "birthYear": 1882,
+   "birthPlace": "Charleston, SC",
+   "deathDate": "1972-04-09",
+   "deathYear": 1972,
+   "deathPlace": "Columbia, SC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1941-06-12",
+     "confirmationDate": "1941-06-12",
+     "commissionDate": "1941-06-25",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1942-10-03"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 84,
+   "scdbCode": "RHJackson",
+   "scdbName": "Jackson, Robert",
+   "scdbServiceStart": "1941-07-11",
+   "scdbServiceEnd": "1954-10-09",
+   "fjcNid": "1382731",
+   "fullName": "Robert Houghwout Jackson",
+   "birthDate": "1892-02-13",
+   "birthYear": 1892,
+   "birthPlace": "Spring Creek, PA",
+   "deathDate": "1954-10-09",
+   "deathYear": 1954,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1941-06-12",
+     "confirmationDate": "1941-07-07",
+     "commissionDate": "1941-07-11",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1954-10-09"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 85,
+   "scdbCode": "WBRutledge",
+   "scdbName": "Rutledge, Wiley",
+   "scdbServiceStart": "1943-02-15",
+   "scdbServiceEnd": "1949-09-10",
+   "fjcNid": "1387276",
+   "fullName": "Wiley Blount Rutledge",
+   "birthDate": "1894-07-20",
+   "birthYear": 1894,
+   "birthPlace": "Cloverport, KY",
+   "deathDate": "1949-09-10",
+   "deathYear": 1949,
+   "deathPlace": "York, ME",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Franklin D. Roosevelt",
+     "nominationDate": "1943-01-11",
+     "confirmationDate": "1943-02-08",
+     "commissionDate": "1943-02-11",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1949-09-10"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 86,
+   "scdbCode": "HHBurton",
+   "scdbName": "Burton, Harold",
+   "scdbServiceStart": "1945-10-01",
+   "scdbServiceEnd": "1958-10-13",
+   "fjcNid": "1378621",
+   "fullName": "Harold Hitz Burton",
+   "birthDate": "1888-06-22",
+   "birthYear": 1888,
+   "birthPlace": "Jamaica Plain, MA",
+   "deathDate": "1964-10-28",
+   "deathYear": 1964,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Harry S Truman",
+     "nominationDate": "1945-09-18",
+     "confirmationDate": "1945-09-19",
+     "commissionDate": "1945-09-22",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1964-10-28"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 87,
+   "scdbCode": "FMVinson",
+   "scdbName": "Vinson, Fred",
+   "scdbServiceStart": "1946-06-24",
+   "scdbServiceEnd": "1953-09-08",
+   "fjcNid": "1389186",
+   "fullName": "Frederick Moore Vinson",
+   "birthDate": "1890-01-22",
+   "birthYear": 1890,
+   "birthPlace": "Louisa, KY",
+   "deathDate": "1953-09-08",
+   "deathYear": 1953,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Harry S Truman",
+     "nominationDate": "1946-06-06",
+     "confirmationDate": "1946-06-20",
+     "commissionDate": "1946-06-21",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1953-09-08"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 88,
+   "scdbCode": "TCClark",
+   "scdbName": "Clark, Tom",
+   "scdbServiceStart": "1949-08-24",
+   "scdbServiceEnd": "1967-06-12",
+   "fjcNid": "1379176",
+   "fullName": "Tom C. Clark",
+   "birthDate": "1899-09-23",
+   "birthYear": 1899,
+   "birthPlace": "Dallas, TX",
+   "deathDate": "1977-06-13",
+   "deathYear": 1977,
+   "deathPlace": "New York, NY",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Harry S Truman",
+     "nominationDate": "1949-08-02",
+     "confirmationDate": "1949-08-18",
+     "commissionDate": "1949-08-19",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "73/8",
+     "terminationReason": "Death",
+     "terminationDate": "1977-06-13"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 89,
+   "scdbCode": "SMinton",
+   "scdbName": "Minton, Sherman",
+   "scdbServiceStart": "1949-10-12",
+   "scdbServiceEnd": "1956-10-15",
+   "fjcNid": "1385206",
+   "fullName": "Sherman Minton",
+   "birthDate": "1890-10-20",
+   "birthYear": 1890,
+   "birthPlace": "Georgetown, IN",
+   "deathDate": "1965-04-09",
+   "deathYear": 1965,
+   "deathPlace": "New Albany, IN",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Harry S Truman",
+     "nominationDate": "1949-09-15",
+     "confirmationDate": "1949-10-04",
+     "commissionDate": "1949-10-05",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "48/16",
+     "terminationReason": "Death",
+     "terminationDate": "1965-04-09"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 90,
+   "scdbCode": "EWarren",
+   "scdbName": "Warren, Earl",
+   "scdbServiceStart": "1953-10-05",
+   "scdbServiceEnd": "1969-06-23",
+   "fjcNid": "1389396",
+   "fullName": "Earl Warren",
+   "birthDate": "1891-03-19",
+   "birthYear": 1891,
+   "birthPlace": "Los Angeles, CA",
+   "deathDate": "1974-07-09",
+   "deathYear": 1974,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Dwight D. Eisenhower",
+     "nominationDate": "1954-01-11",
+     "confirmationDate": "1954-03-01",
+     "commissionDate": "1954-03-20",
+     "recessAppointmentDate": "1953-10-02",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1974-07-09"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 91,
+   "scdbCode": "JHarlan2",
+   "scdbName": "Harlan, John",
+   "scdbServiceStart": "1955-03-28",
+   "scdbServiceEnd": "1971-09-23",
+   "fjcNid": "1381831",
+   "fullName": "John Marshall Harlan",
+   "birthDate": "1899-05-20",
+   "birthYear": 1899,
+   "birthPlace": "Chicago, IL",
+   "deathDate": "1971-12-29",
+   "deathYear": 1971,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Dwight D. Eisenhower",
+     "nominationDate": "1955-01-10",
+     "confirmationDate": "1955-03-16",
+     "commissionDate": "1955-03-17",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "71/11",
+     "terminationReason": "Death",
+     "terminationDate": "1971-12-29"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 92,
+   "scdbCode": "WJBrennan",
+   "scdbName": "Brennan, William",
+   "scdbServiceStart": "1956-10-16",
+   "scdbServiceEnd": "1990-07-20",
+   "fjcNid": "1378211",
+   "fullName": "William Joseph Brennan, Jr.",
+   "birthDate": "1906-04-25",
+   "birthYear": 1906,
+   "birthPlace": "Newark, NJ",
+   "deathDate": "1997-07-24",
+   "deathYear": 1997,
+   "deathPlace": "Arlington, VA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Dwight D. Eisenhower",
+     "nominationDate": "1957-01-14",
+     "confirmationDate": "1957-03-19",
+     "commissionDate": "1957-03-21",
+     "recessAppointmentDate": "1956-10-15",
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "1997-07-24"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 93,
+   "scdbCode": "CEWhittaker",
+   "scdbName": "Whittaker, Charles",
+   "scdbServiceStart": "1957-03-25",
+   "scdbServiceEnd": "1962-03-31",
+   "fjcNid": "1389716",
+   "fullName": "Charles Evans Whittaker",
+   "birthDate": "1901-02-22",
+   "birthYear": 1901,
+   "birthPlace": "near Troy, KS",
+   "deathDate": "1973-11-26",
+   "deathYear": 1973,
+   "deathPlace": "Kansas City, MO",
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Dwight D. Eisenhower",
+     "nominationDate": "1957-03-02",
+     "confirmationDate": "1957-03-19",
+     "commissionDate": "1957-03-22",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1965-09-30"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 94,
+   "scdbCode": "PStewart",
+   "scdbName": "Stewart, Potter",
+   "scdbServiceStart": "1958-10-14",
+   "scdbServiceEnd": "1981-07-03",
+   "fjcNid": "1388346",
+   "fullName": "Potter Stewart",
+   "birthDate": "1915-01-23",
+   "birthYear": 1915,
+   "birthPlace": "Jackson, MI",
+   "deathDate": "1985-12-07",
+   "deathYear": 1985,
+   "deathPlace": "Hanover, NH",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Dwight D. Eisenhower",
+     "nominationDate": "1959-01-17",
+     "confirmationDate": "1959-05-05",
+     "commissionDate": "1959-05-07",
+     "recessAppointmentDate": "1958-10-14",
+     "senateVoteType": "Roll Call",
+     "senateVote": "70/17",
+     "terminationReason": "Death",
+     "terminationDate": "1985-12-07"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 95,
+   "scdbCode": "BRWhite",
+   "scdbName": "White, Byron",
+   "scdbServiceStart": "1962-04-16",
+   "scdbServiceEnd": "1993-06-28",
+   "fjcNid": "1389691",
+   "fullName": "Byron Raymond White",
+   "birthDate": "1917-06-08",
+   "birthYear": 1917,
+   "birthPlace": "Fort Collins, CO",
+   "deathDate": "2002-04-15",
+   "deathYear": 2002,
+   "deathPlace": "Denver, CO",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "John F. Kennedy",
+     "nominationDate": "1962-04-03",
+     "confirmationDate": "1962-04-11",
+     "commissionDate": "1962-04-12",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Death",
+     "terminationDate": "2002-04-15"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 96,
+   "scdbCode": "AJGoldberg",
+   "scdbName": "Goldberg, Arthur",
+   "scdbServiceStart": "1962-10-01",
+   "scdbServiceEnd": "1965-07-25",
+   "fjcNid": "1381321",
+   "fullName": "Arthur Joseph Goldberg",
+   "birthDate": "1908-08-08",
+   "birthYear": 1908,
+   "birthPlace": "Chicago, IL",
+   "deathDate": "1990-01-19",
+   "deathYear": 1990,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "John F. Kennedy",
+     "nominationDate": "1962-08-31",
+     "confirmationDate": "1962-09-25",
+     "commissionDate": "1962-09-28",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1965-07-26"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 97,
+   "scdbCode": "AFortas",
+   "scdbName": "Fortas, Abe",
+   "scdbServiceStart": "1965-10-04",
+   "scdbServiceEnd": "1969-05-14",
+   "fjcNid": "1380861",
+   "fullName": "Abe Fortas",
+   "birthDate": "1910-06-19",
+   "birthYear": 1910,
+   "birthPlace": "Memphis, TN",
+   "deathDate": "1982-04-05",
+   "deathYear": 1982,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Lyndon B. Johnson",
+     "nominationDate": "1965-07-28",
+     "confirmationDate": "1965-08-11",
+     "commissionDate": "1965-08-11",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Voice",
+     "senateVote": null,
+     "terminationReason": "Resignation",
+     "terminationDate": "1969-05-14"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 98,
+   "scdbCode": "TMarshall",
+   "scdbName": "Marshall, Thurgood",
+   "scdbServiceStart": "1967-10-02",
+   "scdbServiceEnd": "1991-10-01",
+   "fjcNid": "1384366",
+   "fullName": "Thurgood Marshall",
+   "birthDate": "1908-07-02",
+   "birthYear": 1908,
+   "birthPlace": "Baltimore, MD",
+   "deathDate": "1993-01-24",
+   "deathYear": 1993,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Lyndon B. Johnson",
+     "nominationDate": "1967-06-13",
+     "confirmationDate": "1967-08-30",
+     "commissionDate": "1967-08-30",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "69/11",
+     "terminationReason": "Death",
+     "terminationDate": "1993-01-24"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 99,
+   "scdbCode": "WEBurger",
+   "scdbName": "Burger, Warren",
+   "scdbServiceStart": "1969-06-23",
+   "scdbServiceEnd": "1986-09-26",
+   "fjcNid": "1378561",
+   "fullName": "Warren Earl Burger",
+   "birthDate": "1907-09-17",
+   "birthYear": 1907,
+   "birthPlace": "St. Paul, MN",
+   "deathDate": "1995-06-25",
+   "deathYear": 1995,
+   "deathPlace": "Alexandria, VA",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Richard M. Nixon",
+     "nominationDate": "1969-05-23",
+     "confirmationDate": "1969-06-09",
+     "commissionDate": "1969-06-23",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "74/3",
+     "terminationReason": "Death",
+     "terminationDate": "1995-06-25"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 100,
+   "scdbCode": "HABlackmun",
+   "scdbName": "Blackmun, Harry",
+   "scdbServiceStart": "1970-06-09",
+   "scdbServiceEnd": "1994-08-03",
+   "fjcNid": "1377901",
+   "fullName": "Harry Andrew Blackmun",
+   "birthDate": "1908-11-12",
+   "birthYear": 1908,
+   "birthPlace": "Nashville, IL",
+   "deathDate": "1999-03-04",
+   "deathYear": 1999,
+   "deathPlace": "Arlington, VA",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Richard M. Nixon",
+     "nominationDate": "1970-04-15",
+     "confirmationDate": "1970-05-12",
+     "commissionDate": "1970-05-14",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "94/0",
+     "terminationReason": "Death",
+     "terminationDate": "1999-03-04"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 101,
+   "scdbCode": "LFPowell",
+   "scdbName": "Powell, Lewis",
+   "scdbServiceStart": "1972-01-07",
+   "scdbServiceEnd": "1987-06-26",
+   "fjcNid": "1386536",
+   "fullName": "Lewis Franklin Powell, Jr.",
+   "birthDate": "1907-09-19",
+   "birthYear": 1907,
+   "birthPlace": "Suffolk, VA",
+   "deathDate": "1998-08-25",
+   "deathYear": 1998,
+   "deathPlace": "Richmond, VA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Richard M. Nixon",
+     "nominationDate": "1971-10-22",
+     "confirmationDate": "1971-12-06",
+     "commissionDate": "1971-12-09",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "89/1",
+     "terminationReason": "Death",
+     "terminationDate": "1998-08-25"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 102,
+   "scdbCode": "WHRehnquist",
+   "scdbName": "Rehnquist, William",
+   "scdbServiceStart": "1972-01-07",
+   "scdbServiceEnd": "2005-09-03",
+   "fjcNid": "1386831",
+   "fullName": "William Hubbs Rehnquist",
+   "birthDate": "1924-10-01",
+   "birthYear": 1924,
+   "birthPlace": "Milwaukee, WI",
+   "deathDate": "2005-09-03",
+   "deathYear": 2005,
+   "deathPlace": "Arlington, VA",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Richard M. Nixon",
+     "nominationDate": "1971-10-22",
+     "confirmationDate": "1971-12-10",
+     "commissionDate": "1971-12-15",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "68/26",
+     "terminationReason": "Appointment to Another Judicial Position",
+     "terminationDate": "1986-09-26"
+    },
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "Ronald Reagan",
+     "nominationDate": "1986-06-20",
+     "confirmationDate": "1986-09-17",
+     "commissionDate": "1986-09-25",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "65/33",
+     "terminationReason": "Death",
+     "terminationDate": "2005-09-03"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 103,
+   "scdbCode": "JPStevens",
+   "scdbName": "Stevens, John",
+   "scdbServiceStart": "1975-12-19",
+   "scdbServiceEnd": "2010-06-29",
+   "fjcNid": "1388326",
+   "fullName": "John Paul Stevens",
+   "birthDate": "1920-04-20",
+   "birthYear": 1920,
+   "birthPlace": "Chicago, IL",
+   "deathDate": "2019-07-16",
+   "deathYear": 2019,
+   "deathPlace": "Fort Lauderdale, FL",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Gerald Ford",
+     "nominationDate": "1975-11-28",
+     "confirmationDate": "1975-12-17",
+     "commissionDate": "1975-12-17",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "98/0",
+     "terminationReason": "Death",
+     "terminationDate": "2019-07-16"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 104,
+   "scdbCode": "SDOConnor",
+   "scdbName": "O\u2019Connor, Sandra",
+   "scdbServiceStart": "1981-09-25",
+   "scdbServiceEnd": "2006-01-31",
+   "fjcNid": "1385891",
+   "fullName": "Sandra Day O'Connor",
+   "birthDate": "1930-03-26",
+   "birthYear": 1930,
+   "birthPlace": "El Paso, TX",
+   "deathDate": "2023-12-01",
+   "deathYear": 2023,
+   "deathPlace": "Phoenix, AZ",
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Ronald Reagan",
+     "nominationDate": "1981-08-19",
+     "confirmationDate": "1981-09-21",
+     "commissionDate": "1981-09-22",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "99/0",
+     "terminationReason": "Death",
+     "terminationDate": "2023-12-01"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 105,
+   "scdbCode": "AScalia",
+   "scdbName": "Scalia, Antonin",
+   "scdbServiceStart": "1986-09-26",
+   "scdbServiceEnd": "2016-02-13",
+   "fjcNid": "1387421",
+   "fullName": "Antonin Scalia",
+   "birthDate": "1936-03-11",
+   "birthYear": 1936,
+   "birthPlace": "Trenton, NJ",
+   "deathDate": "2016-02-13",
+   "deathYear": 2016,
+   "deathPlace": "Shafter, TX",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Ronald Reagan",
+     "nominationDate": "1986-06-24",
+     "confirmationDate": "1986-09-17",
+     "commissionDate": "1986-09-25",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "98/0",
+     "terminationReason": "Death",
+     "terminationDate": "2016-02-13"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 106,
+   "scdbCode": "AMKennedy",
+   "scdbName": "Kennedy, Anthony",
+   "scdbServiceStart": "1988-02-18",
+   "scdbServiceEnd": "2018-07-31",
+   "fjcNid": "1383211",
+   "fullName": "Anthony McLeod Kennedy",
+   "birthDate": null,
+   "birthYear": 1936,
+   "birthPlace": "Sacramento, CA",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Ronald Reagan",
+     "nominationDate": "1987-11-30",
+     "confirmationDate": "1988-02-03",
+     "commissionDate": "1988-02-11",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "97/0",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 107,
+   "scdbCode": "DHSouter",
+   "scdbName": "Souter, David",
+   "scdbServiceStart": "1990-10-09",
+   "scdbServiceEnd": "2009-06-29",
+   "fjcNid": "1388096",
+   "fullName": "David Hackett Souter",
+   "birthDate": "1939-09-17",
+   "birthYear": 1939,
+   "birthPlace": "Melrose, MA",
+   "deathDate": "2025-05-08",
+   "deathYear": 2025,
+   "deathPlace": "Concord, NH",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George H.W. Bush",
+     "nominationDate": "1990-07-25",
+     "confirmationDate": "1990-10-02",
+     "commissionDate": "1990-10-03",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "90/9",
+     "terminationReason": "Death",
+     "terminationDate": "2025-05-08"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 108,
+   "scdbCode": "CThomas",
+   "scdbName": "Thomas, Clarence",
+   "scdbServiceStart": "1991-10-23",
+   "scdbServiceEnd": null,
+   "fjcNid": "1388686",
+   "fullName": "Clarence Thomas",
+   "birthDate": null,
+   "birthYear": 1948,
+   "birthPlace": "Savannah, GA",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George H.W. Bush",
+     "nominationDate": "1991-07-08",
+     "confirmationDate": "1991-10-15",
+     "commissionDate": "1991-10-18",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "52/48",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 109,
+   "scdbCode": "RBGinsburg",
+   "scdbName": "Ginsburg, Ruth",
+   "scdbServiceStart": "1993-08-10",
+   "scdbServiceEnd": "2020-09-18",
+   "fjcNid": "1381271",
+   "fullName": "Ruth Bader Ginsburg",
+   "birthDate": "1933-03-15",
+   "birthYear": 1933,
+   "birthPlace": "Brooklyn, NY",
+   "deathDate": "2020-09-18",
+   "deathYear": 2020,
+   "deathPlace": "Washington, DC",
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William J. Clinton",
+     "nominationDate": "1993-06-22",
+     "confirmationDate": "1993-08-03",
+     "commissionDate": "1993-08-05",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "96/3",
+     "terminationReason": "Death",
+     "terminationDate": "2020-09-18"
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 110,
+   "scdbCode": "SGBreyer",
+   "scdbName": "Breyer, Stephen",
+   "scdbServiceStart": "1994-08-03",
+   "scdbServiceEnd": "2022-06-30",
+   "fjcNid": "1378241",
+   "fullName": "Stephen Gerald Breyer",
+   "birthDate": null,
+   "birthYear": 1938,
+   "birthPlace": "San Francisco, CA",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "William J. Clinton",
+     "nominationDate": "1994-05-17",
+     "confirmationDate": "1994-07-29",
+     "commissionDate": "1994-08-03",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "87/9",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 111,
+   "scdbCode": "JGRoberts",
+   "scdbName": "Roberts, John",
+   "scdbServiceStart": "2005-09-29",
+   "scdbServiceEnd": null,
+   "fjcNid": "1391841",
+   "fullName": "John Glover Roberts, Jr.",
+   "birthDate": null,
+   "birthYear": 1955,
+   "birthPlace": "Buffalo, NY",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Chief Justice",
+     "appointingPresident": "George W. Bush",
+     "nominationDate": "2005-09-06",
+     "confirmationDate": "2005-09-29",
+     "commissionDate": "2005-09-29",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "78/22",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 112,
+   "scdbCode": "SAAlito",
+   "scdbName": "Alito, Samuel",
+   "scdbServiceStart": "2006-01-31",
+   "scdbServiceEnd": null,
+   "fjcNid": "1377101",
+   "fullName": "Samuel A. Alito, Jr.",
+   "birthDate": null,
+   "birthYear": 1950,
+   "birthPlace": "Trenton, NJ",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "George W. Bush",
+     "nominationDate": "2005-11-10",
+     "confirmationDate": "2006-01-31",
+     "commissionDate": "2006-01-31",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "58/42",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 113,
+   "scdbCode": "SSotomayor",
+   "scdbName": "Sotomayor, Sonia",
+   "scdbServiceStart": "2009-08-08",
+   "scdbServiceEnd": null,
+   "fjcNid": "1388091",
+   "fullName": "Sonia Sotomayor",
+   "birthDate": null,
+   "birthYear": 1954,
+   "birthPlace": "Bronx, NY",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Barack Obama",
+     "nominationDate": "2009-06-01",
+     "confirmationDate": "2009-08-06",
+     "commissionDate": "2009-08-06",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "68/31",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 114,
+   "scdbCode": "EKagan",
+   "scdbName": "Kagan, Elena",
+   "scdbServiceStart": "2010-08-07",
+   "scdbServiceEnd": null,
+   "fjcNid": "1393281",
+   "fullName": "Elena Kagan",
+   "birthDate": null,
+   "birthYear": 1960,
+   "birthPlace": "New York, NY",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 1,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Barack Obama",
+     "nominationDate": "2010-05-10",
+     "confirmationDate": "2010-08-05",
+     "commissionDate": "2010-08-06",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "63/37",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 115,
+   "scdbCode": "NMGorsuch",
+   "scdbName": "Gorsuch, Neil",
+   "scdbServiceStart": "2017-04-08",
+   "scdbServiceEnd": null,
+   "fjcNid": "1392461",
+   "fullName": "Neil M. Gorsuch",
+   "birthDate": null,
+   "birthYear": 1967,
+   "birthPlace": "Denver, CO",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Donald J. Trump",
+     "nominationDate": "2017-02-01",
+     "confirmationDate": "2017-04-07",
+     "commissionDate": "2017-04-08",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "54/45",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 116,
+   "scdbCode": "BMKavanaugh",
+   "scdbName": "Kavanaugh, Brett",
+   "scdbServiceStart": "2018-10-06",
+   "scdbServiceEnd": null,
+   "fjcNid": "1392406",
+   "fullName": "Brett M. Kavanaugh",
+   "birthDate": null,
+   "birthYear": 1965,
+   "birthPlace": "Washington, DC",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Donald J. Trump",
+     "nominationDate": "2018-07-10",
+     "confirmationDate": "2018-10-06",
+     "commissionDate": "2018-10-06",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "50/48",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 117,
+   "scdbCode": "ACBarrett",
+   "scdbName": "Barrett, Amy",
+   "scdbServiceStart": "2020-10-27",
+   "scdbServiceEnd": null,
+   "fjcNid": "3979311",
+   "fullName": "Amy Coney Barrett",
+   "birthDate": null,
+   "birthYear": 1972,
+   "birthPlace": "New Orleans, LA",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 2,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Donald J. Trump",
+     "nominationDate": "2020-09-29",
+     "confirmationDate": "2020-10-26",
+     "commissionDate": "2020-10-26",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "52/48",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  },
+  {
+   "scdbJusticeId": 118,
+   "scdbCode": "KBJackson",
+   "scdbName": "Jackson, Ketanji",
+   "scdbServiceStart": "2022-06-30",
+   "scdbServiceEnd": null,
+   "fjcNid": "1394151",
+   "fullName": "Ketanji Brown Jackson",
+   "birthDate": null,
+   "birthYear": 1970,
+   "birthPlace": "Washington, DC",
+   "deathDate": null,
+   "deathYear": null,
+   "deathPlace": null,
+   "appointments": [
+    {
+     "fjcSequence": 3,
+     "appointmentTitle": "Associate Justice",
+     "appointingPresident": "Joseph R. Biden",
+     "nominationDate": "2022-02-28",
+     "confirmationDate": "2022-04-07",
+     "commissionDate": "2022-04-08",
+     "recessAppointmentDate": null,
+     "senateVoteType": "Roll Call",
+     "senateVote": "53/47",
+     "terminationReason": null,
+     "terminationDate": null
+    }
+   ]
+  }
+ ]
+}

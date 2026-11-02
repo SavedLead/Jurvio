@@ -7,3 +7,11 @@ dist
 .data
 *.log
 .DS_Store
+# SCDB / FJC working files (see data/README.md): only the zips the importer reads are committed.
+data/scdb/**/*.csv
+data/scdb/**/SHA256SUMS
+data/scdb/*.html
+data/scdb/2026_01/SCDB_2026_01_caseCentered_Citation.csv.zip
+data/scdb/2026_01/SCDB_2026_01_justiceCentered_Docket.csv.zip
+data/scdb/legacy_07/SCDB_Legacy_07_caseCentered_Citation.csv.zip
+data/fjc/
