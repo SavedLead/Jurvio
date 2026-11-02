@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { decodeScdbText, parseCsv, readSingleFileZip, scdbInt, scdbText, scdbDate } from "./scdb";
-import { buildTermBreakdown, externalCheck, type TermCaseRow, type TermVoteRow } from "./term-breakdown";
+import { buildTermBreakdown, externalCheck, martinQuinnReleaseLabel, type TermCaseRow, type TermVoteRow } from "./term-breakdown";
 
 /**
  * Guards the OT2025 numbers shown on /justices/terms/2025 against the committed
@@ -83,5 +83,19 @@ describe("OT2025 term breakdown (SCDB 2026_01)", () => {
     expect(total).toBe(57);
     const liberal = Object.values(b.issues).reduce((n, byJustice) => n + (byJustice[roberts]?.liberal ?? 0), 0);
     expect(liberal).toBe(30);
+  });
+});
+
+describe("martinQuinnReleaseLabel", () => {
+  it("does not nest the release's own coverage brackets", () => {
+    const label = martinQuinnReleaseLabel("2024 (OT1937-OT2024)");
+    expect(label).toBe("Martin-Quinn 2024 release, covering OT1937–OT2024");
+    expect(`(${label})`).not.toMatch(/\)\)/);
+  });
+
+  it("handles plain and missing versions", () => {
+    expect(martinQuinnReleaseLabel("2024")).toBe("Martin-Quinn 2024");
+    expect(martinQuinnReleaseLabel(null)).toBe("Martin-Quinn release");
+    expect(martinQuinnReleaseLabel("  ")).toBe("Martin-Quinn release");
   });
 });
