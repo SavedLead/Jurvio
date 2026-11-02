@@ -51,6 +51,8 @@ export default async function AgreementPage({ searchParams }: { searchParams: Pr
         {terms.length > pickerTerms.length ? <span style={{ alignSelf: "center", color: "#6a7489", fontSize: ".8rem" }}>Older terms back to {terms.at(-1)}: add ?term=YYYY</span> : null}</div>
     </header>
 
+    <p><Link className={styles.link} href={`/justices/terms/${term}` as Route}>{termLabel(term)} in numbers: vote splits, every 5–4 decision, opinions and issue areas →</Link></p>
+
     <section className={styles.section} aria-labelledby="matrix">
       <span className={styles.tag}>Facts from SCDB</span>
       <h2 id="matrix">Agreement matrix</h2>

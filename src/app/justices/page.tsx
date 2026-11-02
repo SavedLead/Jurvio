@@ -59,6 +59,7 @@ export default async function JusticesPage({ searchParams }: { searchParams: Pro
     </header>
     <DirectionExplainer />
     <p><Link className={styles.link} href={`/justices/agreement?scope=${scope}` as Route}>See how often each pair of justices votes together →</Link></p>
+    {latest ? <p><Link className={styles.link} href={`/justices/terms/${latest.term}` as Route}>The {termLabel(latest.term)} term in numbers: vote splits, every 5–4 decision, opinions and issue areas →</Link></p> : null}
     {justices.length ? <>
       <section className={styles.section} aria-labelledby="current">
         <h2 id="current">The current Court</h2>
