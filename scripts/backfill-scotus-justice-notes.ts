@@ -15,11 +15,17 @@
 // its official opinion PDF; the PDF is fetched once (same delay, identifying
 // User-Agent), converted with pdftotext and cached as text, and the opening
 // lines are quoted. Without pdftotext the notes are still written, unquoted.
+//
+// The builder has no pdftotext (and no passwordless sudo), so the workflow runs
+// pdftotext inside the released app image (which ships poppler-utils) with the
+// opinion cache mounted read-only at /opinions, and passes the container name in
+// PDFTOTEXT_CONTAINER. When that is set and pdftotext can't run in it, the script
+// exits 2 instead of silently writing unquoted notes.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { officialDocketPageUrl } from "@/modules/ingestion/providers/scotus/docket-status";
 import { parseOfficialDocket } from "@/modules/ingestion/providers/scotus/official-docket";
@@ -59,8 +65,24 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const started = Date.now();
 const overBudget = () => Date.now() - started > budgetMs;
 
+const pdftotextContainer = process.env.PDFTOTEXT_CONTAINER?.trim() || null;
+const CONTAINER_OPINION_DIR = "/opinions";
+
+/** pdftotext on the host, or inside the app-image container (PDF path mapped to /opinions). */
+function runPdftotext(args: string[], pdfPath: string | null, timeout: number) {
+  const options = { maxBuffer: 16 * 1024 * 1024, timeout };
+  const tail = pdfPath ? [pdfPath, "-"] : [];
+  if (!pdftotextContainer) return execFileAsync("pdftotext", [...args, ...tail], options);
+  const inside = pdfPath ? [`${CONTAINER_OPINION_DIR}/${basename(pdfPath)}`, "-"] : [];
+  return execFileAsync("docker", ["exec", pdftotextContainer, "pdftotext", ...args, ...inside], options);
+}
+
 let havePdftotext = true;
-try { await execFileAsync("pdftotext", ["-v"], { timeout: 10_000 }); } catch { havePdftotext = false; }
+try { await runPdftotext(["-v"], null, 10_000); } catch { havePdftotext = false; }
+if (!havePdftotext && pdftotextContainer) {
+  console.error(`pdftotext does not run in container ${pdftotextContainer}; refusing to write unquoted notes`);
+  process.exit(2);
+}
 
 function copyValue(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "\\N";
@@ -107,9 +129,9 @@ async function opinionText(url: string): Promise<string | null> {
   writeFileSync(pdfPath, page.body);
   // A preliminary-print order list holds many orders; "#page=85" says where this one starts.
   const startPage = Number(/#page=(\d+)/.exec(url)?.[1] ?? "1");
-  const args = ["-f", String(startPage), "-l", String(startPage + 40), pdfPath, "-"];
+  const args = ["-f", String(startPage), "-l", String(startPage + 40)];
   try {
-    const { stdout } = await execFileAsync("pdftotext", args, { maxBuffer: 16 * 1024 * 1024, timeout: 120_000 });
+    const { stdout } = await runPdftotext(args, pdfPath, 120_000);
     writeFileSync(cached, gzipSync(stdout));
     stats.opinionsFetched += 1;
     return stdout;
