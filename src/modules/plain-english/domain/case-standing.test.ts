@@ -278,3 +278,69 @@ describe("readDocketOutcome", () => {
     expect(won?.sourceLabel).toBe("From the court's docket, Sep. 30, 2024");
   });
 });
+
+describe("official outcome sources", () => {
+  const docket = {
+    certStatus: "denied" as const, certStatusOn: "2020-04-06", certEntry: "Petition DENIED.", judgmentOn: null, judgmentEntry: null,
+    petitioner: "Jeffrey Lance Hill, Sr.", respondent: "Leandra G. Johnson, et al.",
+    lowerCourt: "United States Court of Appeals for the Eleventh Circuit", lowerCourtDecidedOn: "2019-09-20",
+    lastEntryOn: "2020-06-01", fetchedAt: "2026-11-01 19:00:00-05", sourceUrl: "https://www.supremecourt.gov/search.aspx?filename=/docket/docketfiles/html/public/19-994.html",
+  };
+  const cert: CaseStandingInput = { ...base, caption: "Jeffrey Lance Hill, Sr., Petitioner v. Leandra G. Johnson, et al.", decidedOn: null, verified: false, scotusDocket: docket };
+
+  it("cert denied: the lower court's ruling stands, named sides, official docket quoted", () => {
+    const standing = buildCaseStanding(cert);
+    expect(standing?.headline).toBe("The Supreme Court declined to hear this case, so the lower court's ruling stands.");
+    const who = standing?.points.find((point) => point.id === "who-won")?.text ?? "";
+    expect(who).toContain("A win for Leandra G. Johnson and others (the respondent, the side that won in the lower court)");
+    expect(who).toContain("denied certiorari (refused to review the case) on Apr 6, 2020");
+    expect(who).toContain("the decision of the United States Court of Appeals for the Eleventh Circuit stands");
+    expect(who).toContain("a loss for Jeffrey Lance Hill, Sr. (the petitioner");
+    const decided = standing?.points.find((point) => point.id === "decided");
+    expect(decided).toMatchObject({ quote: "Petition DENIED.", sourceHref: docket.sourceUrl });
+    expect(standing?.points.find((point) => point.id === "means")?.text).toContain("not a ruling on who was right");
+    expect(standing?.points.some((point) => point.id === "good-law")).toBe(false);
+    expect(standing?.points.find((point) => point.id === "lower")?.text).toContain("which decided it on Sep. 20, 2019");
+  });
+
+  it("judgment from the official docket when the opinion line is missing", () => {
+    const standing = buildCaseStanding({ ...cert, caption: "Philip Morris USA v. Williams", scotusDocket: { ...docket, certStatus: "granted", judgmentOn: "2007-02-20",
+      judgmentEntry: "Judgment VACATED and case REMANDED.", petitioner: "Philip Morris USA", respondent: "Mayola Williams, Personal Representative of the Estate of Jesse D. Williams, Deceased", lowerCourt: "Supreme Court of Oregon" } });
+    expect(standing?.headline).toBe("The Supreme Court canceled the lower court's decision — a win for Philip Morris USA, at least for now.");
+    expect(standing?.points.find((point) => point.id === "decided")).toMatchObject({ quote: "Judgment VACATED and case REMANDED.", sourceLabel: "From the Supreme Court's official docket, Feb. 20, 2007" });
+    expect(standing?.points.some((point) => point.id === "good-law")).toBe(true);
+  });
+
+  it("granted and not yet decided; a stale pending petition says nothing", () => {
+    const granted = buildCaseStanding({ ...cert, scotusDocket: { ...docket, certStatus: "granted", certStatusOn: "2026-10-10", certEntry: "Petition GRANTED.", lastEntryOn: "2026-10-10" } });
+    expect(granted?.headline).toBe("The Supreme Court agreed to hear this case and has not decided it yet.");
+    expect(buildCaseStanding({ ...cert, scotusDocket: { ...docket, certStatus: "pending", lastEntryOn: "2004-01-01" } })).toBeNull();
+  });
+
+  const fjcBase: CaseStandingInput = { ...base, courtKind: "district", courtName: "District Court, E.D. Pennsylvania", caption: "Wild Leitz USA, Inc. v. Affordable Instruments Supply",
+    decidedOn: null, filedOn: "1989-10-11", terminatedOn: null, verified: false, opinionIsMajority: false };
+  const fjc = { terminatedOn: "1989-11-24", disposition: 4, judgment: 1, plaintiff: "WILD LEITZ USA, INC.", defendant: "AFFORDABLE INSTRUMENTS SUPPLY", snapshotDate: "2026-09-30" };
+
+  it("district: FJC disposition and judgment name the winner", () => {
+    const standing = buildCaseStanding({ ...fjcBase, fjcOutcome: fjc });
+    expect(standing?.headline).toBe("The court ruled for Wild Leitz USA, Inc. (the plaintiff).");
+    const who = standing?.points.find((point) => point.id === "who-won");
+    expect(who?.text).toContain("by default judgment (the defendant did not respond to the lawsuit), against Affordable Instruments Supply (the defendant)");
+    expect(who?.sourceHref).toBe("https://www.fjc.gov/research/idb");
+    expect(standing?.points.find((point) => point.id === "status")?.text).toBe("No. The court closed this case on Nov. 24, 1989.");
+  });
+
+  it("district: settlement, and names withheld when the IDB parties don't match the caption", () => {
+    expect(buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, disposition: 13, judgment: null } })?.headline).toBe("The case was settled.");
+    const unmatched = buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, judgment: 2, plaintiff: "SOMEONE ELSE", defendant: "OTHER PARTY" } });
+    expect(unmatched?.headline).toBe("The court ruled for the defendant.");
+    const swapped = buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, judgment: 2, plaintiff: "AFFORDABLE INSTRUMENTS SUPPLY", defendant: "WILD LEITZ USA, INC." } });
+    expect(swapped?.headline).toBe("The court ruled for Wild Leitz USA, Inc. (the defendant).");
+  });
+
+  it("district: a docket judgment still wins over the FJC statistics", () => {
+    const standing = buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, judgment: 2 }, docketEntries: [{ filedOn: "1989-11-24", description: "JUDGMENT entered in favor of Wild Leitz USA, Inc. against Affordable Instruments Supply." }] });
+    expect(standing?.headline).toBe("The court ruled for Wild Leitz USA (the plaintiff).");
+    expect(standing?.points.find((point) => point.id === "who-won")?.sourceHref).not.toBe("https://www.fjc.gov/research/idb");
+  });
+});

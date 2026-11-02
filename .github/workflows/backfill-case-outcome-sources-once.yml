@@ -1,0 +1,232 @@
+name: Backfill official case outcome sources (once, resumable)
+
+# Fills the two side tables "Where this case stands" reads (migration 0185):
+#
+#   scotus  - scotus_docket_status: the Supreme Court's own docket page for each
+#             published Supreme Court case with a 2000+ docket number (cert
+#             granted / denied / dismissed, judgment line, party titles).
+#             Fetched from the builder, one request at a time with a delay
+#             (robots.txt Crawl-delay 1), identifying User-Agent, gzip cache in
+#             ~/.cache/jurvio/scotus-dockets so re-dispatching resumes; cases
+#             checked in the last 30 days are skipped.
+#   fjc     - fjc_idb_case_outcome: how published federal district civil cases
+#             ended per the FJC Integrated Database (CourtListener's free bulk
+#             file, streamed and decompressed on the builder; never stored).
+#
+# Runs on the builder, never on a web host. The database sees one read-only
+# export and one COPY + upsert per source. Nothing is published: both tables are
+# read only by case pages that are already published and displayable.
+# Dispatch by hand with confirm=BACKFILL_CASE_OUTCOMES.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKFILL_CASE_OUTCOMES to run this workflow against production"
+        required: true
+        type: string
+      source:
+        description: "scotus, fjc or both"
+        required: true
+        default: "both"
+        type: string
+      budget_minutes:
+        description: "Stop fetching new Supreme Court dockets after this many minutes (re-dispatch to resume)"
+        required: true
+        default: "300"
+        type: string
+      delay_ms:
+        description: "Delay between supremecourt.gov requests (1100-10000 ms)"
+        required: true
+        default: "1500"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backfill-case-outcome-sources
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 400
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      SOURCE: ${{ inputs.source }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes }}
+      DELAY_MS: ${{ inputs.delay_ms }}
+    steps:
+      - name: Require confirm=BACKFILL_CASE_OUTCOMES and validate inputs
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "BACKFILL_CASE_OUTCOMES" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_CASE_OUTCOMES."
+            exit 1
+          fi
+          case "$SOURCE" in scotus|fjc|both) ;; *) echo "::error::source must be scotus, fjc or both"; exit 1;; esac
+          case "$BUDGET_MINUTES" in ''|*[!0-9]*) echo "::error::budget_minutes must be an integer"; exit 1;; esac
+          if [ "$BUDGET_MINUTES" -lt 1 ] || [ "$BUDGET_MINUTES" -gt 330 ]; then echo "::error::budget_minutes must be 1-330"; exit 1; fi
+          case "$DELAY_MS" in ''|*[!0-9]*) echo "::error::delay_ms must be an integer"; exit 1;; esac
+          if [ "$DELAY_MS" -lt 1100 ] || [ "$DELAY_MS" -gt 10000 ]; then echo "::error::delay_ms must be 1100-10000"; exit 1; fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Check migration 0185 is applied
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 \
+            -c "SELECT count(*) FROM scotus_docket_status" -c "SELECT count(*) FROM fjc_idb_case_outcome" \
+            || { echo "::error::tables missing; release migration 0185 with deploy-production.yml first"; exit 1; }
+          REMOTE
+
+      - name: Supreme Court official dockets
+        if: ${{ inputs.source == 'scotus' || inputs.source == 'both' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/scotus"; mkdir -p "$work"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" > "$work/cases.tsv" <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          sudo -n docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=600s' "$pg" \
+            psql -U jurvio -d jurvio -At -F $'\t' -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT c.id, btrim(c.docket_number)
+          FROM legal_case c
+          JOIN court ct ON ct.id = c.court_id AND lower(ct.provider_court_id) = 'scotus'
+          LEFT JOIN scotus_docket_status s ON s.case_id = c.id
+          WHERE c.publication = 'published'
+            AND btrim(c.docket_number) ~ '^(0[0-9]|1[0-9]|2[0-9])(-[0-9]{1,5}|A[0-9]{1,4})$'
+            AND (s.case_id IS NULL OR s.fetched_at < now() - interval '30 days')
+          ORDER BY (c.decided_on IS NULL) DESC,
+            (SELECT t.tier FROM publication_tier_release t WHERE t.case_id = c.id AND t.state = 'published' ORDER BY t.tier LIMIT 1) NULLS LAST,
+            c.docket_number DESC;
+          SQL
+          REMOTE
+          echo "::notice title=Supreme Court cases to check::$(wc -l < "$work/cases.tsv")"
+          INGESTION_USER_AGENT="Jurvio/0.1 (+https://jurvio.com; public court records)" \
+            pnpm exec tsx scripts/backfill-scotus-docket-status.ts --input "$work/cases.tsv" \
+              --cache-dir "$HOME/.cache/jurvio/scotus-dockets" --out "$work/status.tsv" \
+              --delay-ms "$DELAY_MS" --budget-minutes "$BUDGET_MINUTES" | tee "$work/stats.json"
+          echo "::notice title=Supreme Court docket stats::$(cat "$work/stats.json")"
+          rows="$(wc -l < "$work/status.tsv")"
+          [ "$rows" -gt 0 ] || { echo "no rows to load"; exit 0; }
+          { cat <<'SQL'
+          \set ON_ERROR_STOP on
+          BEGIN;
+          SET LOCAL statement_timeout = '600s';
+          SET LOCAL lock_timeout = '10s';
+          CREATE TEMP TABLE incoming (LIKE scotus_docket_status INCLUDING DEFAULTS) ON COMMIT DROP;
+          ALTER TABLE incoming DROP COLUMN updated_at;
+          COPY incoming (case_id, docket_number, source_url, fetched_at, content_hash, parser_version,
+            petitioner_title, respondent_title, lower_court, lower_court_decided_on, docketed_on,
+            cert_status, cert_status_on, cert_entry, judgment_on, judgment_entry, last_entry_on, entry_count) FROM STDIN;
+          SQL
+            cat "$work/status.tsv"; printf '\\.\n'
+            cat <<'SQL'
+          INSERT INTO scotus_docket_status (case_id, docket_number, source_url, fetched_at, content_hash, parser_version,
+            petitioner_title, respondent_title, lower_court, lower_court_decided_on, docketed_on,
+            cert_status, cert_status_on, cert_entry, judgment_on, judgment_entry, last_entry_on, entry_count, updated_at)
+          SELECT i.case_id, i.docket_number, i.source_url, i.fetched_at, i.content_hash, i.parser_version,
+            i.petitioner_title, i.respondent_title, i.lower_court, i.lower_court_decided_on, i.docketed_on,
+            i.cert_status, i.cert_status_on, i.cert_entry, i.judgment_on, i.judgment_entry, i.last_entry_on, i.entry_count, now()
+          FROM incoming i JOIN legal_case c ON c.id = i.case_id
+          ON CONFLICT (case_id) DO UPDATE SET docket_number = EXCLUDED.docket_number, source_url = EXCLUDED.source_url,
+            fetched_at = EXCLUDED.fetched_at, content_hash = EXCLUDED.content_hash, parser_version = EXCLUDED.parser_version,
+            petitioner_title = EXCLUDED.petitioner_title, respondent_title = EXCLUDED.respondent_title,
+            lower_court = EXCLUDED.lower_court, lower_court_decided_on = EXCLUDED.lower_court_decided_on,
+            docketed_on = EXCLUDED.docketed_on, cert_status = EXCLUDED.cert_status, cert_status_on = EXCLUDED.cert_status_on,
+            cert_entry = EXCLUDED.cert_entry, judgment_on = EXCLUDED.judgment_on, judgment_entry = EXCLUDED.judgment_entry,
+            last_entry_on = EXCLUDED.last_entry_on, entry_count = EXCLUDED.entry_count, updated_at = now();
+          COMMIT;
+          SELECT cert_status, count(*), count(judgment_entry) AS with_judgment FROM scotus_docket_status GROUP BY 1 ORDER BY 1;
+          SQL
+          } > "$work/load.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/load.sql" | tee "$work/after.txt"
+          { echo '### scotus_docket_status'; echo '```'; cat "$work/stats.json" "$work/after.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: FJC Integrated Database district outcomes
+        if: ${{ inputs.source == 'fjc' || inputs.source == 'both' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/fjc"; mkdir -p "$work"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" > "$work/keys.tsv" <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          sudo -n docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=900s' "$pg" \
+            psql -U jurvio -d jurvio -At -F $'\t' -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT c.id, lower(ct.provider_court_id), federal_docket_core(c.docket_number),
+            coalesce(federal_docket_office(c.docket_number)::text, '\N'), coalesce(extract(year FROM c.filed_on)::int::text, '\N')
+          FROM legal_case c JOIN court ct ON ct.id = c.court_id
+          WHERE c.publication = 'published'
+            AND upper(coalesce(ct.jurisdiction, '')) IN ('FD', 'FEDERAL DISTRICT')
+            AND federal_docket_core(c.docket_number) IS NOT NULL;
+          SQL
+          REMOTE
+          echo "::notice title=District case keys::$(wc -l < "$work/keys.tsv")"
+          bucket="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          snap="$(curl -fsS "${bucket}/?list-type=2&prefix=bulk-data/fjc-integrated-database-" \
+            | grep -oE 'fjc-integrated-database-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' | sort | tail -1 \
+            | sed -E 's/fjc-integrated-database-([0-9-]+)\.csv\.bz2/\1/')"
+          case "$snap" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "::error::no FJC snapshot"; exit 1;; esac
+          echo "snapshot=$snap"
+          # Stream: download -> decompress -> match, nothing written to disk but the matches.
+          curl -fsSL --retry 3 "${bucket}/bulk-data/fjc-integrated-database-${snap}.csv.bz2" \
+            | python3 -c 'import bz2, shutil, sys; shutil.copyfileobj(bz2.open(sys.stdin.buffer), sys.stdout.buffer, 1 << 20)' \
+            | NODE_OPTIONS=--max-old-space-size=3072 pnpm exec tsx scripts/match-fjc-idb-outcomes.ts \
+                --file /dev/stdin --snapshot-date "$snap" --keys "$work/keys.tsv" --out "$work/outcomes.tsv" | tee "$work/stats.json"
+          echo "::notice title=FJC match stats::$(cat "$work/stats.json")"
+          rows="$(wc -l < "$work/outcomes.tsv")"
+          [ "$rows" -gt 0 ] || { echo "no rows to load"; exit 0; }
+          { cat <<'SQL'
+          \set ON_ERROR_STOP on
+          BEGIN;
+          SET LOCAL statement_timeout = '600s';
+          SET LOCAL lock_timeout = '10s';
+          CREATE TEMP TABLE incoming (LIKE fjc_idb_case_outcome INCLUDING DEFAULTS) ON COMMIT DROP;
+          ALTER TABLE incoming DROP COLUMN updated_at;
+          COPY incoming (case_id, snapshot_date, idb_row_id, date_terminated, disposition_code, judgment_code,
+            nature_of_judgment, procedural_progress, plaintiff, defendant, source_uri) FROM STDIN;
+          SQL
+            cat "$work/outcomes.tsv"; printf '\\.\n'
+            cat <<'SQL'
+          INSERT INTO fjc_idb_case_outcome (case_id, snapshot_date, idb_row_id, date_terminated, disposition_code, judgment_code,
+            nature_of_judgment, procedural_progress, plaintiff, defendant, source_uri, updated_at)
+          SELECT i.case_id, i.snapshot_date, i.idb_row_id, i.date_terminated, i.disposition_code, i.judgment_code,
+            i.nature_of_judgment, i.procedural_progress, i.plaintiff, i.defendant, i.source_uri, now()
+          FROM incoming i JOIN legal_case c ON c.id = i.case_id
+          ON CONFLICT (case_id) DO UPDATE SET snapshot_date = EXCLUDED.snapshot_date, idb_row_id = EXCLUDED.idb_row_id,
+            date_terminated = EXCLUDED.date_terminated, disposition_code = EXCLUDED.disposition_code,
+            judgment_code = EXCLUDED.judgment_code, nature_of_judgment = EXCLUDED.nature_of_judgment,
+            procedural_progress = EXCLUDED.procedural_progress, plaintiff = EXCLUDED.plaintiff,
+            defendant = EXCLUDED.defendant, source_uri = EXCLUDED.source_uri, updated_at = now();
+          COMMIT;
+          SELECT disposition_code, judgment_code, count(*) FROM fjc_idb_case_outcome GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 40;
+          SQL
+          } > "$work/load.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/load.sql" | tee "$work/after.txt"
+          { echo '### fjc_idb_case_outcome'; echo '```'; cat "$work/stats.json" "$work/after.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

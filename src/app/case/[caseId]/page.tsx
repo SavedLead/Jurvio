@@ -263,6 +263,12 @@ export default async function CasePage({ params }: CasePageProps) {
     ].filter(Boolean).join(" ")),
     loadCaseStandingSignals(sql, caseId, majorityOpinion?.publicId ?? null),
   ]);
+  // Federal district cases the docket shows as open but the FJC statistics show as closed: say so in the quick answer too.
+  const fjcClosedOn = !legalCase.terminatedOn ? standingSignals.fjcOutcome?.terminatedOn ?? null : null;
+  const shownAnswers = caseAnswers.map((item) => fjcClosedOn && item.id === "what-happened"
+    ? { ...item, answer: item.answer.replace("No closing date appears in the court records we have.",
+      `The Federal Judicial Center's case statistics show the case was closed on ${formatPublicCaseDate(fjcClosedOn) ?? fjcClosedOn}.`) }
+    : item);
   const standing = buildCaseStanding({
     courtKind: legalCase.courtKind ?? "other",
     courtName: legalCase.courtName,
@@ -289,6 +295,8 @@ export default async function CasePage({ params }: CasePageProps) {
     citedByPath: citationCounts.citedBy ? "#cited-by" : null,
     docketEntries,
     docketPath: `/case/${caseId}/docket`,
+    scotusDocket: standingSignals.scotusDocket,
+    fjcOutcome: standingSignals.fjcOutcome,
   });
   // Citations become links; the plain stretches get dictionary-term tooltips
   // (first mention of each term per section, see createTermMarker).
@@ -388,7 +396,7 @@ export default async function CasePage({ params }: CasePageProps) {
                 : "Short answers drawn from the court record. If the record doesn't say, we leave it out rather than guess."}
             </p>
             <div className="caseAnswerGrid">
-              {caseAnswers.filter((item) => item.available).map((item) => (
+              {shownAnswers.filter((item) => item.available).map((item) => (
                 <article className={item.available ? "caseAnswerCard" : "caseAnswerCard caseAnswerUnavailable"} id={item.id} key={item.id}>
                   <h3>{item.question}</h3>
                   <p>{linkedText(item.answer, createTermMarker(`answer-${item.id}`))}</p>
