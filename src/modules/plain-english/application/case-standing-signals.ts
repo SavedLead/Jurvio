@@ -2,7 +2,7 @@ import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
-import { readOverruledParenthetical, type OverruledCandidate } from "@/modules/plain-english/domain/case-standing";
+import { readOverruledParenthetical, type FjcOutcomeSignal, type OverruledCandidate, type ScotusDocketSignal } from "@/modules/plain-english/domain/case-standing";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -16,6 +16,10 @@ export interface CaseStandingSignals {
   votes: { majority: number; minority: number } | null;
   /** "Overruled by …" parentheticals; the summary keeps only ones naming a court that can overrule the case. */
   overruled: OverruledCandidate[];
+  /** The Supreme Court's own docket page, as last checked (migration 0185). */
+  scotusDocket: ScotusDocketSignal | null;
+  /** FJC Integrated Database outcome for a district civil case (migration 0185). */
+  fjcOutcome: FjcOutcomeSignal | null;
 }
 
 // Passed as a bind parameter: backslashes in a template literal would be eaten.
@@ -26,7 +30,7 @@ const OVERRULED_PATTERN = String.raw`^\s*((expressly|implicitly|partially)\s+)?(
 // judgment line is read from the text before that point (the earliest marker; ~10 ms on a 150 KB opinion).
 const SEPARATE_OPINION_PATTERN = String.raw`(?:(?:MR\. )?JUSTICE [A-Z][A-Z'’]+(?: [A-Z][A-Z'’]+)?,(?: with whom [^.]{0,250}?)? (?:concurring|dissenting)|[A-Z][A-Za-z'’-]+, (?:Chief |Senior )?(?:Circuit|District) Judge, (?:concurring|dissenting))`;
 
-const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, opinionHead: null, votes: null, overruled: [] };
+const EMPTY: CaseStandingSignals = { clusterDisposition: null, precedentialStatus: null, opinionTail: null, opinionHead: null, votes: null, overruled: [], scotusDocket: null, fjcOutcome: null };
 
 /**
  * One indexed round trip for the "Where this case stands" summary:
@@ -77,6 +81,7 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       WHERE c.public_id = ${casePublicId} AND c.publication = 'published'
     `;
     if (!row) return EMPTY;
+    const sources = await loadOutcomeSources(sql, casePublicId);
     const overruled = (row.overruled ?? [])
       .map((item) => ({ ...item, text: readOverruledParenthetical(item.text) }))
       .filter((item): item is typeof item & { text: string } => Boolean(item.text))
@@ -92,9 +97,36 @@ export async function loadCaseStandingSignals(sql: Sql, casePublicId: string, op
       opinionHead: row.opinionHead,
       votes: parseVotes(row.votes),
       overruled,
+      ...sources,
     };
   } catch {
     return EMPTY;
+  }
+}
+
+/** The two official outcome side tables; a separate query so a missing table only hides these two signals. */
+async function loadOutcomeSources(sql: Sql, casePublicId: string): Promise<Pick<CaseStandingSignals, "scotusDocket" | "fjcOutcome">> {
+  try {
+    const [row] = await sql<Array<{ scotusDocket: ScotusDocketSignal | null; fjcOutcome: FjcOutcomeSignal | null }>>`
+      SELECT
+        (SELECT jsonb_build_object('certStatus', s.cert_status, 'certStatusOn', s.cert_status_on::text, 'certEntry', s.cert_entry,
+            'judgmentOn', s.judgment_on::text, 'judgmentEntry', s.judgment_entry, 'petitioner', s.petitioner_title,
+            'respondent', s.respondent_title, 'lowerCourt', s.lower_court, 'lowerCourtDecidedOn', s.lower_court_decided_on::text,
+            'lastEntryOn', s.last_entry_on::text, 'fetchedAt', s.fetched_at::text, 'sourceUrl', s.source_url)
+           FROM scotus_docket_status s WHERE s.case_id = c.id) AS "scotusDocket",
+        (SELECT jsonb_build_object('terminatedOn', f.date_terminated::text, 'disposition', f.disposition_code,
+            'judgment', f.judgment_code, 'plaintiff', f.plaintiff, 'defendant', f.defendant, 'snapshotDate', f.snapshot_date::text)
+           FROM fjc_idb_case_outcome f WHERE f.case_id = c.id) AS "fjcOutcome"
+      FROM legal_case c
+      WHERE c.public_id = ${casePublicId} AND c.publication = 'published'
+    `;
+    const docket = row?.scotusDocket ?? null;
+    return {
+      scotusDocket: docket && /^https:\/\/www\.supremecourt\.gov\//.test(docket.sourceUrl) ? docket : null,
+      fjcOutcome: row?.fjcOutcome ?? null,
+    };
+  } catch {
+    return { scotusDocket: null, fjcOutcome: null };
   }
 }
 
