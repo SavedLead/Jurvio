@@ -125,7 +125,7 @@ export default async function SupremeCourtPage() {
         <span>{String(index + 1).padStart(2, "0")}</span><small>{justice.role}</small><h3>{justice.name}</h3>
         <dl><div><dt>Joined the Court</dt><dd>{justice.joined}</dd></div><div><dt>Appointed by</dt><dd>{justice.appointingPresident}</dd></div></dl>
       </article>)}</div>
-      <div className={styles.justiceLinks}><a href="https://www.supremecourt.gov/about/biographies.aspx">Official biographies ↗</a><a href="https://www.supremecourt.gov/about/members_text.aspx">Every Justice, 1789 to present ↗</a><a href="https://www.supremecourt.gov/about/circuitassignments.aspx">Circuit assignments ↗</a></div>
+      <div className={styles.justiceLinks}><Link href={"/justices" as Route}>Voting records and analytics →</Link><Link href={"/justices/agreement" as Route}>Who votes with whom →</Link><a href="https://www.supremecourt.gov/about/biographies.aspx">Official biographies ↗</a><a href="https://www.supremecourt.gov/about/members_text.aspx">Every Justice, 1789 to present ↗</a><a href="https://www.supremecourt.gov/about/circuitassignments.aspx">Circuit assignments ↗</a></div>
     </section>
 
     <section className={styles.historyPreview}>

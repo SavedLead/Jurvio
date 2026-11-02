@@ -1,3 +1,5 @@
+import { lineupRole } from "@/modules/scotus/domain/justice-lineup";
+import { loadAgreementMatrix, loadCaseLineup, loadJusticeProfile, matrixKey } from "./justice-analytics";
 import { describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { docketKey, usReportsKey } from "../domain/scdb";
@@ -151,6 +153,28 @@ describe.skipIf(!databaseUrl)("SCDB import, Jurvio matching and justice analytic
 
         const [release] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_dataset_release WHERE version = 'fixture' AND sha256 ~ '^[0-9a-f]{64}$'`;
         expect(release!.n).toBe(2);
+
+        // Public read models for /justices and the case-page lineup block.
+        const readSql = tx as unknown as Parameters<typeof loadCaseLineup>[0];
+        const lineup = await loadCaseLineup(readSql, "jv-scdbfix1");
+        expect(lineup).toMatchObject({ scdbCaseId: "2190-001", voteSplit: "3-1", matchMethod: "us_cite" });
+        expect(lineup!.votes.map((v) => [v.scdbJusticeId, v.side, lineupRole(v)])).toEqual([
+          [901, "majority", "Wrote the Court’s opinion"],
+          [902, "majority", "Joined the majority"],
+          [903, "majority", "Joined the majority and a concurrence"],
+          [904, "dissent", "Dissented"],
+        ]);
+        expect(await loadCaseLineup(readSql, "jv-scdbfix3a")).toBeNull();
+
+        const matrix = await loadAgreementMatrix(readSql, 2190, "all");
+        expect(matrix.justices.map((j) => j.scdbJusticeId)).toEqual([901, 902, 903, 904]);
+        expect(matrix.cells[matrixKey(902, 901)]).toEqual({ casesTogether: 3, casesAgreed: 3, casesExcluded: 0, rate: 1 });
+        expect(matrix.coverage).toMatchObject({ scdbCases: 3, fiveFourCases: 1 });
+
+        const profile = await loadJusticeProfile(readSql, "fixture-justice-901", "all");
+        expect(profile!.justice.direction).toMatchObject({ votesParticipating: 3, votesWithoutDirection: 1 });
+        expect(profile!.terms.map((t) => [t.term, t.votesInMajority, t.majorityOpinionsWritten])).toEqual([[2190, 3, 3]]);
+        expect(profile!.pairs.find((pair) => pair.otherJusticeId === 902)).toMatchObject({ casesTogether: 3, rate: 1 });
         throw new Rollback();
       }).catch((error) => { if (!(error instanceof Rollback)) throw error; });
     } finally {
