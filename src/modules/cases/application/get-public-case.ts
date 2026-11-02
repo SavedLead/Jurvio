@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
+import { stripReporterRunningHeads } from "@/modules/cases/domain/reporter-text";
 import { captionTag, cleanCourtName, courtKindFromJurisdiction, type CourtKind } from "@/modules/cases/domain/record-answers";
 import { displayCaption } from "@/modules/cases/domain/case-title";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
@@ -135,5 +136,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
     caption: displayCaption(record.caption, record.docketNumber, courtKind),
     courtName: cleanCourtName(record.courtName),
     courtKind,
+    // Holdings read from U.S. Reports PDFs can carry the page's running head ("260 RILEY v. BONDI Syllabus").
+    exactHolding: record.exactHolding ? stripReporterRunningHeads(record.exactHolding) : record.exactHolding,
   };
 }
