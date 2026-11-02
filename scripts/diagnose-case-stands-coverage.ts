@@ -76,7 +76,8 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
     add("shown");
     const whoWon = standing.points.find((point) => point.id === "who-won");
     if (whoWon) add("who-won-line");
-    if (whoWon && /^(?:A win for|.*\bwon\b)/i.test(whoWon.text) && !NOT_IN_RECORD.test(whoWon.text) && !/^No one yet/.test(whoWon.text)) add("who-won-names-winner");
+    if (whoWon?.sourceHref === FJC_IDB_URL) add("who-won-from-fjc");
+    if (whoWon && /^(?:A win for|.*\bwon\b)|entered judgment \(its final decision\) (?:for the (?:plaintiff|defendant)|.*partly for)|in favor of/i.test(whoWon.text) && !NOT_IN_RECORD.test(whoWon.text) && !/^No one yet/.test(whoWon.text)) add("who-won-names-winner");
     if (asked) add("asked-point");
     const items = asked?.items ?? [];
     if (items.length) add("asked-with-items");
@@ -113,7 +114,7 @@ for (const [key, value] of [...sources.entries()].sort()) console.log(`${key}: $
 console.log("--- one example per bucket ---");
 for (const [key, text] of [...examples.entries()].sort()) console.log(`${key}: ${text}`);
 console.log("--- phase 6 per court kind (sampled | est) ---");
-const PHASE6_KEYS = ["sampled", "shown", "who-won-line", "who-won-names-winner", "asked-point", "asked-with-items", "asked-rulings-only", "asked-some-won", "asked-some-lost", "asked-won-and-lost", "says-outcome-not-in-records", "item-granted", "item-denied", "item-partly", "item-not-reached", "item-not-shown", "item-pending"];
+const PHASE6_KEYS = ["sampled", "shown", "who-won-line", "who-won-names-winner", "who-won-from-fjc", "asked-point", "asked-with-items", "asked-rulings-only", "asked-some-won", "asked-some-lost", "asked-won-and-lost", "says-outcome-not-in-records", "item-granted", "item-denied", "item-partly", "item-not-reached", "item-not-shown", "item-pending"];
 for (const [kind, bucket] of [...phase6.entries()].sort()) {
   console.log(`${kind}: ${PHASE6_KEYS.map((name) => `${name}=${bucket[name] ?? 0} (${scale(bucket[name])})`).join(" | ")}`);
 }
