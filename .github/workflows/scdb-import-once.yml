@@ -1,0 +1,93 @@
+name: SCDB justice analytics import (once, builder)
+
+# Loads the committed SCDB / Martin-Quinn / FJC roster files (data/README.md)
+# into the migration-0186 tables, links SCDB cases to legal_case and refreshes
+# the justice analytics views. Runs on the builder (never web-01): the importer
+# is bundled from THIS commit and run in the deployed worker image with the repo
+# data mounted read-only. Needs migration 0186 applied first (Deploy production).
+# Light job: ~260k votes, a few minutes, one connection, advisory lock.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type SCDB_IMPORT to load justice analytics data into production"
+        required: true
+        type: string
+      match_only:
+        description: "true = only re-run Jurvio matching and refresh the views"
+        required: false
+        default: 'false'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: jurvio-scdb-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 40
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      JOB_CPUS: '1'
+      JOB_MEMORY: 1500m
+      MATCH_ONLY: ${{ inputs.match_only }}
+    steps:
+      - name: Require confirm=SCDB_IMPORT
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "SCDB_IMPORT" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=SCDB_IMPORT."
+            exit 1
+          fi
+          [[ "$MATCH_ONLY" =~ ^(true|false)$ ]] || { echo "::error::match_only true|false"; exit 1; }
+      - uses: actions/checkout@v4
+      - name: Bundle the importer with its data
+        run: |
+          set -euo pipefail
+          corepack pnpm install --frozen-lockfile --prefer-offline
+          job="$RUNNER_TEMP/scdb-job-$GITHUB_RUN_ID"
+          install -d "$job"
+          corepack pnpm exec esbuild scripts/import-scdb.ts --bundle --platform=node --format=esm --packages=bundle \
+            --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" \
+            --outfile="$job/import-scdb.mjs"
+          cp -r data "$job/data"
+          echo "JOB_MOUNT=$job" >> "$GITHUB_ENV"
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/jv-ssh-$GITHUB_RUN_ID"
+          install -m 700 -d "$d"
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > "$d/id_ed25519"
+          chmod 600 "$d/id_ed25519"
+          cat > "$d/config" <<CFG
+          Host *
+            IdentityFile $d/id_ed25519
+            UserKnownHostsFile $d/known_hosts
+            BatchMode yes
+            ConnectTimeout 15
+            ServerAliveInterval 30
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 "$d/config"
+          echo "SSH_CONFIG_FILE=$d/config" >> "$GITHUB_ENV"
+      - name: Import
+        run: |
+          set -euo pipefail
+          args=(--data-dir=/job/data)
+          [ "$MATCH_ONLY" = "true" ] && args+=(--match-only)
+          bash scripts/ops/builder-job.sh /job/import-scdb.mjs "${args[@]}" | tee "$RUNNER_TEMP/scdb-import.txt"
+          { echo '```'; cat "$RUNNER_TEMP/scdb-import.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove ephemeral files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/jv-ssh-$GITHUB_RUN_ID" "$RUNNER_TEMP/scdb-job-$GITHUB_RUN_ID"
