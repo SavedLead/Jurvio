@@ -39,6 +39,9 @@ export function readSyllabusHeld(head: string | null | undefined, maxChars = 900
   const delivered = text.search(/\b(?:(?:MR\.\s+)?(?:CHIEF\s+)?JUSTICE\s+)?[A-Z][A-Z'’-]+,\s+(?:C\.\s*)?J\.,?\s+delivered\s+the\s+opinion\b/);
   if (delivered >= 0 && delivered < held.index) return null;
   let body = text.slice(held.index + held[0].length, delivered > held.index ? delivered : undefined).trim();
+  // Drop printed running heads that the PDF text carries mid-sentence ("260 RILEY v. BONDI Syllabus", "Cite as: 604 U. S. 1 (2025)").
+  body = body.replace(/\s\d{1,4}\s+[A-Z][A-Z0-9 .,'’&-]*?\bv\.\s+[A-Z][A-Z0-9 .,'’&-]*?\s+Syllabus\b\s*/g, " ")
+    .replace(/\s*Cite as:\s*\d+\s+U\.\s?S\.\s+(?:_+|\d+)\s*\(\d{4}\)\s*/g, " ").replace(/\s{2,}/g, " ");
   const mark = body.search(PAGE_MARK);
   let truncated = false;
   if (mark > 30) { truncated = body.slice(mark).replace(PAGE_MARK, "").trim().length > 40; body = body.slice(0, mark).trim(); }

@@ -37,3 +37,13 @@ describe("reach", () => {
     expect(citingCourtKind("S", "cal")).toBe("state");
   });
 });
+
+describe("readSyllabusHeld running heads", () => {
+  it("drops the printed page head inside the Held point", () => {
+    const head = "Syllabus Held: BIA orders denying deferral are not final orders of removal under the statute. The order was the final determination. 260 RILEY v. BONDI Syllabus An order of removal becomes final at the earlier of two points. RILEY, J., delivered the opinion of the Court.";
+    const held = readSyllabusHeld(head);
+    expect(held?.text).not.toContain("RILEY v. BONDI Syllabus");
+    expect(held?.text).toContain("determination. An order of removal");
+  });
+});
+
