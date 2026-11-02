@@ -1,7 +1,7 @@
 # ADR 0095: Supreme Court justice analytics data foundation (SCDB + Martin-Quinn)
 
-Status: proposed (PR open, not merged; awaiting David Rosenberg's review and the
-product spec for justice / judge analytics pages).
+Status: accepted (merged on green CI per the owner's instruction of 2026-11-01;
+shaped by the justice analytics spec's Evidence Ledger requirement).
 
 ## Context
 
@@ -38,6 +38,14 @@ supremecourt.gov docket JSON and slip-opinion ingest; this work does not touch i
    term x issue area; pairwise agreement by term) refreshed concurrently after an
    import, and plain views for per-case breakdowns and 5-4 decisions/coalitions.
    `scope` = `all` or `argued` (decisionType 1, 6, 7).
+6. **Evidence Ledger in the data:** every rate is stored with its numerator,
+   denominator, unknowns (no direction / no side) and exclusions, so pages never
+   recompute or hide a denominator. `scotus_term_coverage_v` feeds the coverage
+   meter. The one piece of Jurvio analysis, `scotus_unusual_alignment_v`, uses a
+   fixed published rule (lowest whole-term agreement inside a 5-4 majority) and
+   is labelled as analysis on every page, apart from SCDB facts.
+7. **Production import** runs only by hand (`scdb-import-once.yml`,
+   confirm=SCDB_IMPORT) on builder-01, bundled from the dispatched commit.
 
 ## Alternatives considered
 
