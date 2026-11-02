@@ -37,6 +37,8 @@ import { CaseNewsSection } from "@/modules/case-news/ui/case-news-section";
 import { listCaseAgencyItems } from "@/modules/agency-sources/application/public-items";
 import { OfficialAgencySources } from "@/modules/agency-sources/ui/official-agency-sources";
 import { agencyTimelineEvents } from "@/modules/agency-sources/domain/timeline";
+import { loadCaseLineup } from "@/modules/scotus/application/justice-analytics";
+import { CaseScdbLineup } from "@/modules/scotus/ui/case-scdb-lineup";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-english/ui/term-text";
@@ -117,7 +119,7 @@ export default async function CasePage({ params }: CasePageProps) {
   if (loaded.gated) return <SubscriberCaseGate path={`/case/${loaded.caseId}`} />;
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible] = await Promise.all([
+  const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible, scdbLineup] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
@@ -130,6 +132,8 @@ export default async function CasePage({ params }: CasePageProps) {
     captionAllowsFollow(legalCase.caption, legalCase.docketNumber)
       ? caseFollowEligible(sql, caseId).catch(() => false)
       : Promise.resolve(false),
+    // SCDB vote lineup (Supreme Court cases linked to an SCDB case only); optional like news.
+    legalCase.supremeCourtTerm !== null ? loadCaseLineup(sql, caseId).catch(() => null) : Promise.resolve(null),
   ]);
   const { cited: citedCases, citing: citingCases, counts: citationCounts } = citations;
   const verified = legalCase.verification === "verified";
@@ -477,6 +481,8 @@ export default async function CasePage({ params }: CasePageProps) {
               )}
             </section>
           ) : null}
+
+          {scdbLineup ? <CaseScdbLineup lineup={scdbLineup} /> : null}
 
           <CitationCaseList
             title="Cases cited"
