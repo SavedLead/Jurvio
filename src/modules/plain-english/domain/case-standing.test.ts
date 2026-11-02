@@ -330,6 +330,14 @@ describe("official outcome sources", () => {
     expect(standing?.points.find((point) => point.id === "status")?.text).toBe("No. The court closed this case on Nov. 24, 1989.");
   });
 
+  it("district: an FJC match names the winner even when the case record has no filed or closed date", () => {
+    const standing = buildCaseStanding({ ...fjcBase, filedOn: null, terminatedOn: null, fjcOutcome: { ...fjc, judgment: 2, disposition: 6 } });
+    expect(standing?.headline).toBe("The court ruled for Affordable Instruments Supply (the defendant).");
+    expect(standing?.points.find((point) => point.id === "who-won")?.sourceHref).toBe("https://www.fjc.gov/research/idb");
+    expect(standing?.points.find((point) => point.id === "status")?.text).toBe("No. The court closed this case on Nov. 24, 1989.");
+    expect(buildCaseStanding({ ...fjcBase, filedOn: null, terminatedOn: null })).toBeNull();
+  });
+
   it("district: settlement, and names withheld when the IDB parties don't match the caption", () => {
     expect(buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, disposition: 13, judgment: null } })?.headline).toBe("The case was settled.");
     const unmatched = buildCaseStanding({ ...fjcBase, fjcOutcome: { ...fjc, judgment: 2, plaintiff: "SOMEONE ELSE", defendant: "OTHER PARTY" } });

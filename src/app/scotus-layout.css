@@ -105,6 +105,12 @@
   .caseMeta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
   .caseMeta div { min-width: 0; padding-top: 10px; border-top: 1px solid var(--border); }
   .caseWorkspace, .opinionWorkspace { display: block; margin-top: 26px; }
+  /* Phones: "Where this case stands" right after the section menu, before the Follow box and rail. */
+  .caseWorkspace { display: flex; flex-direction: column; }
+  .caseWorkspace > .caseWorkspaceNav, .caseWorkspace > .caseWorkspaceMain { display: contents; }
+  .caseWorkspaceNav > .caseNavMobile { order: 0; box-sizing: border-box; width: 100%; }
+  .caseWorkspaceMain > .caseStands { order: 1; }
+  .caseWorkspaceNav > *:not(.caseNavMobile), .caseWorkspaceMain > *:not(.caseStands) { order: 2; }
   .caseWorkspaceNav, .caseProvenanceRail, .opinionReaderTools, .readerMetadataRail { position: static; max-height: none; overflow: visible; }
   .caseNavDesktop { display: none !important; }
   .caseNavMobile { display: block; margin: 22px 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
