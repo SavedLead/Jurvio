@@ -41,6 +41,8 @@ export interface CourtDirectorySummary {
 }
 
 export interface CourtDirectoryProfile extends CourtDirectorySummary {
+  /** CourtListener-style court id ("ca7", "ilnd"); used to find the court's Circuit Justice. */
+  providerCourtId?: string | null;
   sourceUrl: string | null;
   verification: string;
   indexable: boolean;
@@ -251,6 +253,7 @@ export async function getPublicCourt(sql: Sql, publicId: string): Promise<CourtD
     [court] = await sql<Row[]>`
       SELECT court.public_id AS "publicId", court.name, court.short_name AS "shortName",
         court.jurisdiction, court.source_url AS "sourceUrl", court.verification::text AS verification,
+        court.provider_court_id AS "providerCourtId",
         stats.case_count AS "caseCount", stats.latest_case_date::text AS "latestCaseDate",
         stats.recent_case_ids::text[] AS "recentCaseIds",
         COALESCE((
@@ -289,6 +292,7 @@ export async function getPublicCourtLive(sql: Sql, publicId: string): Promise<Co
   const [court] = await sql<Array<Omit<CourtDirectoryProfile, "cases">>>`
     SELECT court.public_id AS "publicId", court.name, court.short_name AS "shortName",
       court.jurisdiction, court.source_url AS "sourceUrl", court.verification::text AS verification,
+      court.provider_court_id AS "providerCourtId",
       count(legal_case.id)::int AS "caseCount", max(legal_case.filed_on)::text AS "latestCaseDate",
       COALESCE((
         SELECT decision.indexable FROM publication_decision decision
