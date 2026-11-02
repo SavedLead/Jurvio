@@ -1,0 +1,151 @@
+name: Backfill Supreme Court justice notes (once, resumable)
+
+# Fills scotus_docket_justice_note (migration 0191): for each published Supreme
+# Court case that has a scotus_docket_status row, the justice notes the Court's
+# own docket states when it acts on a petition or application ("Justice Alito
+# would grant the petition", "Justice Thomas, dissenting from the denial of
+# certiorari", statements, concurrences, recusals), with the official opinion
+# PDF link and a verbatim quote of its opening where a justice wrote.
+#
+# Runs on the builder, never on a web host. Docket pages are read from the
+# gzip cache the outcome-sources backfill keeps in ~/.cache/jurvio/scotus-dockets
+# (shared concurrency group, so the two never run at once); only pages and
+# opinion PDFs not yet cached are fetched, one request at a time with a delay
+# and an identifying User-Agent. The database sees one read-only export and
+# one transaction that replaces the notes of the cases in this run.
+# Nothing is published. Dispatch by hand with confirm=BACKFILL_JUSTICE_NOTES.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKFILL_JUSTICE_NOTES to run this workflow against production"
+        required: true
+        type: string
+      budget_minutes:
+        description: "Stop fetching new pages / opinion PDFs after this many minutes (re-dispatch to resume)"
+        required: true
+        default: "120"
+        type: string
+      delay_ms:
+        description: "Delay between supremecourt.gov requests (1100-10000 ms)"
+        required: true
+        default: "1500"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backfill-case-outcome-sources
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 240
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes }}
+      DELAY_MS: ${{ inputs.delay_ms }}
+    steps:
+      - name: Require confirm=BACKFILL_JUSTICE_NOTES and validate inputs
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "BACKFILL_JUSTICE_NOTES" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_JUSTICE_NOTES."
+            exit 1
+          fi
+          case "$BUDGET_MINUTES" in ''|*[!0-9]*) echo "::error::budget_minutes must be an integer"; exit 1;; esac
+          if [ "$BUDGET_MINUTES" -lt 1 ] || [ "$BUDGET_MINUTES" -gt 200 ]; then echo "::error::budget_minutes must be 1-200"; exit 1; fi
+          case "$DELAY_MS" in ''|*[!0-9]*) echo "::error::delay_ms must be an integer"; exit 1;; esac
+          if [ "$DELAY_MS" -lt 1100 ] || [ "$DELAY_MS" -gt 10000 ]; then echo "::error::delay_ms must be 1100-10000"; exit 1; fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: pdftotext (opinion quotes; notes are still written without it)
+        run: |
+          command -v pdftotext >/dev/null || { sudo -n apt-get update && sudo -n apt-get install -y poppler-utils; } \
+            || echo "::warning::pdftotext unavailable; notes will be written without opinion quotes"
+          command -v pdftotext && pdftotext -v 2>&1 | head -n1 || true
+
+      - name: Check migration 0191 is applied
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM scotus_docket_justice_note" \
+            || { echo "::error::scotus_docket_justice_note missing; release migration 0191 with deploy-production.yml first"; exit 1; }
+          REMOTE
+
+      - name: Justice notes from official dockets
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/notes"; mkdir -p "$work"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" > "$work/cases.tsv" <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          sudo -n docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=300s' "$pg" \
+            psql -U jurvio -d jurvio -At -F $'\t' -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT s.case_id, s.docket_number
+          FROM scotus_docket_status s JOIN legal_case c ON c.id = s.case_id
+          WHERE c.publication = 'published'
+          ORDER BY s.cert_status_on DESC NULLS LAST;
+          SQL
+          REMOTE
+          echo "::notice title=Dockets to read::$(wc -l < "$work/cases.tsv")"
+          INGESTION_USER_AGENT="Jurvio/0.1 (+https://jurvio.com; public court records)" \
+            pnpm exec tsx scripts/backfill-scotus-justice-notes.ts --input "$work/cases.tsv" \
+              --cache-dir "$HOME/.cache/jurvio/scotus-dockets" --out "$work/notes.tsv" \
+              --delay-ms "$DELAY_MS" --budget-minutes "$BUDGET_MINUTES" | tee "$work/stats.json"
+          echo "::notice title=Justice note stats::$(cat "$work/stats.json")"
+          { cat <<'SQL'
+          \set ON_ERROR_STOP on
+          BEGIN;
+          SET LOCAL statement_timeout = '600s';
+          SET LOCAL lock_timeout = '10s';
+          CREATE TEMP TABLE incoming (LIKE scotus_docket_justice_note INCLUDING DEFAULTS) ON COMMIT DROP;
+          ALTER TABLE incoming DROP COLUMN updated_at;
+          COPY incoming (case_id, docket_number, source_url, entry_on, entry_text, entry_context, justice_ref, note_kind,
+            sentence, opinion_url, opinion_opening, opinion_reason, fetched_at, parser_version) FROM STDIN;
+          SQL
+            cat "$work/notes.tsv"; printf '\\.\n'
+            cat <<'SQL'
+          DELETE FROM scotus_docket_justice_note n USING (SELECT DISTINCT case_id FROM incoming) i WHERE n.case_id = i.case_id;
+          INSERT INTO scotus_docket_justice_note (case_id, docket_number, source_url, entry_on, entry_text, entry_context,
+            justice_ref, note_kind, sentence, opinion_url, opinion_opening, opinion_reason, fetched_at, parser_version, updated_at)
+          SELECT DISTINCT ON (i.case_id, i.entry_on, i.entry_context, i.justice_ref, i.note_kind)
+            i.case_id, i.docket_number, i.source_url, i.entry_on, i.entry_text, i.entry_context,
+            i.justice_ref, i.note_kind, i.sentence, i.opinion_url, i.opinion_opening, i.opinion_reason, i.fetched_at, i.parser_version, now()
+          FROM incoming i JOIN legal_case c ON c.id = i.case_id
+          ORDER BY i.case_id, i.entry_on, i.entry_context, i.justice_ref, i.note_kind;
+          COMMIT;
+          SELECT entry_context, note_kind, count(*), count(DISTINCT case_id) AS cases, count(opinion_opening) AS quoted
+          FROM scotus_docket_justice_note GROUP BY 1, 2 ORDER BY 1, 2;
+          SELECT 'denied cases with a public justice note', count(DISTINCT n.case_id)
+          FROM scotus_docket_justice_note n JOIN scotus_docket_status s ON s.case_id = n.case_id AND s.cert_status = 'denied'
+          WHERE n.entry_context = 'cert_denied' AND n.note_kind <> 'recused';
+          SQL
+          } > "$work/load.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/load.sql" | tee "$work/after.txt"
+          { echo '### scotus_docket_justice_note'; echo '```'; cat "$work/stats.json" "$work/after.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

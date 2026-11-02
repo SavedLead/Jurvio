@@ -39,6 +39,8 @@ import { OfficialAgencySources } from "@/modules/agency-sources/ui/official-agen
 import { agencyTimelineEvents } from "@/modules/agency-sources/domain/timeline";
 import { loadCaseLineup } from "@/modules/scotus/application/justice-analytics";
 import { CaseScdbLineup } from "@/modules/scotus/ui/case-scdb-lineup";
+import { loadCaseJusticeNotes } from "@/modules/scotus/application/justice-notes";
+import { CaseJusticeNotesSection } from "@/modules/scotus/ui/case-justice-notes";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-english/ui/term-text";
@@ -119,7 +121,8 @@ export default async function CasePage({ params }: CasePageProps) {
   if (loaded.gated) return <SubscriberCaseGate path={`/case/${loaded.caseId}`} />;
   const { caseId, legalCase } = loaded;
   const sql = db();
-  const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible, scdbLineup] = await Promise.all([
+  const isSupremeCourt = legalCase.courtKind === "supreme" || (legalCase.courtCode ?? "").toLowerCase() === "scotus";
+  const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible, scdbLineup, justiceNotes] = await Promise.all([
     listPublicDocketEntries(sql, caseId),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
@@ -134,6 +137,8 @@ export default async function CasePage({ params }: CasePageProps) {
       : Promise.resolve(false),
     // SCDB vote lineup (Supreme Court cases linked to an SCDB case only); optional like news.
     legalCase.supremeCourtTerm !== null ? loadCaseLineup(sql, caseId).catch(() => null) : Promise.resolve(null),
+    // Justice notes from the official docket (dissents from denial, would-grant, statements); optional like news.
+    isSupremeCourt ? loadCaseJusticeNotes(sql, caseId).catch(() => null) : Promise.resolve(null),
   ]);
   const { cited: citedCases, citing: citingCases, counts: citationCounts } = citations;
   const verified = legalCase.verification === "verified";
@@ -386,6 +391,7 @@ export default async function CasePage({ params }: CasePageProps) {
 
         <div className="caseWorkspaceMain">
           {standing ? <CaseStandingSection standing={standing} renderText={(text) => marked(text, standsMarker)} /> : null}
+          {justiceNotes ? <CaseJusticeNotesSection data={justiceNotes} /> : null}
           {opinionNotice ? (
             <section className="opinionPendingNotice" aria-labelledby="opinion-official-source">
               <h2 id="opinion-official-source">{opinionNotice.heading}</h2>
