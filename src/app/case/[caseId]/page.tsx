@@ -44,6 +44,8 @@ import { CaseJusticeNotesSection } from "@/modules/scotus/ui/case-justice-notes"
 import { loadCitationReach } from "@/modules/scotus/application/ramifications";
 import { readSyllabusHeld } from "@/modules/scotus/domain/ramifications";
 import { CaseRamificationsSection, type RamificationsHolding } from "@/modules/scotus/ui/case-ramifications";
+import { circuitJusticeFor, circuitJusticeForCircuit, circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
+import { CircuitJusticeBox } from "@/modules/scotus/ui/circuit-justice-box";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-english/ui/term-text";
@@ -285,6 +287,10 @@ export default async function CasePage({ params }: CasePageProps) {
     : legalCase.exactHolding
       ? { kind: "verified", holding: { text: legalCase.exactHolding, truncated: false }, readPath: null, officialUrl: legalCase.holdingSourceUrl }
       : null;
+  // Circuit Justice: this court's circuit, or for a Supreme Court case the court of appeals it came from.
+  const ownCircuitJustice = circuitJusticeFor(legalCase.courtCode);
+  const belowCircuitJustice = ownCircuitJustice ? null
+    : circuitJusticeForCircuit(circuitOfCourtName(legalCase.lowerCourtName ?? standingSignals.scotusDocket?.lowerCourt));
   // Federal district cases the docket shows as open but the FJC statistics show as closed: say so in the quick answer too.
   const fjcClosedOn = !legalCase.terminatedOn ? standingSignals.fjcOutcome?.terminatedOn ?? null : null;
   const shownAnswers = caseAnswers.map((item) => fjcClosedOn && item.id === "what-happened"
@@ -399,6 +405,11 @@ export default async function CasePage({ params }: CasePageProps) {
               </section>
             ) : null}
           </div>
+          {ownCircuitJustice || belowCircuitJustice ? (
+            <CircuitJusticeBox compact
+              justice={(ownCircuitJustice ?? belowCircuitJustice)!}
+              relation={ownCircuitJustice ? (legalCase.courtKind === "appellate" ? "circuit" : "court-in-circuit") : "court-below"} />
+          ) : null}
           <PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
         </aside>
 

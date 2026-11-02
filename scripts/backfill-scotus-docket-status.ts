@@ -59,7 +59,20 @@ writeFileSync(out, "");
 if (qpOut) {
   writeFileSync(qpOut, "");
   mkdirSync(join(cacheDir, "qp"), { recursive: true });
+  // Without pdftotext every PDF would "fail to convert"; stop before fetching anything.
+  try {
+    await execFileAsync("pdftotext", ["-v"], { timeout: 10_000 });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      console.error("pdftotext is not installed (poppler-utils); refusing to fetch questions-presented PDFs");
+      process.exit(2);
+    }
+  }
 }
+
+/** Only a 404 or a non-PDF answer is a permanent miss; anything else (e.g. a conversion failure) is retried. */
+const PERMANENT_MISS = new Set(["404", "not-pdf"]);
 
 function copyValue(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "\\N";
@@ -93,7 +106,10 @@ async function fetchPage(url: string): Promise<{ status: number; body: string | 
 async function questionsPresentedText(url: string, slug: string): Promise<{ text: string; fetchedAt: string; hash: string } | null> {
   const cached = join(cacheDir, "qp", `${slug}.txt.gz`);
   const missing = join(cacheDir, "qp", `${slug}.missing`);
-  if (existsSync(missing)) return null;
+  if (existsSync(missing)) {
+    if (PERMANENT_MISS.has(readFileSync(missing, "utf8").trim())) return null;
+    unlinkSync(missing);
+  }
   if (existsSync(cached)) {
     return { text: gunzipSync(readFileSync(cached)).toString("utf8"), fetchedAt: readFileSync(`${cached}.fetched`, "utf8").trim(), hash: readFileSync(`${cached}.sha256`, "utf8").trim() };
   }
@@ -103,11 +119,12 @@ async function questionsPresentedText(url: string, slug: string): Promise<{ text
   try {
     const response = await fetch(url, { headers: { "user-agent": userAgent, accept: "application/pdf" }, redirect: "follow", signal: AbortSignal.timeout(30_000) });
     if (response.status === 404) { writeFileSync(missing, "404"); return null; }
-    if (!response.ok || new URL(response.url).origin !== "https://www.supremecourt.gov") return null;
+    if (!response.ok || new URL(response.url).origin !== "https://www.supremecourt.gov") { stats.qpFetchFailed += 1; return null; }
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.length > MAX_BYTES || buffer.subarray(0, 5).toString("latin1") !== "%PDF-") { writeFileSync(missing, "not-pdf"); return null; }
     bytes = buffer;
   } catch {
+    stats.qpFetchFailed += 1;
     return null;
   }
   const pdfPath = join(cacheDir, "qp", `${slug}.tmp.pdf`);
@@ -122,7 +139,8 @@ async function questionsPresentedText(url: string, slug: string): Promise<{ text
     stats.qpFetched += 1;
     return { text: stdout, fetchedAt, hash };
   } catch {
-    writeFileSync(missing, "pdftotext-failed");
+    // Not cached as missing: a broken or absent converter must not poison the cache.
+    stats.qpConvertFailed += 1;
     return null;
   } finally {
     try { unlinkSync(pdfPath); } catch { /* already gone */ }
@@ -130,7 +148,7 @@ async function questionsPresentedText(url: string, slug: string): Promise<{ text
 }
 
 const started = Date.now();
-const stats = { cases: 0, cached: 0, fetched: 0, missing: 0, failed: 0, written: 0, noUrl: 0, granted: 0, denied: 0, dismissed: 0, pending: 0, judgment: 0, qpLinked: 0, qpFetched: 0, qpWritten: 0, qpUnparsed: 0, stoppedForBudget: false };
+const stats = { cases: 0, cached: 0, fetched: 0, missing: 0, failed: 0, written: 0, noUrl: 0, granted: 0, denied: 0, dismissed: 0, pending: 0, judgment: 0, qpLinked: 0, qpFetched: 0, qpWritten: 0, qpUnparsed: 0, qpFetchFailed: 0, qpConvertFailed: 0, stoppedForBudget: false };
 const lines = readFileSync(input, "utf8").split("\n").filter(Boolean);
 for (const line of lines) {
   const [caseId, docketNumber] = line.split("\t");

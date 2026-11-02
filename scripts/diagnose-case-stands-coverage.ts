@@ -29,6 +29,9 @@ type Bucket = Record<string, number>;
 const byKind = new Map<string, Bucket>();
 const examples = new Map<string, string>();
 let total = 0;
+const phase6 = new Map<string, Bucket>();
+/** The summary's plain admission that the record doesn't show the outcome. */
+const NOT_IN_RECORD = /records we have don't (?:say|include|show)|can't say yet who won|don't say how it ended/i;
 const sources = new Map<string, number>();
 function countSource(kind: string, name: string) { sources.set(`${kind} ${name}`, (sources.get(`${kind} ${name}`) ?? 0) + 1); }
 for (const line of readFileSync(file, "utf8").split("\n")) {
@@ -65,6 +68,26 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
       : /don't (?:show|say|spell out)|don't have the petition/.test(asked.text) ? "not-in-record" : "role-only";
     countSource(courtKind, `asked-${from}`);
   }
+  // Phase 6 report per court kind: who-won line, asked point, point-by-point results, "not in the records".
+  const p6 = phase6.get(courtKind) ?? {};
+  const add = (name: string) => { p6[name] = (p6[name] ?? 0) + 1; };
+  add("sampled");
+  if (standing) {
+    add("shown");
+    const whoWon = standing.points.find((point) => point.id === "who-won");
+    if (whoWon) add("who-won-line");
+    if (whoWon && /^(?:A win for|.*\bwon\b)/i.test(whoWon.text) && !NOT_IN_RECORD.test(whoWon.text) && !/^No one yet/.test(whoWon.text)) add("who-won-names-winner");
+    if (asked) add("asked-point");
+    const items = asked?.items ?? [];
+    if (items.length) add("asked-with-items");
+    if (asked && !items.length && /point by point:/.test(asked.text)) add("asked-rulings-only");
+    if (items.some((item) => item.result === "granted" || item.result === "partly")) add("asked-some-won");
+    if (items.some((item) => item.result === "denied")) add("asked-some-lost");
+    if (items.some((item) => item.result === "granted" || item.result === "partly") && items.some((item) => item.result === "denied")) add("asked-won-and-lost");
+    for (const item of items) add(`item-${item.result}`);
+    if (standing.points.some((point) => NOT_IN_RECORD.test(point.text))) add("says-outcome-not-in-records");
+  }
+  phase6.set(courtKind, p6);
   const closed = standing?.points.some((point) => point.id === "status" && /^No\. The court closed/.test(point.text));
   const category = !standing ? "hidden" : hasQuote ? "outcome" : closed ? "closed-only" : "status-only";
   const key = `${courtKind}${row.tier ? ` t${row.tier}` : " t-none"}`;
@@ -89,3 +112,8 @@ console.log("--- summaries using an official outcome source (sampled) ---");
 for (const [key, value] of [...sources.entries()].sort()) console.log(`${key}: ${value} (est ${scale(value)})`);
 console.log("--- one example per bucket ---");
 for (const [key, text] of [...examples.entries()].sort()) console.log(`${key}: ${text}`);
+console.log("--- phase 6 per court kind (sampled | est) ---");
+const PHASE6_KEYS = ["sampled", "shown", "who-won-line", "who-won-names-winner", "asked-point", "asked-with-items", "asked-rulings-only", "asked-some-won", "asked-some-lost", "asked-won-and-lost", "says-outcome-not-in-records", "item-granted", "item-denied", "item-partly", "item-not-reached", "item-not-shown", "item-pending"];
+for (const [kind, bucket] of [...phase6.entries()].sort()) {
+  console.log(`${kind}: ${PHASE6_KEYS.map((name) => `${name}=${bucket[name] ?? 0} (${scale(bucket[name])})`).join(" | ")}`);
+}
