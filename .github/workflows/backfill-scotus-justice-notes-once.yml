@@ -101,10 +101,12 @@ jobs:
           opinions="$HOME/.cache/jurvio/scotus-dockets/justice-opinions"; mkdir -p "$opinions"
           name="jurvio-notes-pdftotext-$GITHUB_RUN_ID"
           docker pull -q "$image"
+          # Export the name first so the cleanup step removes the container even if the check below fails.
+          echo "PDFTOTEXT_CONTAINER=$name" >> "$GITHUB_ENV"
           docker run -d --rm --name "$name" --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
             -v "$opinions:/opinions:ro" --entrypoint sleep "$image" 14000 >/dev/null
-          docker exec "$name" pdftotext -v 2>&1 | head -n1
-          echo "PDFTOTEXT_CONTAINER=$name" >> "$GITHUB_ENV"
+          # sed reads all of pdftotext's version lines (head -n1 would close the pipe: SIGPIPE, exit 141).
+          docker exec "$name" pdftotext -v 2>&1 | sed -n 1p
           echo "::notice title=pdftotext::running in $image as container $name"
 
       - name: Check migration 0191 is applied
@@ -175,5 +177,9 @@ jobs:
           { echo '### scotus_docket_justice_note'; echo '```'; cat "$work/stats.json" "$work/after.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop the pdftotext container
-        if: ${{ always() && env.PDFTOTEXT_CONTAINER != '' }}
-        run: docker rm -f "$PDFTOTEXT_CONTAINER" >/dev/null 2>&1 || true
+        if: ${{ always() }}
+        run: |
+          # This run's container, plus any left by an earlier failed run (the concurrency group
+          # means no other justice-notes run is using one).
+          ids="$(docker ps -aq --filter 'name=^jurvio-notes-pdftotext-')"
+          [ -z "$ids" ] || docker rm -f $ids >/dev/null 2>&1 || true
