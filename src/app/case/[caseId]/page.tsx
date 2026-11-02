@@ -52,6 +52,8 @@ import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-eng
 import { buildCaseStanding } from "@/modules/plain-english/domain/case-standing";
 import { loadCaseStandingSignals } from "@/modules/plain-english/application/case-standing-signals";
 import { CaseStandingSection } from "@/modules/plain-english/ui/case-standing-section";
+import { buildMotionGuide } from "@/modules/plain-english/domain/motion-guide";
+import { CaseMotionsSection } from "@/modules/plain-english/ui/case-motions";
 import { loadCaseJourney, loadJourneyBenchmarks, loadOnwardSupremeCourt } from "@/modules/scotus/application/case-journey";
 import { CaseJourneySection, OnwardSupremeCourtSection } from "@/modules/scotus/ui/case-journey";
 
@@ -279,6 +281,10 @@ export default async function CasePage({ params }: CasePageProps) {
   // The court's own opinion (not a dissent or concurrence) is the only text the summary reads.
   const majorityOpinion = readableDocuments.find((document) => document.perCuriam || /majority|lead|combined/i.test(document.opinionType ?? ""))
     ?? (primaryOpinion && !/dissent|concur|rehearing/i.test(primaryOpinion.opinionType ?? "") ? primaryOpinion : undefined);
+  // Plain-English motions: trial and bankruptcy courts only (appellate dockets list briefs, not motions to the trial judge).
+  const motionGuide = legalCase.courtKind === "district" || legalCase.courtKind === "bankruptcy"
+    ? buildMotionGuide(docketEntries.map((entry) => ({ entryNumber: entry.entryNumber, filedOn: entry.filedOn, description: entry.description, publicId: entry.publicId })))
+    : [];
   const decidedSupremeCourt = legalCase.courtKind === "supreme" && Boolean(legalCase.decidedOn);
   const [narrativeTargets, standingSignals, citationReach]=await Promise.all([
     publicCitationTargets(sql, [
@@ -425,6 +431,7 @@ export default async function CasePage({ params }: CasePageProps) {
         <div className="caseWorkspaceMain">
           {standing ? <CaseStandingSection standing={standing} renderText={(text) => marked(text, standsMarker)} /> : null}
           {justiceNotes ? <CaseJusticeNotesSection data={justiceNotes} /> : null}
+          {motionGuide.length ? <CaseMotionsSection motions={motionGuide} caseId={caseId} scanned={docketEntries.length} /> : null}
           {opinionNotice ? (
             <section className="opinionPendingNotice" aria-labelledby="opinion-official-source">
               <h2 id="opinion-official-source">{opinionNotice.heading}</h2>

@@ -64,7 +64,7 @@ export default async function DocketPage({ params }: {
           <ol className="recordList">
             {records.map((entry) => (
               // One marker for the whole docket: each term is underlined at its first mention.
-              <li key={entry.publicId}>
+              <li key={entry.publicId} id={`entry-${entry.publicId}`}>
                 <strong>{entry.entryNumber ? "Entry " + entry.entryNumber : "Docket entry"}</strong>
                 {entry.filedOn ? " · " + entry.filedOn : ""}
                 <p><TermText text={entry.description} marker={docketMarker} /></p>
