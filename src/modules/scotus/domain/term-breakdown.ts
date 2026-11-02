@@ -253,3 +253,18 @@ export const DECISION_TYPE_LABELS: Record<string, string> = {
   "8": "seriatim opinions",
   unknown: "decision type not recorded",
 };
+
+/**
+ * Names the Martin-Quinn release for a parenthetical, without nesting brackets.
+ * Release versions carry their own coverage, e.g. "2024 (OT1937-OT2024)", which
+ * inside "(Martin-Quinn …)" would render as "…OT2024))".
+ */
+export function martinQuinnReleaseLabel(version: string | null): string {
+  const value = version?.trim();
+  if (!value) return "Martin-Quinn release";
+  const match = /^(.*?)\s*\(([^()]*)\)$/.exec(value);
+  if (!match) return `Martin-Quinn ${value}`;
+  const name = match[1]!.trim();
+  const coverage = match[2]!.trim().replace(/-/g, "–");
+  return name ? `Martin-Quinn ${name} release, covering ${coverage}` : `Martin-Quinn release covering ${coverage}`;
+}

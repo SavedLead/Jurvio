@@ -6,7 +6,7 @@ import { db } from "@/db/client";
 import { listDatasetReleases } from "@/modules/scotus/application/justice-analytics";
 import { loadTermBreakdown } from "@/modules/scotus/application/term-breakdown";
 import { percent, shortName, termLabel } from "@/modules/scotus/domain/justice-lineup";
-import { DECISION_TYPE_LABELS, externalCheck, type IssueCell, type ScopeBreakdown } from "@/modules/scotus/domain/term-breakdown";
+import { DECISION_TYPE_LABELS, externalCheck, martinQuinnReleaseLabel, type IssueCell, type ScopeBreakdown } from "@/modules/scotus/domain/term-breakdown";
 import { DirectionExplainer, EvidenceLedger, MQ_HOME, SCDB_DIRECTION_LABEL } from "@/modules/scotus/ui/justice-ui";
 import styles from "@/modules/scotus/ui/justices.module.css";
 
@@ -104,7 +104,7 @@ export default async function TermPage({ params, searchParams }: { params: Promi
           ? <>{check.source} (checked {check.checkedOn}): {check.decisions} decisions, {check.argued} argued, {check.fiveFour} decided 5–4, {check.sixThreeArgued} argued cases decided 6–3, {check.unanimous} unanimous. {check.decisions === b.coverage.decisions && check.argued === b.coverage.argued && check.fiveFour === b.all.fiveFour && check.sixThreeArgued === b.argued.sixThree && check.unanimous === b.all.unanimous ? "Every one of these matches the SCDB release." : "Some counts differ from the SCDB release; the SCDB numbers are shown on this page."} {check.note} <a className={styles.link} href={check.sourceUrl} rel="noopener">Source →</a></>
           : "Not independently checked. The numbers are as published in the SCDB release; the SCDB adds a term only after it ends and can revise earlier codes."}</dd></div>
         <div><dt>Decisions with no SCDB direction</dt><dd>{b.coverage.withoutDirection} of {b.coverage.decisions}</dd></div>
-        <div><dt>Martin-Quinn</dt><dd>{martinQuinn.latestTerm === null ? "No Martin-Quinn scores loaded." : `Latest published scores: ${termLabel(martinQuinn.latestTerm)} (Martin-Quinn ${martinQuinn.releaseVersion ?? "release"}).${mqBehind ? ` There are no ${termLabel(term)} scores yet, so the scores below are each justice’s most recent published score, labelled with its term.` : ""}`}</dd></div>
+        <div><dt>Martin-Quinn</dt><dd>{martinQuinn.latestTerm === null ? "No Martin-Quinn scores loaded." : `Latest published scores: ${termLabel(martinQuinn.latestTerm)} (${martinQuinnReleaseLabel(martinQuinn.releaseVersion)}).${mqBehind ? ` There are no ${termLabel(term)} scores yet, so the scores below are each justice’s most recent published score, labelled with its term.` : ""}`}</dd></div>
       </dl>
     </section>
 
