@@ -8,6 +8,8 @@ import directory from "@/modules/directory/ui/directory.module.css";
 import styles from "@/modules/judges/ui/judge-analytics.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { loadLowerCourtProfile } from "@/modules/judges/application/lower-court-profile";
+import { LowerCourtRecordSection } from "@/modules/judges/ui/lower-court-record";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +38,7 @@ export default async function JudgePage({ params }: { params: Promise<{ publicId
   const { publicId } = await params;
   const judge = await loadJudge(publicId);
   if (!judge) notFound();
+  const lowerCourt = await loadLowerCourtProfile(db(), publicId);
   const rates = calculateOutcomeRates(judge);
   const maxNos = Math.max(...judge.natureOfSuit.map((item) => item.caseCount), 1);
 
@@ -57,6 +60,8 @@ export default async function JudgePage({ params }: { params: Promise<{ publicId
         <div><dt>Data status</dt><dd>Verified sources</dd></div>
       </dl>
     </header>
+
+    {lowerCourt ? <LowerCourtRecordSection profile={lowerCourt} judgeName={judge.displayName} /> : null}
 
     <section className={directory.section}><h2>Case outcomes</h2>
       <p className={styles.small}>Percentages use only high-confidence, source-linked final outcome observations. Mixed rulings are kept separate.</p>
