@@ -81,6 +81,6 @@
 .noteList li { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid #e1e5ed; border-radius: 10px; background: #fff; font-size: .88rem; line-height: 1.5; }
 .noteList li > span { color: #5f6980; font-size: .82rem; }
 .noteQuote { margin: 0; padding: 6px 10px; border-left: 3px solid #cbd3e6; color: #2d3650; font-size: .85rem; }
-.noteQuote small, .noteDocket small { display: block; color: #6b7489; font-size: .74rem; font-weight: 700; letter-spacing: .02em; }
+.noteQuote small, .noteDocket small { display: block; color: #566074; font-size: .74rem; font-weight: 700; letter-spacing: .02em; }
 .noteDocket { margin: 10px 0 0; padding: 10px 12px; border-radius: 10px; background: #f6f7fa; color: #3d4862; font-size: .85rem; line-height: 1.55; overflow-wrap: anywhere; }
 @media (max-width: 720px) { .noteList { grid-template-columns: 1fr; } }

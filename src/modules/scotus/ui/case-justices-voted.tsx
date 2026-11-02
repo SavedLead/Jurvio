@@ -48,7 +48,7 @@ function OrderBlock({ group, bench, docketUrl, docketNumber, primary }: { group:
     <p className={styles.lead} data-vote-summary="">{voteSummaryLine(group, primary && bench.length ? bench.length : null)}</p>
     {chips.length ? <ul className={styles.chips} aria-label="Each justice's public position on this order">
       {chips.map((chip) => <li key={chip.name} className={styles.chip} data-status={chip.status}>
-        <span className={styles.chipName}>{chip.slug ? <Link href={`/justices/${chip.slug}` as Route}>{chip.surname}</Link> : chip.surname}</span>
+        <span className={styles.chipName}>{chip.surname}</span>
         <span className={styles.chipStatus}>{CHIP_LABEL[chip.status]}</span>
       </li>)}
     </ul> : null}
@@ -108,7 +108,7 @@ function LineupBlock({ lineup, extra }: { lineup: CaseLineup; extra?: ReactNode 
     <p className={styles.lead} data-vote-summary="">{lead}</p>
     <ul className={styles.chips} aria-label="Each justice's vote">
       {lineup.votes.map((vote) => <li key={vote.scdbJusticeId} className={styles.chip} data-status={status(vote)}>
-        <span className={styles.chipName}>{vote.slug ? <Link href={`/justices/${vote.slug}` as Route}>{surname(vote.name)}</Link> : surname(vote.name)}</span>
+        <span className={styles.chipName}>{surname(vote.name)}</span>
         <span className={styles.chipStatus}>{statusLabel[status(vote)]}</span>
       </li>)}
     </ul>

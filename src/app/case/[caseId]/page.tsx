@@ -27,7 +27,9 @@ import { caseSections } from "@/modules/cases/ui/case-nav";
 import { CaseGlossary, CaseSection, CaseSourceList, CaseSources, CaseSummaryCard, SourceRef } from "@/modules/cases/ui/case-declutter";
 import { CaseSectionOpener } from "@/modules/cases/ui/case-section-opener";
 import { keyDate as pickKeyDate, summaryFromStanding } from "@/modules/cases/domain/case-summary";
-import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
+import { CaseCardActions } from "@/modules/cases/ui/case-card-actions";
+import { CaseSectionBar, type SectionChip } from "@/modules/cases/ui/case-section-bar";
+import { BackToTop } from "@/modules/cases/ui/back-to-top";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import "./case-intelligence.css";
 import { loadCachedCaseCitations } from "@/modules/citations/application/cached-public-citations";
@@ -494,71 +496,102 @@ export default async function CasePage({ params }: CasePageProps) {
   };
 
   const circuitJustice = ownCircuitJustice ?? belowCircuitJustice;
+  // Which sections render (the chip bar lists exactly these, in page order).
+  const show = {
+    stands: Boolean(standing),
+    datesAhead: keyDatesAhead.length > 0,
+    forward: decidedSupremeCourt || Boolean(circuitSplit),
+    journey: journeySteps.length > 0 || onwardSupremeCourt.length > 0,
+    justices: hasJustices,
+    motions: motionGuide.length > 0,
+    citations: citationTotal > 0 || similarCases.length > 0,
+    docket: timelineEvents.length > 0,
+    documents: documents.length > 0 || Boolean(opinionNotice) || Boolean(opinionPath) || (!isSupremeCourt && Boolean(decisionDetail)),
+    parties: parties.length > 0,
+    record: true,
+    news: newsLinks.length > 0,
+    agency: agencyItems.length > 0,
+    circuitJustice: Boolean(circuitJustice),
+    sources: sources.links.length > 0,
+    glossary: glossary.length > 0,
+  };
+  const chipLabels: Record<keyof typeof show, string> = {
+    stands: "Where it stands", datesAhead: "Dates ahead", forward: "Going forward", journey: "Journey", justices: "Justices",
+    motions: "Motions", citations: "Citations", docket: "Docket", documents: "Documents", parties: "Parties", record: "Record",
+    news: "News", agency: "Agency", circuitJustice: "Circuit Justice", sources: "Sources", glossary: "Glossary",
+  };
+  const sectionIds: Record<keyof typeof show, string> = {
+    stands: "stands", datesAhead: "dates-ahead", forward: "going-forward", journey: "journey", justices: "justices", motions: "motions",
+    citations: "citations", docket: "docket", documents: "documents", parties: "parties", record: "record", news: "news", agency: "agency",
+    circuitJustice: "circuit-justice", sources: "sources", glossary: "glossary",
+  };
+  const chips: SectionChip[] = (Object.keys(show) as Array<keyof typeof show>).filter((key) => show[key]).map((key) => ({ id: sectionIds[key], label: chipLabels[key] }));
   return (
     <main className="shell caseShell scotusCaseShell cdShell">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replaceAll("<", "\\u003c") }} />
       <CaseSectionOpener />
       <div className="cdLayout">
-        <CaseHeader
-          caseId={caseId}
-          caption={caption}
-          courtName={legalCase.courtName}
-          docketNumber={legalCase.docketNumber}
-          filedOn={legalCase.filedOn}
-          decidedOn={legalCase.decidedOn}
-          supremeCourtTerm={legalCase.supremeCourtTerm}
-          officialCitation={legalCase.officialCitation}
-          courtCode={legalCase.courtCode}
-          showNavigation={false}
-        />
-        <nav className="cdLinks" aria-label="Case sections">
-          {caseSections.filter(([, suffix]) => suffix).map(([label, suffix]) => <Link key={label} href={`/case/${caseId}${suffix}` as Route}>{label}</Link>)}
-          {sources.links.length ? <a href="#sources-section">Sources</a> : null}
-          {glossary.length ? <a href="#glossary-section">Glossary</a> : null}
-        </nav>
+        <div className="cdHead" id="top" tabIndex={-1}>
+          <CaseHeader
+            caseId={caseId}
+            caption={caption}
+            courtName={legalCase.courtName}
+            docketNumber={legalCase.docketNumber}
+            filedOn={legalCase.filedOn}
+            decidedOn={legalCase.decidedOn}
+            supremeCourtTerm={legalCase.supremeCourtTerm}
+            officialCitation={legalCase.officialCitation}
+            courtCode={legalCase.courtCode}
+            showNavigation={false}
+          />
+        </div>
 
-        <CaseSummaryCard
-          whatHappened={marked(whatHappened, summaryMarker)}
-          whoWon={summary.whoWon ? marked(summary.whoWon, summaryMarker) : null}
-          goingForward={summary.goingForward ? marked(summary.goingForward, summaryMarker) : null}
-          goingForwardLabel={summary.goingForwardLabel}
-          keyDate={keyDate ? { ...keyDate, display: formatPublicCaseDate(keyDate.date) ?? keyDate.date } : null}
-          facts={summaryFacts}
-          follow={followEligible ? <details className="cdFollow" id="follow"><summary>Follow this case</summary>
-            <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /></details> : null}
-          tools={<><PublicCaseTools permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} />
-            <Link className="cdSummaryLink" href={`/case/${caseId}/summary` as Route}>One-page summary to share or print →</Link></>}
-          note={standing ? <><strong>Plain-English summary, not legal advice.</strong> Generated from the court record by fixed rules; quotes are the court&apos;s own words. If the record doesn&apos;t say, we say so instead of guessing.</> : null}
-        />
+        <aside className="cdRail" aria-label="Case summary">
+          <CaseSummaryCard
+            whatHappened={marked(whatHappened, summaryMarker)}
+            whoWon={summary.whoWon ? marked(summary.whoWon, summaryMarker) : null}
+            goingForward={summary.goingForward ? marked(summary.goingForward, summaryMarker) : null}
+            goingForwardLabel={summary.goingForwardLabel}
+            keyDate={keyDate ? { ...keyDate, display: formatPublicCaseDate(keyDate.date) ?? keyDate.date } : null}
+            facts={summaryFacts}
+            follow={followEligible ? <details className="cdFollow" id="follow"><summary>Follow this case</summary>
+              <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /></details> : null}
+            tools={<CaseCardActions permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} summaryPath={`/case/${caseId}/summary`} />}
+            note={standing ? <>Plain-English summary, not legal advice. <a href="#about-summary">How we write it</a></> : null}
+          />
+        </aside>
 
-        {standing ? <CaseSection id="stands" title="Where this case stands" open hint={`${standing.points.length} questions answered from the record`}>
+        <div className="cdMain">
+        <CaseSectionBar chips={chips} />
+
+        {show.stands && standing ? <CaseSection id="stands" title="Where this case stands" open hint={`${standing.points.length} questions answered from the record`}>
           <CaseStandingSection standing={standing} compact sourceRef={ref} renderText={(text) => marked(text, standsMarker)} />
         </CaseSection> : null}
 
-        {keyDatesAhead.length ? <CaseSection id="dates-ahead" title="Key dates ahead" open hint={`${keyDatesAhead.length} upcoming ${keyDatesAhead.length === 1 ? "date" : "dates"} from the docket`} hideHeading>
+        {show.datesAhead ? <CaseSection id="dates-ahead" title="Key dates ahead" open hint={`${keyDatesAhead.length} upcoming ${keyDatesAhead.length === 1 ? "date" : "dates"} from the docket`} hideHeading>
           <KeyDatesAheadSection dates={keyDatesAhead} caseId={caseId} today={todayNewYork} />
         </CaseSection> : null}
 
-        {decidedSupremeCourt || circuitSplit ? <CaseSection id="going-forward" title="What this means going forward" hideHeading={!circuitSplit} hint={citationCounts.citedBy ? `Cited by ${citationCounts.citedBy.toLocaleString("en-US")} on Jurvio` : undefined}>
+        {show.forward ? <CaseSection id="going-forward" title="What this means going forward" hideHeading={!circuitSplit} hint={citationCounts.citedBy ? `Cited by ${citationCounts.citedBy.toLocaleString("en-US")} on Jurvio` : undefined}>
           {decidedSupremeCourt ? <CaseRamificationsSection holding={ramificationsHolding} reach={citationReach} citedByCount={citationCounts.citedBy} /> : null}
           {circuitSplit ? <CircuitSplitSection {...circuitSplit} /> : null}
         </CaseSection> : null}
 
-        {journeySteps.length || onwardSupremeCourt.length ? <CaseSection id="journey" title="Case journey" hideHeading={!onwardSupremeCourt.length}
+        {show.journey ? <CaseSection id="journey" title="Case journey" hideHeading={!onwardSupremeCourt.length}
           hint={journeySteps.length ? `${journeySteps.length} steps, from the court below to the Supreme Court` : "This case went on to the Supreme Court"}>
           {journey && journeySteps.length ? <CaseJourneySection journey={journey} benchmarks={journeyBenchmarks} sourceRef={ref} /> : null}
           {onwardSupremeCourt.length ? <OnwardSupremeCourtSection cases={onwardSupremeCourt} /> : null}
         </CaseSection> : null}
 
-        {hasJustices ? <CaseSection id="justices" title="How the justices voted" hint={justicesHint(justiceNotes, scdbLineup) ?? undefined}>
+        {show.justices ? <CaseSection id="justices" title="How the justices voted" hint={justicesHint(justiceNotes, scdbLineup) ?? undefined}>
           <CaseJusticesVoted notes={justiceNotes} lineup={scdbLineup} extra={decisionDetail} />
         </CaseSection> : null}
 
-        {motionGuide.length ? <CaseSection id="motions" title="Motions" hideHeading hint={`${motionGuide.length} ${motionGuide.length === 1 ? "motion" : "motions"} in plain English`}>
+        {show.motions ? <CaseSection id="motions" title="Motions" hideHeading hint={`${motionGuide.length} ${motionGuide.length === 1 ? "motion" : "motions"} in plain English`}>
           <CaseMotionsSection motions={motionGuide} caseId={caseId} scanned={docketEntries.length} />
         </CaseSection> : null}
 
-        {citationTotal > 0 || similarCases.length ? <CaseSection id="citations" title="Citations"
+        {show.citations ? <CaseSection id="citations" title="Citations"
           hint={[citationCounts.cited || citedCases.length ? `Cites ${Math.max(citationCounts.cited, citedCases.length).toLocaleString("en-US")}` : null, citationCounts.citedBy ? `cited by ${citationCounts.citedBy.toLocaleString("en-US")}` : null].filter(Boolean).join(" · ") || undefined}>
           <CitationCaseList title="Cases cited" cases={citedCases} total={citationCounts.cited}
             summary={citationCounts.cited ? citationCountLine(citationCounts.cited, citationCounts.citedOnJurvio) : undefined} />
@@ -568,7 +601,7 @@ export default async function CasePage({ params }: CasePageProps) {
           <SimilarCasesSection cases={similarCases} />
         </CaseSection> : null}
 
-        {timelineEvents.length > 0 ? <CaseSection id="docket" title="Docket & timeline"
+        {show.docket ? <CaseSection id="docket" title="Docket & timeline"
           hint={`${timelineEvents.length.toLocaleString("en-US")} dated ${timelineEvents.length === 1 ? "event" : "events"}${latestEvent ? `, latest ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}` : ""}`}>
           <ol className="caseMilestones" id="case-timeline">
             {timelineEvents.map((event) => (
@@ -581,7 +614,7 @@ export default async function CasePage({ params }: CasePageProps) {
           {docketEntries.length > 0 ? <p className="cdMore"><Link href={`/case/${caseId}/docket` as Route}>Full docket →</Link> · <Link href={`/case/${caseId}/timeline` as Route}>View complete available timeline →</Link></p> : null}
         </CaseSection> : null}
 
-        {documents.length > 0 || opinionNotice || opinionPath || (!isSupremeCourt && decisionDetail) ? <CaseSection id="documents" title="Opinion & documents"
+        {show.documents ? <CaseSection id="documents" title="Opinion & documents"
           hint={documents.length ? `${documents.length.toLocaleString("en-US")} ${documents.length === 1 ? "document" : "documents"}` : undefined}>
           {opinionNotice ? <p className="cdLead" id="opinion-official-source">{opinionNotice.heading}. {opinionNotice.body} {opinionNotice.linkLabel}{ref(opinionNotice.href)}</p> : null}
           {opinionPath ? <nav className="opinionQuickLinks" aria-label="Opinion reading tools" id="read-opinion">
@@ -606,7 +639,7 @@ export default async function CasePage({ params }: CasePageProps) {
           </> : null}
         </CaseSection> : null}
 
-        {parties.length > 0 ? <CaseSection id="parties" title="Parties" hint={`${parties.length.toLocaleString("en-US")} named in the record`}>
+        {show.parties ? <CaseSection id="parties" title="Parties" hint={`${parties.length.toLocaleString("en-US")} named in the record`}>
           <p className="cdMuted">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
           <ul className="cdParties" id="named-parties">
             {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><span>{party.displayName}</span> <span className="cdMuted">{marked(publicPartyRole(party.role), partiesMarker)}</span></li>)}
@@ -657,27 +690,34 @@ export default async function CasePage({ params }: CasePageProps) {
           </> : null}
         </CaseSection>
 
-        {newsLinks.length ? <CaseSection id="news" title="In the news" hideHeading hint={`${newsLinks.length} ${newsLinks.length === 1 ? "article" : "articles"}`}>
+        {show.news ? <CaseSection id="news" title="In the news" hideHeading hint={`${newsLinks.length} ${newsLinks.length === 1 ? "article" : "articles"}`}>
           <CaseNewsSection links={newsLinks} />
         </CaseSection> : null}
 
-        {agencyItems.length ? <CaseSection id="agency" title="Official agency sources" hideHeading hint={`${agencyItems.length} ${agencyItems.length === 1 ? "item" : "items"}`}>
+        {show.agency ? <CaseSection id="agency" title="Official agency sources" hideHeading hint={`${agencyItems.length} ${agencyItems.length === 1 ? "item" : "items"}`}>
           <OfficialAgencySources items={agencyItems} />
         </CaseSection> : null}
 
-        {circuitJustice ? <CaseSection id="circuit-justice" title="Circuit Justice" hint={`${circuitJustice.title} ${circuitJustice.justiceName}`}>
+        {show.circuitJustice && circuitJustice ? <CaseSection id="circuit-justice" title="Circuit Justice" hint={`${circuitJustice.title} ${circuitJustice.justiceName}`}>
           <CircuitJusticeBox justice={circuitJustice}
             relation={ownCircuitJustice ? (legalCase.courtKind === "appellate" ? "circuit" : "court-in-circuit") : "court-below"} />
         </CaseSection> : null}
 
-        {sources.links.length ? <CaseSection id="sources" title="Sources" hint={`${sources.links.length} official ${sources.links.length === 1 ? "source" : "sources"} and links`}>
+        {show.sources ? <CaseSection id="sources" title="Sources" hint={`${sources.links.length} official ${sources.links.length === 1 ? "source" : "sources"} and links`}>
           <CaseSources links={sources.links} />
         </CaseSection> : null}
 
-        {glossary.length ? <CaseSection id="glossary" title="Glossary" hint={`${glossary.length} ${glossary.length === 1 ? "term" : "terms"} used on this page`}>
+        {show.glossary ? <CaseSection id="glossary" title="Glossary" hint={`${glossary.length} ${glossary.length === 1 ? "term" : "terms"} used on this page`}>
           <CaseGlossary terms={glossary} />
         </CaseSection> : null}
+
+        <footer className="cdFoot">
+          {standing ? <p id="about-summary"><strong>Plain-English summary, not legal advice.</strong> Generated from the court record by fixed rules; quotes are the court&apos;s own words. If the record doesn&apos;t say, we say so instead of guessing.</p> : null}
+          <p className="cdFootLinks">More on this case: {caseSections.filter(([, suffix]) => suffix).map(([label, suffix], index) => <span key={label}>{index ? " · " : ""}<Link href={`/case/${caseId}${suffix}` as Route}>{label}</Link></span>)}</p>
+        </footer>
+        </div>
       </div>
+      <BackToTop />
     </main>
   );
 }

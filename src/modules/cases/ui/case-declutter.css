@@ -1,40 +1,86 @@
-/* Case page, decluttered: one column, a summary card, then collapsible sections. Mobile first. */
-.cdLayout { max-width: 820px; margin: 0 auto; display: grid; gap: 0; }
-.cdLayout .caseHeader { margin-bottom: 8px; }
-.cdLinks { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 16px; padding: 0; font-size: .9rem; }
-.cdLinks a { color: #304bd4; text-decoration: none; }
-.cdLinks a:hover { text-decoration: underline; }
+/*
+ * Case page, decluttered (mobile first).
+ * Phone/tablet: one column — header, summary card, sticky section chip bar, collapsible sections.
+ * >= 1200px: a 720px reading column and a sticky right rail holding the summary card and Follow.
+ * Text colours are >= 4.5:1 on the page (#fbfaf7) and card (#fff) backgrounds; every control is >= 44px tall.
+ */
+.cdShell { --cd-link: #2f45c5; --cd-muted: #535d70; --cd-line: #e3e7ef; --cd-focus: #2f45c5; }
+.cdShell.caseShell { padding-top: 16px; }
+.cdLayout { max-width: 760px; margin: 0 auto; }
+.cdHead:focus { outline: none; }
 
-.cdSummary { margin: 0 0 18px; padding: 18px 18px 16px; border-radius: 14px; background: #fff; box-shadow: 0 1px 0 #e4e8f0, 0 0 0 1px #e9ecf3; }
-.cdSummaryHeadline { margin: 0 0 12px; font-size: 1.3rem; line-height: 1.35; font-weight: 650; letter-spacing: -.01em; }
+/* Header: smaller title, compact facts. */
+.cdShell .breadcrumb { margin-bottom: 10px; font-size: 13px; }
+.cdShell .breadcrumb a { display: inline-block; padding: 13px 4px; margin: -13px -4px; }
+.cdShell .caseHeader .eyebrow { margin: 0 0 6px; font-size: 12px; letter-spacing: .06em; }
+.cdShell .caseHeader h1 { font-size: clamp(28px, 7.6vw, 32px); line-height: 1.12; letter-spacing: -.015em; text-wrap: balance; }
+.cdShell .caseHeader h1 .caseTitleCitation { font-size: .58em; }
+.cdShell .caseMeta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 10px 0 0; font-size: 13px; }
+.cdShell .caseMeta > div { display: flex; gap: 5px; align-items: baseline; }
+.cdShell .caseMeta dt { color: var(--cd-muted); font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.cdShell .caseMeta dt::after { content: ":"; }
+.cdShell .caseMeta dd { margin: 0; font-weight: 600; }
+.cdShell .caseHeader nav, .cdShell .caseHeaderNav { display: none; }
+
+/* Summary card. */
+.cdSummary { margin: 14px 0 0; padding: 16px; border-radius: 14px; background: #fff; box-shadow: 0 0 0 1px var(--cd-line), 0 1px 2px rgba(11,23,48,.04); }
+.cdSummaryHeadline { margin: 0 0 10px; font-size: 1.15rem; line-height: 1.35; font-weight: 650; letter-spacing: -.005em; }
 .cdSummaryList { display: grid; gap: 10px; margin: 0; }
-.cdSummaryList div { display: grid; gap: 2px; align-content: start; }
-.cdSummaryList dt, .cdFacts dt { color: #5e687e; font-size: .78rem; font-weight: 500; letter-spacing: .02em; text-transform: uppercase; }
-.cdSummaryList dd { margin: 0; font-size: 1rem; line-height: 1.5; }
-.cdFacts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 14px 0 0; padding-top: 12px; border-top: 1px solid #eceff5; }
+.cdSummaryList div { display: grid; gap: 1px; align-content: start; }
+.cdSummaryList dt, .cdFacts dt { color: var(--cd-muted); font-size: .75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.cdSummaryList dd { margin: 0; font-size: .98rem; line-height: 1.5; }
+.cdFacts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--cd-line); }
 .cdFacts dd { margin: 2px 0 0; font-size: .92rem; }
-.cdActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
-.cdActions .publicCaseTools { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; display: flex; flex-wrap: wrap; gap: 6px; }
-.cdActions .publicCaseTools button { padding: 6px 10px; border: 1px solid #dfe3ec; border-radius: 8px; background: #fff; color: #3d4862; font-size: .85rem; font-weight: 500; }
-.cdFollow { width: 100%; }
-.cdFollow > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 16px; border-radius: 8px; background: #0f1a3a; color: #fff; font-weight: 600; font-size: .92rem; cursor: pointer; list-style: none; }
-.cdFollow > summary::-webkit-details-marker { display: none; }
-.cdFollow[open] > summary { background: #2b3657; }
-.cdFollow > .followCaseBox, .cdFollow > * + * { margin-top: 10px; }
-.cdNote { margin: 12px 0 0; color: #6b7489; font-size: .8rem; line-height: 1.5; }
-.cdNote strong { font-weight: 600; }
+.cdFacts a { display: inline-block; padding: 12px 0; margin: -12px 0; color: var(--cd-link); text-decoration: underline; text-underline-offset: 3px; }
+.cdActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; position: relative; }
+.cdAction, .cdFollow > summary { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px; border: 1px solid #cfd5e2; border-radius: 10px;
+  background: #fff; color: #1c2540; font: inherit; font-size: .92rem; font-weight: 600; cursor: pointer; list-style: none; }
+.cdAction:hover { background: #f3f5fa; }
+.cdFollow > summary { border-color: #0f1a3a; background: #0f1a3a; color: #fff; }
+.cdFollow > summary:hover { background: #26315a; }
+.cdFollow > summary::-webkit-details-marker, .cdMenu > summary::-webkit-details-marker, .cdSection > summary::-webkit-details-marker { display: none; }
+.cdFollow[open] { order: 10; flex-basis: 100%; }
+.cdFollow[open] > summary { background: #26315a; }
+.cdFollow > .followCaseBox { margin-top: 10px; }
+.cdMenu { position: relative; }
+.cdMenu > summary::after { content: ""; width: 7px; height: 7px; margin: -3px 0 0 8px; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.cdMenu[open] > summary::after { margin-top: 4px; transform: rotate(-135deg); }
+.cdMenuList { position: absolute; z-index: 15; top: calc(100% + 6px); right: 0; min-width: 200px; padding: 6px; border-radius: 12px; background: #fff;
+  box-shadow: 0 0 0 1px var(--cd-line), 0 12px 32px rgba(11,23,48,.14); display: grid; }
+.cdMenuList button, .cdMenuList a { display: flex; align-items: center; min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: none;
+  color: #1c2540; font: inherit; font-size: .92rem; text-align: left; text-decoration: none; cursor: pointer; }
+.cdMenuList button:hover, .cdMenuList a:hover { background: #f3f5fa; }
+.cdActionStatus { flex-basis: 100%; min-height: 0; color: var(--cd-muted); font-size: .82rem; }
+.cdActionStatus:empty { display: none; }
+.cdNote { margin: 10px 0 0; color: var(--cd-muted); font-size: .8rem; line-height: 1.4; }
+.cdNote a { display: inline-block; padding: 13px 0; margin: -13px 0; color: var(--cd-link); text-decoration: underline; text-underline-offset: 2px; }
 
-.cdSection { border-top: 1px solid #e4e8f0; }
-.cdSection:last-of-type { border-bottom: 1px solid #e4e8f0; }
-.cdSection > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 16px 28px 16px 0; position: relative; cursor: pointer; list-style: none; }
-.cdSection > summary::-webkit-details-marker { display: none; }
-.cdSection > summary::after { content: "+"; position: absolute; right: 4px; top: 14px; color: #5e687e; font-size: 1.3rem; line-height: 1; }
-.cdSection[open] > summary::after { content: "–"; }
-.cdSectionTitle { margin: 0; font-size: 1.08rem; font-weight: 600; letter-spacing: 0; }
-.cdHint { color: #5e687e; font-size: .88rem; }
-.cdBody { padding: 0 0 22px; }
+/* Sticky chip bar. */
+.cdBar { position: sticky; top: var(--cd-header-h, 72px); z-index: 12; margin: 16px -20px 0; padding: 0 20px; background: rgba(251,250,247,.97); backdrop-filter: blur(10px);
+  box-shadow: 0 1px 0 var(--cd-line); }
+.cdBarList { display: flex; gap: 6px; margin: 0; padding: 6px 0; list-style: none; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; scroll-padding: 0 16px; }
+.cdBarList::-webkit-scrollbar { display: none; }
+.cdBarList a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; border-radius: 999px; color: #2b3550; font-size: .88rem; font-weight: 500;
+  white-space: nowrap; text-decoration: none; box-shadow: inset 0 0 0 1px var(--cd-line); background: #fff; }
+.cdBarList a:hover { background: #f1f4fb; }
+.cdBarList a[aria-current] { background: #0f1a3a; color: #fff; box-shadow: none; }
 
-/* Sections reused inside a collapsible lose their own card, borders and repeated heading. */
+/* Sections. */
+.cdSection { border-bottom: 1px solid var(--cd-line); scroll-margin-top: calc(var(--cd-header-h, 72px) + 64px); }
+.cdSection > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-height: 56px; padding: 14px 44px 14px 0; position: relative; cursor: pointer;
+  list-style: none; border-radius: 8px; }
+.cdSection > summary:hover .cdSectionTitle { color: var(--cd-link); }
+.cdSection > summary::after { content: ""; position: absolute; right: 14px; top: 22px; width: 9px; height: 9px; border: solid #3d4862; border-width: 0 2px 2px 0;
+  transform: rotate(45deg); transition: transform .15s ease; }
+.cdSection[open] > summary::after { top: 26px; transform: rotate(-135deg); }
+.cdSectionTitle { margin: 0; font-size: 1.06rem; font-weight: 600; letter-spacing: 0; }
+.cdHint { color: var(--cd-muted); font-size: .88rem; }
+.cdBody { padding: 0 0 24px; }
+.cdBody p, .cdBody li, .cdBody dd { max-width: 68ch; }
+.cdBody a { color: var(--cd-link); }
+.cdBody p a, .cdBody li a, .cdBody dd a, .cdBody figcaption a, .cdBody blockquote a { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+
+/* Components reused inside a collapsible lose their own card, borders and (when the only child) heading. */
 .cdBody > section, .cdBody .contentSection, .cdBody .caseFeatureSection, .cdBody .caseStands, .cdBody .caseAnswerPanel, .cdBody .caseLeadSection,
 .cdBody .opinionPendingNotice { margin: 0 0 14px; padding: 0; border: 0 !important; border-radius: 0; background: none !important; box-shadow: none !important; }
 .cdSection[data-hide-heading] > .cdBody > section > .featureHeading:first-child h2,
@@ -43,58 +89,121 @@
 .cdSection[data-hide-heading] > .cdBody > section > h2:first-child,
 .cdSection[data-hide-heading] > .cdBody > section > .sectionKicker:first-child + h2 { display: none; }
 .cdBody > section > .featureHeading:first-child { margin: 0 0 6px; }
-.cdBody > section h2 { font-size: 1rem; font-weight: 600; }
+.cdBody > section h2 { margin: 6px 0 8px; font-size: 1rem; font-weight: 600; }
 .cdBody > section .sectionKicker { display: none; }
-.cdSummaryLink { flex-basis: 100%; font-size: .88rem; color: #304bd4; }
 .cdBody .featureHeading h3, .cdBody h3 { font-size: 1rem; font-weight: 600; }
+.cdBody .decisionLabel { color: #2b3550; font-size: .9rem; font-weight: 500; }
 .cdBody strong, .cdBody b { font-weight: 600; }
 .cdBody .caseStandsList > div { border: 0; padding: 10px 0; }
 .cdBody .caseStandsList dt { font-weight: 600; }
-.cdBody .caseAnswerGrid { display: grid; gap: 12px; }
-.cdBody .caseAnswerCard { padding: 0; border: 0; background: none; box-shadow: none; }
-.cdBody .caseAnswerCard footer { font-size: .78rem; }
+.cdBody details > summary { min-height: 44px; display: flex; align-items: center; }
+.cdBody details > summary:focus-visible { outline: 3px solid var(--cd-focus); outline-offset: 2px; border-radius: 6px; }
 .cdSub { margin: 18px 0 6px; font-size: 1rem; font-weight: 600; }
-
-.cdRef { margin-left: 3px; color: #304bd4; font-size: .78rem; text-decoration: none; vertical-align: 1px; }
-.cdSources { margin: 0; padding-left: 22px; display: grid; gap: 6px; font-size: .9rem; line-height: 1.5; overflow-wrap: anywhere; }
-.cdSources a { color: #304bd4; }
-.cdSources li:target { background: #fff7d6; }
-.cdGlossary { display: grid; gap: 10px; margin: 0; }
-.cdGlossary dt { font-weight: 600; }
-.cdGlossary dd { margin: 2px 0 0; color: #3d4862; line-height: 1.55; }
-.cdGlossary a { color: #304bd4; font-size: .88rem; }
-
-@media (min-width: 761px) {
-  .cdSummary { padding: 24px 26px 20px; }
-  .cdSummaryHeadline { font-size: 1.5rem; }
-  .cdSummaryList { grid-template-columns: 1fr 1fr; column-gap: 28px; }
-  .cdSummaryList div:last-child:nth-child(odd) { grid-column: 1 / -1; }
-  .cdFollow { width: auto; }
-  .cdFollow[open] { width: 100%; }
-}
-@media print { .cdSection > .cdBody { display: block; } .cdActions { display: none; } }
-
-.cdMuted { color: #5e687e; font-size: .9rem; }
-.cdMore { margin: 10px 0 0; font-size: .92rem; }
-.cdMore a, .cdBody a { color: #304bd4; }
+.cdMuted { color: var(--cd-muted); font-size: .9rem; }
+.cdMore { margin: 6px 0 0; font-size: .92rem; }
+.cdMore a, .cdFootLinks a { display: inline-flex; align-items: center; min-height: 44px; }
 .cdLead { margin: 0 0 12px; line-height: 1.55; }
 .cdDocs, .cdParties { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
 .cdDocs li { display: grid; gap: 2px; }
-.cdDocType { color: #5e687e; font-size: .82rem; }
+.cdDocType { color: var(--cd-muted); font-size: .84rem; }
 .cdDocTitle { line-height: 1.45; }
 .cdAnswers { display: grid; gap: 12px; margin: 8px 0 0; }
 .cdAnswers dt { font-weight: 600; }
 .cdAnswers dd { margin: 2px 0 0; line-height: 1.55; }
 .cdBody .caseMilestones { margin-top: 4px; }
-.cdBody .opinionQuickLinks { margin: 0 0 12px; }
+.cdBody .opinionQuickLinks { display: flex; flex-wrap: wrap; gap: 0 18px; margin: 0 0 8px; }
+.cdBody .opinionQuickLinks a { display: inline-flex; align-items: center; min-height: 44px; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+  font-size: .92rem; font-weight: 500; text-transform: none; letter-spacing: 0; text-decoration: underline; text-underline-offset: 3px; }
 .cdBody .verifiedDetail { margin: 4px 0; }
-.cdShell .caseHeader nav, .cdShell .caseHeaderNav { display: none; }
 .cdBody > aside[data-circuit] { margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
 .cdBody > aside[data-circuit] > p:first-child { display: none; }
 .cdBody > aside[data-circuit] h3, .cdBody > aside[data-circuit] h2 { font-size: 1rem; font-weight: 500; }
-.cdBody .opinionQuickLinks { display: flex; flex-wrap: wrap; gap: 4px 16px; }
-.cdBody .opinionQuickLinks a { padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; font-size: .92rem; font-weight: 500; text-transform: none; letter-spacing: 0; }
-.cdShell .cdActions .publicCaseTools { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
-.cdShell .cdActions .publicCaseTools button { flex: 0 0 auto; min-height: 44px; padding: 6px 12px; border-radius: 8px; }
-.cdShell .cdActions .publicCaseTools span:empty { display: none; }
-.cdShell .cdActions .publicCaseTools span { flex-basis: 100%; }
+
+/* Numbered source refs: small text, 44px tall hit area that does not change line height. */
+.cdRef { display: inline-block; margin: -14px 0 -14px 2px; padding: 14px 3px; color: var(--cd-link); font-size: .8rem; line-height: 1; text-decoration: none; vertical-align: 1px; }
+.cdRef:hover { text-decoration: underline; }
+.cdSources { margin: 0; padding-left: 26px; display: grid; gap: 0; font-size: .92rem; line-height: 1.45; overflow-wrap: anywhere; }
+.cdSources li { padding: 2px 0; }
+.cdSources a { display: inline-flex; align-items: center; min-height: 44px; color: var(--cd-link); }
+.cdSources li:target { background: #fff4c2; }
+.cdGlossary { display: grid; gap: 10px; margin: 0; }
+.cdGlossary dt { font-weight: 600; }
+.cdGlossary dd { margin: 2px 0 0; color: #3d4862; line-height: 1.55; }
+.cdGlossary a { font-size: .9rem; }
+
+.cdFoot { margin: 20px 0 0; color: var(--cd-muted); font-size: .84rem; line-height: 1.5; }
+.cdFoot p { max-width: 68ch; margin: 0 0 6px; }
+.cdFoot strong { font-weight: 600; color: #2b3550; }
+.cdFootLinks a { color: var(--cd-link); }
+
+/* Back to top. */
+.cdTop { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 18; display: inline-flex; align-items: center; gap: 6px;
+  min-width: 44px; min-height: 44px; padding: 0 14px; border: 0; border-radius: 999px; background: #0f1a3a; color: #fff; font: inherit; font-size: .88rem; font-weight: 600;
+  box-shadow: 0 6px 18px rgba(11,23,48,.22); cursor: pointer; opacity: 0; visibility: hidden; transform: translateY(8px); transition: opacity .15s, transform .15s, visibility .15s; }
+.cdTop[data-shown] { opacity: 1; visibility: visible; transform: none; }
+.cdTop:hover { background: #26315a; }
+.cdTopLabel { display: none; }
+
+/* Focus: one visible ring for every control. */
+.cdShell a:focus-visible, .cdShell button:focus-visible, .cdShell summary:focus-visible { outline: 3px solid var(--cd-focus); outline-offset: 2px; }
+.cdBarList a:focus-visible { outline-offset: -3px; }
+
+@media (prefers-reduced-motion: reduce) { .cdSection > summary::after, .cdTop { transition: none; } }
+
+@media (min-width: 761px) {
+  .cdShell.caseShell { padding-top: 28px; }
+  .cdShell .caseHeader h1 { font-size: clamp(34px, 3.6vw, 44px); }
+  .cdSummary { padding: 22px 24px 18px; }
+  .cdSummaryHeadline { font-size: 1.35rem; }
+  .cdSummaryList { grid-template-columns: 1fr 1fr; column-gap: 28px; }
+  .cdSummaryList div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .cdBar { margin: 20px 0 0; padding: 0; }
+  .cdTopLabel { display: inline; }
+}
+
+/* Wide screens: reading column + sticky summary rail. */
+@media (min-width: 1200px) {
+  .cdLayout { max-width: 1112px; display: grid; grid-template-columns: minmax(0, 720px) 344px; column-gap: 48px; grid-template-areas: "head rail" "main rail"; align-items: start; }
+  .cdHead { grid-area: head; }
+  .cdMain { grid-area: main; min-width: 0; }
+  .cdRail { grid-area: rail; position: sticky; top: calc(var(--cd-header-h, 72px) + 20px); max-height: calc(100vh - var(--cd-header-h, 72px) - 40px); overflow-y: auto;
+    margin-top: 34px; padding: 2px; }
+  .cdRail .cdSummary { margin: 0; padding: 20px; }
+  .cdRail .cdSummaryHeadline { font-size: 1.12rem; }
+  .cdRail .cdSummaryList { grid-template-columns: 1fr; }
+  .cdRail .cdMenuList { left: auto; right: 0; }
+  .cdShell .caseHeader h1 { font-size: 42px; }
+}
+@media print { .cdBar, .cdTop, .cdActions { display: none !important; } .cdSection > .cdBody { display: block; } }
+
+/* v2 review fixes */
+.cdShell .caseMeta > div, .cdShell .caseMeta span { border: 0; padding: 0; min-width: 0; }
+.cdShell .breadcrumb { flex-wrap: nowrap; white-space: nowrap; min-width: 0; }
+.cdShell .breadcrumb [aria-current] { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cdActions { gap: 6px; }
+.cdAction, .cdFollow > summary { padding: 0 13px; }
+.cdBarList { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); padding-right: 28px; }
+/* Bigger hit areas that do not change line height (inline padding / negative margins). */
+/* Term buttons are inline-block (buttons can't be inline), so the bigger hit area is a pseudo-element, not padding. */
+.cdShell .ptTerm > .ptTrigger { position: relative; }
+.cdShell .ptTerm > .ptTrigger::after { content: ""; position: absolute; inset: -10px -2px; }
+.cdShell .breadcrumb a { padding: 15px 6px; margin: -15px -6px; }
+.cdRef { padding: 16px 4px; margin: -16px 0 -16px 1px; }
+.cdFacts a { padding: 14px 0; margin: -14px 0; }
+.cdNote a { padding: 14px 0; margin: -14px 0; }
+.cdBody .caseStandsSource a:not(.cdRef), .cdBody aside[data-circuit] h3 a, .cdBody aside[data-circuit] h2 a, .cdBody aside[data-circuit] p:not(:last-child) a { display: inline-block; padding: 12px 0; margin: -12px 0; }
+.cdMore a, .cdFootLinks a { min-height: 46px; min-width: 44px; }
+.cdFollow .followKinds label { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
+.cdFollow .followKinds input[type="checkbox"] { width: 20px; height: 20px; }
+.cdRef { padding: 16px 15px; margin: -16px -13px -16px -11px; }
+@media (min-width: 1200px) {
+  .cdLayout { grid-template-columns: minmax(0, 720px) 352px; column-gap: 40px; }
+  .cdRail .cdSummary { padding: 18px; }
+}
+/* The site sets html { scroll-padding-top: 96px }; on this page anchors land just below the header + chip bar instead. */
+html:has(.cdShell) { scroll-padding-top: calc(var(--cd-header-h, 72px) + 60px); }
+.cdSection, .cdShell [id] { scroll-margin-top: 0; }
+.cdBody details:not([class]) > summary { gap: 6px; color: var(--cd-link); cursor: pointer; list-style: none; }
+.cdBody details:not([class]) > summary::-webkit-details-marker { display: none; }
+.cdBody details:not([class]) > summary::before { content: "▸"; }
+.cdBody details:not([class])[open] > summary::before { content: "▾"; }
