@@ -6,6 +6,8 @@
 //
 //   tsx scripts/backfill-appeals-judge-record.ts seats --roster roster.tsv --cases cases.tsv \
 //     --seats-out seats.tsv --outcomes-out outcomes.tsv --stats stats.json
+//   tsx scripts/backfill-appeals-judge-record.ts seats --district ... (district court opinions: role judge_line,
+//     no reporter outcomes; roster includes FJC magistrate judges; loads into district_opinion_judge, 0193)
 //   tsx scripts/backfill-appeals-judge-record.ts closings --tails tails.tsv --outcomes-out outcomes.tsv --stats stats.json
 //
 // roster.tsv: judge_id, court_key, normalized_name, started_on, ended_on, appointing_president_party
@@ -24,6 +26,7 @@ import { readDispositionLine, readOpinionClosing } from "@/modules/plain-english
 
 export const MATCHER_VERSION = "appeals-panel-fjc-v1";
 export const OUTCOME_RULE_VERSION = "appeals-outcome-v1";
+export const DISTRICT_MATCHER_VERSION = "district-opinion-fjc-v1";
 
 const args = process.argv.slice(2);
 const mode = args[0];
@@ -72,6 +75,9 @@ export function matchName(index: Map<string, RosterRow[]>, courtId: string, surn
 }
 
 function runSeats() {
+  const district = args.includes("--district");
+  const panelRole = district ? "judge_line" : "panel";
+  const matcherVersion = district ? DISTRICT_MATCHER_VERSION : MATCHER_VERSION;
   const roster = readTsv(option("roster")!, 6).map(([judgeId, courtKey, name, startedOn, endedOn, party]) => ({
     judgeId: judgeId!, courtId: courtKey!, keys: rosterKeys(name ?? ""), startedOn: startedOn ?? null, endedOn: endedOn ?? null, party: party ?? null,
   }));
@@ -89,7 +95,7 @@ function runSeats() {
       stats.panelSlots += 1;
       if (match.status === "matched") stats.panelMatched += 1;
       if (match.status === "ambiguous") stats.panelAmbiguous += 1;
-      seatsOut.push([caseId, courtId, decidedOn, seat, "panel", name, match.judgeId, match.status, match.party, MATCHER_VERSION].map(copyValue).join("\t"));
+      seatsOut.push([caseId, courtId, decidedOn, seat, panelRole, name, match.judgeId, match.status, match.party, matcherVersion].map(copyValue).join("\t"));
     });
     const author = parsePanelSurnames(authorName)[0];
     if (author) {
@@ -97,8 +103,9 @@ function runSeats() {
       const match = matchName(index, courtKey, author, decidedOn ?? null);
       if (match.status === "matched") stats.authorMatched += 1;
       if (match.status === "ambiguous") stats.authorAmbiguous += 1;
-      seatsOut.push([caseId, courtId, decidedOn, 0, "author", author, match.judgeId, match.status, match.party, MATCHER_VERSION].map(copyValue).join("\t"));
+      seatsOut.push([caseId, courtId, decidedOn, 0, "author", author, match.judgeId, match.status, match.party, matcherVersion].map(copyValue).join("\t"));
     }
+    if (district) continue;
     const reading = readDispositionLine(disposition, "case-data");
     const outcome = reading ? appealsOutcomeOf(reading.kind) : null;
     if (reading && outcome) {

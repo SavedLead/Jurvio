@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import type { Route } from "next";
-import type { AppealsRecord, LowerCourtProfile } from "@/modules/judges/application/lower-court-profile";
+import type { AppealsRecord, DistrictRecord, LowerCourtProfile } from "@/modules/judges/application/lower-court-profile";
 import { appointmentPhrase, FJC_BIOGRAPHICAL_DIRECTORY_URL, percentOf, type AppealsOutcome } from "@/modules/judges/domain/lower-court-analytics";
 import directory from "@/modules/directory/ui/directory.module.css";
 import styles from "@/modules/judges/ui/judge-analytics.module.css";
@@ -68,6 +68,39 @@ function AppealsSection({ record, judgeName }: { record: AppealsRecord; judgeNam
   </section>;
 }
 
+function durationPhrase(days: number): string {
+  if (days < 60) return plural(days, "day", "days");
+  const months = Math.round(days / 30.44);
+  if (months < 24) return plural(months, "month", "months");
+  return `${(days / 365.25).toFixed(1)} years`;
+}
+
+function DistrictSection({ record, judgeName }: { record: DistrictRecord; judgeName: string }) {
+  const match = record.courtMatch;
+  return <section className={directory.section} id="district-record" data-judge-record="district">
+    <h2>Record as a district court judge</h2>
+    <p className={styles.small}>A district court is the federal trial court: it hears the case first, decides motions, and holds any trial. One judge is assigned to each case. These counts use only published district court opinions on Jurvio that name {judgeName} as the judge or the opinion’s author{record.firstDecided && record.lastDecided ? `, dated ${formatDate(record.firstDecided)} to ${formatDate(record.lastDecided)}` : ""}.</p>
+    <div className={styles.grid}>
+      <div className={styles.stat}><span>District court opinions (on Jurvio)</span><strong>{record.opinionCases.toLocaleString()}</strong><span>{record.authoredCases.toLocaleString()} of these {record.authoredCases === 1 ? "names" : "name"} this judge as the opinion’s author</span></div>
+      <div className={styles.stat}><span>Typical time from case filed to case closed</span><strong style={record.medianDaysToClose === null ? { fontSize: "1.05rem" } : undefined}>{record.medianDaysToClose === null ? "Too few to say" : durationPhrase(record.medianDaysToClose)}</strong><span>{record.medianDaysToClose === null
+        ? `only ${plural(record.closeBase, "of these cases shows", "of these cases show")} both a filing date and a closing date; a typical time needs at least 10`
+        : `median of ${plural(record.closeBase, "case", "cases")} whose docket shows both a filing date and a closing date`}</span></div>
+      <div className={styles.stat}><span>How often this judge is reversed on appeal</span><strong style={{ fontSize: "1.05rem" }}>Not shown</strong><span>The records Jurvio holds do not reliably connect a district court case to its appeal, so a reversal rate cannot be computed.</span></div>
+    </div>
+    <p className={styles.small} style={{ marginTop: 14 }}><strong>Reading this:</strong> the <em>median</em> is the middle value: half of these cases closed faster and half slower. A case is <em>closed</em> (terminated) when the court enters its final action, which can be a judgment, a dismissal, or a settlement; the closing judge may not be the judge who wrote the opinion. Judge names are linked to the Federal Judicial Center record only when exactly one district judge or magistrate judge with that surname served on this court on the opinion date.</p>
+
+    <h3 style={{ marginTop: 24 }}>How complete this is</h3>
+    <ul className={styles.small} style={{ lineHeight: 1.7 }}>
+      {match ? <li>Across this court, {match.matched.toLocaleString()} of {match.slots.toLocaleString()} judge names printed on district opinions were linked to one judge ({pct(percentOf(match.matched, match.slots))}); {plural(match.ambiguous, "was", "were")} shared by more than one judge serving then and {plural(match.unmatched, "had", "had")} no FJC match. Those are left out rather than guessed.</li> : null}
+      <li>Most district court rulings are short orders that are never published as opinions, so these numbers cover only a small part of this judge’s work.</li>
+    </ul>
+    {record.examples.length ? <><h3 style={{ marginTop: 24 }}>Recent opinions</h3>
+      <ol className={directory.caseList}>{record.examples.map((item) => <li key={item.publicId}>
+        <Link href={`/case/${item.publicId}` as Route}><div><h3>{cleanCaseCaption(item.caption)}</h3><p>District court opinion</p></div><time>{item.decidedOn ?? "Date unavailable"}</time></Link>
+      </li>)}</ol></> : null}
+  </section>;
+}
+
 /** FJC appointment record plus court of appeals analytics. Facts only, each with its source. */
 export function LowerCourtRecordSection({ profile, judgeName }: { profile: LowerCourtProfile; judgeName: string }) {
   const fjcLink = profile.fjcProfileUrl ?? FJC_BIOGRAPHICAL_DIRECTORY_URL;
@@ -89,5 +122,7 @@ export function LowerCourtRecordSection({ profile, judgeName }: { profile: Lower
 
     {profile.kind === "appeals" ? (profile.appeals ? <AppealsSection record={profile.appeals} judgeName={judgeName} />
       : <section className={directory.section} id="appeals-record" data-judge-record="appeals-empty"><h2>Record as a court of appeals judge</h2><p>Jurvio has not yet linked this judge to any court of appeals opinion it holds. Opinions are linked only when the printed list of judges names this judge unambiguously.</p></section>) : null}
+    {profile.district ? <DistrictSection record={profile.district} judgeName={judgeName} />
+      : profile.kind === "district" ? <section className={directory.section} id="district-record" data-judge-record="district-empty"><h2>Record as a district court judge</h2><p>Jurvio has not yet linked this judge to any published district court opinion it holds. Opinions are linked only when the printed judge name matches this judge unambiguously.</p></section> : null}
   </>;
 }

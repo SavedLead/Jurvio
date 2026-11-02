@@ -43,12 +43,30 @@ export interface AppealsRecord {
   examples: Array<{ publicId: string; caption: string; decidedOn: string | null; outcome: AppealsOutcome | null }>;
 }
 
+export interface DistrictRecord {
+  /** Published district court cases whose opinion names this judge (judges line or author), linked unambiguously. */
+  opinionCases: number;
+  authoredCases: number;
+  firstDecided: string | null;
+  lastDecided: string | null;
+  /** Median days from the case being filed to the case being closed, over cases where the docket shows both dates. */
+  medianDaysToClose: number | null;
+  closeBase: number;
+  /** Match rates for names printed on district opinions of this judge's court(s). */
+  courtMatch: { slots: number; matched: number; ambiguous: number; unmatched: number } | null;
+  examples: Array<{ publicId: string; caption: string; decidedOn: string | null }>;
+}
+
 export interface LowerCourtProfile {
   fjcProfileUrl: string | null;
   services: FjcServiceRecord[];
   kind: "appeals" | "district" | "other";
   appeals: AppealsRecord | null;
+  district: DistrictRecord | null;
 }
+
+/** Fewest closed cases for which a median time to close is shown. */
+export const MIN_CLOSE_BASE = 10;
 
 const CACHE_MS = 30 * 60_000;
 const cache = new Map<string, { at: number; value: LowerCourtProfile | null }>();
@@ -167,10 +185,52 @@ async function loadCourtMatch(sql: Sql, judgeId: string): Promise<AppealsRecord[
   return value;
 }
 
+async function loadDistrict(sql: Sql, judgeId: string): Promise<DistrictRecord | null> {
+  try {
+    return await sql.begin(async (tx) => {
+      await tx`SET LOCAL statement_timeout = '3000ms'`;
+      const [summary] = await tx<Array<{ opinionCases: number; authoredCases: number; firstDecided: string | null; lastDecided: string | null; medianDaysToClose: number | null; closeBase: number }>>`
+        WITH mine AS (
+          SELECT s.case_id, bool_or(s.role = 'author') AS authored, min(s.decided_on) AS decided_on
+          FROM district_opinion_judge s WHERE s.judge_id = ${judgeId} GROUP BY s.case_id
+        )
+        SELECT count(*)::int AS "opinionCases", count(*) FILTER (WHERE mine.authored)::int AS "authoredCases",
+          min(mine.decided_on)::text AS "firstDecided", max(mine.decided_on)::text AS "lastDecided",
+          (percentile_cont(0.5) WITHIN GROUP (ORDER BY (lc.terminated_on - lc.filed_on))
+            FILTER (WHERE lc.filed_on IS NOT NULL AND lc.terminated_on >= lc.filed_on))::int AS "medianDaysToClose",
+          count(*) FILTER (WHERE lc.filed_on IS NOT NULL AND lc.terminated_on >= lc.filed_on)::int AS "closeBase"
+        FROM mine JOIN legal_case lc ON lc.id = mine.case_id AND lc.publication = 'published'
+      `;
+      if (!summary || !summary.opinionCases) return null;
+      const examples = await tx<DistrictRecord["examples"]>`
+        SELECT lc.public_id AS "publicId", lc.caption, s.decided_on::text AS "decidedOn"
+        FROM (SELECT DISTINCT ON (case_id) case_id, decided_on FROM district_opinion_judge WHERE judge_id = ${judgeId} ORDER BY case_id) s
+        JOIN legal_case lc ON lc.id = s.case_id AND lc.publication = 'published'
+          AND NOT ${tx.unsafe(searchExcludedCaseSql("lc"))}
+        ORDER BY s.decided_on DESC NULLS LAST LIMIT 8
+      `;
+      const courtMatch = await tx<Array<{ slots: number; matched: number; ambiguous: number; unmatched: number }>>`
+        SELECT count(*)::int AS slots, count(*) FILTER (WHERE s.match_status = 'matched')::int AS matched,
+          count(*) FILTER (WHERE s.match_status = 'ambiguous')::int AS ambiguous,
+          count(*) FILTER (WHERE s.match_status = 'unmatched')::int AS unmatched
+        FROM district_opinion_judge s
+        WHERE s.court_id IN (SELECT DISTINCT court_id FROM district_opinion_judge WHERE judge_id = ${judgeId})
+      `;
+      const match = courtMatch[0] && courtMatch[0].slots ? courtMatch[0] : null;
+      const enough = summary.closeBase >= MIN_CLOSE_BASE;
+      return { ...summary, medianDaysToClose: enough ? summary.medianDaysToClose : null, courtMatch: match, examples };
+    });
+  } catch (error) {
+    if (!isMissingRelation(error)) console.warn("district record unavailable", (error as Error).message);
+    return null;
+  }
+}
+
 /**
  * Lower-court analytics for one public judge: the FJC appointment record and,
  * for court of appeals judges, panels, outcomes, colleagues by appointing
- * party, and match rates, from the tables the appeals backfill writes.
+ * party, and match rates, from the tables the appeals backfill writes; for
+ * district judges (and magistrate judges), opinions that name them and time to close.
  * Read-only, short timeouts, cached 30 minutes; null rather than throwing.
  */
 export async function loadLowerCourtProfile(sql: Sql, judgePublicId: string): Promise<LowerCourtProfile | null> {
@@ -187,9 +247,10 @@ export async function loadLowerCourtProfile(sql: Sql, judgePublicId: string): Pr
         : services.some((s) => s.courtCategory === "district") ? "district" : "other";
       const appeals = kind === "appeals" ? await loadAppeals(sql, judge.id) : null;
       if (appeals) appeals.courtMatch = await loadCourtMatch(sql, judge.id);
+      const district = await loadDistrict(sql, judge.id);
       value = {
         fjcProfileUrl: judge.officialProfileUrl ?? (judge.fjcNid ? `https://www.fjc.gov/node/${encodeURIComponent(judge.fjcNid)}` : null),
-        services, kind, appeals,
+        services, kind, appeals, district,
       };
     }
   } catch {
