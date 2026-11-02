@@ -6,6 +6,9 @@ import { appointmentPhrase, FJC_BIOGRAPHICAL_DIRECTORY_URL, percentOf, type Appe
 import directory from "@/modules/directory/ui/directory.module.css";
 import styles from "@/modules/judges/ui/judge-analytics.module.css";
 
+/** Below this many appeals with a readable result, a percentage would mislead. */
+const MIN_REVERSAL_BASE = 10;
+
 function formatDate(value: string | null): string | null {
   if (!value) return null;
   const date = new Date(`${value}T12:00:00Z`);
@@ -31,7 +34,7 @@ function AppealsSection({ record, judgeName }: { record: AppealsRecord; judgeNam
     <p className={styles.small}>A court of appeals reviews decisions of district courts and federal agencies. Three judges (a <em>panel</em>) usually decide each appeal, and one writes the opinion. These counts use only opinions on Jurvio that name {judgeName} in the printed list of judges or as the author{record.firstDecided && record.lastDecided ? `, decided ${formatDate(record.firstDecided)} to ${formatDate(record.lastDecided)}` : ""}.</p>
     <div className={styles.grid}>
       <div className={styles.stat}><span>Appeals on a panel (on Jurvio)</span><strong>{record.panelCases.toLocaleString()}</strong><span>{plural(record.authoredCases, "opinion", "opinions")} written by this judge</span></div>
-      <div className={styles.stat}><span>Panel reversed or vacated the decision below</span><strong>{pct(record.reversedOrVacatedPercent)}</strong><span>of {plural(record.reversalBase, "appeal", "appeals")} with a readable result</span></div>
+      <div className={styles.stat}><span>Panel reversed or vacated the decision below</span><strong>{record.reversalBase >= MIN_REVERSAL_BASE ? pct(record.reversedOrVacatedPercent) : "Too few to say"}</strong><span>{record.reversalBase >= MIN_REVERSAL_BASE ? <>of {plural(record.reversalBase, "appeal", "appeals")} with a readable result</> : <>only {plural(record.reversalBase, "appeal", "appeals")} with a readable result; a percentage needs at least {MIN_REVERSAL_BASE}</>}</span></div>
       <div className={styles.stat}><span>Time from appeal filed to decision</span><strong style={{ fontSize: "1.05rem" }}>Not shown</strong><span>The records Jurvio holds rarely include the date an appeal was filed, so a median would not be reliable.</span></div>
     </div>
     {known.length ? <ul className={styles.legend} style={{ listStyle: "none", padding: 0, marginTop: 14 }}>{known.map((key) => <li key={key}>{OUTCOME_WORD[key]}: <strong>{record.outcomes[key].toLocaleString()}</strong></li>)}</ul> : null}
