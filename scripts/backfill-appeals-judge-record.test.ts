@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { rosterKeys } from "@/modules/judges/domain/lower-court-analytics";
 import { buildRosterIndex, copyField, matchName } from "./backfill-appeals-judge-record";
@@ -20,4 +24,22 @@ describe("appeals matcher", () => {
     expect(copyField("\\N")).toBeNull();
     expect(copyField("a\\tb\\nc\\\\d")).toBe("a\tb\nc\\d");
   });
+});
+
+describe("district mode", () => {
+  it("writes judge_line rows, the district matcher version, and no outcomes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "district-"));
+    writeFileSync(join(dir, "roster.tsv"), "j-rakoff\tnysd\tjed saul rakoff\t1996-03-01\t\\N\tDemocratic\nj-mag\tnysd\tsarah netburn\t2012-01-01\t\\N\t\\N\n");
+    writeFileSync(join(dir, "cases.tsv"), "00000000-0000-0000-0000-000000000001\tcourt-1\tnysd\t2020-05-01\tRakoff\tNetburn\tAFFIRMED\n");
+    const out = spawnSync(process.execPath, ["--import", "tsx", "scripts/backfill-appeals-judge-record.ts", "seats", "--district",
+      "--roster", join(dir, "roster.tsv"), "--cases", join(dir, "cases.tsv"), "--seats-out", join(dir, "seats.tsv"),
+      "--outcomes-out", join(dir, "outcomes.tsv"), "--stats", join(dir, "stats.json")], { encoding: "utf8" });
+    expect(out.status, out.stderr).toBe(0);
+    const rows = readFileSync(join(dir, "seats.tsv"), "utf8").trim().split("\n").map((line) => line.split("\t"));
+    expect(rows.map((row) => [row[4], row[6], row[7], row[9]])).toEqual([
+      ["judge_line", "j-rakoff", "matched", "district-opinion-fjc-v1"],
+      ["author", "j-mag", "matched", "district-opinion-fjc-v1"],
+    ]);
+    expect(readFileSync(join(dir, "outcomes.tsv"), "utf8").trim()).toBe("");
+  }, 20_000);
 });
