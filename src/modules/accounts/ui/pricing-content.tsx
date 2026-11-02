@@ -20,7 +20,8 @@ export function priceNote(id: PlanId): string {
  * the footer's not-legal-advice line, the waitlist form).
  */
 export const PRICING_FAQ: ReadonlyArray<{ q: string; a: ReactNode }> = [
-  { q: "What does following a case mean?", a: <>We email you when new docket entries are filed in a case you follow: a daily digest on Free, hourly on Plus, and within minutes on Pro and Team. Unfollow any time from <Link href="/account">your account</Link>.</> },
+  { q: "What does following a case mean?", a: <>We email you when Jurvio picks up new docket entries or citing opinions in a case you follow: a daily digest on Free, hourly on Plus, and every ten minutes on Pro and Team. Unfollow any time from <Link href="/account">your account</Link>.</> },
+  { q: "How quickly do new filings reach Jurvio?", a: <>Alerts are not instant. Jurvio checks each court on its own schedule, from every few minutes for federal appeals courts to every few hours for district courts and the Supreme Court docket, so a new filing can take a few hours to appear. Alert timing counts from when Jurvio picks up an entry.</> },
   { q: "Where does the data come from?", a: <>Public court records and other official public sources. Case pages link to the source records that are available. See <Link href="/methodology">sources and methodology</Link>.</> },
   { q: "Is reading cases free?", a: <>Yes. Public case pages are free to read on every plan. Plans only change how many cases you can follow and how fast alerts arrive.</> },
   { q: "Can I cancel?", a: <>Yes. Paid plans are month to month and you can cancel at any time.</> },

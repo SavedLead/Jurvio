@@ -55,7 +55,7 @@ describe("record answers", () => {
   it("builds an open civil case from record fields only", () => {
     const answers = buildRecordAnswers(base);
     expect(answers.happened).toBe(
-      "A civil rights case (nature of suit 440, other civil rights) filed on Oct. 30, 2026 in the Eastern District of California by Doe against County of Fresno. No closing date appears in the court record Jurvio holds.",
+      "A civil rights case (nature of suit 440, other civil rights) filed on Oct. 30, 2026 in the Eastern District of California by Doe against County of Fresno. No closing date appears in the court records we have.",
     );
     expect(answers.about).toBe(
       "The court record classifies this case under nature of suit 440: Other civil rights (civil rights). The cause of action listed is 42 U.S.C. § 1983 (Civil Rights Act).",
@@ -67,10 +67,10 @@ describe("record answers", () => {
   it("reports closure without inventing a disposition", () => {
     const answers = buildRecordAnswers({ ...base, terminatedOn: "2027-01-15", citedByCount: 3, docketEntryCount: 2 });
     expect(answers.happened).toContain("closed on Jan. 15, 2027");
-    expect(answers.happened).toContain("docket entries Jurvio holds");
-    expect(answers.outcome).toContain("closed on Jan. 15, 2027");
+    expect(answers.happened).toContain("docket entries we have");
+    expect(answers.outcome).toContain("closed this case on Jan. 15, 2027");
     expect(answers.outcome).not.toMatch(/won|lost|granted|dismissed|settled/i);
-    expect(answers.matters).toBe("3 court opinions on Jurvio cite this case, which shows other courts have relied on or discussed it.");
+    expect(answers.matters).toBe("At least 3 court opinions on Jurvio cite this case, which shows other courts have relied on or discussed it.");
   });
 
   it("describes criminal cases without charges it does not hold", () => {
@@ -114,7 +114,7 @@ describe("real record shapes", () => {
       captionCategory: captionTag(raw),
     });
     expect(answers.happened).toBe(
-      "A habeas corpus case filed on Oct. 30, 2026 in the Eastern District of California by Kumar against Moss et al. No closing date appears in the court record Jurvio holds.",
+      "A habeas corpus case filed on Oct. 30, 2026 in the Eastern District of California by Kumar against Moss et al. No closing date appears in the court records we have.",
     );
     expect(answers.about).toBe(
       "The court's docket caption marks this as a habeas corpus case: a petition asking the court to decide whether a person's detention is lawful.",

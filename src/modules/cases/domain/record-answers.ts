@@ -244,8 +244,8 @@ export function buildRecordAnswers(input: RecordAnswerInput): RecordAnswers {
   if (terminated) happenedParts.push(`The court record shows the case was closed on ${terminated}.`);
   else if (decided) happenedParts.push(`The court issued a decision on ${decided}.`);
   else if (input.hasReadableOpinion) happenedParts.push("The court's written opinion is available on this page.");
-  else if (district) happenedParts.push("No closing date appears in the court record Jurvio holds.");
-  if (input.docketEntryCount > 0) happenedParts.push("The docket entries Jurvio holds are listed in the timeline on this page.");
+  else if (district) happenedParts.push("No closing date appears in the court records we have.");
+  if (input.docketEntryCount > 0) happenedParts.push("The docket entries we have are listed in the timeline on this page.");
   const hasCoreFact = Boolean(filed || terminated || decided || nos || parties || input.hasReadableOpinion);
   const happened = hasCoreFact ? happenedParts.join(" ") : null;
 
@@ -270,7 +270,7 @@ export function buildRecordAnswers(input: RecordAnswerInput): RecordAnswers {
 
   // Why it matters: only measurable reliance by later opinions.
   const matters = input.citedByCount > 0
-    ? `${plural(input.citedByCount, "court opinion", "court opinions")} on Jurvio ${input.citedByCount === 1 ? "cites" : "cite"} this case, which shows other courts have relied on or discussed it.`
+    ? `At least ${plural(input.citedByCount, "court opinion", "court opinions")} on Jurvio ${input.citedByCount === 1 ? "cites" : "cite"} this case, which shows other courts have relied on or discussed it.`
     : null;
 
   // Outcome: dates the record states; never a characterization it does not.
@@ -278,9 +278,9 @@ export function buildRecordAnswers(input: RecordAnswerInput): RecordAnswers {
   if (decided && input.hasReadableOpinion) {
     outcome = `The court issued its decision on ${decided}. The full text of the opinion is available on this page.`;
   } else if (terminated) {
-    outcome = `The court record shows the case was closed on ${terminated}. Jurvio has not yet verified how it was resolved; the docket entries are the source for the final orders.`;
+    outcome = `The court closed this case on ${terminated}. The court records we have don't say how it ended; the docket entries are the best source for the final orders.`;
   } else if (decided) {
-    outcome = `The court issued a decision on ${decided}. Jurvio has not yet verified a plain-English holding.`;
+    outcome = `The court issued its decision on ${decided}. “Where this case stands” at the top of this page explains what the record says about the result.`;
   }
 
   return { happened, about, matters, outcome };
