@@ -52,3 +52,12 @@ describe("entity alert copy", () => {
     expect(entityFollowDue("daily", new Date("2026-11-03T06:00:00Z"), new Date("2026-10-01T00:00:00Z"), now)).toBe(false);
   });
 });
+
+describe("matches label", () => {
+  it("says 'since you followed' for new follows", async () => {
+    const { matchesSinceLabel } = await import("../domain/entity-follow");
+    const now = new Date("2026-11-03T06:00:00Z");
+    expect(matchesSinceLabel(0, "2026-11-03 05:09:00.2+00", now)).toBe("0 matches since you followed (only new filings count, not earlier ones)");
+    expect(matchesSinceLabel(1, "2026-10-01 05:09:00+00", now)).toBe("1 match in the last 7 days");
+  });
+});
