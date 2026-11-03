@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
@@ -13,7 +14,11 @@ function MedianLine({ label, median }: { label: string; median: Median }) {
 }
 
 /** The case's path from the court below to the Supreme Court's last action, from the official docket. */
-export function CaseJourneySection({ journey, benchmarks }: { journey: JourneyInput; benchmarks: JourneyBenchmarks | null }) {
+export function CaseJourneySection({ journey, benchmarks, sourceRef }: {
+  journey: JourneyInput; benchmarks: JourneyBenchmarks | null;
+  /** Declutter layout: show "Source: label [n]" pointing into the page's one Sources list instead of a link per step. */
+  sourceRef?: (href: string) => ReactNode;
+}) {
   const steps = buildCaseJourney(journey);
   if (!steps.length) return null;
   const application = isEmergencyApplication(journey.docketNumber);
@@ -38,7 +43,8 @@ export function CaseJourneySection({ journey, benchmarks }: { journey: JourneyIn
           <p style={{ margin: "4px 0", lineHeight: 1.55 }}>{step.plain}</p>
           {step.quote ? <p style={{ ...muted, margin: "4px 0" }}>Docket: “{step.quote}”</p> : null}
           <p style={{ ...muted, margin: 0 }}>
-            {step.sourceUrl ? <a href={step.sourceUrl} rel="noopener noreferrer" target="_blank">Source: {step.sourceLabel} ↗</a> : `Source: ${step.sourceLabel}`}
+            {step.sourceUrl && sourceRef ? <>Source: {step.sourceLabel}{sourceRef(step.sourceUrl)}</>
+              : step.sourceUrl ? <a href={step.sourceUrl} rel="noopener noreferrer" target="_blank">Source: {step.sourceLabel} ↗</a> : `Source: ${step.sourceLabel}`}
             {step.jurvioPath ? <> · <Link href={step.jurvioPath as Route}>Open the lower-court case on Jurvio →</Link></> : null}
           </p>
         </li>;

@@ -40,6 +40,8 @@ export interface CaseJusticeNotes {
   certStatusOn: string | null;
   fetchedAt: string;
   notes: CaseJusticeNote[];
+  /** The justices sitting on the date of the latest order with a note (for the 9-justice chip row). */
+  bench: Array<{ name: string; slug: string | null; surname: string }>;
 }
 
 let rosterCache: { at: number; roster: RosterJustice[] } | null = null;
@@ -109,8 +111,13 @@ export async function loadCaseJusticeNotes(sql: Sql, publicCaseId: string): Prom
       opinionOpening: row.opinionOpening, opinionReason: row.opinionReason,
     };
   }).sort((left, right) => right.entryOn.localeCompare(left.entryOn) || KIND_ORDER.indexOf(left.kind) - KIND_ORDER.indexOf(right.kind));
+  const benchOn = notes[0]?.entryOn ?? first.entryOn;
+  const bench = roster
+    .filter((justice) => justice.serviceStart <= benchOn && (!justice.serviceEnd || justice.serviceEnd >= benchOn))
+    .sort((left, right) => (left.chiefFrom && left.chiefFrom <= benchOn ? -1 : 0) - (right.chiefFrom && right.chiefFrom <= benchOn ? -1 : 0) || left.serviceStart.localeCompare(right.serviceStart))
+    .map((justice) => ({ name: justice.displayName, slug: justice.slug || null, surname: justice.surname }));
   return {
     docketNumber: first.docketNumber, sourceUrl: first.sourceUrl, certStatus: first.certStatus,
-    certStatusOn: first.certStatusOn, fetchedAt: first.fetchedAt, notes,
+    certStatusOn: first.certStatusOn, fetchedAt: first.fetchedAt, notes, bench,
   };
 }
