@@ -1,0 +1,107 @@
+name: Alerts test account (once)
+
+# Creates or revokes the throwaway customer account used to check judge,
+# topic and party alerts on the live site while email sign-in is off.
+#
+# create: upserts app_user alerts-qa@example.com (example.com never receives
+#   mail) and adds one auth_session whose token HASH is the token_hash input.
+#   The raw session token never leaves the operator's machine and is never
+#   an input, so this run's inputs and logs reveal nothing that signs in.
+#   The session lasts 3 days. plan=pro adds a Stripe-less account_subscription
+#   row so all three follow kinds can be tested at once; nothing is charged.
+# revoke: revokes every session of that account and deletes its follows.
+#
+# Dispatch by hand with confirm=ALERTS_TEST_ACCOUNT.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type ALERTS_TEST_ACCOUNT"
+        required: true
+        type: string
+      mode:
+        description: "create or revoke"
+        required: true
+        default: create
+        type: choice
+        options: [create, revoke]
+      plan:
+        description: "create only: free, or pro to test unlimited judge/topic/party follows (no Stripe, nothing is charged)"
+        required: false
+        default: free
+        type: choice
+        options: [free, pro]
+      token_hash:
+        description: "create only: SHA-256 hex (64 chars) of a fresh random session token"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-alerts-test-account
+  cancel-in-progress: false
+
+jobs:
+  account:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 10
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      MODE: ${{ inputs.mode }}
+      TOKEN_HASH: ${{ inputs.token_hash }}
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - name: Require confirm=ALERTS_TEST_ACCOUNT and validate inputs
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "ALERTS_TEST_ACCOUNT" ]; then
+            echo "::error::Refusing to run without confirm=ALERTS_TEST_ACCOUNT"
+            exit 1
+          fi
+          case "$MODE" in create|revoke) ;; *) echo "::error::mode must be create or revoke"; exit 1;; esac
+          case "${PLAN:-free}" in free|pro) ;; *) echo "::error::plan must be free or pro"; exit 1;; esac
+          if [ "$MODE" = create ] && ! [[ "$TOKEN_HASH" =~ ^[0-9a-f]{64}$ ]]; then echo "::error::token_hash must be 64 lowercase hex chars"; exit 1; fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Apply over private VPC
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          if [ "$MODE" = create ]; then
+            body="INSERT INTO app_user (email, email_verified_at) VALUES ('alerts-qa@example.com', now())
+              ON CONFLICT (email) DO UPDATE SET email_verified_at = COALESCE(app_user.email_verified_at, now()), alerts_unsubscribed_at = NULL, updated_at = now();
+            INSERT INTO auth_session (token_hash, user_id, expires_at)
+              SELECT '$TOKEN_HASH', id, now() + interval '3 days' FROM app_user WHERE email = 'alerts-qa@example.com';
+            INSERT INTO account_subscription (user_id, plan, status)
+              SELECT id, '${PLAN:-free}', 'active' FROM app_user WHERE email = 'alerts-qa@example.com'
+              ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan, status = 'active', updated_at = now();"
+          else
+            body="UPDATE auth_session SET revoked_at = now() WHERE revoked_at IS NULL AND user_id = (SELECT id FROM app_user WHERE email = 'alerts-qa@example.com');
+            DELETE FROM entity_follow WHERE user_id = (SELECT id FROM app_user WHERE email = 'alerts-qa@example.com');
+            DELETE FROM case_follow WHERE user_id = (SELECT id FROM app_user WHERE email = 'alerts-qa@example.com');
+            DELETE FROM account_subscription WHERE user_id = (SELECT id FROM app_user WHERE email = 'alerts-qa@example.com') AND stripe_subscription_id IS NULL;"
+          fi
+          sql="BEGIN; SET LOCAL statement_timeout = '30s'; SET LOCAL lock_timeout = '5s';
+          $body
+          COMMIT;
+          SELECT u.email, u.email_verified_at IS NOT NULL AS verified, (SELECT s.plan FROM account_subscription s WHERE s.user_id = u.id) AS plan,
+            (SELECT count(*) FROM auth_session s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > now()) AS live_sessions,
+            (SELECT count(*) FROM entity_follow f WHERE f.user_id = u.id) AS entity_follows
+          FROM app_user u WHERE u.email = 'alerts-qa@example.com';"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<REMOTE
+          set -euo pipefail
+          pg="\$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "\$pg" ] || { echo "postgres missing" >&2; exit 1; }
+          sudo -n docker exec -i "\$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
+          $sql
+          SQL
+          REMOTE

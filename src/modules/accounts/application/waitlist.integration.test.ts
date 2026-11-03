@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PLANS } from "../domain/plans";
 import postgres from "postgres";
 import { afterAll, describe, expect, it } from "vitest";
 import { createFixtures } from "./test-fixtures";
@@ -90,10 +91,11 @@ describe.skipIf(!databaseUrl)("no-sign-in lead waitlist", () => {
     const f = await fixtures!;
     const email = freshEmail();
     const userId = await f.createUser(email);
-    const cases = [await f.createCase(), await f.createCase(), await f.createCase(), await f.createCase()];
+    const cases = [];
+    for (let i = 0; i <= PLANS.free.followLimit; i += 1) cases.push(await f.createCase());
     for (const c of cases) await captureLead(sql, { email, ip: ip(), source: "case_follow", casePublicId: c.publicId });
     const result = await convertLeads(sql, userId, email);
-    expect(result.followed).toHaveLength(3);
+    expect(result.followed).toHaveLength(PLANS.free.followLimit);
     const [open] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM lead_waitlist WHERE email = ${email} AND converted_at IS NULL`;
     expect(open!.n).toBe(1);
   });

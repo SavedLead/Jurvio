@@ -3,7 +3,7 @@
 import type { Route } from "next";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { PLANS } from "../domain/plans";
+import { PLANS, formatLimit } from "../domain/plans";
 import { EmailCaptureForm, WAITLIST_SUCCESS } from "./email-capture-form";
 import "./follow-case-box.css";
 
@@ -117,10 +117,10 @@ export function FollowCaseBox({ caseId, citationsFirst = false }: { caseId: stri
           {state.citations ? "Citations ✓" : "Follow citations"}
         </button>
       </div>
-      {typeof state.followCount === "number" ? <small>{state.followCount} of {state.followLimit} follows used · <Link href="/account">Manage</Link>{state.error === "limit_reached" ? null : <> · <Link href={"/pricing" as Route}>See plans</Link></>}</small> : null}
+      {typeof state.followCount === "number" ? <small>{state.followCount} of {formatLimit(state.followLimit ?? 0)} follows used · <Link href={"/alerts" as Route}>Manage</Link>{state.error === "limit_reached" ? null : <> · <Link href={"/pricing" as Route}>See plans</Link></>}</small> : null}
       {state.error === "limit_reached" ? <p className="followUpgrade" role="alert">
-        You are following {state.followCount} of {state.followLimit} cases on your plan.
-        {state.upgrade ? <> {state.upgrade.name} (${state.upgrade.monthlyPriceUsd}/mo) follows up to {state.upgrade.followLimit}. </> : " "}
+        You are following {state.followCount} of {formatLimit(state.followLimit ?? 0)} cases on your plan.
+        {state.upgrade ? <> {state.upgrade.name} follows {formatLimit(state.upgrade.followLimit) === "unlimited" ? "unlimited cases" : `up to ${formatLimit(state.upgrade.followLimit)}`}: upgrade coming soon. </> : " "}
         <Link href={"/pricing" as Route}>See plans</Link>
       </p> : null}
     </>}

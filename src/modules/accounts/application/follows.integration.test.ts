@@ -1,8 +1,11 @@
 import postgres from "postgres";
+import { PLANS } from "../domain/plans";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { captionAllowsFollow, caseFollowEligible, followCase, followState, parseFollowKinds, unfollowCase } from "./follows";
 import { completeSignInIntent } from "./sign-in-intent";
 import { createFixtures } from "./test-fixtures";
+
+const FREE_LIMIT = PLANS.free.followLimit;
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -33,17 +36,17 @@ describe.skipIf(!databaseUrl)("case follows", () => {
 
   it("enforces the plan follow limit with an upgrade suggestion", async () => {
     const userId = await fx.createUser();
-    const cases = await Promise.all([1, 2, 3, 4].map(() => fx.createCase()));
-    for (const legalCase of cases.slice(0, 3)) expect((await followCase(sql, userId, legalCase.publicId)).status).toBe("followed");
+    const cases = await Promise.all(Array.from({ length: FREE_LIMIT + 1 }, () => fx.createCase()));
+    for (const legalCase of cases.slice(0, FREE_LIMIT)) expect((await followCase(sql, userId, legalCase.publicId)).status).toBe("followed");
     expect((await followCase(sql, userId, cases[0]!.publicId)).status).toBe("already_following");
-    const over = await followCase(sql, userId, cases[3]!.publicId);
+    const over = await followCase(sql, userId, cases[FREE_LIMIT]!.publicId);
     expect(over.status).toBe("limit_reached");
     if (over.status !== "limit_reached") throw new Error("expected limit");
-    expect(over.state).toMatchObject({ plan: "free", followCount: 3, followLimit: 3, following: false, upgrade: { plan: "plus", monthlyPriceUsd: 19, followLimit: 50 } });
+    expect(over.state).toMatchObject({ plan: "free", followCount: FREE_LIMIT, followLimit: FREE_LIMIT, following: false, upgrade: { plan: "plus", monthlyPriceUsd: 19, followLimit: 50 } });
 
     const state = await unfollowCase(sql, userId, cases[0]!.publicId);
-    expect(state).toMatchObject({ following: false, followCount: 2 });
-    expect((await followCase(sql, userId, cases[3]!.publicId)).status).toBe("followed");
+    expect(state).toMatchObject({ following: false, followCount: FREE_LIMIT - 1 });
+    expect((await followCase(sql, userId, cases[FREE_LIMIT]!.publicId)).status).toBe("followed");
   });
 
   it("uses the paid plan's limit", async () => {
@@ -67,7 +70,7 @@ describe.skipIf(!databaseUrl)("case follows", () => {
 
   it("keeps activity and citation kinds per follow, one follow slot per case", async () => {
     const userId = await fx.createUser();
-    const cases = await Promise.all([1, 2, 3, 4].map(() => fx.createCase()));
+    const cases = await Promise.all(Array.from({ length: FREE_LIMIT + 1 }, () => fx.createCase()));
     expect((await followCase(sql, userId, cases[0]!.publicId, { activity: false, citations: true })).status).toBe("followed");
     expect(await followState(sql, userId, cases[0]!.publicId)).toMatchObject({ following: true, activity: false, citations: true, followCount: 1 });
     const both = await followCase(sql, userId, cases[0]!.publicId, { activity: true, citations: true });
@@ -79,8 +82,8 @@ describe.skipIf(!databaseUrl)("case follows", () => {
     expect((await followCase(sql, userId, cases[0]!.publicId, { activity: false, citations: false })).status).toBe("updated");
     expect(await followState(sql, userId, cases[0]!.publicId)).toMatchObject({ following: false, activity: false, citations: false, followCount: 0 });
     // Citation follows count toward the same plan limit.
-    for (const legalCase of cases.slice(0, 3)) await followCase(sql, userId, legalCase.publicId, { activity: false, citations: true });
-    expect((await followCase(sql, userId, cases[3]!.publicId, { activity: false, citations: true })).status).toBe("limit_reached");
+    for (const legalCase of cases.slice(0, FREE_LIMIT)) await followCase(sql, userId, legalCase.publicId, { activity: false, citations: true });
+    expect((await followCase(sql, userId, cases[FREE_LIMIT]!.publicId, { activity: false, citations: true })).status).toBe("limit_reached");
     // Changing kinds on an existing follow is allowed at the limit.
     expect((await followCase(sql, userId, cases[1]!.publicId, { activity: true, citations: true })).status).toBe("updated");
   });

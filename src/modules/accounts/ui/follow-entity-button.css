@@ -1,0 +1,30 @@
+.entityFollow { display: inline-flex; flex-direction: column; gap: 6px; max-width: 100%; min-width: 0; vertical-align: middle; }
+.entityFollowRow { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.entityFollowButton { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 36px; padding: 7px 14px; border: 1px solid var(--ink); border-radius: 999px; background: var(--ink); color: #fff; font: inherit; font-size: 14px; font-weight: 700; line-height: 1.2; text-decoration: none; cursor: pointer; white-space: nowrap; }
+a.entityFollowButton, a.entityFollowButton:visited { color: #fff; text-decoration: none; }
+.entityFollowButton:hover { background: var(--brand); border-color: var(--brand); }
+.entityFollowButton.following { background: #e9f1ff; color: var(--brand-dark); border-color: #b8cdf5; }
+.entityFollowButton[disabled] { opacity: .6; cursor: default; }
+.entityFollowFrequency { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.entityFollowFrequency select { flex: 0 0 auto; min-height: 32px; height: 32px; padding: 0 8px; border: 1px solid #c8d0dc; border-radius: 7px; background: #fff; font: inherit; font-size: 13px; color: var(--ink); }
+.entityFollowNote { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.entityFollowNote a, .entityFollowUpgrade a { text-decoration: underline; text-underline-offset: 2px; }
+.entityFollowUpgrade { display: block; max-width: 520px; padding: 8px 10px; border-radius: 8px; background: #fff7e6; color: #5c3b00; font-size: 13px; line-height: 1.4; }
+.entityFollowUpgrade a { font-weight: 700; color: inherit; }
+.entityFollowStatus:empty { display: none; }
+.entityFollowStatus { font-size: 12px; color: var(--muted); }
+.entityFollowCompact { display: inline-flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 6px; }
+.entityFollowCompact .entityFollowButton { min-height: 32px; padding: 3px 10px; font-size: 12px; background: #fff; color: var(--ink); border-color: #c8d0dc; }
+.entityFollowCompact a.entityFollowButton, .entityFollowCompact a.entityFollowButton:visited { color: var(--ink); }
+.entityFollowCompact .entityFollowButton:hover { background: #f1f5f9; color: var(--ink); border-color: var(--ink); }
+.entityFollowCompact .entityFollowButton.following { background: #e9f1ff; color: var(--brand-dark); border-color: #b8cdf5; }
+.entityFollowCompact .entityFollowFrequency select { min-height: 32px; height: 32px; font-size: 12px; }
+.entityFollowCompact .entityFollowUpgrade { flex-basis: 100%; }
+.srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.entityFollowExtras { margin-top: 14px; padding-top: 12px; border-top: 1px solid #e3e8ef; }
+.entityFollowExtrasTitle { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: var(--ink); }
+.entityFollowExtras ul { margin: 0 0 6px; padding: 0; list-style: none; display: grid; gap: 6px; }
+.entityFollowExtras li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.entityFollowExtrasName { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.entityFollowExtrasKind { display: inline-block; margin-right: 4px; padding: 1px 6px; border-radius: 999px; background: #eef2f7; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+.entityFollowExtras .entityFollowCompact { margin-left: 0; }

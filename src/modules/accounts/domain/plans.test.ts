@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { CADENCE_INTERVAL_MS, PLANS, effectivePlan, formatMonthlyPrice, nextPlanUp } from "./plans";
+import { CADENCE_INTERVAL_MS, PLANS, UNLIMITED, effectivePlan, formatLimit, formatMonthlyPrice, nextPlanUp } from "./plans";
 
 describe("plans config", () => {
   it("has the decided prices, follow limits and cadences", () => {
     expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => [plan.monthlyPriceUsd, plan.followLimit, plan.alertCadence]))
-      .toEqual([[0, 3, "daily"], [19, 50, "hourly"], [59, 500, "instant"], [199, 2500, "instant"]]);
+      .toEqual([[0, 5, "daily"], [19, 50, "hourly"], [59, UNLIMITED, "instant"], [199, UNLIMITED, "instant"]]);
+    expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => plan.entityFollowLimit)).toEqual([1, 10, UNLIMITED, UNLIMITED]);
+    expect(formatLimit(PLANS.pro.followLimit)).toBe("unlimited");
+    expect(formatLimit(PLANS.free.followLimit)).toBe("5");
     expect(PLANS.team.seats).toBe(5);
     expect(PLANS.team.available).toBe(false);
     expect(PLANS.pro.monitors).toBe(true);
@@ -24,5 +27,7 @@ describe("plans config", () => {
     expect(nextPlanUp("free")?.id).toBe("plus");
     expect(nextPlanUp("plus")?.id).toBe("pro");
     expect(nextPlanUp("pro")).toBeNull();
+    expect(nextPlanUp("free", "entityFollowLimit")?.id).toBe("plus");
+    expect(nextPlanUp("plus", "entityFollowLimit")?.id).toBe("pro");
   });
 });

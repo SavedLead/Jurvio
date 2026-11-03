@@ -1,10 +1,12 @@
 import postgres from "postgres";
 import { env } from "@/lib/config/env";
 import { runAlertDigests } from "@/modules/accounts/application/alerts";
+import { matchEntityAlerts, sendEntityAlerts } from "@/modules/accounts/application/entity-alerts";
 import { getEmailProvider } from "@/modules/accounts/infrastructure/email";
 
-// Followed-case docket alert digests (scheduler job "account-alerts", every 10 min).
-// No-op unless RESEND_API_KEY, EMAIL_FROM and EMAIL_POSTAL_ADDRESS are set.
+// Followed-case docket alert digests (scheduler job "account-alerts", every 10 min),
+// then judge/topic/party alerts: matching always runs (matches show on My alerts),
+// sending is a no-op unless RESEND_API_KEY, EMAIL_FROM and EMAIL_POSTAL_ADDRESS are set.
 //   node jobs/run-account-alerts.mjs [--max-users=500]
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
@@ -29,6 +31,21 @@ try {
       maxUsers: Number.isFinite(maxUsers) && maxUsers > 0 ? maxUsers : 500,
     });
     console.log(JSON.stringify({ accountAlerts: summary.status, elapsedMs: Date.now() - started, ...summary }));
+    const entityStarted = Date.now();
+    try {
+      const matched = await matchEntityAlerts(sql);
+      const sent = await sendEntityAlerts(sql, {
+        provider: getEmailProvider(),
+        siteUrl: env().SITE_URL,
+        postalAddress: process.env.EMAIL_POSTAL_ADDRESS,
+        maxUsers: Number.isFinite(maxUsers) && maxUsers > 0 ? maxUsers : 500,
+      });
+      console.log(JSON.stringify({ entityAlerts: { match: matched, send: sent }, elapsedMs: Date.now() - entityStarted }));
+    } catch (error) {
+      // Judge/topic/party alerts must never block case alerts; the next tick retries from the same cursor.
+      console.error(JSON.stringify({ entityAlerts: "failed", error: error instanceof Error ? error.message : String(error) }));
+      process.exitCode = 1;
+    }
   }
 } finally {
   await sql.end();

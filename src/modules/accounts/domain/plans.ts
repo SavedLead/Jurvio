@@ -11,6 +11,21 @@ export type PlanId = (typeof PLAN_IDS)[number];
 // literally instant delivery. Customer-facing copy must say "every 10 minutes".
 export type AlertCadence = "daily" | "hourly" | "instant";
 
+/**
+ * "No limit". A large sentinel instead of Infinity so it survives JSON (API
+ * responses). Show it with formatLimit(), never as a number.
+ */
+export const UNLIMITED = 1_000_000;
+
+export function isUnlimited(limit: number): boolean {
+  return limit >= UNLIMITED;
+}
+
+/** "5" or "unlimited". */
+export function formatLimit(limit: number): string {
+  return isUnlimited(limit) ? "unlimited" : limit.toLocaleString("en-US");
+}
+
 export interface PlanDefinition {
   id: PlanId;
   name: string;
@@ -18,10 +33,14 @@ export interface PlanDefinition {
   monthlyPriceUsd: number;
   /** Seats included. */
   seats: number;
-  /** Maximum followed cases for the account. */
+  /** Maximum followed cases for the account (UNLIMITED = no limit). */
   followLimit: number;
+  /** Maximum judge + topic + party follows combined (UNLIMITED = no limit). */
+  entityFollowLimit: number;
+  /** May pick "as soon as we see it" for judge/topic/party follows (otherwise daily only). */
+  entityAsap: boolean;
   alertCadence: AlertCadence;
-  /** Entity/topic monitors (Pro and above; not built in Phase 1). */
+  /** Judge/topic/party follows beyond the free allowance are a selling point of this plan. */
   monitors: boolean;
   /** Offered for self-serve sign-up now. Team is "later". */
   available: boolean;
@@ -31,29 +50,28 @@ export interface PlanDefinition {
 
 export const PLANS: Readonly<Record<PlanId, PlanDefinition>> = {
   free: {
-    id: "free", name: "Free", monthlyPriceUsd: 0, seats: 1, followLimit: 3, alertCadence: "daily",
+    id: "free", name: "Free", monthlyPriceUsd: 0, seats: 1, followLimit: 5, entityFollowLimit: 1, entityAsap: true, alertCadence: "daily",
     monitors: false, available: true,
-    tagline: "Follow a few cases and get a daily digest.",
-    features: ["Follow up to 3 cases", "Daily email digest of new docket activity", "All public case pages, free forever"],
+    tagline: "Follow a few cases and one judge, topic or party.",
+    features: ["Follow up to 5 cases", "Follow 1 judge, topic or party", "Daily email digest of new docket activity", "All public case pages, free forever"],
   },
   plus: {
-    id: "plus", name: "Plus", monthlyPriceUsd: 19, seats: 1, followLimit: 50, alertCadence: "hourly",
+    id: "plus", name: "Plus", monthlyPriceUsd: 19, seats: 1, followLimit: 50, entityFollowLimit: 10, entityAsap: true, alertCadence: "hourly",
     monitors: false, available: true,
     tagline: "For journalists, researchers and close followers.",
-    features: ["Follow up to 50 cases", "Hourly email alerts", "Everything in Free"],
+    features: ["Follow up to 50 cases", "Follow up to 10 judges, topics or parties", "Hourly email alerts", "Everything in Free"],
   },
   pro: {
-    id: "pro", name: "Pro", monthlyPriceUsd: 59, seats: 1, followLimit: 500, alertCadence: "instant",
+    id: "pro", name: "Pro", monthlyPriceUsd: 59, seats: 1, followLimit: UNLIMITED, entityFollowLimit: UNLIMITED, entityAsap: true, alertCadence: "instant",
     monitors: true, available: true,
     tagline: "For attorneys and professionals who need it fast.",
-    features: ["Follow up to 500 cases", "Email alerts every 10 minutes", "Monitors for parties, firms and topics (coming soon)", "Everything in Plus"],
+    features: ["Unlimited case follows", "Unlimited judge, topic and party alerts", "Email alerts every 10 minutes", "Everything in Plus"],
   },
   team: {
-    // Follow limit for Team is provisional (5 seats x Pro's 500) until Team ships.
-    id: "team", name: "Team", monthlyPriceUsd: 199, seats: 5, followLimit: 2500, alertCadence: "instant",
+    id: "team", name: "Team", monthlyPriceUsd: 199, seats: 5, followLimit: UNLIMITED, entityFollowLimit: UNLIMITED, entityAsap: true, alertCadence: "instant",
     monitors: true, available: false,
     tagline: "For firms and newsrooms. Five seats.",
-    features: ["5 seats", "Shared follows and monitors", "Email alerts every 10 minutes", "Everything in Pro"],
+    features: ["5 seats", "Shared follows and alerts", "Email alerts every 10 minutes", "Everything in Pro"],
   },
 };
 
@@ -83,9 +101,9 @@ export function planLimits(plan: PlanId): PlanDefinition {
 }
 
 /** The cheapest available plan that allows more follows than `plan`, for upgrade prompts. */
-export function nextPlanUp(plan: PlanId): PlanDefinition | null {
-  const current = PLANS[plan].followLimit;
-  return PLAN_IDS.map((id) => PLANS[id]).find((candidate) => candidate.available && candidate.followLimit > current) ?? null;
+export function nextPlanUp(plan: PlanId, limit: "followLimit" | "entityFollowLimit" = "followLimit"): PlanDefinition | null {
+  const current = PLANS[plan][limit];
+  return PLAN_IDS.map((id) => PLANS[id]).find((candidate) => candidate.available && candidate[limit] > current) ?? null;
 }
 
 export function formatMonthlyPrice(plan: PlanDefinition): string {

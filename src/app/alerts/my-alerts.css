@@ -1,0 +1,33 @@
+.myAlerts .alertsUsage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.myAlerts .alertsUsage div { padding: 12px 14px; border: 1px solid var(--border); border-radius: 9px; }
+.myAlerts .alertsUsage dt { color: var(--muted); font-size: 12px; font-weight: 650; }
+.myAlerts .alertsUsage dd { margin: 4px 0 0; font-size: 18px; font-weight: 750; }
+.myAlerts .alertsUpgrade { margin: 16px 0 0; padding: 12px 14px; border-radius: 9px; background: #fff7e6; color: #5c3b00; line-height: 1.5; }
+.myAlerts .alertsUpgrade a { font-weight: 700; color: inherit; text-decoration: underline; }
+.myAlerts .alertsEmpty ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.6; color: var(--muted); }
+.myAlerts .alertsList { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.myAlerts .alertsItem { padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
+.myAlerts .alertsItemHead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+.myAlerts .alertsItemTitle { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
+.myAlerts .alertsKind { flex: 0 0 auto; padding: 3px 9px; border-radius: 999px; background: #eef3fc; color: var(--brand-dark); font-size: 11px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.myAlerts .alertsKind-topic { background: #eefaf2; color: #14532d; }
+.myAlerts .alertsKind-party { background: #f6effc; color: #4c1d95; }
+.myAlerts .alertsItemActions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.myAlerts .alertsItemActions form { display: flex; gap: 6px; align-items: center; margin: 0; }
+.myAlerts .alertsItemActions select { min-height: 40px; height: 40px; padding: 0 10px; border: 1px solid #c8d0dc; border-radius: 8px; background: #fff; font: inherit; font-size: 14px; }
+.myAlerts .alertsItemActions .accountButton { min-height: 40px; padding: 8px 14px; }
+.myAlerts .alertsMeta { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.myAlerts .alertsMatches { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.myAlerts .alertsMatches li { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 10px; align-items: start; padding-top: 8px; border-top: 1px solid var(--border); font-size: 14px; }
+.myAlerts .alertsMatches small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+.myAlerts .alertsEvent { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding-top: 2px; }
+.myAlerts .srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 640px) {
+  .myAlerts.accountShell { padding: 28px 14px 64px; }
+  .myAlerts .accountCard { padding: 20px 16px; }
+  .myAlerts .alertsUsage { grid-template-columns: minmax(0, 1fr); }
+  .myAlerts .alertsItemActions { width: 100%; }
+  .myAlerts .alertsFrequencyForm { flex: 1 1 auto; }
+  .myAlerts .alertsFrequencyForm select { flex: 1 1 auto; min-width: 0; }
+  .myAlerts .alertsMatches li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
