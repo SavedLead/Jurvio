@@ -56,6 +56,8 @@ import { CaseRamificationsSection, type RamificationsHolding } from "@/modules/s
 import { ALLOTMENT_SOURCE_URL, APPLICATIONS_GUIDE_URL, circuitJusticeFor, circuitJusticeForCircuit, circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
 import { CircuitJusticeBox } from "@/modules/scotus/ui/circuit-justice-box";
 import { captionAllowsFollow, caseFollowEligible } from "@/modules/accounts/application/follows";
+import { FollowEntityButton } from "@/modules/accounts/ui/follow-entity-button";
+import { FollowCaseExtras } from "@/modules/accounts/ui/follow-case-extras";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { createTermMarker, TermText, type TermMarker } from "@/modules/plain-english/ui/term-text";
 import { buildCaseStanding } from "@/modules/plain-english/domain/case-standing";
@@ -573,7 +575,8 @@ export default async function CasePage({ params }: CasePageProps) {
             keyDate={keyDateShown}
             facts={summaryFacts}
             follow={followEligible ? <details className="cdFollow" id="follow"><summary>Follow this case</summary>
-              <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} /></details> : null}
+              <FollowCaseBox caseId={caseId} citationsFirst={Boolean(legalCase.decidedOn || legalCase.terminatedOn)} />
+              <FollowCaseExtras caption={caption} natureOfSuit={legalCase.natureOfSuit} /></details> : null}
             tools={<CaseCardActions permanentUrl={permanentUrl} shareTitle={caption} citation={legalCase.officialCitation} summaryPath={`/case/${caseId}/summary`} />}
             note={standing ? <>Plain-English summary, not legal advice. <a href="#about-summary">How we write it</a></> : null}
           />
@@ -660,7 +663,7 @@ export default async function CasePage({ params }: CasePageProps) {
         {show.parties ? <CaseSection id="parties" title="Parties" hint={`${parties.length.toLocaleString("en-US")} named in the record`}>
           <p className="cdMuted">Being named in a case does not establish liability, wrongdoing, or guilt.</p>
           <ul className="cdParties" id="named-parties">
-            {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><span>{party.displayName}</span> <span className="cdMuted">{marked(publicPartyRole(party.role), partiesMarker)}</span></li>)}
+            {parties.slice(0, 8).map((party) => <li key={party.publicId + ":" + party.role}><span>{party.displayName}</span> <span className="cdMuted">{marked(publicPartyRole(party.role), partiesMarker)}</span>{followEligible ? <FollowEntityButton kind="party" target={party.publicId} name={party.displayName} compact /> : null}</li>)}
           </ul>
           <p className="cdMore"><Link href={`/case/${caseId}/parties` as Route}>View all parties →</Link></p>
         </CaseSection> : null}

@@ -2,7 +2,7 @@ import * as React from "react";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { PLANS } from "../domain/plans";
+import { PLANS, UNLIMITED } from "../domain/plans";
 import type { PricingJoinOption } from "./pricing-join-form";
 
 // Vitest compiles JSX with the classic runtime here; Next uses the automatic one.
@@ -29,7 +29,7 @@ function count(html: string, needle: string): number {
 describe("pricing content", () => {
   it("keeps the approved prices, names and limits", () => {
     expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => [plan.name, plan.monthlyPriceUsd, plan.followLimit, plan.seats]))
-      .toEqual([["Free", 0, 3, 1], ["Plus", 19, 50, 1], ["Pro", 59, 500, 1], ["Team", 199, 2500, 5]]);
+      .toEqual([["Free", 0, 5, 1], ["Plus", 19, 50, 1], ["Pro", 59, UNLIMITED, 1], ["Team", 199, UNLIMITED, 5]]);
   });
 
   it("states seats and 'Free forever' under the price", () => {

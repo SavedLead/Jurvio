@@ -10,6 +10,8 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { loadLowerCourtProfile } from "@/modules/judges/application/lower-court-profile";
 import { LowerCourtRecordSection } from "@/modules/judges/ui/lower-court-record";
+import { FollowEntityButton } from "@/modules/accounts/ui/follow-entity-button";
+import { KIND_EXPLAINER } from "@/modules/accounts/domain/entity-follow";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +61,10 @@ export default async function JudgePage({ params }: { params: Promise<{ publicId
         <div><dt>Awards measured</dt><dd>{judge.awardSample.toLocaleString()}</dd></div>
         <div><dt>Data status</dt><dd>Verified sources</dd></div>
       </dl>
+      <div id="follow" style={{ marginTop: 16, clear: "both" }}>
+        <FollowEntityButton kind="judge" target={judge.publicId} name={judge.displayName} />
+        <p className={styles.small} style={{ margin: "6px 0 0" }}>{KIND_EXPLAINER.judge}</p>
+      </div>
     </header>
 
     {lowerCourt ? <LowerCourtRecordSection profile={lowerCourt} judgeName={judge.displayName} /> : null}

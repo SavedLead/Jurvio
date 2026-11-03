@@ -86,6 +86,8 @@ const PUBLIC_PATH_PREFIXES = [
   "/supreme-court",
   "/government-litigation",
   "/sitemaps",
+  // Topic pages: same HTML for everyone; the Follow button loads its state in the browser.
+  "/topics",
 ] as const;
 
 // /cases filters that carry visitor-typed free text. Kept live (never cached).

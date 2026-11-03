@@ -11,6 +11,8 @@ import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { createTermMarker, TermText } from "@/modules/plain-english/ui/term-text";
 import { publicPartyRole } from "@/modules/cases/domain/public-labels";
+import { captionAllowsFollow } from "@/modules/accounts/application/follows";
+import { FollowEntityButton } from "@/modules/accounts/ui/follow-entity-button";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +51,7 @@ export default async function PartiesPage({ params }: {
   });
 
   const partiesMarker = createTermMarker("parties");
+  const followable = captionAllowsFollow(legalCase.caption, legalCase.docketNumber);
   return (
     <main className="shell caseShell">
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
@@ -63,6 +66,7 @@ export default async function PartiesPage({ params }: {
             {records.map((party) => (
               <li key={party.publicId + ":" + party.role}>
                 <strong>{party.displayName}</strong>
+                {followable ? <FollowEntityButton kind="party" target={party.publicId} name={party.displayName} compact /> : null}
                 <p><TermText text={publicPartyRole(party.role)} marker={partiesMarker} /> · Name as filed: {party.nameAsFiled}</p>
               </li>
             ))}

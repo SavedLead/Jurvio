@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { db } from "@/db/client";
 import { loadAccount } from "@/modules/accounts/application/account";
-import { formatMonthlyPrice } from "@/modules/accounts/domain/plans";
+import { formatLimit, formatMonthlyPrice } from "@/modules/accounts/domain/plans";
 import { currentUser } from "@/modules/accounts/http/session";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { UnfollowButton } from "@/modules/accounts/ui/unfollow-button";
@@ -32,7 +32,7 @@ export default async function AccountPage() {
         <dt>Email</dt><dd>{account.email}</dd>
         <dt>Plan</dt><dd>{plan.name} ({formatMonthlyPrice(plan)})</dd>
         <dt>Alerts</dt><dd>{account.alertsUnsubscribed ? "Unsubscribed" : CADENCE_LABEL[plan.alertCadence]}</dd>
-        <dt>Follows</dt><dd>{account.followCount} of {plan.followLimit}</dd>
+        <dt>Follows</dt><dd>{account.followCount} of {formatLimit(plan.followLimit)} cases · <Link href={"/alerts" as Route}>My alerts</Link> for judges, topics and parties</dd>
       </dl>
       {account.alertsUnsubscribed ? <form action="/api/alerts/resubscribe" method="post" style={{ marginBottom: 12 }}>
         <button className="accountButton" type="submit">Resume alert emails</button>
