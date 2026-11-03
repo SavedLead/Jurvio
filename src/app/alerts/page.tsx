@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db/client";
 import { loadAccount } from "@/modules/accounts/application/account";
 import { listEntityFollows } from "@/modules/accounts/application/entity-follows";
-import { FREQUENCY_LABEL, KIND_EXPLAINER, KIND_LABEL, TIMING_NOTE } from "@/modules/accounts/domain/entity-follow";
+import { FREQUENCY_LABEL, KIND_EXPLAINER, matchesSinceLabel, KIND_LABEL, TIMING_NOTE } from "@/modules/accounts/domain/entity-follow";
 import { formatLimit, nextPlanUp, PLANS } from "@/modules/accounts/domain/plans";
 import { TOPICS } from "@/modules/accounts/domain/topics";
 import { currentUser } from "@/modules/accounts/http/session";
@@ -99,7 +99,7 @@ export default async function MyAlertsPage({ searchParams }: { searchParams: Pro
               </div>
             </div>
             <p className="alertsMeta">
-              {KIND_EXPLAINER[follow.kind]} {follow.matches7d.toLocaleString("en-US")} {follow.matches7d === 1 ? "match" : "matches"} in the last 7 days
+              {KIND_EXPLAINER[follow.kind]} {matchesSinceLabel(follow.matches7d, follow.createdAt)}
               {follow.queued ? ` · ${follow.queued.toLocaleString("en-US")} waiting for the next email` : ""}
               {follow.lastSentAt ? ` · last emailed ${follow.lastSentAt.slice(0, 10)}` : ""}
             </p>
