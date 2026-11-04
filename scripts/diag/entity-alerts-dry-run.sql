@@ -87,23 +87,49 @@ WITH match_follow AS MATERIALIZED (
           OR (f.target_key = 'government-records' AND (c.nature_of_suit_code IS NOT NULL AND CASE WHEN substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)') IS NOT NULL THEN ((substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 895 AND 895 OR (substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 899 AND 899) ELSE c.nature_of_suit_code ~* 'freedom of information|administrative procedure' END))
           OR (f.target_key = 'false-claims-fraud' AND (c.nature_of_suit_code IS NOT NULL AND CASE WHEN substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)') IS NOT NULL THEN ((substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 375 AND 376 OR (substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 470 AND 470) ELSE c.nature_of_suit_code ~* 'false claims|qui tam|racketeer' END))
           OR (f.target_key = 'constitutional' AND (c.nature_of_suit_code IS NOT NULL AND CASE WHEN substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)') IS NOT NULL THEN ((substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 950 AND 950) ELSE c.nature_of_suit_code ~* 'constitutionality' END)))
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN scotus_application a ON a.case_id = ev.case_id
+      WHERE f.kind = 'emergency' AND ev.event_kind IN ('docket_entry', 'new_case')
+        AND (a.kind <> 'extension' AND (
+        f.target_key = 'all'
+        OR (f.target_key = 'federal' AND a.applicant_kind = 'federal')
+        OR (f.target_key = 'state' AND a.applicant_kind = 'state')
+        OR (f.target_key = 'capital' AND (a.capital OR a.kind = 'stay_of_execution'))
+        OR (f.target_key = 'stays' AND a.kind IN ('stay', 'injunction', 'vacate_stay') AND NOT a.capital)
+        OR (f.target_key = 'justice:john-glover-roberts-jr' AND a.submitted_justice_slug = 'john-glover-roberts-jr')
+        OR (f.target_key = 'justice:ketanji-brown-jackson' AND a.submitted_justice_slug = 'ketanji-brown-jackson')
+        OR (f.target_key = 'justice:sonia-sotomayor' AND a.submitted_justice_slug = 'sonia-sotomayor')
+        OR (f.target_key = 'justice:samuel-a-alito-jr' AND a.submitted_justice_slug = 'samuel-a-alito-jr')
+        OR (f.target_key = 'justice:brett-m-kavanaugh' AND a.submitted_justice_slug = 'brett-m-kavanaugh')
+        OR (f.target_key = 'justice:amy-coney-barrett' AND a.submitted_justice_slug = 'amy-coney-barrett')
+        OR (f.target_key = 'justice:elena-kagan' AND a.submitted_justice_slug = 'elena-kagan')
+        OR (f.target_key = 'justice:neil-m-gorsuch' AND a.submitted_justice_slug = 'neil-m-gorsuch')
+        OR (f.target_key = 'justice:clarence-thomas' AND a.submitted_justice_slug = 'clarence-thomas')
+      ))
     ),
     kept AS (
       SELECT DISTINCT ON (cand.follow_id, cand.item_key)
         cand.follow_id, cand.kind, cand.item_key, cand.case_id, cand.event_kind, cand.occurred_on, cand.event_at,
-        CASE cand.event_kind
+        CASE WHEN cand.kind = 'emergency' THEN CASE cand.event_kind
+            WHEN 'docket_entry' THEN left(coalesce((CASE sae.kind WHEN 'submitted' THEN 'Application filed' WHEN 'resubmitted' THEN 'Sent to another justice' WHEN 'referred' THEN 'Referred to the full Court' WHEN 'response_requested' THEN 'Response requested' WHEN 'administrative_stay' THEN 'Administrative stay' WHEN 'response_filed' THEN 'Response filed' WHEN 'reply_filed' THEN 'Reply filed' WHEN 'amicus_filed' THEN 'Amicus brief filed' WHEN 'granted' THEN 'Granted' WHEN 'granted_in_part' THEN 'Granted in part' WHEN 'denied' THEN 'Denied' WHEN 'withdrawn' THEN 'Withdrawn' WHEN 'moot' THEN 'Ended as moot' WHEN 'converted' THEN 'Turned into a full case' WHEN 'letter' THEN 'Letter filed' WHEN 'other' THEN 'Other docket activity' END) || ': ', '') || regexp_replace(e.description, '\s+', ' ', 'g'), 300)
+            ELSE 'New emergency application' END
+        ELSE CASE cand.event_kind
           WHEN 'new_case' THEN 'New case filed'
           WHEN 'decision' THEN left('Opinion: ' || regexp_replace(d.title, '\s+', ' ', 'g'), 300)
           ELSE CASE WHEN lower(court.provider_court_id) = 'scotus'
             THEN left(regexp_replace(e.description, '\s+', ' ', 'g'), 300)
             ELSE 'New docket entry' END
-        END AS summary
+        END END AS summary
       FROM match_candidate cand
       JOIN legal_case c ON c.id = cand.case_id
       JOIN court ON court.id = c.court_id
       LEFT JOIN docket_entry e ON e.id = cand.entry_id
       LEFT JOIN document d ON d.id = cand.document_id
-      WHERE (
+      LEFT JOIN scotus_application_event sae ON sae.source_record_id = e.provider_entry_id
+      WHERE (CASE WHEN cand.kind = 'emergency' THEN ((
     c.publication = 'published'
     AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
         WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
@@ -113,7 +139,29 @@ WITH match_follow AS MATERIALIZED (
     AND c.docket_number !~* '-(mj|gj|sw|sealed)-'
     AND NOT EXISTS (SELECT 1 FROM direct_court_event restricted_event
       WHERE restricted_event.case_id = c.id AND restricted_event.restricted)
-  )
+  ) OR (
+    c.publication IN ('published', 'draft')
+    AND EXISTS (SELECT 1 FROM scotus_application emergency_app
+      WHERE emergency_app.case_id = c.id AND emergency_app.kind <> 'extension')
+    AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
+        WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
+    WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
+    ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1), true)
+    AND c.caption !~* '\m(sealed|under seal|grand jury|juvenile|minor child|in re search|search warrant)\M'
+    AND c.docket_number !~* '-(mj|gj|sw|sealed)-'
+    AND NOT EXISTS (SELECT 1 FROM direct_court_event restricted_event
+      WHERE restricted_event.case_id = c.id AND restricted_event.restricted)
+  )) ELSE (
+    c.publication = 'published'
+    AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
+        WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
+    WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
+    ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1), false)
+    AND c.caption !~* '\m(sealed|under seal|grand jury|juvenile|minor child|in re search|search warrant)\M'
+    AND c.docket_number !~* '-(mj|gj|sw|sealed)-'
+    AND NOT EXISTS (SELECT 1 FROM direct_court_event restricted_event
+      WHERE restricted_event.case_id = c.id AND restricted_event.restricted)
+  ) END)
         AND (cand.event_kind <> 'docket_entry' OR (
           e.id IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM publication_decision restricted_decision
@@ -215,23 +263,49 @@ WITH match_follow AS MATERIALIZED (
           OR (f.target_key = 'government-records' AND (c.nature_of_suit_code IS NOT NULL AND CASE WHEN substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)') IS NOT NULL THEN ((substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 895 AND 895 OR (substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 899 AND 899) ELSE c.nature_of_suit_code ~* 'freedom of information|administrative procedure' END))
           OR (f.target_key = 'false-claims-fraud' AND (c.nature_of_suit_code IS NOT NULL AND CASE WHEN substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)') IS NOT NULL THEN ((substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 375 AND 376 OR (substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 470 AND 470) ELSE c.nature_of_suit_code ~* 'false claims|qui tam|racketeer' END))
           OR (f.target_key = 'constitutional' AND (c.nature_of_suit_code IS NOT NULL AND CASE WHEN substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)') IS NOT NULL THEN ((substring(c.nature_of_suit_code from '^\s*[0-9]?([0-9]{3})([^0-9]|$)'))::int BETWEEN 950 AND 950) ELSE c.nature_of_suit_code ~* 'constitutionality' END)))
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN scotus_application a ON a.case_id = ev.case_id
+      WHERE f.kind = 'emergency' AND ev.event_kind IN ('docket_entry', 'new_case')
+        AND (a.kind <> 'extension' AND (
+        f.target_key = 'all'
+        OR (f.target_key = 'federal' AND a.applicant_kind = 'federal')
+        OR (f.target_key = 'state' AND a.applicant_kind = 'state')
+        OR (f.target_key = 'capital' AND (a.capital OR a.kind = 'stay_of_execution'))
+        OR (f.target_key = 'stays' AND a.kind IN ('stay', 'injunction', 'vacate_stay') AND NOT a.capital)
+        OR (f.target_key = 'justice:john-glover-roberts-jr' AND a.submitted_justice_slug = 'john-glover-roberts-jr')
+        OR (f.target_key = 'justice:ketanji-brown-jackson' AND a.submitted_justice_slug = 'ketanji-brown-jackson')
+        OR (f.target_key = 'justice:sonia-sotomayor' AND a.submitted_justice_slug = 'sonia-sotomayor')
+        OR (f.target_key = 'justice:samuel-a-alito-jr' AND a.submitted_justice_slug = 'samuel-a-alito-jr')
+        OR (f.target_key = 'justice:brett-m-kavanaugh' AND a.submitted_justice_slug = 'brett-m-kavanaugh')
+        OR (f.target_key = 'justice:amy-coney-barrett' AND a.submitted_justice_slug = 'amy-coney-barrett')
+        OR (f.target_key = 'justice:elena-kagan' AND a.submitted_justice_slug = 'elena-kagan')
+        OR (f.target_key = 'justice:neil-m-gorsuch' AND a.submitted_justice_slug = 'neil-m-gorsuch')
+        OR (f.target_key = 'justice:clarence-thomas' AND a.submitted_justice_slug = 'clarence-thomas')
+      ))
     ),
     kept AS (
       SELECT DISTINCT ON (cand.follow_id, cand.item_key)
         cand.follow_id, cand.kind, cand.item_key, cand.case_id, cand.event_kind, cand.occurred_on, cand.event_at,
-        CASE cand.event_kind
+        CASE WHEN cand.kind = 'emergency' THEN CASE cand.event_kind
+            WHEN 'docket_entry' THEN left(coalesce((CASE sae.kind WHEN 'submitted' THEN 'Application filed' WHEN 'resubmitted' THEN 'Sent to another justice' WHEN 'referred' THEN 'Referred to the full Court' WHEN 'response_requested' THEN 'Response requested' WHEN 'administrative_stay' THEN 'Administrative stay' WHEN 'response_filed' THEN 'Response filed' WHEN 'reply_filed' THEN 'Reply filed' WHEN 'amicus_filed' THEN 'Amicus brief filed' WHEN 'granted' THEN 'Granted' WHEN 'granted_in_part' THEN 'Granted in part' WHEN 'denied' THEN 'Denied' WHEN 'withdrawn' THEN 'Withdrawn' WHEN 'moot' THEN 'Ended as moot' WHEN 'converted' THEN 'Turned into a full case' WHEN 'letter' THEN 'Letter filed' WHEN 'other' THEN 'Other docket activity' END) || ': ', '') || regexp_replace(e.description, '\s+', ' ', 'g'), 300)
+            ELSE 'New emergency application' END
+        ELSE CASE cand.event_kind
           WHEN 'new_case' THEN 'New case filed'
           WHEN 'decision' THEN left('Opinion: ' || regexp_replace(d.title, '\s+', ' ', 'g'), 300)
           ELSE CASE WHEN lower(court.provider_court_id) = 'scotus'
             THEN left(regexp_replace(e.description, '\s+', ' ', 'g'), 300)
             ELSE 'New docket entry' END
-        END AS summary
+        END END AS summary
       FROM match_candidate cand
       JOIN legal_case c ON c.id = cand.case_id
       JOIN court ON court.id = c.court_id
       LEFT JOIN docket_entry e ON e.id = cand.entry_id
       LEFT JOIN document d ON d.id = cand.document_id
-      WHERE (
+      LEFT JOIN scotus_application_event sae ON sae.source_record_id = e.provider_entry_id
+      WHERE (CASE WHEN cand.kind = 'emergency' THEN ((
     c.publication = 'published'
     AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
         WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
@@ -241,7 +315,29 @@ WITH match_follow AS MATERIALIZED (
     AND c.docket_number !~* '-(mj|gj|sw|sealed)-'
     AND NOT EXISTS (SELECT 1 FROM direct_court_event restricted_event
       WHERE restricted_event.case_id = c.id AND restricted_event.restricted)
-  )
+  ) OR (
+    c.publication IN ('published', 'draft')
+    AND EXISTS (SELECT 1 FROM scotus_application emergency_app
+      WHERE emergency_app.case_id = c.id AND emergency_app.kind <> 'extension')
+    AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
+        WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
+    WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
+    ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1), true)
+    AND c.caption !~* '\m(sealed|under seal|grand jury|juvenile|minor child|in re search|search warrant)\M'
+    AND c.docket_number !~* '-(mj|gj|sw|sealed)-'
+    AND NOT EXISTS (SELECT 1 FROM direct_court_event restricted_event
+      WHERE restricted_event.case_id = c.id AND restricted_event.restricted)
+  )) ELSE (
+    c.publication = 'published'
+    AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
+        WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
+    WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
+    ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1), false)
+    AND c.caption !~* '\m(sealed|under seal|grand jury|juvenile|minor child|in re search|search warrant)\M'
+    AND c.docket_number !~* '-(mj|gj|sw|sealed)-'
+    AND NOT EXISTS (SELECT 1 FROM direct_court_event restricted_event
+      WHERE restricted_event.case_id = c.id AND restricted_event.restricted)
+  ) END)
         AND (cand.event_kind <> 'docket_entry' OR (
           e.id IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM publication_decision restricted_decision

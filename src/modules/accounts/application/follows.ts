@@ -28,6 +28,32 @@ export function followEligibleSql(alias = "c"): string {
   )`;
 }
 
+/**
+ * A Supreme Court emergency application (not a routine extension request) can
+ * be followed and alerted on while its Jurvio case is still a draft: its
+ * docket lines come from the Court's public docket and already passed the
+ * strict sealed/restricted filter. Every other check of followEligibleSql
+ * still applies, and an explicit "not displayable" decision still hides it.
+ */
+export function emergencyApplicationEligibleSql(alias = "c"): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("invalid alias");
+  return `(
+    ${alias}.publication IN ('published', 'draft')
+    AND EXISTS (SELECT 1 FROM scotus_application emergency_app
+      WHERE emergency_app.case_id = ${alias}.id AND emergency_app.kind <> 'extension')
+    AND ${latestPublicationColumnSql("displayable", "legal_case", `${alias}.id`, true)}
+    AND ${alias}.caption !~* '\\m(sealed|under seal|grand jury|juvenile|minor child|in re search|search warrant)\\M'
+    AND ${alias}.docket_number !~* '-(mj|gj|sw|sealed)-'
+    AND NOT EXISTS (SELECT 1 FROM direct_court_event restricted_event
+      WHERE restricted_event.case_id = ${alias}.id AND restricted_event.restricted)
+  )`;
+}
+
+/** Cases a user may follow and get alerts for: published cases, plus held emergency applications. */
+export function alertEligibleSql(alias = "c"): string {
+  return `(${followEligibleSql(alias)} OR ${emergencyApplicationEligibleSql(alias)})`;
+}
+
 export async function caseFollowEligible(sql: Sql, casePublicId: string): Promise<boolean> {
   const [row] = await sql<{ ok: boolean }[]>`
     SELECT ${sql.unsafe(followEligibleSql("c"))} AS ok FROM legal_case c WHERE c.public_id = ${casePublicId}`;
@@ -92,7 +118,7 @@ export async function followState(sql: Sql, userId: string, casePublicId: string
   const plan = await userPlan(sql, userId);
   const [row] = await sql<{ eligible: boolean | null; activity: boolean | null; citations: boolean | null; followCount: number }[]>`
     SELECT
-      (SELECT ${sql.unsafe(followEligibleSql("c"))} FROM legal_case c WHERE c.public_id = ${casePublicId}) AS eligible,
+      (SELECT ${sql.unsafe(alertEligibleSql("c"))} FROM legal_case c WHERE c.public_id = ${casePublicId}) AS eligible,
       mine.activity, mine.citations,
       (SELECT count(*)::int FROM case_follow WHERE user_id = ${userId}) AS "followCount"
     FROM (SELECT 1) one
@@ -131,7 +157,7 @@ export async function followCase(
   const outcome = await sql.begin(async (tx) => {
     await tx`SELECT 1 FROM app_user WHERE id = ${userId} FOR UPDATE`;
     const [legalCase] = await tx<{ id: string; ok: boolean }[]>`
-      SELECT c.id, ${tx.unsafe(followEligibleSql("c"))} AS ok FROM legal_case c WHERE c.public_id = ${casePublicId}`;
+      SELECT c.id, ${tx.unsafe(alertEligibleSql("c"))} AS ok FROM legal_case c WHERE c.public_id = ${casePublicId}`;
     if (!legalCase?.ok) return "not_eligible" as const;
     const [existing] = await tx<{ activity: boolean; citations: boolean }[]>`
       SELECT activity, citations FROM case_follow WHERE user_id = ${userId} AND case_id = ${legalCase.id}`;

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { db } from "@/db/client";
 import { loadAccount } from "@/modules/accounts/application/account";
-import { listEntityFollows } from "@/modules/accounts/application/entity-follows";
+import { asapAllowedFor, listEntityFollows } from "@/modules/accounts/application/entity-follows";
 import { FREQUENCY_LABEL, KIND_EXPLAINER, matchesSinceLabel, KIND_LABEL, TIMING_NOTE } from "@/modules/accounts/domain/entity-follow";
 import { formatLimit, nextPlanUp, PLANS } from "@/modules/accounts/domain/plans";
 import { TOPICS } from "@/modules/accounts/domain/topics";
@@ -24,6 +24,7 @@ const EVENT_LABEL: Record<string, string> = { new_case: "New case", docket_entry
 function targetHref(kind: string, targetKey: string): Route | null {
   if (kind === "judge") return `/judges/${targetKey}` as Route;
   if (kind === "topic") return `/topics/${targetKey}` as Route;
+  if (kind === "emergency") return "/supreme-court/emergency" as Route;
   return null;
 }
 
@@ -87,7 +88,7 @@ export default async function MyAlertsPage({ searchParams }: { searchParams: Pro
                   <label htmlFor={`freq-${follow.id}`} className="srOnly">Email frequency for {follow.label}</label>
                   <select id={`freq-${follow.id}`} name="frequency" defaultValue={follow.frequency}>
                     <option value="daily">{FREQUENCY_LABEL.daily}</option>
-                    {plan.entityAsap ? <option value="asap">{FREQUENCY_LABEL.asap}</option> : null}
+                    {asapAllowedFor(account.plan, follow.kind) ? <option value="asap">{FREQUENCY_LABEL.asap}</option> : null}
                   </select>
                   <button type="submit" className="accountButton secondary">Save</button>
                 </form>
@@ -107,7 +108,7 @@ export default async function MyAlertsPage({ searchParams }: { searchParams: Pro
               {follow.recent.map((item, index) => <li key={`${index}-${item.casePublicId}`}>
                 <span className="alertsEvent">{EVENT_LABEL[item.eventKind] ?? "Update"}</span>
                 <span>
-                  <Link href={`/case/${item.casePublicId}` as Route}>{cleanCaseCaption(item.caption)}</Link>
+                  <Link href={(follow.kind === "emergency" ? `/supreme-court/emergency/${item.docketNumber}` : `/case/${item.casePublicId}`) as Route}>{cleanCaseCaption(item.caption)}</Link>
                   <small>{[item.summary, item.courtName, item.docketNumber, item.occurredOn ? `filed ${item.occurredOn}` : null].filter(Boolean).join(" · ")}</small>
                 </span>
               </li>)}
@@ -125,7 +126,7 @@ export default async function MyAlertsPage({ searchParams }: { searchParams: Pro
         : <ul className="accountFollowList">
           {account.follows.map((follow) => <li key={follow.casePublicId}>
             <span>
-              <Link href={`/case/${follow.casePublicId}` as Route}>{cleanCaseCaption(follow.caption)}</Link>
+              <Link href={(follow.emergencyDocket ? `/supreme-court/emergency/${follow.emergencyDocket}` : `/case/${follow.casePublicId}`) as Route}>{cleanCaseCaption(follow.caption)}</Link>
               <small>{[follow.courtName, follow.docketNumber, [follow.activity ? "docket activity" : null, follow.citations ? "citations" : null].filter(Boolean).join(" + ")].filter(Boolean).join(" · ")}</small>
             </span>
             <UnfollowButton caseId={follow.casePublicId} />

@@ -53,7 +53,38 @@ function officialLink(href: string, base: string) {
   return url.toString();
 }
 
+/**
+ * Emergency-application event types (docket lines on "A" dockets), checked
+ * before the general types. Uses the Court's fixed phrasing; the full
+ * application classifier with plain English lives in
+ * src/modules/scotus/domain/emergency-application.ts.
+ */
+function classifyApplicationLine(description: string): string | null {
+  const text = description.replace(/\s+/g, " ").trim();
+  if (/\badministrative(?:ly)?\s+stay(?:ed)?\b/i.test(text)
+    || /^Order\s+entered\s+by\s+(?:The\s+Chief\s+Justice|Justice\s+[A-Z][A-Za-z'’-]+)\b[^.]*\bstayed\s+pending\s+further\s+order/i.test(text)) return "administrative_stay";
+  if (/^Application\b[^.]*\b(?:denied|dismissed)\s+as\s+moot\b/i.test(text)) return "application_moot";
+  if (/^Application\b[^.]*\bwithdrawn\b/i.test(text)) return "application_withdrawn";
+  if (/^Application\b[^.]*\b(?:is\s+)?granted\b/i.test(text)) return "application_granted";
+  if (/^Application\b[^.]*\b(?:is\s+)?denied\b/i.test(text)) return "application_denied";
+  if (/^Application\b[^.]*\breferred\s+to\s+the\s+Court\b/i.test(text)) return "application_referred";
+  if (/^Response\s+to\s+application\b[^.]*\brequested\s+by\b/i.test(text)) return "response_requested";
+  if (/^Response\s+to\s+application\b[^.]*\bfiled\b/i.test(text)) return "application_response_filed";
+  if (/^Reply\b[^.]*\bin\s+support\s+of\s+(?:the\s+)?application\b/i.test(text)) return "application_reply_filed";
+  if (/^Application\b[^.]*\b(?:re-?submitted|renewed)\b/i.test(text)) return "application_resubmitted";
+  if (/^Application\b[^.]*\bsubmitted\s+to\b/i.test(text)) return "application_submitted";
+  return null;
+}
+
+/** Event types that make an entry "high" importance (case page and alerts). */
+export const HIGH_IMPORTANCE_EVENTS: ReadonlySet<string> = new Set([
+  "petition_filed", "certiorari_granted", "oral_argument", "decision", "mandate_issued",
+  "application_granted", "application_denied", "administrative_stay", "application_referred", "response_requested",
+]);
+
 export function classifyEvent(description: string) {
+  const application = classifyApplicationLine(description);
+  if (application) return application;
   const value = description.toLowerCase();
   if (value.includes("petition for a writ of certiorari filed")) return "petition_filed";
   if (value.includes("judgment and mandate issued")) return "mandate_issued";

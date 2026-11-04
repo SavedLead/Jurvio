@@ -3,10 +3,11 @@ import { latestPublicationColumnSql } from "@/modules/publication/application/cu
 import { nextPlanUp, planLimits, type PlanId } from "../domain/plans";
 import { topicBySlug } from "../domain/topics";
 import { cleanPartyName, isFollowablePartyName, partyKey } from "../domain/party-names";
-import { followEligibleSql } from "./follows";
+import { alertEligibleSql, followEligibleSql } from "./follows";
 import type { EntityFrequency, EntityKind } from "../domain/entity-follow";
 import { isPublicId } from "@/lib/ids/public-id";
 import { userPlan } from "./account";
+import { emergencyFeedBySlug } from "@/modules/scotus/domain/emergency-application";
 
 // Judge, topic and party follows. A follow stores a stable target key:
 // judge public id, topic slug, or the party's normalized name (see
@@ -31,6 +32,10 @@ const displayableJudge = `
 export async function resolveEntityTarget(sql: Sql, kind: EntityKind, raw: unknown): Promise<EntityTarget | null> {
   if (typeof raw !== "string") return null;
   const value = raw.trim();
+  if (kind === "emergency") {
+    const feed = emergencyFeedBySlug(value);
+    return feed ? { kind, targetKey: feed.slug, label: feed.label } : null;
+  }
   if (kind === "topic") {
     const topic = topicBySlug(value);
     return topic ? { kind, targetKey: topic.slug, label: topic.label } : null;
@@ -85,6 +90,16 @@ export interface EntityFollowState {
   upgrade: { plan: PlanId; name: string; monthlyPriceUsd: number; entityFollowLimit: number } | null;
 }
 
+/**
+ * "As found" alerts per kind and plan. Emergency-docket feeds on Free are a
+ * weekday daily email only (Plus is hourly, Pro every 10 minutes, applied at
+ * send time from the plan's alert cadence).
+ */
+export function asapAllowedFor(plan: PlanId, kind: EntityKind): boolean {
+  if (kind === "emergency" && plan === "free") return false;
+  return planLimits(plan).entityAsap;
+}
+
 function upgradeFor(plan: PlanId) {
   const next = nextPlanUp(plan, "entityFollowLimit");
   return next ? { plan: next.id, name: next.name, monthlyPriceUsd: next.monthlyPriceUsd, entityFollowLimit: next.entityFollowLimit } : null;
@@ -103,7 +118,7 @@ export async function entityFollowState(sql: Sql, userId: string, target: Pick<E
     plan,
     entityCount: row?.entityCount ?? 0,
     entityLimit: limits.entityFollowLimit,
-    asapAllowed: limits.entityAsap,
+    asapAllowed: asapAllowedFor(plan, target.kind),
     upgrade: upgradeFor(plan),
   };
 }
@@ -119,7 +134,7 @@ export async function followEntity(sql: Sql, userId: string, target: EntityTarge
     await db`SELECT 1 FROM app_user WHERE id = ${userId} FOR UPDATE`;
     const plan = await userPlan(db, userId);
     const limits = planLimits(plan);
-    const wanted: EntityFrequency = frequency === "asap" && !limits.entityAsap ? "daily" : frequency;
+    const wanted: EntityFrequency = frequency === "asap" && !asapAllowedFor(plan, target.kind) ? "daily" : frequency;
     const [existing] = await db<{ frequency: string }[]>`
       SELECT frequency FROM entity_follow WHERE user_id = ${userId} AND kind = ${target.kind} AND target_key = ${target.targetKey}`;
     if (existing) {
@@ -152,8 +167,10 @@ export async function updateEntityFollowById(sql: Sql, userId: string, followId:
     return rows.length > 0;
   }
   if (!change.frequency) return false;
-  const limits = planLimits(await userPlan(sql, userId));
-  const frequency = change.frequency === "asap" && !limits.entityAsap ? "daily" : change.frequency;
+  const plan = await userPlan(sql, userId);
+  const [follow] = await sql<{ kind: EntityKind }[]>`SELECT kind FROM entity_follow WHERE id = ${followId} AND user_id = ${userId}`;
+  if (!follow) return false;
+  const frequency = change.frequency === "asap" && !asapAllowedFor(plan, follow.kind) ? "daily" : change.frequency;
   const rows = await sql`UPDATE entity_follow SET frequency = ${frequency}, updated_at = now() WHERE id = ${followId} AND user_id = ${userId} RETURNING id`;
   return rows.length > 0;
 }
@@ -192,8 +209,8 @@ export async function listEntityFollows(sql: Sql, userId: string): Promise<Entit
       JOIN legal_case c ON c.id = i.case_id
       LEFT JOIN court ON court.id = c.court_id
       WHERE f.user_id = ${userId}
-        AND c.publication = 'published'
-        AND ${sql.unsafe(latestPublicationColumnSql("displayable", "legal_case", "c.id"))}
+        AND (CASE WHEN f.kind = 'emergency' THEN ${sql.unsafe(alertEligibleSql("c"))}
+          ELSE c.publication = 'published' AND ${sql.unsafe(latestPublicationColumnSql("displayable", "legal_case", "c.id"))} END)
     ) ranked WHERE ranked.rn <= 5`;
   return follows.map((follow) => ({
     ...follow,

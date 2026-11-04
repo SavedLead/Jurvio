@@ -3,7 +3,7 @@ import { latestPublicationColumnSql } from "@/modules/publication/application/cu
 import { CADENCE_INTERVAL_MS, effectivePlan, planLimits, type AlertCadence } from "../domain/plans";
 import { escapeHtml, type EmailProvider } from "../infrastructure/email";
 import { citationCaseVisibleSql, citationDocumentVisibleSql } from "@/modules/citations/application/citation-edges";
-import { followEligibleSql } from "./follows";
+import { alertEligibleSql, followEligibleSql } from "./follows";
 
 // Docket-entry and citation alert digests for followed cases. Runs every 10 minutes from
 // the production scheduler; each user is emailed at most once per their plan
@@ -56,6 +56,8 @@ export interface DigestEntry {
   entryNumber: string | null;
   filedOn: string | null;
   description: string;
+  /** Supreme Court emergency application docket number, when the case is one (links to its emergency page). */
+  emergencyDocket?: string | null;
 }
 
 export interface CitationDigestEntry {
@@ -131,7 +133,8 @@ export function buildDigestEmail(input: {
     : `${docketSubject} · ${citeTotal} new citing ${citeTotal === 1 ? "opinion" : "opinions"}`;
   const citedUrl = (id: string) => new URL(`/case/${id}#cited-by`, input.siteUrl).toString();
   const citingUrl = (id: string) => new URL(`/case/${id}`, input.siteUrl).toString();
-  const caseUrl = (id: string) => new URL(`/case/${id}/docket`, input.siteUrl).toString();
+  const emergencyByCase = new Map(input.entries.filter((entry) => entry.emergencyDocket).map((entry) => [entry.casePublicId, entry.emergencyDocket!]));
+  const caseUrl = (id: string) => new URL(emergencyByCase.has(id) ? `/supreme-court/emergency/${emergencyByCase.get(id)}` : `/case/${id}/docket`, input.siteUrl).toString();
   const accountUrl = new URL("/account", input.siteUrl).toString();
   const unsubscribe = unsubscribeUrl(input.siteUrl, input.unsubscribeToken);
   const cadenceLine = { daily: "daily digest", hourly: "hourly alerts", instant: "10-minute alerts" }[input.cadence];
@@ -240,7 +243,8 @@ export async function runAlertDigests(sql: Sql, deps: AlertDeps): Promise<AlertR
 
     const entries = await sql<DigestEntry[]>`
       SELECT c.public_id AS "casePublicId", c.caption, c.docket_number AS "docketNumber", court.name AS "courtName",
-        e.entry_number AS "entryNumber", e.filed_on::text AS "filedOn", e.description
+        e.entry_number AS "entryNumber", e.filed_on::text AS "filedOn", e.description,
+        (SELECT a.docket_number FROM scotus_application a WHERE a.case_id = c.id LIMIT 1) AS "emergencyDocket"
       FROM case_follow f
       JOIN legal_case c ON c.id = f.case_id
       LEFT JOIN court ON court.id = c.court_id
@@ -248,7 +252,7 @@ export async function runAlertDigests(sql: Sql, deps: AlertDeps): Promise<AlertR
       WHERE f.user_id = ${user.id} AND f.activity
         AND e.created_at > f.last_alerted_entry_created_at AND e.created_at <= ${cutoff}
         AND (e.filed_on IS NULL OR e.filed_on >= (f.created_at - make_interval(days => ${BACKFILL_GRACE_DAYS}))::date)
-        AND ${sql.unsafe(followEligibleSql("c"))}
+        AND ${sql.unsafe(alertEligibleSql("c"))}
         AND ${sql.unsafe(latestPublicationColumnSql("displayable", "docket_entry", "e.id"))}
       ORDER BY f.created_at, c.id, e.filed_on DESC NULLS LAST, e.created_at DESC
       LIMIT 2000`;

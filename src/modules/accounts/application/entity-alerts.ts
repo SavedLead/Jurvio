@@ -4,8 +4,10 @@ import { escapeHtml, type EmailProvider } from "../infrastructure/email";
 import { partyCaptionMatchSql } from "../domain/party-names";
 import { TOPICS, topicMatchSql } from "../domain/topics";
 import { KIND_LABEL, TIMING_NOTE, type EntityFrequency, type EntityKind } from "../domain/entity-follow";
-import { followEligibleSql } from "./follows";
+import { alertEligibleSql, followEligibleSql } from "./follows";
 import { oneClickUnsubscribeUrl, unsubscribeUrl } from "./alerts";
+import { effectivePlan, planLimits, CADENCE_INTERVAL_MS, type AlertCadence } from "../domain/plans";
+import { EMERGENCY_TIMING_NOTE, EVENT_LABEL as APPLICATION_EVENT_LABEL, easternWeekday, emergencyFeedConditionSql } from "@/modules/scotus/domain/emergency-application";
 
 // Judge / topic / party alerts. Two steps, both run by the 10-minute
 // "account-alerts" scheduler job:
@@ -59,6 +61,12 @@ export interface EntityMatchSummary {
 }
 
 const SOURCES = ["docket_entry", "document", "legal_case", "judge_case_assignment"] as const;
+
+/** SQL CASE turning an application event kind into its short label (fixed catalog, safe to inline). */
+function applicationLabelSql(column: string): string {
+  if (!/^[a-z_][a-z0-9_.]*$/.test(column)) throw new Error("invalid column");
+  return `(CASE ${column} ${Object.entries(APPLICATION_EVENT_LABEL).map(([key, label]) => `WHEN '${key}' THEN '${label.replaceAll("'", "''")}'`).join(" ")} END)`;
+}
 
 function restrictedEntrySql(entryAlias: string): string {
   return `EXISTS (SELECT 1 FROM publication_decision restricted_decision
@@ -158,23 +166,34 @@ export function entityMatchCtes(options: EntityMatchSqlOptions): string {
       JOIN legal_case c ON c.id = ev.case_id
       WHERE f.kind = 'topic'
         AND (${topicCondition})
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN scotus_application a ON a.case_id = ev.case_id
+      WHERE f.kind = 'emergency' AND ev.event_kind IN ('docket_entry', 'new_case')
+        AND ${emergencyFeedConditionSql("a")}
     ),
     kept AS (
       SELECT DISTINCT ON (cand.follow_id, cand.item_key)
         cand.follow_id, cand.kind, cand.item_key, cand.case_id, cand.event_kind, cand.occurred_on, cand.event_at,
-        CASE cand.event_kind
+        CASE WHEN cand.kind = 'emergency' THEN CASE cand.event_kind
+            WHEN 'docket_entry' THEN left(coalesce(${applicationLabelSql("sae.kind")} || ': ', '') || regexp_replace(e.description, '\\s+', ' ', 'g'), 300)
+            ELSE 'New emergency application' END
+        ELSE CASE cand.event_kind
           WHEN 'new_case' THEN 'New case filed'
           WHEN 'decision' THEN left('Opinion: ' || regexp_replace(d.title, '\\s+', ' ', 'g'), 300)
           ELSE CASE WHEN lower(court.provider_court_id) = 'scotus'
             THEN left(regexp_replace(e.description, '\\s+', ' ', 'g'), 300)
             ELSE 'New docket entry' END
-        END AS summary
+        END END AS summary
       FROM match_candidate cand
       JOIN legal_case c ON c.id = cand.case_id
       JOIN court ON court.id = c.court_id
       LEFT JOIN docket_entry e ON e.id = cand.entry_id
       LEFT JOIN document d ON d.id = cand.document_id
-      WHERE ${followEligibleSql("c")}
+      LEFT JOIN scotus_application_event sae ON sae.source_record_id = e.provider_entry_id
+      WHERE (CASE WHEN cand.kind = 'emergency' THEN ${alertEligibleSql("c")} ELSE ${followEligibleSql("c")} END)
         AND (cand.event_kind <> 'docket_entry' OR (
           e.id IS NOT NULL
           AND NOT ${restrictedEntrySql("e")}
@@ -200,7 +219,7 @@ export async function matchEntityAlerts(sql: Sql, options: {
   dryRun?: boolean;
   followIds?: string[];
 } = {}): Promise<EntityMatchSummary> {
-  const byKind: Record<EntityKind, number> = { judge: 0, topic: 0, party: 0 };
+  const byKind: Record<EntityKind, number> = { judge: 0, topic: 0, party: 0, emergency: 0 };
   return sql.begin(async (tx) => {
     const db = tx as unknown as Sql;
     if (options.followIds && !options.followIds.every((id) => /^[0-9a-f-]{36}$/.test(id))) throw new Error("invalid follow id");
@@ -317,8 +336,12 @@ export function buildEntityDigestEmail(input: {
   const first = input.items[0]!;
   const subject = groups.size === 1
     ? `${total} new ${total === 1 ? "match" : "matches"} for ${KIND_LABEL[first.kind].toLowerCase()} ${clean(first.label, 60)}`
-    : `${total} new matches for ${groups.size} judges, topics and parties you follow`;
+    : `${total} new matches for ${groups.size} alerts you follow`;
   const caseUrl = (id: string) => new URL(`/case/${id}`, input.siteUrl).toString();
+  const itemUrl = (item: EntityDigestItem) => item.kind === "emergency" && /^\d{2}A\d{1,4}$/.test(item.docketNumber)
+    ? new URL(`/supreme-court/emergency/${item.docketNumber}`, input.siteUrl).toString() : caseUrl(item.casePublicId);
+  const hasEmergency = input.items.some((item) => item.kind === "emergency");
+  const timing = hasEmergency ? `${EMERGENCY_TIMING_NOTE} ${TIMING_NOTE}` : TIMING_NOTE;
   const alertsUrl = new URL("/alerts", input.siteUrl).toString();
   const unsubscribe = unsubscribeUrl(input.siteUrl, input.unsubscribeToken);
   const how = input.frequency === "daily" ? "daily digest" : input.frequency === "asap" ? "alerts as matches are found" : "alerts";
@@ -331,8 +354,8 @@ export function buildEntityDigestEmail(input: {
     html.push(`<h2 style="font-size:16px;margin:20px 0 6px">${escapeHtml(head)}</h2><ul style="padding-left:18px;margin:0">`);
     for (const item of items) {
       const meta = [item.courtName, item.docketNumber, item.occurredOn ? `filed ${item.occurredOn}` : null].filter(Boolean).join(" · ");
-      text.push(`- ${clean(item.caption, 140)}`, `  ${EVENT_LABEL[item.eventKind]}: ${clean(item.summary, 300)}`, `  ${meta}`, `  ${caseUrl(item.casePublicId)}`, "");
-      html.push(`<li style="margin:0 0 10px"><a href="${escapeHtml(caseUrl(item.casePublicId))}">${escapeHtml(clean(item.caption, 140))}</a><br>`
+      text.push(`- ${clean(item.caption, 140)}`, `  ${EVENT_LABEL[item.eventKind]}: ${clean(item.summary, 300)}`, `  ${meta}`, `  ${itemUrl(item)}`, "");
+      html.push(`<li style="margin:0 0 10px"><a href="${escapeHtml(itemUrl(item))}">${escapeHtml(clean(item.caption, 140))}</a><br>`
         + `<strong>${escapeHtml(EVENT_LABEL[item.eventKind])}:</strong> ${escapeHtml(clean(item.summary, 300))}<br>`
         + `<span style="color:#5b6678">${escapeHtml(meta)}</span></li>`);
     }
@@ -344,7 +367,7 @@ export function buildEntityDigestEmail(input: {
     html.push("</ul>");
   }
   const footerText = [
-    `You get Jurvio ${how} for judges, topics and parties you follow. ${TIMING_NOTE}`,
+    `You get Jurvio ${how} for what you follow. ${timing}`,
     "Only public court records are included; sealed or restricted filings are never sent. Jurvio is not legal advice.",
     `Manage alerts: ${alertsUrl}`,
     `Unsubscribe from all alerts: ${unsubscribe}`,
@@ -357,7 +380,7 @@ export function buildEntityDigestEmail(input: {
 <h1 style="font-size:18px">${escapeHtml(subject)}</h1>
 ${html.join("\n")}
 <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0">
-<p style="font-size:12px;color:#5b6678">You get Jurvio ${escapeHtml(how)} for judges, topics and parties you follow. ${escapeHtml(TIMING_NOTE)}<br>
+<p style="font-size:12px;color:#5b6678">You get Jurvio ${escapeHtml(how)} for what you follow. ${escapeHtml(timing)}<br>
 Only public court records are included; sealed or restricted filings are never sent. Jurvio is not legal advice.<br>
 <a href="${escapeHtml(alertsUrl)}">Manage alerts</a> · <a href="${escapeHtml(unsubscribe)}">Unsubscribe from alerts</a><br>
 ${escapeHtml(input.postalAddress)}</p>
@@ -366,9 +389,20 @@ ${escapeHtml(input.postalAddress)}</p>
 }
 
 /** True when a follow with this frequency and last send is due now. */
-export function entityFollowDue(frequency: EntityFrequency, lastSentAt: Date | null, createdAt: Date, now: Date): boolean {
+export function entityFollowDue(frequency: EntityFrequency, lastSentAt: Date | null, createdAt: Date, now: Date,
+  options: { kind?: EntityKind; cadence?: AlertCadence } = {}): boolean {
+  const dailyDue = () => now.getTime() - (lastSentAt ?? createdAt).getTime() >= DAY_MS - CADENCE_SLACK_MS;
+  if (options.kind === "emergency") {
+    // Emergency-docket feeds: the daily email goes out on weekdays only ("Emergency docket today");
+    // "as found" follows the plan's cadence: Pro/Team every 10-minute tick, Plus at most hourly.
+    const weekday = easternWeekday(now) >= 1 && easternWeekday(now) <= 5;
+    const cadence = options.cadence ?? "daily";
+    if (frequency === "daily" || cadence === "daily") return weekday && dailyDue();
+    if (cadence === "hourly") return !lastSentAt || now.getTime() - lastSentAt.getTime() >= CADENCE_INTERVAL_MS.hourly - CADENCE_SLACK_MS;
+    return true;
+  }
   if (frequency === "asap") return true;
-  return now.getTime() - (lastSentAt ?? createdAt).getTime() >= DAY_MS - CADENCE_SLACK_MS;
+  return dailyDue();
 }
 
 export async function sendEntityAlerts(sql: Sql, deps: {
@@ -385,18 +419,22 @@ export async function sendEntityAlerts(sql: Sql, deps: {
   const now = deps.now ?? new Date();
   const summary: EntitySendSummary = { status: "done", ...empty };
 
-  type DueFollow = { id: string; userId: string; email: string; token: string; frequency: EntityFrequency; lastSentAt: Date | null; createdAt: Date };
+  type DueFollow = { id: string; userId: string; email: string; token: string; kind: EntityKind; frequency: EntityFrequency;
+    lastSentAt: Date | null; createdAt: Date; plan: string | null; planStatus: string | null };
   const follows = await sql<DueFollow[]>`
-    SELECT f.id, f.user_id AS "userId", u.email, u.unsubscribe_token AS token, f.frequency,
-      f.last_sent_at AS "lastSentAt", f.created_at AS "createdAt"
+    SELECT f.id, f.user_id AS "userId", u.email, u.unsubscribe_token AS token, f.kind, f.frequency,
+      f.last_sent_at AS "lastSentAt", f.created_at AS "createdAt", s.plan::text AS plan, s.status AS "planStatus"
     FROM entity_follow f JOIN app_user u ON u.id = f.user_id
+    LEFT JOIN account_subscription s ON s.user_id = u.id
     WHERE u.alerts_unsubscribed_at IS NULL AND u.email_verified_at IS NOT NULL
       AND EXISTS (SELECT 1 FROM entity_alert_item i WHERE i.follow_id = f.id AND i.sent_at IS NULL)
     ORDER BY f.user_id, f.created_at
     LIMIT 20000`;
   const byUser = new Map<string, DueFollow[]>();
   for (const follow of follows) {
-    if (!entityFollowDue(follow.frequency, follow.lastSentAt ? new Date(follow.lastSentAt) : null, new Date(follow.createdAt), now)) continue;
+    const cadence = planLimits(effectivePlan(follow.plan ? { plan: follow.plan, status: follow.planStatus ?? "active" } : null)).alertCadence;
+    if (!entityFollowDue(follow.frequency, follow.lastSentAt ? new Date(follow.lastSentAt) : null, new Date(follow.createdAt), now,
+      { kind: follow.kind, cadence })) continue;
     byUser.set(follow.userId, [...(byUser.get(follow.userId) ?? []), follow]);
   }
   for (const [userId, due] of byUser) {
@@ -409,7 +447,7 @@ export async function sendEntityAlerts(sql: Sql, deps: {
         court.name AS "courtName", c.docket_number AS "docketNumber", i.event_kind AS "eventKind",
         i.occurred_on::text AS "occurredOn", i.summary,
         row_number() OVER (PARTITION BY i.follow_id ORDER BY i.found_at DESC, i.item_key)::int AS rn,
-        ${sql.unsafe(followEligibleSql("c"))} AS visible
+        (CASE WHEN f.kind = 'emergency' THEN ${sql.unsafe(alertEligibleSql("c"))} ELSE ${sql.unsafe(followEligibleSql("c"))} END) AS visible
       FROM entity_alert_item i
       JOIN entity_follow f ON f.id = i.follow_id
       JOIN legal_case c ON c.id = i.case_id

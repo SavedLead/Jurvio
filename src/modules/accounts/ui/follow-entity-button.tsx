@@ -96,7 +96,7 @@ export function FollowEntityButton({ kind, target, name, compact = false }: {
         aria-label={`Follow ${name}: sign in to get email alerts`}>
         {compact ? "Follow" : `Follow ${kindWord}`}
       </Link>
-      {compact ? null : <small className="entityFollowNote">Sign in to get email alerts. Free includes one judge, topic or party.</small>}
+      {compact ? null : <small className="entityFollowNote">Sign in to get email alerts. Free includes one judge, topic, party or emergency docket feed.</small>}
     </span>;
   }
 
@@ -122,12 +122,12 @@ export function FollowEntityButton({ kind, target, name, compact = false }: {
       {!compact || state.following ? frequencyPicker : null}
     </span>
     {state.error === "limit_reached" ? <span className="entityFollowUpgrade" role="alert">
-      Your plan includes {formatLimit(state.entityLimit ?? 1)} judge, topic or party {state.entityLimit === 1 ? "follow" : "follows"} ({state.entityCount} used).
+      Your plan includes {formatLimit(state.entityLimit ?? 1)} judge, topic, party or emergency feed {state.entityLimit === 1 ? "follow" : "follows"} ({state.entityCount} used).
       {state.upgrade ? <> {state.upgrade.name} raises this to {formatLimit(state.upgrade.entityFollowLimit)}: upgrade coming soon.</> : null}
       {" "}<Link href="/alerts">Manage alerts</Link> · <Link href={"/pricing" as Route}>See plans</Link>
     </span> : null}
     {!compact && !state.error ? <small className="entityFollowNote">
-      {typeof state.entityCount === "number" ? <>{state.entityCount} of {formatLimit(state.entityLimit ?? 1)} judge, topic and party follows used · </> : null}
+      {typeof state.entityCount === "number" ? <>{state.entityCount} of {formatLimit(state.entityLimit ?? 1)} judge, topic, party and feed follows used · </> : null}
       <Link href="/alerts">My alerts</Link>
     </small> : null}
     <span role="status" aria-live="polite" className="entityFollowStatus">{message}</span>
