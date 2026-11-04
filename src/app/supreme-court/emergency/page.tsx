@@ -6,11 +6,11 @@ import { FollowEntityButton } from "@/modules/accounts/ui/follow-entity-button";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { listEmergencyApplications, statusUncertain, type ListStatus } from "@/modules/scotus/application/emergency-docket";
 import {
-  APPLICANT_KIND_LABEL, EMERGENCY_FEEDS, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate,
+  APPLICANT_KIND_LABEL, EMERGENCY_FEEDS, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, responseDisplay,
   type ApplicantKind, type ApplicationKind,
 } from "@/modules/scotus/domain/emergency-application";
 import styles from "./emergency.module.css";
-import { daysUntil, easternTime, justiceLabel, kindLabel, shortDate } from "./format";
+import { easternTime, justiceLabel, kindLabel, shortDate } from "./format";
 
 export const dynamic = "force-dynamic";
 
@@ -95,7 +95,7 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
           : data.rows.length === 0 ? <div className={styles.empty}><h2>No applications match</h2><p>Try another filter, or <Link href={"/supreme-court/emergency?status=all" as Route}>see every application</Link>.</p></div>
           : <ol className={styles.list}>
             {data.rows.map((row) => {
-              const due = row.status === "pending" && row.responseDueOn ? daysUntil(row.responseDueOn, today) : null;
+              const response = statusUncertain(row) ? null : responseDisplay(row, today);
               return <li key={row.docketNumber} className={styles.item}>
                 <div><span className={styles.docket}>No. {row.docketNumber}</span></div>
                 <div>
@@ -116,7 +116,9 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
                   {statusUncertain(row)
                     ? <span className={`${styles.status} ${styles.status_withdrawn}`} title="Some docket lines are withheld">Check Court docket</span>
                     : <span className={`${styles.status} ${styles[`status_${row.status}`] ?? ""}`}>{STATUS_LABEL[row.status]}</span>}
-                  {due !== null && !statusUncertain(row) ? <span className={due <= 2 ? styles.due : undefined}>Response due {due === 0 ? "today" : due === 1 ? "tomorrow" : due < 0 ? shortDate(row.responseDueOn) : `in ${due} days`}</span> : null}
+                  {response?.state === "due" ? <span className={response.days <= 2 ? styles.due : undefined}>Response due {response.days === 0 ? "today" : response.days === 1 ? "tomorrow" : `in ${response.days} days`}</span>
+                    : response?.state === "filed" ? <span>Response filed {shortDate(response.on)}</span>
+                    : response?.state === "passed" ? <span>Response deadline passed {shortDate(response.on)}</span> : null}
                   {row.rulingOn ? <span>Ruled {shortDate(row.rulingOn)}</span> : null}
                 </div>
               </li>;

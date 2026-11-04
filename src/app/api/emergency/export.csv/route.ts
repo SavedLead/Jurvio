@@ -16,13 +16,13 @@ export async function GET(request: Request) {
   if (!data) return new NextResponse("The emergency docket is not available right now.", { status: 503, headers: { "Cache-Control": "no-store" } });
   const origin = siteOrigin();
   const header = ["docket_number", "caption", "request_type", "capital", "applicant_type", "status", "submitted_to", "expected_circuit_justice",
-    "filed_on", "docketed_on", "referred_on", "response_due_on", "response_due_text", "administrative_stay_on", "ruling_on", "noted_votes",
+    "filed_on", "docketed_on", "referred_on", "response_due_on", "response_due_text", "response_filed_on", "administrative_stay_on", "ruling_on", "noted_votes",
     "amicus_briefs", "lower_court", "latest_event", "latest_event_on", "jurvio_url"];
   const lines = [header.join(",")];
   for (const row of data.rows) {
     lines.push([row.docketNumber, row.caption, APPLICATION_KIND_LABEL[row.kind], row.capital ? "yes" : "no", APPLICANT_KIND_LABEL[row.applicantKind],
       STATUS_LABEL[row.status], row.submittedJustice, row.expectedJustice, row.submittedOn, row.docketedOn, row.referredOn, row.responseDueOn,
-      row.responseDueText, row.adminStayOn, row.rulingOn, row.notedVotes, row.amicusCount, row.lowerCourt,
+      row.responseDueText, row.responseFiledOn, row.adminStayOn, row.rulingOn, row.notedVotes, row.amicusCount, row.lowerCourt,
       row.lastEvent ? EVENT_LABEL[row.lastEvent.kind] : null, row.lastEvent?.filedOn ?? null,
       `${origin}/supreme-court/emergency/${row.docketNumber}`].map(csvCell).join(","));
   }

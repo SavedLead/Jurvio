@@ -9,10 +9,10 @@ import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/appli
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
   APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor,
-  justiceSlugForRef, plainEnglishFor, type ApplicationEventKind, type NotedVote,
+  justiceSlugForRef, plainEnglishFor, responseDisplay, type ApplicationEventKind, type NotedVote,
 } from "@/modules/scotus/domain/emergency-application";
 import styles from "../emergency.module.css";
-import { daysUntil, easternTime, justiceLabel, kindLabel, shortDate } from "../format";
+import { easternTime, justiceLabel, kindLabel, shortDate } from "../format";
 
 export const dynamic = "force-dynamic";
 
@@ -70,7 +70,7 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const latestKey = latest && !["letter", "amicus_filed", "other"].includes(latest.kind) ? latest
     : [...app.events].reverse().find((event) => KEY_EVENTS.has(event.kind)) ?? latest;
   const uncertain = statusUncertain(app);
-  const due = app.status === "pending" && app.responseDueOn && !uncertain ? daysUntil(app.responseDueOn, today) : null;
+  const response = uncertain ? null : responseDisplay(app, today);
   const plain = uncertain
     ? "Jurvio cannot show this application's full record: some docket lines mention sealed or restricted material and are withheld, and one of them may be a ruling. Check the Court's own docket for the current status."
     : [
@@ -107,7 +107,10 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <div><dt>Status</dt><dd>{uncertain ? <>Not clear<small>Some lines are withheld; see the <a href={app.sourceUrl}>Court&apos;s docket ↗</a></small></> : STATUS_LABEL[app.status]}{app.rulingOn ? <small>{shortDate(app.rulingOn)}{app.ruledBy === "court" ? " · by the full Court" : app.ruledBy === "justice" ? " · by one justice" : ""}{app.writtenReasons ? " · with a written opinion" : ""}</small> : null}</dd></div>
           <div><dt>Response deadline</dt><dd>{app.responseDueOn
             ? <>{shortDate(app.responseDueOn)}{app.responseDueText && /[ap]\.?\s?m/i.test(app.responseDueText) ? <small>{app.responseDueText}</small> : null}
-              {due !== null ? <small className={due <= 2 ? styles.due : undefined}>{due === 0 ? "Due today" : due === 1 ? "Due tomorrow" : due > 1 ? `In ${due} days` : "Deadline passed"}</small> : null}
+              {response?.state === "due" ? <small className={response.days <= 2 ? styles.due : undefined}>{response.days === 0 ? "Due today" : response.days === 1 ? "Due tomorrow" : `In ${response.days} days`}</small>
+                : response?.state === "filed" ? <small>Response filed {shortDate(response.on)}</small>
+                : response?.state === "passed" ? <small>Deadline passed; no response on the public docket yet</small>
+                : app.responseFiledOn ? <small>Response filed {shortDate(app.responseFiledOn)}</small> : null}
               {app.responseRequestedBy ? <small>Requested by {justiceLabel(app.responseRequestedBy)}</small> : null}</>
             : <>None set<small>A justice has not asked for a response on the public docket.</small></>}</dd></div>
           <div><dt>Submitted to</dt><dd>{app.submittedJustice

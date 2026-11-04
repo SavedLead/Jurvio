@@ -10,6 +10,7 @@ import { getEmergencyApplication, listEmergencyApplications } from "@/modules/sc
 import { LocalArtifactStore } from "../infrastructure/local-artifact-store";
 import { providerId } from "./persist";
 import { runScotusEmergency } from "./scotus-emergency";
+import { EMERGENCY_PARSER_VERSION } from "@/modules/scotus/domain/emergency-application";
 
 const databaseUrl = process.env.DATABASE_URL;
 const fixture = (name: string) => readFileSync(join(__dirname, "..", "..", "scotus", "fixtures", "emergency", `${name}.html`), "utf8");
@@ -117,6 +118,25 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     const [event] = await sql<{ kind: string; backfilled: boolean }[]>`
       SELECT kind, backfilled FROM scotus_application_event WHERE docket_number = '26A623' ORDER BY position DESC LIMIT 1`;
     expect(event).toEqual({ kind: "response_requested", backfilled: false });
+  });
+
+  it("re-reads pages stored by an older parser in full and refreshes their lines without new alerts", async () => {
+    await sql`UPDATE scotus_application SET parser_version = 'scotus-emergency-v0', status = 'pending', ruling_on = NULL WHERE docket_number = '26A624'`;
+    await sql`UPDATE scotus_application_event SET kind = 'other' WHERE docket_number = '26A624' AND kind = 'denied'`;
+    const [before] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_application_event WHERE docket_number = '26A624'`;
+    calls.length = 0;
+    pages = { ...PAGES };
+    const fourth = await run(new Date(t0.getTime() + 30 * 60_000));
+    const call = calls.find((item) => /26a624\.html$/i.test(item.url));
+    expect(call).toBeTruthy();
+    expect(call?.ims).toBeFalsy();
+    expect(fourth.newEvents).toBe(0);
+    const [app] = await sql<{ status: string; parser_version: string }[]>`
+      SELECT status, parser_version FROM scotus_application WHERE docket_number = '26A624'`;
+    expect(app).toEqual({ status: "denied", parser_version: EMERGENCY_PARSER_VERSION });
+    const [after] = await sql<{ n: number; denied: number }[]>`
+      SELECT count(*)::int AS n, count(*) FILTER (WHERE kind = 'denied')::int AS denied FROM scotus_application_event WHERE docket_number = '26A624'`;
+    expect(after).toEqual({ n: before!.n, denied: 1 });
   });
 
   it("serves the list (extensions hidden by default) and the detail page data", async () => {

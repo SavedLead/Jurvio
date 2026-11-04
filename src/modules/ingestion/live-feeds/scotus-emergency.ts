@@ -72,6 +72,8 @@ export interface EmergencyRunOptions {
   frontierProbes?: number;
   /** Never-read applications read per run (newest first). */
   seedPerRun?: number;
+  /** Pages stored by an older parser version to read again per run (default 10). */
+  reparsePerRun?: number;
   /** Docket years to seed (two-digit). Default: this docket year and the one before. */
   seedYears?: number[];
 }
@@ -259,7 +261,15 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
       const knownIds = new Set(known.map((row) => row.source_record_id));
       const knownText = new Set(known.map((row) => `${row.filed_on}|${row.description}`));
       for (const [position, event] of state.events.entries()) {
-        if (knownIds.has(event.sourceRecordId) || knownText.has(`${event.filedOn}|${event.description}`)) continue;
+        if (knownIds.has(event.sourceRecordId) || knownText.has(`${event.filedOn}|${event.description}`)) {
+          // Known line: keep its first-seen time (no new alert) but refresh what a newer parser reads in it.
+          await db`
+            UPDATE scotus_application_event SET kind = ${event.kind}, plain_line = ${event.plain}, justices = ${event.justices}
+            WHERE docket_number = ${docketNumber}
+              AND (source_record_id = ${event.sourceRecordId} OR (filed_on IS NOT DISTINCT FROM ${event.filedOn}::date AND description = ${event.description}))
+              AND (kind IS DISTINCT FROM ${event.kind} OR plain_line IS DISTINCT FROM ${event.plain} OR justices IS DISTINCT FROM ${event.justices}::text[])`;
+          continue;
+        }
         await db`
           INSERT INTO scotus_application_event (source_record_id, docket_number, position, filed_on, kind, description, plain_line, justices, backfilled)
           VALUES (${event.sourceRecordId}, ${docketNumber}, ${position + 1}, ${event.filedOn}, ${event.kind}, ${event.description},
@@ -356,6 +366,21 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
     for (const row of due) {
       if (!budget.canFetch) break;
       await handle(row.docket_number, row.last_modified, "poll");
+    }
+
+    // 2b. Pages stored by an older parser: read them again in full (no If-Modified-Since,
+    // since the page itself may not have changed), pending first, a few per run.
+    const reparseLimit = Math.min(options.reparsePerRun ?? 10, budget.remainingRequests);
+    if (reparseLimit > 0 && budget.canFetch) {
+      const stale = await sql<{ docket_number: string }[]>`
+        SELECT a.docket_number FROM scotus_application a
+        WHERE a.parser_version <> ${EMERGENCY_PARSER_VERSION} AND a.poll_tier <> 'retired'
+        ORDER BY (a.status = 'pending') DESC, a.last_entry_on DESC NULLS LAST
+        LIMIT ${reparseLimit}`;
+      for (const row of stale) {
+        if (!budget.canFetch) break;
+        await handle(row.docket_number, null, "poll");
+      }
     }
 
     // 3. Seed: applications Jurvio holds (from the JSON discovery lane) that this lane has not read yet.
