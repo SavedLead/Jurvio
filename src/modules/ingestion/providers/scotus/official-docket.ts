@@ -59,15 +59,30 @@ function officialLink(href: string, base: string) {
  * application classifier with plain English lives in
  * src/modules/scotus/domain/emergency-application.ts.
  */
+// Periods of common abbreviations ("Moshe Bain, et al. filed") would end a "[^.]*" sentence match early.
+const ABBREVIATION = /\b(et\s+al|Inc|Corp|Co|Ltd|Jr|Sr|Dr|Mr|Mrs|Ms|St|No|Nos|U\.\s?S|L\.\s?L\.\s?C)\./g;
+
 function classifyApplicationLine(description: string): string | null {
-  const text = description.replace(/\s+/g, " ").trim();
+  const text = description.replace(/\s+/g, " ").trim().replace(ABBREVIATION, "$1");
   if (/\badministrative(?:ly)?\s+stay(?:ed)?\b/i.test(text)
     || /^Order\s+entered\s+by\s+(?:The\s+Chief\s+Justice|Justice\s+[A-Z][A-Za-z'’-]+)\b[^.]*\bstayed\s+pending\s+further\s+order/i.test(text)) return "administrative_stay";
-  if (/^Application\b[^.]*\b(?:denied|dismissed)\s+as\s+moot\b/i.test(text)) return "application_moot";
+  // A ruling written as an order: "... it is ordered that the application for stay is denied without prejudice ...".
+  const ordered = /\bit\s+is\s+(?:hereby\s+)?ordered\s+that\s+the\s+application\b[^.]*?\bis\s+(?:hereby\s+)?(granted\s+in\s+part|granted|denied)\b([^.]*)/i.exec(text);
+  if (ordered?.[1]) {
+    const verb = ordered[1].toLowerCase().replace(/\s+/g, " ");
+    if (verb === "granted in part" || (verb === "granted" && /\b(?:otherwise|in\s+part)\s+denied\b|\bdenied\s+in\s+part\b/i.test(ordered[2] ?? ""))) return "application_granted_in_part";
+    return verb === "granted" ? "application_granted" : "application_denied";
+  }
+  if (/^(?:The\s+)?Application\b[^.]*\b(?:denied|dismissed)\s+as\s+moot\b/i.test(text)) return "application_moot";
   if (/^Application\b[^.]*\bwithdrawn\b/i.test(text)) return "application_withdrawn";
-  if (/^Application\b[^.]*\b(?:is\s+)?granted\b/i.test(text)) return "application_granted";
-  if (/^Application\b[^.]*\b(?:is\s+)?denied\b/i.test(text)) return "application_denied";
-  if (/^Application\b[^.]*\breferred\s+to\s+the\s+Court\b/i.test(text)) return "application_referred";
+  if (/^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?granted\s+in\s+part\b/i.test(text)
+    || /^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?granted\b[^.]*\b(?:otherwise|in\s+all\s+other\s+respects)\s+denied\b/i.test(text)) return "application_granted_in_part";
+  if (/^(?:The\s+)?Application\b[^.]*\breferred\s+to\s+the\s+Court\b[^.]*\bis\s+(?:hereby\s+)?granted\b/i.test(text)) return "application_granted";
+  if (/^(?:The\s+)?Application\b[^.]*\breferred\s+to\s+the\s+Court\b[^.]*\bis\s+(?:hereby\s+)?denied\b/i.test(text)) return "application_denied";
+  if (/^Application\b[^.]*\breferred\s+to\s+the\s+Court\.?$/i.test(text)) return "application_referred";
+  if (/^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?granted\b/i.test(text)) return "application_granted";
+  if (/^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?denied\b/i.test(text)) return "application_denied";
+  if (/^(?:The\s+)?Application\b[^.]*\breferred\s+to\s+the\s+Court\b/i.test(text)) return "application_referred";
   if (/^Response\s+to\s+application\b[^.]*\brequested\s+by\b/i.test(text)) return "response_requested";
   if (/^Response\s+to\s+application\b[^.]*\bfiled\b/i.test(text)) return "application_response_filed";
   if (/^Reply\b[^.]*\bin\s+support\s+of\s+(?:the\s+)?application\b/i.test(text)) return "application_reply_filed";
@@ -79,7 +94,7 @@ function classifyApplicationLine(description: string): string | null {
 /** Event types that make an entry "high" importance (case page and alerts). */
 export const HIGH_IMPORTANCE_EVENTS: ReadonlySet<string> = new Set([
   "petition_filed", "certiorari_granted", "oral_argument", "decision", "mandate_issued",
-  "application_granted", "application_denied", "administrative_stay", "application_referred", "response_requested",
+  "application_granted", "application_granted_in_part", "application_denied", "administrative_stay", "application_referred", "response_requested",
 ]);
 
 export function classifyEvent(description: string) {
