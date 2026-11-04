@@ -30,6 +30,7 @@ export default async function InternalOverviewPage() {
     { id: "infrastructure", title: "Workers & infrastructure", detail: "Worker runs, failures, leases, scheduler health, processing pressure, and watchdog visibility.", href: "/internal/operations", state: "Read only" },
     { id: "costs", title: "Cost control", detail: "Recorded enrichment cost, storage pressure, demand cost, and approval-bound automation.", href: "/internal/governance#demand", state: "Partial" },
     { id: "analytics", title: "Product analytics", detail: "Human and machine visitors, searches, zero-results, entities, features, and daily demand.", href: "/internal/analytics", state: "Live" },
+    { id: "signups", title: "Sign-ups", detail: "Accounts, verified and outside people, new in 24 hours and 7 days, waitlists, case follows, paid plans, and the latest 50 entries.", href: "/internal/signups", state: "Live" },
     { id: "users", title: "Users, plans & access", detail: "Administrator roles are live. Customer plans, subscriptions, limits, and billing follow launch setup.", href: "/internal#users", state: "Admin live" },
     { id: "content", title: "Content & quality control", detail: "Evidence review, publication decisions, data quality, privacy states, and audit history.", href: "/internal/governance", state: "Live" },
     { id: "launch", title: "Launch readiness", detail: "Security, indexing, billing, email, analytics, source coverage, and go-live blockers.", href: "/internal#launch", state: "Tracking" },
