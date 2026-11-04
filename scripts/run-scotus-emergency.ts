@@ -2,6 +2,7 @@ import postgres from "postgres";
 import { env } from "@/lib/config/env";
 import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import { runScotusEmergency } from "@/modules/ingestion/live-feeds/scotus-emergency";
+import { refreshEmergencyStats } from "@/modules/scotus/application/emergency-stats";
 
 // Supreme Court emergency docket lane (scheduler job "scotus-emergency", every
 // 10 minutes): conditional re-reads of open emergency application docket pages
@@ -33,6 +34,14 @@ try {
       seedPerRun: number("seed", 15, 40),
     });
     console.log(JSON.stringify({ scotusEmergency: result.ok ? "ok" : "partial", elapsedMs: Date.now() - started, ...result }));
+    // Pro analytics counts (migration 0196): rebuilt only when applications changed
+    // (at most every 30 minutes) or the counts are 6 hours old; a failure here never fails the lane.
+    try {
+      const stats = await refreshEmergencyStats(sql, { force: args.has("refresh-stats") });
+      console.log(JSON.stringify({ emergencyStats: stats }));
+    } catch (error) {
+      console.log(JSON.stringify({ emergencyStats: "failed", error: error instanceof Error ? error.message.slice(0, 300) : String(error) }));
+    }
     if (!result.ok && result.requests === 0 && !result.skippedReason) process.exitCode = 1;
   }
 } finally {

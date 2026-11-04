@@ -60,7 +60,7 @@ export function withResponseStatus<T extends { responseDueOn: string | null; res
 }
 
 /** Not explicitly hidden: no decision (draft) counts as visible here; a "not displayable" decision hides it. */
-function visibleSql(alias = "a"): string {
+export function visibleSql(alias = "a"): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("invalid alias");
   return `(${alias}.case_id IS NULL OR ${latestPublicationColumnSql("displayable", "legal_case", `${alias}.case_id`, true)})`;
 }
