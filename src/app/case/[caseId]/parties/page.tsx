@@ -45,7 +45,7 @@ export default async function PartiesPage({ params }: {
   const records = await listPublicParties(sql, caseId);
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
-    eventType: "page_view", userAgent: requestHeaders.get("user-agent"),
+    eventType: "page_view", userAgent: requestHeaders.get("user-agent"), headers: requestHeaders,
     referrer: requestHeaders.get("referer"), path: `/case/${caseId}/parties`,
     contentKind: "case", targetType: "case", targetPublicId: caseId,
   });

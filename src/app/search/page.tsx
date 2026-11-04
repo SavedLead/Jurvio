@@ -44,7 +44,7 @@ export default async function SearchPage({ searchParams }:{searchParams:Promise<
   const active=filters.query.length>=2||Boolean(filters.court||filters.dateFrom||filters.dateTo||filters.precedentialStatus||filters.opinionType);
   const settled=await settleSearchThenFacets(active,()=>loadCachedSearch(filters),()=>loadCachedFacets());
   const {response,facets}=interpretSettledSearch(filters,settled.search,settled.facets);
-  if(active&&!response.timedOut){const requestHeaders=await headers();await recordDemandEvent(searchDb(),{eventType:"internal_search",userAgent:requestHeaders.get("user-agent"),referrer:requestHeaders.get("referer"),path:"/search",contentKind:"search",rawSearchQuery:filters.query,resultCount:response.countTimedOut?undefined:response.total});}
+  if(active&&!response.timedOut){const requestHeaders=await headers();await recordDemandEvent(searchDb(),{eventType:"internal_search",userAgent:requestHeaders.get("user-agent"),headers:requestHeaders,referrer:requestHeaders.get("referer"),path:"/search",contentKind:"search",rawSearchQuery:filters.query,resultCount:response.countTimedOut?undefined:response.total});}
   const pages=Math.max(1,Math.ceil(response.total/response.pageSize));
   const resultHeading=!active?"Begin with keywords or a filter":response.timedOut?"Search did not finish":response.totalCapped?`${response.total.toLocaleString()}+ published opinions`:response.countTimedOut?`Showing ${response.results.length.toLocaleString()} matching ${response.results.length===1?"opinion":"opinions"}`:`${response.total.toLocaleString()} published ${response.total===1?"opinion":"opinions"}`;
   const showPagination=active&&!response.timedOut&&(response.countTimedOut?filters.page>1||response.results.length===response.pageSize:pages>1);

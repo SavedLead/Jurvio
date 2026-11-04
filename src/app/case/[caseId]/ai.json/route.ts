@@ -13,7 +13,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ case
   if (!record) return Response.json({ error: "not_found" }, { status: 404 });
   await recordDemandEvent(db(), {
     eventType: "page_view",
-    userAgent: request.headers.get("user-agent"),
+    userAgent: request.headers.get("user-agent"), headers: request.headers,
     referrer: request.headers.get("referer"),
     path: `/case/${caseId}/ai.json`,
     channel: "machine_json",

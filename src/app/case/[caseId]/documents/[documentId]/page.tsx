@@ -80,7 +80,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
   const requestHeaders = await headers();
   await recordDemandEvent(db(), {
     eventType: "document_view",
-    userAgent: requestHeaders.get("user-agent"),
+    userAgent: requestHeaders.get("user-agent"), headers: requestHeaders,
     referrer: requestHeaders.get("referer"),
     path: canonicalPath,
     contentKind: "document",
