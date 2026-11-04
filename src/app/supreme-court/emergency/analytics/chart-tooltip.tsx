@@ -60,7 +60,14 @@ export function ChartTooltips({ children }: { children: ReactNode }) {
 /** Filter form that applies itself on change (the Apply button stays for no-JS). */
 export function AutoSubmitForm({ children, className, action }: { children: ReactNode; className?: string; action: string }) {
   return <form className={className} action={action} method="get" role="search" aria-label="Filter analytics"
-    onChange={(event) => (event.currentTarget as HTMLFormElement).requestSubmit()}>
+    onChange={(event) => {
+      // Apply on change with a clean URL (no empty parameters); without JS the Apply button submits the form.
+      const form = event.currentTarget as HTMLFormElement;
+      const params = new URLSearchParams();
+      for (const [key, value] of new FormData(form)) if (typeof value === "string" && value) params.set(key, value);
+      const query = params.toString();
+      window.location.assign(query ? `${action}?${query}` : action);
+    }}>
     {children}
   </form>;
 }
