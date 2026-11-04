@@ -1,7 +1,7 @@
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import type { ArtifactStore } from "./artifact-store";
-import { fetchOfficialDocket } from "../providers/scotus/official-docket";
+import { fetchOfficialDocket, HIGH_IMPORTANCE_EVENTS } from "../providers/scotus/official-docket";
 import { extractQuestionPresentedFromPdf, fetchOfficialFilingPdf } from "../providers/scotus/official-filing";
 
 type Sql = ReturnType<typeof postgres>;
@@ -18,8 +18,7 @@ function dispositionScope(value: string) {
 }
 
 function importance(eventType: string) {
-  return ["petition_filed", "certiorari_granted", "oral_argument", "decision", "mandate_issued"].includes(eventType)
-    ? "high" : "routine";
+  return HIGH_IMPORTANCE_EVENTS.has(eventType) ? "high" : "routine";
 }
 
 export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: ArtifactStore, options: { limit: number }) {

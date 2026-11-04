@@ -19,7 +19,7 @@ const OPTIONS: PricingJoinOption[] = [
   { id: "free", name: "Free", price: "$0" },
   { id: "plus", name: "Plus", price: "$19/mo" },
   { id: "pro", name: "Pro", price: "$59/mo" },
-  { id: "team", name: "Team", price: "$199/mo" },
+  { id: "team", name: "Team", price: "$249/mo" },
 ];
 
 function count(html: string, needle: string): number {
@@ -29,7 +29,7 @@ function count(html: string, needle: string): number {
 describe("pricing content", () => {
   it("keeps the approved prices, names and limits", () => {
     expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => [plan.name, plan.monthlyPriceUsd, plan.followLimit, plan.seats]))
-      .toEqual([["Free", 0, 5, 1], ["Plus", 19, 50, 1], ["Pro", 59, UNLIMITED, 1], ["Team", 199, UNLIMITED, 5]]);
+      .toEqual([["Free", 0, 5, 1], ["Plus", 19, 50, 1], ["Pro", 59, UNLIMITED, 1], ["Team", 249, UNLIMITED, 5]]);
   });
 
   it("states seats and 'Free forever' under the price", () => {
@@ -111,7 +111,7 @@ describe("/pricing page", () => {
   it("renders four plans with unchanged prices, a badge on Pro, one shared form and the FAQ strip", async () => {
     const html = await render();
     expect(count(html, 'class="accountCard pricingCard')).toBe(4);
-    for (const price of ["$0", "$19", "$59", "$199"]) expect(html).toContain(`${price}<span class="pricingUnit">/mo</span>`);
+    for (const price of ["$0", "$19", "$59", "$249"]) expect(html).toContain(`${price}<span class="pricingUnit">/mo</span>`);
     expect(html).toContain("for 5 seats");
     expect(html).toMatch(/pricingCard featured" id="plan-pro"[^>]*><p class="pricingBadge">Recommended<\/p>/);
     expect(count(html, 'id="join"')).toBe(1);

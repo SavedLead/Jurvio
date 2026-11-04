@@ -31,6 +31,10 @@ export interface PlanDefinition {
   name: string;
   /** Monthly price in whole US dollars. */
   monthlyPriceUsd: number;
+  /** Annual price in whole US dollars (null = no annual plan). Display only; Stripe is not wired for it. */
+  annualPriceUsd: number | null;
+  /** Supreme Court emergency docket Pro tools: response-deadline calendar, analytics and CSV export. */
+  emergencyTools: boolean;
   /** Seats included. */
   seats: number;
   /** Maximum followed cases for the account (UNLIMITED = no limit). */
@@ -50,25 +54,25 @@ export interface PlanDefinition {
 
 export const PLANS: Readonly<Record<PlanId, PlanDefinition>> = {
   free: {
-    id: "free", name: "Free", monthlyPriceUsd: 0, seats: 1, followLimit: 5, entityFollowLimit: 1, entityAsap: true, alertCadence: "daily",
+    id: "free", name: "Free", monthlyPriceUsd: 0, annualPriceUsd: null, emergencyTools: false, seats: 1, followLimit: 5, entityFollowLimit: 1, entityAsap: true, alertCadence: "daily",
     monitors: false, available: true,
     tagline: "Follow a few cases and one judge, topic or party.",
-    features: ["Follow up to 5 cases", "Follow 1 judge, topic or party", "Daily email digest of new docket activity", "All public case pages, free forever"],
+    features: ["Follow up to 5 cases", "Follow 1 judge, topic, party or emergency-docket feed", "Daily email digest of new docket activity", "Emergency docket: follow up to 5 applications; feed emails on weekdays", "All public case pages, free forever"],
   },
   plus: {
-    id: "plus", name: "Plus", monthlyPriceUsd: 19, seats: 1, followLimit: 50, entityFollowLimit: 10, entityAsap: true, alertCadence: "hourly",
+    id: "plus", name: "Plus", monthlyPriceUsd: 19, annualPriceUsd: 190, emergencyTools: false, seats: 1, followLimit: 50, entityFollowLimit: 10, entityAsap: true, alertCadence: "hourly",
     monitors: false, available: true,
     tagline: "For journalists, researchers and close followers.",
-    features: ["Follow up to 50 cases", "Follow up to 10 judges, topics or parties", "Hourly email alerts", "Everything in Free"],
+    features: ["Follow up to 50 cases", "Follow up to 10 judges, topics, parties or emergency-docket feeds", "Hourly email alerts", "Everything in Free"],
   },
   pro: {
-    id: "pro", name: "Pro", monthlyPriceUsd: 59, seats: 1, followLimit: UNLIMITED, entityFollowLimit: UNLIMITED, entityAsap: true, alertCadence: "instant",
+    id: "pro", name: "Pro", monthlyPriceUsd: 59, annualPriceUsd: 590, emergencyTools: true, seats: 1, followLimit: UNLIMITED, entityFollowLimit: UNLIMITED, entityAsap: true, alertCadence: "instant",
     monitors: true, available: true,
     tagline: "For attorneys and professionals who need it fast.",
-    features: ["Unlimited case follows", "Unlimited judge, topic and party alerts", "Email alerts every 10 minutes", "Everything in Plus"],
+    features: ["Unlimited case follows", "Unlimited judge, topic, party and emergency-docket alerts", "Email alerts every 10 minutes", "Emergency docket: response-deadline calendar, analytics and CSV export", "Everything in Plus"],
   },
   team: {
-    id: "team", name: "Team", monthlyPriceUsd: 199, seats: 5, followLimit: UNLIMITED, entityFollowLimit: UNLIMITED, entityAsap: true, alertCadence: "instant",
+    id: "team", name: "Team", monthlyPriceUsd: 249, annualPriceUsd: null, emergencyTools: true, seats: 5, followLimit: UNLIMITED, entityFollowLimit: UNLIMITED, entityAsap: true, alertCadence: "instant",
     monitors: true, available: false,
     tagline: "For firms and newsrooms. Five seats.",
     features: ["5 seats", "Shared follows and alerts", "Email alerts every 10 minutes", "Everything in Pro"],
@@ -104,6 +108,11 @@ export function planLimits(plan: PlanId): PlanDefinition {
 export function nextPlanUp(plan: PlanId, limit: "followLimit" | "entityFollowLimit" = "followLimit"): PlanDefinition | null {
   const current = PLANS[plan][limit];
   return PLAN_IDS.map((id) => PLANS[id]).find((candidate) => candidate.available && candidate[limit] > current) ?? null;
+}
+
+/** "or $190/yr" under a monthly price; null when there is no annual plan. */
+export function formatAnnualPrice(plan: PlanDefinition): string | null {
+  return plan.annualPriceUsd ? `$${plan.annualPriceUsd}/yr` : null;
 }
 
 export function formatMonthlyPrice(plan: PlanDefinition): string {

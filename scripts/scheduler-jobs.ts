@@ -125,6 +125,19 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     budgetMs: 12 * minute,
     command: ["jobs/run-live-feeds.mjs", "--source=scotus"],
   },
+  {
+    // Supreme Court emergency docket (approved 2026-11-04): conditional re-reads
+    // (If-Modified-Since) of open emergency application docket pages, a probe of
+    // the next few application numbers and a small seed batch. At most one
+    // request a second, usually 10 to 40 small requests, mostly 304s; no PDFs.
+    // Never reads /rss/. See src/modules/ingestion/live-feeds/scotus-emergency.ts.
+    lane: "core",
+    name: "scotus-emergency",
+    initialDelayMs: 3 * minute,
+    intervalMs: 10 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-scotus-emergency.mjs", "--max-requests=60", "--seed=15"],
+  },
   // The CourtListener API live tail ("courtlistener-tail") was dropped on
   // 2026-10-31 (David Rosenberg): it shared the API token's daily quota and kept
   // hitting 429. New federal data comes from the official court feeds and the

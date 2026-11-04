@@ -26,7 +26,7 @@ describe("entity alert copy", () => {
       more: new Map([["f1", 4]]),
       siteUrl: "https://jurvio.com", unsubscribeToken: "a".repeat(48), postalAddress: "Jurvio, PO Box 1", frequency: "asap",
     });
-    expect(message.subject).toBe("6 new matches for 2 judges, topics and parties you follow");
+    expect(message.subject).toBe("6 new matches for 2 alerts you follow");
     expect(message.text).toContain("Judge: Hon. Jane Roe");
     expect(message.text).toContain("Party: Acme Widgets LLC");
     expect(message.text).toContain("https://jurvio.com/case/jv-abc1234567");
@@ -59,5 +59,23 @@ describe("matches label", () => {
     const now = new Date("2026-11-03T06:00:00Z");
     expect(matchesSinceLabel(0, "2026-11-03 05:09:00.2+00", now)).toBe("0 matches since you followed (only new filings count, not earlier ones)");
     expect(matchesSinceLabel(1, "2026-10-01 05:09:00+00", now)).toBe("1 match in the last 7 days");
+  });
+});
+
+describe("emergency docket feed cadence", () => {
+  const created = new Date("2026-10-01T00:00:00Z");
+  it("sends Free (daily) emergency email on weekdays only", () => {
+    const wednesday = new Date("2026-11-04T15:00:00Z");
+    const saturday = new Date("2026-11-07T15:00:00Z");
+    expect(entityFollowDue("daily", new Date("2026-11-03T14:00:00Z"), created, wednesday, { kind: "emergency", cadence: "daily" })).toBe(true);
+    expect(entityFollowDue("daily", new Date("2026-11-06T14:00:00Z"), created, saturday, { kind: "emergency", cadence: "daily" })).toBe(false);
+    // Free cannot get faster emails by choosing "as found".
+    expect(entityFollowDue("asap", new Date("2026-11-04T14:50:00Z"), created, wednesday, { kind: "emergency", cadence: "daily" })).toBe(false);
+  });
+  it("sends Plus hourly and Pro every tick", () => {
+    const now = new Date("2026-11-04T15:00:00Z");
+    expect(entityFollowDue("asap", new Date("2026-11-04T14:30:00Z"), created, now, { kind: "emergency", cadence: "hourly" })).toBe(false);
+    expect(entityFollowDue("asap", new Date("2026-11-04T13:59:00Z"), created, now, { kind: "emergency", cadence: "hourly" })).toBe(true);
+    expect(entityFollowDue("asap", new Date("2026-11-04T14:50:00Z"), created, now, { kind: "emergency", cadence: "instant" })).toBe(true);
   });
 });

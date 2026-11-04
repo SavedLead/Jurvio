@@ -48,7 +48,7 @@ export default async function AccountPage() {
         : <ul className="accountFollowList">
           {account.follows.map((follow) => <li key={follow.casePublicId}>
             <span>
-              <Link href={`/case/${follow.casePublicId}` as Route}>{cleanCaseCaption(follow.caption)}</Link>
+              <Link href={(follow.emergencyDocket ? `/supreme-court/emergency/${follow.emergencyDocket}` : `/case/${follow.casePublicId}`) as Route}>{cleanCaseCaption(follow.caption)}</Link>
               <small>{[follow.courtName, follow.docketNumber, [follow.activity ? "docket activity" : null, follow.citations ? "citations" : null].filter(Boolean).join(" + ")].filter(Boolean).join(" · ")}</small>
             </span>
             <UnfollowButton caseId={follow.casePublicId} />

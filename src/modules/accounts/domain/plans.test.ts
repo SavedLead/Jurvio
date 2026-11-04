@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CADENCE_INTERVAL_MS, PLANS, UNLIMITED, effectivePlan, formatLimit, formatMonthlyPrice, nextPlanUp } from "./plans";
+import { CADENCE_INTERVAL_MS, PLANS, UNLIMITED, effectivePlan, formatAnnualPrice, formatLimit, formatMonthlyPrice, nextPlanUp } from "./plans";
 
 describe("plans config", () => {
   it("has the decided prices, follow limits and cadences", () => {
     expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => [plan.monthlyPriceUsd, plan.followLimit, plan.alertCadence]))
-      .toEqual([[0, 5, "daily"], [19, 50, "hourly"], [59, UNLIMITED, "instant"], [199, UNLIMITED, "instant"]]);
+      .toEqual([[0, 5, "daily"], [19, 50, "hourly"], [59, UNLIMITED, "instant"], [249, UNLIMITED, "instant"]]);
     expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => plan.entityFollowLimit)).toEqual([1, 10, UNLIMITED, UNLIMITED]);
     expect(formatLimit(PLANS.pro.followLimit)).toBe("unlimited");
     expect(formatLimit(PLANS.free.followLimit)).toBe("5");
@@ -13,6 +13,10 @@ describe("plans config", () => {
     expect(PLANS.pro.monitors).toBe(true);
     expect(formatMonthlyPrice(PLANS.plus)).toBe("$19/mo");
     expect(CADENCE_INTERVAL_MS.instant).toBe(600_000);
+    expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => plan.annualPriceUsd)).toEqual([null, 190, 590, null]);
+    expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => plan.emergencyTools)).toEqual([false, false, true, true]);
+    expect(formatAnnualPrice(PLANS.plus)).toBe("$190/yr");
+    expect(formatAnnualPrice(PLANS.free)).toBeNull();
   });
 
   it("falls back to free unless a paid subscription is entitled", () => {

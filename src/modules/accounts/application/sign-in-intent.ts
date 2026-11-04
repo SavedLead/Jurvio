@@ -19,7 +19,9 @@ export async function completeSignInIntent(sql: Sql, verified: VerifiedSignIn): 
   const result = await followCase(sql, verified.userId, verified.followCasePublicId,
     followKindsFromBits(verified.followKindBits), { merge: true }).catch(() => null);
   const casePath = `/case/${verified.followCasePublicId}`;
-  const base = verified.redirectPath.startsWith(casePath) ? verified.redirectPath : casePath;
+  // An emergency application page follows its case too (the case itself may still be a draft page).
+  const base = verified.redirectPath.startsWith(casePath) || /^\/supreme-court\/emergency\/\d{2}A\d+(?:[?#]|$)/.test(verified.redirectPath)
+    ? verified.redirectPath : casePath;
   const note = result?.status === "limit_reached" ? "limit" : result && result.status !== "not_eligible" ? "followed" : null;
   return note ? `${base.split("#")[0]}${base.includes("?") ? "&" : "?"}follow=${note}#follow` : base;
 }

@@ -48,7 +48,8 @@ export async function POST(request: NextRequest) {
     return noStore(NextResponse.json(status === "waitlisted" ? { status, message: LEAD_SUCCESS_MESSAGE } : { status }, { status: HTTP_STATUS[status] }));
   }
   if (status === "waitlisted" && follow) {
-    return noStore(NextResponse.redirect(absoluteUrl(`/case/${follow}?follow=waitlisted#follow`, request.nextUrl.origin), 303));
+    const back = typeof body.next === "string" && /^\/supreme-court\/emergency\/\d{2}A\d+$/.test(body.next) ? body.next : `/case/${follow}`;
+    return noStore(NextResponse.redirect(absoluteUrl(`${back}?follow=waitlisted#follow`, request.nextUrl.origin), 303));
   }
   const target = new URLSearchParams();
   if (status === "sent" || status === "logged") target.set("sent", "1");

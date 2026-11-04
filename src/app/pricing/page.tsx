@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { PLAN_IDS, PLANS, formatMonthlyPrice, isPlanId } from "@/modules/accounts/domain/plans";
+import { PLAN_IDS, PLANS, formatAnnualPrice, formatMonthlyPrice, isPlanId } from "@/modules/accounts/domain/plans";
 import { FEATURED_BADGE, FEATURED_PLAN, PRICING_FAQ, priceNote } from "@/modules/accounts/ui/pricing-content";
 import { billingConfig, checkoutEnabled } from "@/modules/accounts/infrastructure/stripe";
 import { PlanAction } from "@/modules/accounts/ui/plan-action";
@@ -51,8 +51,8 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
             <h2 id={`plan-${id}-name`}>{plan.name}</h2>
             <div className="pricingPriceBlock">
               <p className="pricingPrice" aria-hidden="true">${plan.monthlyPriceUsd}<span className="pricingUnit">/mo</span></p>
-              <p className={`pricingNote${plan.seats > 1 ? " seats" : ""}`} aria-hidden="true">{priceNote(id)}</p>
-              <span className="pricingSr">{formatMonthlyPrice(plan)}, {priceNote(id)}</span>
+              <p className={`pricingNote${plan.seats > 1 ? " seats" : ""}`} aria-hidden="true">{priceNote(id)}{formatAnnualPrice(plan) ? <> · or {formatAnnualPrice(plan)}</> : null}</p>
+              <span className="pricingSr">{formatMonthlyPrice(plan)}, {priceNote(id)}{formatAnnualPrice(plan) ? `, or ${formatAnnualPrice(plan)}` : ""}</span>
             </div>
           </div>
           <p className="pricingTagline">{plan.tagline}</p>
@@ -65,7 +65,7 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
     </div>
     <PricingJoinForm options={joinOptions} initialPlan={initialPlan} joinedPlan={params.joined ?? null} />
     <p className="pricingFinePrint">Prices in US dollars. Paid plans are not open yet; join a waitlist with just your email and we will email you when they launch. Payment never changes case facts, rankings or explanations.</p>
-    <p className="pricingFinePrint">How fresh alerts are: alert emails go out daily (Free), hourly (Plus) or every 10 minutes (Pro and Team), counted from when Jurvio picks up a new entry. Jurvio checks federal appeals courts every 5 to 60 minutes, district court docket feeds about every 2 hours, the Supreme Court docket every 3 hours and other active federal cases about every 6 hours, and processes CourtListener&apos;s monthly bulk data overnight. New citing opinions are matched about every 15 minutes after they arrive.</p>
+    <p className="pricingFinePrint">How fresh alerts are: alert emails go out daily (Free), hourly (Plus) or every 10 minutes (Pro and Team), counted from when Jurvio picks up a new entry. Jurvio checks federal appeals courts every 5 to 60 minutes, district court docket feeds about every 2 hours, open Supreme Court emergency applications about every 10 minutes (alerts usually arrive within 10 to 20 minutes after the Court posts), the rest of the Supreme Court docket every 3 hours and other active federal cases about every 6 hours, and processes CourtListener&apos;s monthly bulk data overnight. New citing opinions are matched about every 15 minutes after they arrive.</p>
     <section className="pricingFaq" aria-labelledby="pricing-faq-title">
       <h2 id="pricing-faq-title">Good to know</h2>
       <dl>

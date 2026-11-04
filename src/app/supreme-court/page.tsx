@@ -65,11 +65,12 @@ export default async function SupremeCourtPage() {
       <p className={styles.lede}>Follow cases from petition to decision. Explore the Justices, calendar, orders, opinions, history, and the public record behind the Court.</p>
       <div className={styles.actions}>
         <a href="#recent-opinions">Browse recent opinions</a>
+        <Link href={"/supreme-court/emergency" as Route}>Emergency applications</Link>
         <a href="https://www.supremecourt.gov/docket/docket.aspx">Search the official docket ↗</a>
       </div>
       <nav className={styles.sectionNav} aria-label="Supreme Court sections">
         <a href="#court-now">Court now</a><a href="#cases">Cases & process</a><a href="#justices">Justices</a>
-        <a href="#recent-opinions">Opinions</a><Link href="/supreme-court/timeline">Timeline</Link><a href="#sources">Official sources</a>
+        <a href="#recent-opinions">Opinions</a><Link href="/supreme-court/timeline">Timeline</Link><Link href={"/supreme-court/emergency" as Route}>Emergency docket</Link><a href="#sources">Official sources</a>
       </nav>
     </header>
 

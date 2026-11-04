@@ -12,6 +12,7 @@
 .myAlerts .alertsKind { flex: 0 0 auto; padding: 3px 9px; border-radius: 999px; background: #eef3fc; color: var(--brand-dark); font-size: 11px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
 .myAlerts .alertsKind-topic { background: #eefaf2; color: #14532d; }
 .myAlerts .alertsKind-party { background: #f6effc; color: #4c1d95; }
+.myAlerts .alertsKind-emergency { background: #fdecea; color: #9b2a22; }
 .myAlerts .alertsItemActions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .myAlerts .alertsItemActions form { display: flex; gap: 6px; align-items: center; margin: 0; }
 .myAlerts .alertsItemActions select { min-height: 40px; height: 40px; padding: 0 10px; border: 1px solid #c8d0dc; border-radius: 8px; background: #fff; font: inherit; font-size: 14px; }

@@ -35,7 +35,14 @@ const FREE_FOLLOW_LIMIT = PLANS.free.followLimit;
  * `citationsFirst` pre-ticks citations instead of activity for signed-out
  * visitors on cases whose docket is unlikely to move.
  */
-export function FollowCaseBox({ caseId, citationsFirst = false }: { caseId: string; citationsFirst?: boolean }) {
+export function FollowCaseBox({ caseId, citationsFirst = false, application }: {
+  caseId: string;
+  citationsFirst?: boolean;
+  /** Supreme Court emergency application: docket alerts only (no citation option), returns to its emergency page. */
+  application?: { docketNumber: string };
+}) {
+  const noun = application ? "application" : "case";
+  const nextPath = application ? `/supreme-court/emergency/${application.docketNumber}` : `/case/${caseId}`;
   const [state, setState] = useState<FollowApiState | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -43,7 +50,7 @@ export function FollowCaseBox({ caseId, citationsFirst = false }: { caseId: stri
 
   useEffect(() => {
     const note = new URLSearchParams(window.location.search).get("follow");
-    if (note === "followed") setMessage("You are now following this case.");
+    if (note === "followed") setMessage(`You are now following this ${noun}.`);
     if (note === "waitlisted") setWaitlisted(true);
     if (!document.cookie.split(";").some((part) => part.trim() === HINT)) {
       setState({ signedIn: false });
@@ -55,7 +62,7 @@ export function FollowCaseBox({ caseId, citationsFirst = false }: { caseId: stri
       .then((body) => { if (!cancelled) setState(note === "limit" && body.signedIn && !body.following ? { ...body, error: "limit_reached" } : body); })
       .catch(() => { if (!cancelled) setState({ signedIn: false }); });
     return () => { cancelled = true; };
-  }, [caseId]);
+  }, [caseId, noun]);
 
   async function setKinds(next: { activity: boolean; citations: boolean }) {
     if (!state?.signedIn) return;
@@ -72,10 +79,10 @@ export function FollowCaseBox({ caseId, citationsFirst = false }: { caseId: stri
       const body = await response.json() as FollowApiState;
       if (response.status === 401) { setState({ signedIn: false }); return; }
       setState(body);
-      if (!body.error) setMessage(!body.following ? "You stopped following this case."
+      if (!body.error) setMessage(!body.following ? `You stopped following this ${noun}.`
         : body.activity && body.citations ? "You get docket and citation alerts for this case."
         : body.citations ? "You get an email when a new opinion cites this case."
-        : "You get an email when new docket entries are filed.");
+        : application ? "You get an email when this application gets a new docket line." : "You get an email when new docket entries are filed.");
     } catch {
       setMessage("Something went wrong. Try again.");
     } finally {
@@ -88,34 +95,38 @@ export function FollowCaseBox({ caseId, citationsFirst = false }: { caseId: stri
     citations: kind === "citations" ? !state?.citations : Boolean(state?.citations),
   });
 
-  if (state === null) return <section id="follow" className="followCaseBox" aria-busy="true" aria-label="Follow this case" />;
+  if (state === null) return <section id="follow" className="followCaseBox" aria-busy="true" aria-label={`Follow this ${noun}`} />;
   if (state.signedIn && state.eligible === false) return null;
 
   return <section id="follow" className="followCaseBox" aria-labelledby="follow-case-title">
-    <h2 id="follow-case-title">Follow this case</h2>
+    <h2 id="follow-case-title">Follow this {noun}</h2>
     {!state.signedIn ? <>
-      <p>Get an email when new docket entries are filed or a new opinion cites this case. Free for up to {FREE_FOLLOW_LIMIT} cases. <Link className="followPlansLink" href={"/pricing" as Route}>See plans</Link></p>
+      {application
+        ? <p>Get an email when this application gets a response deadline, a stay, a referral or a ruling. Free for up to {FREE_FOLLOW_LIMIT} applications and cases. <Link className="followPlansLink" href={"/pricing" as Route}>See plans</Link></p>
+        : <p>Get an email when new docket entries are filed or a new opinion cites this case. Free for up to {FREE_FOLLOW_LIMIT} cases. <Link className="followPlansLink" href={"/pricing" as Route}>See plans</Link></p>}
       <EmailCaptureForm
         action="/api/auth/request"
-        hidden={{ next: `/case/${caseId}`, follow: caseId, follow_kinds: "1" }}
+        hidden={{ next: nextPath, follow: caseId, follow_kinds: "1" }}
         buttonLabel="Follow by email"
         initialMessage={waitlisted ? WAITLIST_SUCCESS : undefined}
         footnote="No password. We only email you about cases you follow."
-        fieldsBeforeButton={<fieldset className="followKinds">
+        fieldsBeforeButton={application ? <input type="hidden" name="follow_activity" value="on" /> : <fieldset className="followKinds">
           <legend>Email me about</legend>
           <label><input type="checkbox" name="follow_activity" value="on" defaultChecked={!citationsFirst} /> New docket entries</label>
           <label><input type="checkbox" name="follow_citations" value="on" defaultChecked={citationsFirst} /> New opinions citing this case</label>
         </fieldset>}
       />
     </> : <>
-      <p>{state.following ? "Choose what you get emails about." : "Get an email when new docket entries are filed or a new opinion cites this case."}</p>
+      <p>{application
+        ? (state.following ? "You get an email when this application gets a new docket line." : "Get an email when this application gets a response deadline, a stay, a referral or a ruling.")
+        : state.following ? "Choose what you get emails about." : "Get an email when new docket entries are filed or a new opinion cites this case."}</p>
       <div className="followKinds" role="group" aria-label="Follow alerts">
         <button type="button" className={state.activity ? "following" : undefined} disabled={busy} onClick={() => toggle("activity")} aria-pressed={Boolean(state.activity)}>
-          {state.activity ? "Docket activity ✓" : "Follow docket activity"}
+          {state.activity ? (application ? "Following ✓" : "Docket activity ✓") : application ? "Follow this application" : "Follow docket activity"}
         </button>
-        <button type="button" className={state.citations ? "following" : undefined} disabled={busy} onClick={() => toggle("citations")} aria-pressed={Boolean(state.citations)}>
+        {application ? null : <button type="button" className={state.citations ? "following" : undefined} disabled={busy} onClick={() => toggle("citations")} aria-pressed={Boolean(state.citations)}>
           {state.citations ? "Citations ✓" : "Follow citations"}
-        </button>
+        </button>}
       </div>
       {typeof state.followCount === "number" ? <small>{state.followCount} of {formatLimit(state.followLimit ?? 0)} follows used · <Link href={"/alerts" as Route}>Manage</Link>{state.error === "limit_reached" ? null : <> · <Link href={"/pricing" as Route}>See plans</Link></>}</small> : null}
       {state.error === "limit_reached" ? <p className="followUpgrade" role="alert">
