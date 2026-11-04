@@ -6,6 +6,7 @@ import "./globals.css";
 import "./scotus-layout.css";
 import { robotsFor } from "@/lib/seo/indexing";
 import { PrivacySafeAnalytics } from "./privacy-safe-analytics";
+import { FirstTouch } from "./first-touch";
 import { MobileNavigation } from "./mobile-navigation";
 import { AccountNavLink } from "./account-nav-link";
 import { NavLinks } from "./nav-links";
@@ -40,6 +41,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en"><body>
       <a className="skipLink" href="#main-content">Skip to main content</a>
       <PrivacySafeAnalytics />
+      <FirstTouch />
       <PlainTermsBehavior />
       <header className="siteHeader">
         <Link className="brand" href="/" aria-label="Jurvio home">

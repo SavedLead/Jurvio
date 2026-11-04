@@ -22,6 +22,8 @@ export interface LeadInput {
   followKindBits?: number;
   /** Hidden form field humans never fill. A filled value is answered as success and dropped. */
   honeypot?: unknown;
+  /** First-touch attribution from the visitor cookie (kept from the first submission). */
+  attribution?: Record<string, unknown> | null;
 }
 
 export const LEAD_SUCCESS_MESSAGE = "You're on the list; we'll email you when alerts go live.";
@@ -48,11 +50,12 @@ export async function captureLead(sql: Sql, input: LeadInput): Promise<LeadStatu
   if (!ipAllowed || !emailAllowed) return "rate_limited";
 
   await sql`
-    INSERT INTO lead_waitlist (email, source, case_public_id, plan, ip_hash, follow_kinds)
-    VALUES (${email}, ${input.source}, ${casePublicId}, ${plan}::account_plan, ${hashIdentifier("ip", ip)}, ${kindBits})
+    INSERT INTO lead_waitlist (email, source, case_public_id, plan, ip_hash, follow_kinds, attribution)
+    VALUES (${email}, ${input.source}, ${casePublicId}, ${plan}::account_plan, ${hashIdentifier("ip", ip)}, ${kindBits}, ${input.attribution ? sql.json(input.attribution as never) : null})
     ON CONFLICT (email, source, coalesce(case_public_id, ''), coalesce(plan, 'free'::account_plan)) DO UPDATE SET
       submissions = lead_waitlist.submissions + 1, last_seen_at = now(),
-      follow_kinds = lead_waitlist.follow_kinds | EXCLUDED.follow_kinds`;
+      follow_kinds = lead_waitlist.follow_kinds | EXCLUDED.follow_kinds,
+      attribution = coalesce(lead_waitlist.attribution, EXCLUDED.attribution)`;
   return "joined";
 }
 

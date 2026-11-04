@@ -16,6 +16,8 @@ export interface SignInRequestInput {
   followCasePublicId?: unknown;
   /** Follow kinds ticked in the signed-out Follow box: bit 1 activity, bit 2 citations. */
   followKindBits?: number;
+  /** First-touch attribution + sign-in start page, carried to account creation. */
+  attribution?: Record<string, unknown> | null;
 }
 
 export interface SignInDeps {
@@ -71,8 +73,8 @@ export async function requestSignIn(sql: Sql, input: SignInRequestInput, deps: S
   const redirectPath = safeRedirectPath(input.redirectPath);
   const followCasePublicId = safeCasePublicId(input.followCasePublicId);
   await sql`
-    INSERT INTO auth_login_token (token_hash, email, redirect_path, follow_case_public_id, follow_kinds, requested_ip_hash, expires_at)
-    VALUES (${hashToken(token)}, ${email}, ${redirectPath}, ${followCasePublicId}, ${followKindBits(input.followKindBits)},
+    INSERT INTO auth_login_token (token_hash, email, redirect_path, follow_case_public_id, follow_kinds, attribution, requested_ip_hash, expires_at)
+    VALUES (${hashToken(token)}, ${email}, ${redirectPath}, ${followCasePublicId}, ${followKindBits(input.followKindBits)}, ${input.attribution ? sql.json(input.attribution as never) : null},
       ${hashIdentifier("ip", input.ip || "unknown")}, now() + make_interval(mins => ${LOGIN_TOKEN_TTL_MINUTES}))`;
   const link = signInLink(deps.siteUrl, token);
 
@@ -104,10 +106,10 @@ export interface VerifiedSignIn {
 export async function verifySignIn(sql: Sql, token: unknown): Promise<VerifiedSignIn | null> {
   if (typeof token !== "string" || token.length < 20 || token.length > 200) return null;
   return sql.begin(async (tx) => {
-    const [login] = await tx<{ email: string; redirectPath: string | null; followCasePublicId: string | null; followKindBits: number }[]>`
+    const [login] = await tx<{ email: string; redirectPath: string | null; followCasePublicId: string | null; followKindBits: number; attribution: Record<string, unknown> | null }[]>`
       UPDATE auth_login_token SET consumed_at = now()
       WHERE token_hash = ${hashToken(token)} AND consumed_at IS NULL AND expires_at > now()
-      RETURNING email, redirect_path AS "redirectPath", follow_case_public_id AS "followCasePublicId", follow_kinds AS "followKindBits"`;
+      RETURNING email, redirect_path AS "redirectPath", follow_case_public_id AS "followCasePublicId", follow_kinds AS "followKindBits", attribution`;
     if (!login) return null;
     const [user] = await tx<{ id: string }[]>`
       INSERT INTO app_user (email, email_verified_at, last_signed_in_at) VALUES (${login.email}, now(), now())
@@ -115,6 +117,7 @@ export async function verifySignIn(sql: Sql, token: unknown): Promise<VerifiedSi
         email_verified_at = COALESCE(app_user.email_verified_at, now()), last_signed_in_at = now(), updated_at = now()
       RETURNING id`;
     await tx`INSERT INTO account_subscription (user_id) VALUES (${user!.id}) ON CONFLICT (user_id) DO NOTHING`;
+    await recordSignupAttribution(tx as unknown as Sql, user!.id, login.attribution);
     const sessionToken = generateToken();
     await tx`
       INSERT INTO auth_session (token_hash, user_id, expires_at)
@@ -147,4 +150,14 @@ export async function getSessionUser(sql: Sql, sessionToken: string | null | und
 export async function revokeSession(sql: Sql, sessionToken: string | null | undefined): Promise<void> {
   if (!sessionToken || sessionToken.length > 200) return;
   await sql`UPDATE auth_session SET revoked_at = now() WHERE token_hash = ${hashToken(sessionToken)} AND revoked_at IS NULL`;
+}
+
+/** Saves first-touch attribution on the account once (first sign-in wins). */
+export async function recordSignupAttribution(sql: Sql, userId: string, a: Record<string, unknown> | null): Promise<void> {
+  const str = (k: string) => (a && typeof a[k] === "string" ? (a[k] as string).slice(0, 300) : null);
+  await sql`
+    INSERT INTO signup_attribution (user_id, source, referrer_host, landing_path, utm_source, utm_medium, utm_campaign, first_touch_at, signin_from_path)
+    VALUES (${userId}, ${str("source") ?? "unknown"}, ${str("referrerHost")}, ${str("landingPath")}, ${str("utmSource")}, ${str("utmMedium")},
+      ${str("utmCampaign")}, ${str("at")}::timestamptz, ${str("signinFromPath")})
+    ON CONFLICT (user_id) DO NOTHING`;
 }
