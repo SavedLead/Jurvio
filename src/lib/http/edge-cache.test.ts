@@ -20,4 +20,11 @@ describe("edge cache and subscriber-only case records", () => {
   it("never shares the ?subscriber=1 reload the gate makes for signed-in visitors", () => {
     expect(publicEdgeCacheControl(request("/case/jv-a3xztujrpi", { search: "subscriber=1" }))).toBeNull();
   });
+
+  it("never shares the Pro emergency analytics page, even its anonymous teaser", () => {
+    expect(publicEdgeCacheControl(request("/supreme-court/emergency/analytics"))).toBeNull();
+    expect(publicEdgeCacheControl(request("/supreme-court/emergency/analytics", { search: "term=2025" }))).toBeNull();
+    expect(publicEdgeCacheControl(request("/supreme-court/emergency"))).toBe(PUBLIC_EDGE_CACHE_CONTROL);
+    expect(publicEdgeCacheControl(request("/supreme-court/emergency/25A1"))).toBe(PUBLIC_EDGE_CACHE_CONTROL);
+  });
 });
