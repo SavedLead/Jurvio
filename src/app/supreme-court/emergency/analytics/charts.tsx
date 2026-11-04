@@ -38,20 +38,30 @@ export function DataTable({ summary = "View as table", caption, head, rows }: { 
 
 export type Segment = { key: "granted" | "partial" | "denied" | "other" | "pending" | "justice" | "court"; value: number };
 
-export interface Column { id: string; label: string; sublabel?: string; segments: Segment[]; tip: string; selected?: boolean; rate?: number | null; rateLabel?: string }
+export interface Column { id: string; label: string; sublabel?: string; segments: Segment[]; tip: string; selected?: boolean; rate?: number | null; rateLabel?: string; loading?: boolean }
 
 /** Stacked columns with an optional rate line (0-100%) drawn over them. */
 export function StackedColumns({ columns, label, medianAt, medianLabel }: { columns: Column[]; label: string; medianAt?: number | null; medianLabel?: string }) {
-  const { max, ticks } = axisTicks(Math.max(1, ...columns.map((column) => column.segments.reduce((sum, segment) => sum + segment.value, 0))));
+  const { max, ticks } = axisTicks(Math.max(1, ...columns.filter((column) => !column.loading).map((column) => column.segments.reduce((sum, segment) => sum + segment.value, 0))));
   const n = columns.length;
-  const ratePoints = columns.map((column, index) => column.rate === null || column.rate === undefined ? null : { x: ((index + 0.5) / n) * 100, y: 100 - column.rate, label: column.rateLabel ?? "" });
+  const ratePoints = columns.map((column, index) => column.loading || column.rate === null || column.rate === undefined ? null : { x: ((index + 0.5) / n) * 100, y: 100 - column.rate, label: column.rateLabel ?? "" });
   const line = ratePoints.filter((point): point is NonNullable<typeof point> => point !== null);
+  // The line never bridges a loading or thin year: one polyline per unbroken run.
+  const runs: Array<typeof line> = [];
+  ratePoints.forEach((point, index) => {
+    if (!point) return;
+    if (index > 0 && ratePoints[index - 1]) runs[runs.length - 1]!.push(point); else runs.push([point]);
+  });
   return <div className={styles.columns} role="img" aria-label={label}>
     <div className={styles.yAxis} aria-hidden="true">{ticks.map((tick) => <span key={tick} style={{ bottom: `${tick * 100}%` }}>{fmt.format(Math.round(max * tick))}</span>)}</div>
     <div className={styles.plot}>
       {ticks.slice(1).map((tick) => <div key={tick} className={styles.gridLine} style={{ bottom: `${tick * 100}%` }} aria-hidden="true" />)}
       <div className={styles.bars}>
         {columns.map((column) => {
+          if (column.loading) {
+            return <div key={column.id} className={`${styles.bar} ${styles.barLoading}`} tabIndex={0} data-tip={column.tip} aria-label={column.tip.replace(/\n/g, ". ")}>
+              <span aria-hidden="true">Loading history</span></div>;
+          }
           const total = column.segments.reduce((sum, segment) => sum + segment.value, 0);
           return <div key={column.id} className={`${styles.bar} ${column.selected ? styles.barSelected : ""}`} tabIndex={0} data-tip={column.tip} aria-label={column.tip.replace(/\n/g, ". ")}
             style={{ height: `${(total / max) * 100}%` }}>
@@ -60,8 +70,8 @@ export function StackedColumns({ columns, label, medianAt, medianLabel }: { colu
           </div>;
         })}
       </div>
-      {line.length > 1 ? <svg className={styles.overlay} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        <polyline points={line.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke="#e3483e" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+      {runs.some((run) => run.length > 1) ? <svg className={styles.overlay} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {runs.filter((run) => run.length > 1).map((run) => <polyline key={run[0]!.x} points={run.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke="#e3483e" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />)}
       </svg> : null}
       {line.length ? <div className={styles.pointLayer} aria-hidden="true">
         {line.map((point) => <span key={point.x}><i className={styles.point} style={{ left: `${point.x}%`, top: `${point.y}%` }} />
@@ -70,7 +80,7 @@ export function StackedColumns({ columns, label, medianAt, medianLabel }: { colu
       {medianAt !== null && medianAt !== undefined ? <div className={styles.medianFlag} style={{ left: `${((medianAt + 0.5) / n) * 100}%` }} aria-hidden="true"><span>{medianLabel}</span></div> : null}
     </div>
     <div className={styles.xAxis} aria-hidden="true" style={{ gridColumn: "1 / 3" }}>
-      {columns.map((column) => <span key={column.id}>{column.label}{column.sublabel ? <small>{column.sublabel}</small> : null}</span>)}
+      {columns.map((column) => <span key={column.id} className={column.loading ? styles.xLoading : undefined}>{column.label}{column.sublabel ? <small>{column.sublabel}</small> : null}</span>)}
     </div>
   </div>;
 }

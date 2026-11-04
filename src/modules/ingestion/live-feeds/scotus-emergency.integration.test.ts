@@ -7,7 +7,8 @@ import { matchEntityAlerts } from "@/modules/accounts/application/entity-alerts"
 import { followEntity, resolveEntityTarget } from "@/modules/accounts/application/entity-follows";
 import { alertEligibleSql, followCase, followState } from "@/modules/accounts/application/follows";
 import { getEmergencyApplication, listEmergencyApplications } from "@/modules/scotus/application/emergency-docket";
-import { loadEmergencyStats, refreshEmergencyStats } from "@/modules/scotus/application/emergency-stats";
+import { coverageSql } from "@/modules/scotus/application/emergency-history";
+import { loadEmergencyStats, refreshEmergencyStats, resetEmergencyStatsCache } from "@/modules/scotus/application/emergency-stats";
 import { summarize } from "@/modules/scotus/domain/emergency-stats";
 import { LocalArtifactStore } from "../infrastructure/local-artifact-store";
 import { providerId } from "./persist";
@@ -15,6 +16,13 @@ import { runScotusEmergency } from "./scotus-emergency";
 import { EMERGENCY_PARSER_VERSION } from "@/modules/scotus/domain/emergency-application";
 
 const databaseUrl = process.env.DATABASE_URL;
+
+async function loadFresh() {
+  resetEmergencyStatsCache();
+  const stats = await loadEmergencyStats(postgresForFresh!);
+  return stats!;
+}
+let postgresForFresh: ReturnType<typeof postgres> | null = null;
 const fixture = (name: string) => readFileSync(join(__dirname, "..", "..", "scotus", "fixtures", "emergency", `${name}.html`), "utf8");
 const PAGES: Record<string, string> = { "26A623": fixture("26a623"), "26A624": fixture("26a624"), "26A600": fixture("26a600") };
 const NEW_LINE = `<div class="card"><table class="ProceedingItem"><tr><td class="ProceedingDate">Nov 04 2026</td>
@@ -28,6 +36,7 @@ function withExtraLine(html: string): string {
 
 describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postgres", () => {
   const sql = postgres(databaseUrl ?? "postgres://invalid", { max: 1, onnotice: () => undefined });
+  postgresForFresh = sql;
   const store = new LocalArtifactStore(mkdtempSync(join(tmpdir(), "jurvio-emergency-")));
   const calls: Array<{ url: string; ims: string | null }> = [];
   let pages = { ...PAGES };
@@ -192,6 +201,22 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     expect((await refreshEmergencyStats(sql)).refreshed).toBe(false);
     const [lane] = await sql<{ lanes: string[] }[]>`SELECT array_agg(DISTINCT source_lane) AS lanes FROM scotus_application WHERE docket_number LIKE '26A%'`;
     expect(lane!.lanes).toEqual(["live"]);
+  });
+
+  it("flags a docket year complete only after the history scan finished it (migration 0197)", async () => {
+    await sql`DELETE FROM scotus_emergency_history_coverage`;
+    await refreshEmergencyStats(sql, { force: true });
+    expect((await loadFresh()).meta.terms.find((row) => row.term === 2026)?.complete).toBe(false);
+    await sql.unsafe(coverageSql([{ term: 2026, complete: true, highest: 700, pages: 690 }]));
+    // A later partial scan never clears it.
+    await sql.unsafe(coverageSql([{ term: 2026, complete: false, highest: 20, pages: 20 }]));
+    await refreshEmergencyStats(sql, { force: true });
+    const meta = (await loadFresh()).meta;
+    expect(meta.terms.find((row) => row.term === 2026)?.complete).toBe(true);
+    expect(meta.historyFrom).toBe(2017);
+    const [row] = await sql<{ highest: number }[]>`SELECT highest_number AS highest FROM scotus_emergency_history_coverage WHERE term = 2026`;
+    expect(row!.highest).toBe(700);
+    await sql`DELETE FROM scotus_emergency_history_coverage`;
   });
 
   it("never lists an old history application with no ruling as open", async () => {

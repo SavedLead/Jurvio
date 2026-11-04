@@ -126,7 +126,23 @@ export function historyRowsFromPage(html: string, docketNumber: string, today: s
  * so a case hidden by a publication decision stays hidden. Anything still open
  * gets a poll row so the 10-minute lane keeps it current.
  */
-export function historyLoadSql(applicationsTsv: string, eventsTsv: string): string {
+export interface YearCoverage { term: number; complete: boolean; highest: number; pages: number }
+
+/** Coverage upsert: complete stays true once a full scan finished; a partial rerun never clears it. */
+export function coverageSql(coverage: readonly YearCoverage[]): string {
+  const rows = coverage.filter((row) => Number.isInteger(row.term) && row.term >= 2000 && row.term <= 2099)
+    .map((row) => `(${row.term}, ${row.complete ? "true" : "false"}, ${Math.max(0, Math.trunc(row.highest))}, ${Math.max(0, Math.trunc(row.pages))})`);
+  if (!rows.length) return "";
+  return `INSERT INTO scotus_emergency_history_coverage (term, complete, highest_number, pages, scanned_at, completed_at)
+SELECT term, complete, highest_number, pages, now(), CASE WHEN complete THEN now() END
+FROM (VALUES ${rows.join(", ")}) AS v(term, complete, highest_number, pages)
+ON CONFLICT (term) DO UPDATE SET complete = scotus_emergency_history_coverage.complete OR EXCLUDED.complete,
+  highest_number = greatest(scotus_emergency_history_coverage.highest_number, EXCLUDED.highest_number),
+  pages = greatest(scotus_emergency_history_coverage.pages, EXCLUDED.pages), scanned_at = now(),
+  completed_at = COALESCE(scotus_emergency_history_coverage.completed_at, EXCLUDED.completed_at);`;
+}
+
+export function historyLoadSql(applicationsTsv: string, eventsTsv: string, coverage: readonly YearCoverage[] = []): string {
   const appColumns = HISTORY_APPLICATION_COLUMNS.join(", ");
   const eventColumns = HISTORY_EVENT_COLUMNS.join(", ");
   const updates = HISTORY_APPLICATION_COLUMNS.filter((column) => column !== "docket_number")
@@ -163,6 +179,7 @@ ON CONFLICT (source_record_id) DO NOTHING;`,
 SELECT a.source_url, a.docket_number, 200, now(), now(), now() FROM scotus_application a JOIN loaded l USING (docket_number)
 WHERE a.poll_tier <> 'retired'
 ON CONFLICT (url) DO NOTHING;`,
+    coverageSql(coverage),
     "SELECT 'loaded', count(*) FROM loaded;",
     "COMMIT;",
     "SELECT substring(docket_number FROM 1 FOR 2) AS docket_year, source_lane, count(*) AS applications, count(*) FILTER (WHERE kind <> 'extension') AS serious FROM scotus_application GROUP BY 1, 2 ORDER BY 1, 2;",

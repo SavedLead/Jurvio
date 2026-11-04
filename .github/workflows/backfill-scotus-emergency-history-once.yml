@@ -25,9 +25,9 @@ on:
         required: true
         type: string
       years:
-        description: "Two-digit docket years, e.g. 17-25"
+        description: "Two-digit docket years, e.g. 17-26"
         required: true
-        default: "17-25"
+        default: "17-26"
         type: string
       budget_minutes:
         description: "Stop fetching new pages after this many minutes (re-dispatch to resume)"
@@ -67,7 +67,7 @@ jobs:
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_EMERGENCY_HISTORY."
             exit 1
           fi
-          if ! printf '%s' "$YEARS" | grep -Eq '^[0-9]{2}(-[0-9]{2})?(,[0-9]{2}(-[0-9]{2})?)*$'; then echo "::error::years must look like 17-25"; exit 1; fi
+          if ! printf '%s' "$YEARS" | grep -Eq '^[0-9]{2}(-[0-9]{2})?(,[0-9]{2}(-[0-9]{2})?)*$'; then echo "::error::years must look like 17-26"; exit 1; fi
           case "$BUDGET_MINUTES" in ''|*[!0-9]*) echo "::error::budget_minutes must be an integer"; exit 1;; esac
           if [ "$BUDGET_MINUTES" -lt 1 ] || [ "$BUDGET_MINUTES" -gt 200 ]; then echo "::error::budget_minutes must be 1-200"; exit 1; fi
           case "$DELAY_MS" in ''|*[!0-9]*) echo "::error::delay_ms must be an integer"; exit 1;; esac
@@ -86,7 +86,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile --prefer-offline
 
-      - name: Check migration 0196 is applied
+      - name: Check migrations 0196 and 0197 are applied
         run: |
           set -euo pipefail
           # shellcheck disable=SC1090
@@ -95,8 +95,8 @@ jobs:
           set -euo pipefail
           pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
           [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
-          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM scotus_emergency_stat_meta" \
-            || { echo "::error::scotus_emergency_stat_meta missing; release migration 0196 with deploy-production.yml first"; exit 1; }
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM scotus_emergency_stat_meta) + (SELECT count(*) FROM scotus_emergency_history_coverage)" \
+            || { echo "::error::analytics tables missing; release migrations 0196-0197 with deploy-production.yml first"; exit 1; }
           REMOTE
 
       - name: Read docket pages (cached, polite) and load history

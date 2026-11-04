@@ -5,7 +5,7 @@
 // (never /rss/, which robots.txt disallows). Runs on the builder, never on a
 // web host; the workflow loads the TSVs into scotus_application(_event).
 //
-//   tsx scripts/backfill-scotus-emergency-history.ts --years 17-25 \
+//   tsx scripts/backfill-scotus-emergency-history.ts --years 17-26 \
 //     --cache-dir ~/.cache/jurvio/scotus-dockets --out-dir work/ \
 //     [--delay-ms 1500] [--budget-minutes 180] [--miss-stop 15] [--offline]
 //
@@ -47,7 +47,7 @@ function parseYears(spec: string): number[] {
   return [...years].sort((a, b) => a - b);
 }
 
-const years = parseYears(option("years", "17-25"));
+const years = parseYears(option("years", "17-26"));
 const cacheDir = option("cache-dir");
 const outDir = option("out-dir");
 const delayMs = Math.max(1100, Number(option("delay-ms", "1500")));
@@ -168,5 +168,6 @@ try {
 }
 stats.elapsedMs = Date.now() - started;
 writeFileSync(join(outDir, "stats.json"), JSON.stringify(stats));
-writeFileSync(join(outDir, "load.sql"), historyLoadSql(readFileSync(appsFile, "utf8"), readFileSync(eventsFile, "utf8")));
+writeFileSync(join(outDir, "load.sql"), historyLoadSql(readFileSync(appsFile, "utf8"), readFileSync(eventsFile, "utf8"),
+  Object.entries(stats.years).map(([yy, year]) => ({ term: 2000 + Number(yy), complete: year.complete, highest: year.highest, pages: year.pages }))));
 console.log(JSON.stringify(stats));

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { copyCell, HISTORY_APPLICATION_COLUMNS, HISTORY_EVENT_COLUMNS, historyLoadSql, historyRowsFromPage, textArrayLiteral } from "./emergency-history";
+import { copyCell, coverageSql, HISTORY_APPLICATION_COLUMNS, HISTORY_EVENT_COLUMNS, historyLoadSql, historyRowsFromPage, textArrayLiteral } from "./emergency-history";
 
 const fixture = (name: string) => readFileSync(join(process.cwd(), "src/modules/scotus/fixtures/emergency", name), "utf8");
 
@@ -57,5 +57,16 @@ describe("historyLoadSql", () => {
     expect(sql.indexOf("SELECT 'loaded'")).toBeLessThan(sql.indexOf("COMMIT;"));
     expect(sql).toContain("ON CONFLICT (url) DO NOTHING");
     expect(sql).not.toMatch(/\/rss\//);
+  });
+});
+
+describe("coverageSql", () => {
+  it("keeps a finished year complete and ignores bad terms", () => {
+    const sql = coverageSql([{ term: 2025, complete: true, highest: 1468, pages: 1467 }, { term: 2017, complete: false, highest: 1300, pages: 910 }, { term: 1999, complete: true, highest: 1, pages: 1 }]);
+    expect(sql).toContain("(2025, true, 1468, 1467)");
+    expect(sql).toContain("(2017, false, 1300, 910)");
+    expect(sql).not.toContain("1999");
+    expect(sql).toContain("complete = scotus_emergency_history_coverage.complete OR EXCLUDED.complete");
+    expect(coverageSql([])).toBe("");
   });
 });

@@ -47,8 +47,52 @@ function filterSummary(filters: DashboardFilters): string[] {
   return parts;
 }
 
-function termColumns(dashboard: Dashboard, selected: number | null): Column[] {
-  return dashboard.byTerm.map((row) => {
+interface YearCoverage { from: number; to: number; complete: Set<number> }
+
+function yearCoverage(stats: EmergencyStats): YearCoverage {
+  const terms = stats.meta.terms.map((row) => row.term);
+  return {
+    from: Math.min(stats.meta.historyFrom, ...terms), to: Math.max(stats.meta.historyFrom, ...terms),
+    complete: new Set(stats.meta.terms.filter((row) => row.complete).map((row) => row.term)),
+  };
+}
+
+/** Docket years the history backfill has not read end to end. */
+function loadingYears(coverage: YearCoverage): number[] {
+  const out: number[] = [];
+  for (let term = coverage.from; term <= coverage.to; term += 1) if (!coverage.complete.has(term)) out.push(term);
+  return out;
+}
+
+function yearRanges(terms: number[]): string {
+  const parts: string[] = [];
+  for (let index = 0; index < terms.length; index += 1) {
+    let end = index;
+    while (end + 1 < terms.length && terms[end + 1] === terms[end]! + 1) end += 1;
+    parts.push(end === index ? String(terms[index]) : `${terms[index]}–${terms[end]}`);
+    index = end;
+  }
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0] ?? "";
+}
+
+/**
+ * One column per docket year from the first history year to the newest. A year
+ * the backfill has not finished is a "Loading history" placeholder (no counts,
+ * no rate point), so a half-read year never looks like a quiet one.
+ */
+function termColumns(dashboard: Dashboard, selected: number | null, coverage: YearCoverage): Column[] {
+  const byTerm = new Map(dashboard.byTerm.map((row) => [row.term, row]));
+  const terms: number[] = [];
+  if (selected !== null) terms.push(selected);
+  else for (let term = coverage.from; term <= coverage.to; term += 1) terms.push(term);
+  return terms.map((term) => {
+    const row = byTerm.get(term) ?? { term, applications: 0, granted: 0, grantedInPart: 0, denied: 0, closedOther: 0, pending: 0 };
+    if (selected === null && !coverage.complete.has(term)) {
+      return {
+        id: String(term), label: String(term), sublabel: `${yy(term)}A`, loading: true, segments: [],
+        tip: `${term} docket year (${yy(term)}A)\nHistory still loading: ${fmt.format(row.applications)} applications read so far.\nCounts appear here once every docket page for the year has been read.`,
+      };
+    }
     const decided = row.granted + row.grantedInPart + row.denied;
     const rate = decided >= 5 ? Math.round(((row.granted + row.grantedInPart) / decided) * 100) : null;
     return {
@@ -58,7 +102,7 @@ function termColumns(dashboard: Dashboard, selected: number | null): Column[] {
         { key: "granted", value: row.granted }, { key: "partial", value: row.grantedInPart }, { key: "denied", value: row.denied },
         { key: "other", value: row.closedOther }, { key: "pending", value: row.pending },
       ],
-      tip: `${row.term} docket year (${yy(row.term)}A)\n${fmt.format(row.applications)} applications\nGranted ${fmt.format(row.granted)} · in part ${fmt.format(row.grantedInPart)} · denied ${fmt.format(row.denied)}\nWithdrawn, moot or no ruling shown ${fmt.format(row.closedOther)} · pending ${fmt.format(row.pending)}${rate === null ? "" : `\nGrant rate ${rate}% of ${fmt.format(decided)} decided`}`,
+      tip: `${row.term} docket year (${yy(row.term)}A)${coverage.complete.has(term) ? "" : " · history still loading"}\n${fmt.format(row.applications)} applications\nGranted ${fmt.format(row.granted)} · in part ${fmt.format(row.grantedInPart)} · denied ${fmt.format(row.denied)}\nWithdrawn, moot or no ruling shown ${fmt.format(row.closedOther)} · pending ${fmt.format(row.pending)}${rate === null ? "" : `\nGrant rate ${rate}% of ${fmt.format(decided)} decided`}`,
     };
   });
 }
@@ -202,18 +246,23 @@ const OUTCOME_LEGEND = [
   { key: "other", label: "Withdrawn, moot, no ruling shown" }, { key: "pending", label: "Pending" }, { key: "line", label: "Grant rate" },
 ];
 
-function TermCard({ dashboard, preview = false }: { dashboard: Dashboard; preview?: boolean }) {
-  const columns = termColumns(dashboard, dashboard.filters.term);
+function TermCard({ dashboard, coverage, preview = false }: { dashboard: Dashboard; coverage: YearCoverage; preview?: boolean }) {
+  const columns = termColumns(dashboard, dashboard.filters.term, coverage);
+  const loading = loadingYears(coverage);
+  const selectedLoading = dashboard.filters.term !== null && !coverage.complete.has(dashboard.filters.term);
+  const shown = columns.filter((column) => !column.loading).map((column) => Number(column.id));
   return <section className={`${styles.card} ${preview ? styles.span12 : styles.span8}`} aria-labelledby="terms-title">
     <div className={styles.cardHead}>
       <div><h2 id="terms-title">Outcomes by docket year</h2><p>Every application, by the docket year it was numbered in (17A = 2017). The red line is the share granted in whole or in part.</p></div>
       {preview ? <span className={styles.previewLabel}>Free preview</span> : <span className={styles.sampleTag}>n = {fmt.format(dashboard.byTerm.reduce((sum, row) => sum + row.applications, 0))}</span>}
     </div>
+    {dashboard.filters.term === null && loading.length ? <p className={styles.loadingNote}><span aria-hidden="true">⏳</span><span><b>History still loading for {yearRanges(loading)}.</b> Those years are placeholders until every docket page for the year has been read, so a half-read year never looks like a quiet one.</span></p>
+      : selectedLoading ? <p className={styles.loadingNote}><span aria-hidden="true">⏳</span><span><b>History for {dashboard.filters.term} is still loading.</b> These counts cover only the docket pages read so far.</span></p> : null}
     <Legend items={OUTCOME_LEGEND} />
     {columns.length ? <StackedColumns columns={columns} label={`Applications and outcomes by docket year, ${columns.map((column) => column.tip.split("\n").slice(0, 2).join(": ")).join("; ")}`} />
       : <p className={styles.empty}>No applications match these filters.</p>}
     <DataTable caption="Outcomes by docket year" head={["Docket year", "Applications", "Granted", "In part", "Denied", "Withdrawn/moot/no ruling", "Pending", "Grant rate"]}
-      rows={dashboard.byTerm.map((row) => [row.term, fmt.format(row.applications), row.granted, row.grantedInPart, row.denied, row.closedOther, row.pending,
+      rows={dashboard.byTerm.filter((row) => dashboard.filters.term !== null || shown.includes(row.term)).map((row) => [row.term, fmt.format(row.applications), row.granted, row.grantedInPart, row.denied, row.closedOther, row.pending,
         pct(row.granted + row.grantedInPart, row.granted + row.grantedInPart + row.denied)])} />
   </section>;
 }
@@ -392,11 +441,12 @@ function Caveats({ stats }: { stats: EmergencyStats }) {
       <li><strong>Sample sizes</strong>Rates are shown only when at least 5 applications were decided; smaller groups show &ldquo;n&lt;5&rdquo;. Each chart lists its n.</li>
       <li><strong>No ruling shown</strong>Some older applications never show a ruling on their own docket (the page just says the application was &ldquo;completed&rdquo;, often because the Court ruled on a related petition). After a year they are counted as &ldquo;no ruling shown&rdquo;, not as pending or denied.</li>
       <li><strong>Extensions</strong>Requests for more time to file a petition are routine and almost always granted, so they are left out unless you include them.</li>
+      <li><strong>Years still loading</strong>Jurvio reads each docket year&apos;s pages one by one, politely. Until a year has been read end to end it shows as &ldquo;Loading history&rdquo; in the by-year chart; its applications read so far still count in the other charts.</li>
       <li><strong>Docket year</strong>Applications are numbered by the Court&apos;s docket year (24A = filed from about mid-2024 to mid-2025), not the calendar year.</li>
       <li><strong>Freshness</strong>Counts are rebuilt in the background after the Court&apos;s docket changes; the newest applications appear within about 10 to 20 minutes of the Court posting them, then in these counts at the next rebuild.{speed.lines >= 20 && speed.medianMinutesAfterDocketDay !== null ? ` Across ${fmt.format(speed.lines)} recent docket updates, Jurvio stored the median one ${Math.round(speed.medianMinutesAfterDocketDay / 60)} hours after the start of its docket day.` : ""}</li>
     </ul>
-    <DataTable summary="Coverage by docket year" caption="Applications held by docket year" head={["Docket year", "Applications", "Emergency (not extensions)"]}
-      rows={stats.meta.terms.map((row) => [row.term, fmt.format(row.applications), fmt.format(row.serious)])} />
+    <DataTable summary="Coverage by docket year" caption="Applications held by docket year" head={["Docket year", "Applications", "Emergency (not extensions)", "History"]}
+      rows={stats.meta.terms.map((row) => [row.term, fmt.format(row.applications), fmt.format(row.serious), row.complete ? "Complete" : "Still loading"])} />
   </section>;
 }
 
@@ -435,7 +485,7 @@ function Teaser({ gate, stats }: { gate: Extract<ProGate, { ok: false }>; stats:
           <div className={styles.kpi}>
             <span className={styles.kpiLabel}>Docket years</span>
             <span className={styles.kpiValue}>{terms.length || "—"}</span>
-            <span className={styles.kpiNote}>{terms.length ? `${Math.min(...terms)} to ${Math.max(...terms)}` : "Loading history"}</span>
+            <span className={styles.kpiNote}>{terms.length ? `${Math.min(...terms)} to ${Math.max(...terms)}${stats!.meta.terms.some((row) => !row.complete) ? `; ${stats!.meta.terms.filter((row) => row.complete).length} fully loaded so far` : ""}` : "Loading history"}</span>
           </div>
           <LockedKpi label="Grant rate" fake="48%" note="By applicant, administration, circuit" />
           <LockedKpi label="Median time to ruling" fake="6 days" note="One justice vs. the full Court" />
@@ -445,7 +495,7 @@ function Teaser({ gate, stats }: { gate: Extract<ProGate, { ok: false }>; stats:
       </Header>
       <div className={`${styles.wrap} ${styles.body}`}>
         <div className={styles.grid}>
-          {dashboard ? <TermCard dashboard={dashboard} preview /> : null}
+          {dashboard ? <TermCard dashboard={dashboard} coverage={yearCoverage(stats!)} preview /> : null}
           <div className={`${styles.span12} ${styles.teaserGrid}`}>
             <div className={`${styles.grid} ${styles.blurred}`} aria-hidden="true" inert>
               <section className={`${styles.card} ${styles.span6}`}><div className={styles.cardHead}><h2>Who wins: grant rate by applicant</h2></div>
@@ -508,7 +558,7 @@ export default async function EmergencyAnalyticsPage({ searchParams }: { searchP
       <div className={`${styles.wrap} ${styles.body}`}>
         <div className={styles.grid}>
           <Findings dashboard={dashboard} />
-          <TermCard dashboard={dashboard} />
+          <TermCard dashboard={dashboard} coverage={yearCoverage(stats)} />
           <MixCard dashboard={dashboard} />
           <ApplicantCards dashboard={dashboard} />
           <PathCards dashboard={dashboard} />

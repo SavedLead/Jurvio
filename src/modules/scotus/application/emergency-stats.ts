@@ -20,8 +20,24 @@ export interface StatMeta {
   refreshedAt: string;
   applications: number;
   historyApplications: number;
-  terms: Array<{ term: number; applications: number; serious: number; history: number }>;
+  /** complete: the history backfill read this docket year end to end (migration 0197). */
+  terms: Array<{ term: number; applications: number; serious: number; history: number; complete: boolean }>;
+  /** First docket year the history backfill covers. */
+  historyFrom: number;
   speed: { lines: number; medianMinutesAfterDocketDay: number | null };
+}
+
+export const HISTORY_FROM = 2017;
+
+/** Docket years the history backfill has read end to end; none before migration 0197. */
+async function completeTerms(sql: Sql): Promise<Set<number>> {
+  try {
+    const rows = await sql<{ term: number }[]>`SELECT term FROM scotus_emergency_history_coverage WHERE complete`;
+    return new Set(rows.map((row) => Number(row.term)));
+  } catch (error) {
+    if (missingRelation(error)) return new Set();
+    throw error;
+  }
 }
 
 export interface RefreshResult { refreshed: boolean; reason: string; statRows?: number; voteRows?: number; applications?: number; elapsedMs?: number }
@@ -44,6 +60,7 @@ export async function refreshEmergencyStats(sql: Sql, options: { force?: boolean
       if (ageMinutes < (options.minIntervalMinutes ?? 30)) return { refreshed: false, reason: "refreshed recently" };
       if (!changed && ageMinutes < (options.maxAgeMinutes ?? 360)) return { refreshed: false, reason: "no changes" };
     }
+    const complete = await completeTerms(sql);
     return await sql.begin(async (tx) => {
       await tx`SET LOCAL statement_timeout = '60s'`;
       await tx`SET LOCAL lock_timeout = '5s'`;
@@ -64,7 +81,7 @@ export async function refreshEmergencyStats(sql: Sql, options: { force?: boolean
       const terms = new Map<number, StatMeta["terms"][number]>();
       for (const row of source) {
         const term = 2000 + Number(row.docketNumber.slice(0, 2));
-        const entry = terms.get(term) ?? { term, applications: 0, serious: 0, history: 0 };
+        const entry = terms.get(term) ?? { term, applications: 0, serious: 0, history: 0, complete: complete.has(term) };
         entry.applications += 1;
         if (row.kind !== "extension") entry.serious += 1;
         if (row.history) entry.history += 1;
@@ -90,6 +107,7 @@ export async function refreshEmergencyStats(sql: Sql, options: { force?: boolean
       }
       const meta = {
         terms: [...terms.values()].sort((a, b) => a.term - b.term),
+        historyFrom: HISTORY_FROM,
         speed: speed ?? { lines: 0, medianMinutesAfterDocketDay: null },
       };
       const elapsedMs = Date.now() - started;
@@ -114,12 +132,15 @@ export interface EmergencyStats { stats: StatRow[]; votes: VoteRow[]; meta: Stat
 let cache: { at: number; value: EmergencyStats } | null = null;
 const CACHE_MS = 120_000;
 
+/** For tests and the refresh script: drop the in-memory copy. */
+export function resetEmergencyStatsCache() { cache = null; }
+
 export async function loadEmergencyStats(sql: Sql): Promise<EmergencyStats | null> {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.value;
   try {
     const value = await sql.begin(async (tx) => {
       await tx`SET LOCAL statement_timeout = '4000ms'`;
-      const [meta] = await tx<Array<{ refreshedAt: string; applications: number; historyApplications: number; terms: { terms: StatMeta["terms"]; speed: StatMeta["speed"] } }>>`
+      const [meta] = await tx<Array<{ refreshedAt: string; applications: number; historyApplications: number; terms: { terms: StatMeta["terms"]; speed: StatMeta["speed"]; historyFrom?: number } }>>`
         SELECT to_json(refreshed_at)#>>'{}' AS "refreshedAt", applications, history_applications AS "historyApplications", terms
         FROM scotus_emergency_stat_meta WHERE id = 1`;
       if (!meta) return null;
@@ -133,7 +154,8 @@ export async function loadEmergencyStats(sql: Sql): Promise<EmergencyStats | nul
       return {
         stats: [...stats], votes: [...votes],
         meta: { refreshedAt: meta.refreshedAt, applications: meta.applications, historyApplications: meta.historyApplications,
-          terms: meta.terms?.terms ?? [], speed: meta.terms?.speed ?? { lines: 0, medianMinutesAfterDocketDay: null } },
+          terms: (meta.terms?.terms ?? []).map((row) => ({ ...row, complete: row.complete === true })),
+          historyFrom: meta.terms?.historyFrom ?? HISTORY_FROM, speed: meta.terms?.speed ?? { lines: 0, medianMinutesAfterDocketDay: null } },
       };
     });
     if (value) cache = { at: Date.now(), value };
