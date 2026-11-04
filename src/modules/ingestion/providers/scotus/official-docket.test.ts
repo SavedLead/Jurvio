@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { officialDocketSlug, parseOfficialDocket } from "./official-docket";
+import { classifyEvent, officialDocketSlug, parseOfficialDocket } from "./official-docket";
 
 const sourceUri = "https://www.supremecourt.gov/docket/docketfiles/html/public/24-1159.html";
 const fixture = `
@@ -34,5 +34,24 @@ describe("official Supreme Court docket parser", () => {
 
   it("rejects links outside the official Court origin", () => {
     expect(() => parseOfficialDocket(`<table><tr><td>May 09 2025</td><td>Filed <a href="https://example.com/x.pdf">Main Document</a></td></tr></table>`, "24-1159", sourceUri)).toThrow(/not an official/);
+  });
+});
+
+describe("application line types (abbreviations, ordered rulings, partial grants)", () => {
+  it.each([
+    ["Response to application from respondent Moshe Bain, et al. filed.", "application_response_filed"],
+    ["Response to application from respondent Acme Holdings, Inc. filed.", "application_response_filed"],
+    ["Order entered by Justice Sotomayor: Upon consideration of the application of counsel for the applicants and the response filed thereto, it is ordered that the application for stay is denied without prejudice to applicants again seeking relief.", "application_denied"],
+    ["Order entered by Justice Alito: Upon consideration of the application, it is ordered that the application is granted.", "application_granted"],
+    ["The application to vacate the Ninth Circuit's stay presented to Justice Kagan and by her referred to the Court is granted as to the parents but is otherwise denied. Opinion per curiam.", "application_granted_in_part"],
+    ["Application (26A1) granted in part and denied in part by Justice Kagan.", "application_granted_in_part"],
+    ["The application for stay presented to Justice Alito and by him referred to the Court is denied.", "application_denied"],
+    ["Application (26A624) referred to the Court.", "application_referred"],
+    ["Application (26A1) for a stay, submitted to Justice Kagan.", "application_submitted"],
+    ["Response to application (26A458) requested by Justice Kagan, due by 4 p.m. (EDT) on October 13, 2026.", "response_requested"],
+    ["Order entered by Justice Alito: Upon consideration of the application, it is ordered that the mandate is stayed pending further order of the undersigned.", "administrative_stay"],
+    ["Petition for a writ of certiorari filed. (Response due December 1, 2026)", "petition_filed"],
+  ])("%s", (line, type) => {
+    expect(classifyEvent(line)).toBe(type);
   });
 });
