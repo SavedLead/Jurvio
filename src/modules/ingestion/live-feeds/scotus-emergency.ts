@@ -27,7 +27,7 @@ import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import type { ArtifactStore } from "../application/artifact-store";
 import { isRestrictedDocketText } from "../domain/federal-stream";
-import { classifyEvent, HIGH_IMPORTANCE_EVENTS, parseOfficialDocket } from "../providers/scotus/official-docket";
+import { classifyEvent, entryImportance, parseOfficialDocket } from "../providers/scotus/official-docket";
 import { readDocketTitle } from "../providers/scotus/docket-status";
 import { FetchBudget, RateLimitedError } from "./polite-fetcher";
 import { matchOrCreateDraftCase, providerId, resolveCourt, storeFeedArtifact } from "./persist";
@@ -282,7 +282,7 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
           INSERT INTO docket_entry (public_id, case_id, provider_id, provider_entry_id, entry_number,
             filed_on, description, entry_type, importance, source_artifact_id)
           VALUES (${createPublicId("docketEntry")}, ${caseId}, ${provider}, ${event.sourceRecordId}, ${String(position + 1)},
-            ${event.filedOn}, ${event.description}, ${entryType}, ${HIGH_IMPORTANCE_EVENTS.has(entryType) ? "high" : "routine"}, ${artifactId})
+            ${event.filedOn}, ${event.description}, ${entryType}, ${entryImportance(entryType, event.description, docketNumber)}, ${artifactId})
           ON CONFLICT (provider_id, provider_entry_id) DO NOTHING
           RETURNING id`;
         // Another lane may have stored the same public line first without a decision.
