@@ -53,6 +53,16 @@ export interface HistoryRows {
 }
 
 /**
+ * An old application whose own docket never shows a ruling (older pages often
+ * end with "Application (17A145) completed." when the stay was decided on the
+ * companion petition docket). The live lane must not poll it forever.
+ */
+function staleOpen(state: { status: string; lastEntryOn: string | null; submittedOn: string | null }, today: string): boolean {
+  const last = state.lastEntryOn ?? state.submittedOn;
+  return state.status === "pending" && Boolean(last) && Date.parse(`${today}T00:00:00Z`) - Date.parse(`${last}T00:00:00Z`) > 365 * 86_400_000;
+}
+
+/**
  * Rows for one cached docket page, or null when the caption is restricted.
  * `today` (Eastern, yyyy-mm-dd) only sets the poll tier: decided long ago =
  * retired (the live lane never re-reads it); anything still open stays pollable.
@@ -96,7 +106,7 @@ export function historyRowsFromPage(html: string, docketNumber: string, today: s
     entry_count: parsed.lines.length,
     withheld_lines: parsed.withheldLines,
     last_entry_on: state.lastEntryOn,
-    poll_tier: pollTier(state, today),
+    poll_tier: staleOpen(state, today) ? "retired" : pollTier(state, today),
     source_url: docketPageUrl(docketNumber),
     parser_version: EMERGENCY_PARSER_VERSION,
   };

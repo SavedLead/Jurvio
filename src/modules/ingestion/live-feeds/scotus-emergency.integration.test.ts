@@ -193,4 +193,16 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     const [lane] = await sql<{ lanes: string[] }[]>`SELECT array_agg(DISTINCT source_lane) AS lanes FROM scotus_application WHERE docket_number LIKE '26A%'`;
     expect(lane!.lanes).toEqual(["live"]);
   });
+
+  it("never lists an old history application with no ruling as open", async () => {
+    const before = await listEmergencyApplications(sql, { status: "open", extensions: false, applicant: null, kind: null });
+    await sql`
+      INSERT INTO scotus_application (docket_number, caption, kind, applicant_kind, status, source_url, parser_version, source_lane, submitted_on, last_entry_on, poll_tier)
+      VALUES ('26A9998', 'Old v. History', 'stay', 'private', 'pending', 'https://www.supremecourt.gov/docket/docketfiles/html/public/26a9998.html',
+        ${EMERGENCY_PARSER_VERSION}, 'history', '2017-07-31', '2017-08-21', 'retired')`;
+    const after = await listEmergencyApplications(sql, { status: "open", extensions: false, applicant: null, kind: null });
+    expect(after!.rows.some((row) => row.docketNumber === "26A9998")).toBe(false);
+    expect(after!.counts.openSerious).toBe(before!.counts.openSerious);
+    await sql`DELETE FROM scotus_application WHERE docket_number = '26A9998'`;
+  });
 });

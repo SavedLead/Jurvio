@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildStatRows, daysToRuling, lowerCourtGroup, parseDashboardFilters, rate, summarize, termOfDocket, type StatSourceRow,
+  buildStatRows, daysToRuling, statOutcome, lowerCourtGroup, parseDashboardFilters, rate, summarize, termOfDocket, type StatSourceRow,
 } from "./emergency-stats";
 
 function app(overrides: Partial<StatSourceRow>): StatSourceRow {
@@ -48,7 +48,7 @@ describe("buildStatRows + summarize", () => {
     app({ docketNumber: "24A5", kind: "extension", status: "granted" }),
     app({ docketNumber: "24A6", lowerCourt: "Supreme Court of Ohio", status: "withdrawn", rulingOn: "2024-07-02" }),
   ];
-  const { stats, votes } = buildStatRows(rows);
+  const { stats, votes } = buildStatRows(rows, "2024-08-01");
 
   it("collapses identical applications into one count row", () => {
     expect(stats.reduce((sum, row) => sum + row.applications, 0)).toBe(rows.length);
@@ -98,5 +98,18 @@ describe("rate / parseDashboardFilters", () => {
       .toEqual({ term: 2024, applicant: "federal", circuit: "ca9", extensions: true });
     expect(parseDashboardFilters({ term: "1999", applicant: "x", circuit: "<script>", extensions: "yes" }, [2024]))
       .toEqual({ term: null, applicant: null, circuit: null, extensions: false });
+  });
+});
+
+describe("statOutcome", () => {
+  it("counts an application with no ruling a year on as no_ruling, not pending", () => {
+    expect(statOutcome({ status: "pending", submittedOn: "2017-07-31" }, "2026-11-04")).toBe("no_ruling");
+    expect(statOutcome({ status: "pending", submittedOn: "2026-10-01" }, "2026-11-04")).toBe("pending");
+    expect(statOutcome({ status: "denied", submittedOn: "2017-07-31" }, "2026-11-04")).toBe("denied");
+  });
+  it("puts no_ruling with withdrawn/moot, outside decided", () => {
+    const { stats, votes } = buildStatRows([app({ docketNumber: "17A145", status: "pending", submittedOn: "2017-07-31", rulingOn: null })], "2026-11-04");
+    const dashboard = summarize(stats, votes, { term: null, applicant: null, circuit: null, extensions: false });
+    expect(dashboard.totals).toMatchObject({ applications: 1, pending: 0, closedOther: 1, decided: 0 });
   });
 });

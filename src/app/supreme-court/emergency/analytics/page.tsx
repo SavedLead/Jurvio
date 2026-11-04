@@ -58,7 +58,7 @@ function termColumns(dashboard: Dashboard, selected: number | null): Column[] {
         { key: "granted", value: row.granted }, { key: "partial", value: row.grantedInPart }, { key: "denied", value: row.denied },
         { key: "other", value: row.closedOther }, { key: "pending", value: row.pending },
       ],
-      tip: `${row.term} docket year (${yy(row.term)}A)\n${fmt.format(row.applications)} applications\nGranted ${fmt.format(row.granted)} · in part ${fmt.format(row.grantedInPart)} · denied ${fmt.format(row.denied)}\nWithdrawn, moot or other ${fmt.format(row.closedOther)} · pending ${fmt.format(row.pending)}${rate === null ? "" : `\nGrant rate ${rate}% of ${fmt.format(decided)} decided`}`,
+      tip: `${row.term} docket year (${yy(row.term)}A)\n${fmt.format(row.applications)} applications\nGranted ${fmt.format(row.granted)} · in part ${fmt.format(row.grantedInPart)} · denied ${fmt.format(row.denied)}\nWithdrawn, moot or no ruling shown ${fmt.format(row.closedOther)} · pending ${fmt.format(row.pending)}${rate === null ? "" : `\nGrant rate ${rate}% of ${fmt.format(decided)} decided`}`,
     };
   });
 }
@@ -131,7 +131,7 @@ function Kpis({ dashboard }: { dashboard: Dashboard }) {
     <div className={styles.kpi}>
       <span className={styles.kpiLabel}>Applications</span>
       <span className={styles.kpiValue}>{fmt.format(t.applications)}</span>
-      <span className={styles.kpiNote}>{fmt.format(t.decided)} decided · {fmt.format(t.pending)} pending · {fmt.format(t.closedOther)} withdrawn or moot</span>
+      <span className={styles.kpiNote}>{fmt.format(t.decided)} decided · {fmt.format(t.pending)} pending · {fmt.format(t.closedOther)} withdrawn, moot or no ruling shown</span>
     </div>
     <div className={styles.kpi}>
       <span className={styles.kpiLabel}>Grant rate</span>
@@ -199,7 +199,7 @@ function Legend({ items }: { items: Array<{ key: string; label: string }> }) {
 
 const OUTCOME_LEGEND = [
   { key: "granted", label: "Granted" }, { key: "partial", label: "Granted in part" }, { key: "denied", label: "Denied" },
-  { key: "other", label: "Withdrawn, moot, other" }, { key: "pending", label: "Pending" }, { key: "line", label: "Grant rate" },
+  { key: "other", label: "Withdrawn, moot, no ruling shown" }, { key: "pending", label: "Pending" }, { key: "line", label: "Grant rate" },
 ];
 
 function TermCard({ dashboard, preview = false }: { dashboard: Dashboard; preview?: boolean }) {
@@ -212,7 +212,7 @@ function TermCard({ dashboard, preview = false }: { dashboard: Dashboard; previe
     <Legend items={OUTCOME_LEGEND} />
     {columns.length ? <StackedColumns columns={columns} label={`Applications and outcomes by docket year, ${columns.map((column) => column.tip.split("\n").slice(0, 2).join(": ")).join("; ")}`} />
       : <p className={styles.empty}>No applications match these filters.</p>}
-    <DataTable caption="Outcomes by docket year" head={["Docket year", "Applications", "Granted", "In part", "Denied", "Withdrawn/moot/other", "Pending", "Grant rate"]}
+    <DataTable caption="Outcomes by docket year" head={["Docket year", "Applications", "Granted", "In part", "Denied", "Withdrawn/moot/no ruling", "Pending", "Grant rate"]}
       rows={dashboard.byTerm.map((row) => [row.term, fmt.format(row.applications), row.granted, row.grantedInPart, row.denied, row.closedOther, row.pending,
         pct(row.granted + row.grantedInPart, row.granted + row.grantedInPart + row.denied)])} />
   </section>;
@@ -224,7 +224,7 @@ function MixCard({ dashboard }: { dashboard: Dashboard }) {
     { key: "granted", label: "Granted", value: t.granted, color: "#0b5bd7" },
     { key: "partial", label: "Granted in part", value: t.grantedInPart, color: "#7ea9f4" },
     { key: "denied", label: "Denied", value: t.denied, color: "#cdd5e1" },
-    { key: "other", label: "Withdrawn, moot, other", value: t.closedOther, color: "#e9cf9a" },
+    { key: "other", label: "Withdrawn, moot, no ruling shown", value: t.closedOther, color: "#e9cf9a" },
     { key: "pending", label: "Pending", value: t.pending, color: "#9db3d8" },
   ];
   return <section className={`${styles.card} ${styles.span4}`} aria-labelledby="mix-title">
@@ -390,6 +390,7 @@ function Caveats({ stats }: { stats: EmergencyStats }) {
       <li><strong>Source</strong>The Court&apos;s own public docket pages for each application, back to the 2017 docket year. Docket lines that mention sealed or restricted material are never read into these counts.</li>
       <li><strong>Votes are often not noted</strong>The Court usually rules on emergency applications without saying how each justice voted, so dissent counts are minimums, not vote tallies.</li>
       <li><strong>Sample sizes</strong>Rates are shown only when at least 5 applications were decided; smaller groups show &ldquo;n&lt;5&rdquo;. Each chart lists its n.</li>
+      <li><strong>No ruling shown</strong>Some older applications never show a ruling on their own docket (the page just says the application was &ldquo;completed&rdquo;, often because the Court ruled on a related petition). After a year they are counted as &ldquo;no ruling shown&rdquo;, not as pending or denied.</li>
       <li><strong>Extensions</strong>Requests for more time to file a petition are routine and almost always granted, so they are left out unless you include them.</li>
       <li><strong>Docket year</strong>Applications are numbered by the Court&apos;s docket year (24A = filed from about mid-2024 to mid-2025), not the calendar year.</li>
       <li><strong>Freshness</strong>Counts are rebuilt in the background after the Court&apos;s docket changes; the newest applications appear within about 10 to 20 minutes of the Court posting them, then in these counts at the next rebuild.{speed.lines >= 20 && speed.medianMinutesAfterDocketDay !== null ? ` Across ${fmt.format(speed.lines)} recent docket updates, Jurvio stored the median one ${Math.round(speed.medianMinutesAfterDocketDay / 60)} hours after the start of its docket day.` : ""}</li>

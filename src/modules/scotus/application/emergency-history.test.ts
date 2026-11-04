@@ -34,6 +34,22 @@ describe("historyRowsFromPage", () => {
   });
 });
 
+describe("stale open applications", () => {
+  it("retires an application whose docket shows no ruling a year on, so the live lane never polls it", () => {
+    const html = fixture("26a624.html");
+    const fresh = historyRowsFromPage(html, "26A624", "2026-11-04");
+    const later = historyRowsFromPage(html, "26A624", "2028-01-01");
+    const tier = (rows: typeof fresh) => rows!.application.split("\t")[HISTORY_APPLICATION_COLUMNS.indexOf("poll_tier")];
+    const status = fresh!.application.split("\t")[HISTORY_APPLICATION_COLUMNS.indexOf("status")];
+    if (status === "pending") {
+      expect(tier(fresh)).not.toBe("retired");
+      expect(tier(later)).toBe("retired");
+    } else {
+      expect(tier(later)).toBe("retired");
+    }
+  });
+});
+
 describe("historyLoadSql", () => {
   it("never overwrites live rows and counts before commit", () => {
     const sql = historyLoadSql("", "");

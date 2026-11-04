@@ -6,6 +6,8 @@
 import { ALLOTMENT, circuitOfCourtName, type CircuitId } from "./circuit-justice";
 import type { ApplicantKind, ApplicationKind, ApplicationStatus, NotedVote } from "./emergency-application";
 
+export type StatOutcome = ApplicationStatus | "no_ruling";
+
 export type LowerGroup = CircuitId | "state" | "federal_other" | "unknown";
 
 export const LOWER_GROUP_LABEL: Readonly<Record<LowerGroup, string>> = {
@@ -60,7 +62,7 @@ export interface StatRow {
   justice: string | null;
   extension: boolean;
   kind: ApplicationKind;
-  outcome: ApplicationStatus;
+  outcome: StatOutcome;
   referred: boolean;
   responseRequested: boolean;
   adminStay: boolean;
@@ -80,7 +82,7 @@ export interface VoteRow {
   notes: number;
 }
 
-export const DECIDED: ReadonlySet<ApplicationStatus> = new Set(["granted", "granted_in_part", "denied"]);
+export const DECIDED: ReadonlySet<StatOutcome> = new Set(["granted", "granted_in_part", "denied"]);
 export const DISSENT_POSITIONS: ReadonlySet<string> = new Set(["dissent", "would_grant", "would_deny"]);
 export const DAYS_CAP = 61;
 
@@ -104,8 +106,18 @@ function votesOf(value: unknown): NotedVote[] {
   return Array.isArray(value) ? value.filter((vote): vote is NotedVote => Boolean(vote) && typeof (vote as NotedVote).justiceRef === "string" && typeof (vote as NotedVote).position === "string") : [];
 }
 
+/**
+ * Outcome for the counts: "no_ruling" for an application still pending on its own
+ * docket a year after filing (older dockets often end "Application completed."
+ * with the ruling on the companion petition docket), so it is not counted as pending.
+ */
+export function statOutcome(row: Pick<StatSourceRow, "status" | "submittedOn">, today: string): StatOutcome {
+  if (row.status !== "pending" || !row.submittedOn) return row.status;
+  return daysBetween(row.submittedOn, today) > 365 ? "no_ruling" : "pending";
+}
+
 /** Collapse applications into count rows (one per distinct dimension combination). */
-export function buildStatRows(rows: readonly StatSourceRow[]): { stats: StatRow[]; votes: VoteRow[] } {
+export function buildStatRows(rows: readonly StatSourceRow[], today = new Date().toISOString().slice(0, 10)): { stats: StatRow[]; votes: VoteRow[] } {
   const stats = new Map<string, StatRow>();
   const votes = new Map<string, VoteRow>();
   for (const row of rows) {
@@ -116,7 +128,7 @@ export function buildStatRows(rows: readonly StatSourceRow[]): { stats: StatRow[
     const noted = votesOf(row.notedVotes);
     const dims: Omit<StatRow, "applications" | "withVotes"> = {
       term, administration: row.administration, applicantKind: row.applicantKind, lowerGroup, justice: row.submittedJustice,
-      extension, kind: row.kind, outcome: row.status, referred: Boolean(row.referredOn) || row.ruledBy === "court",
+      extension, kind: row.kind, outcome: statOutcome(row, today), referred: Boolean(row.referredOn) || row.ruledBy === "court",
       responseRequested: row.responseRequested, adminStay: Boolean(row.adminStayOn), written: row.writtenReasons,
       days: daysToRuling(row),
     };
