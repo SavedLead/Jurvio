@@ -36,7 +36,7 @@ function responseLinesSql(alias = "a"): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("invalid alias");
   return `(SELECT coalesce(jsonb_agg(jsonb_build_object('filedOn', e.filed_on::text, 'kind', e.kind, 'description', e.description) ORDER BY e.position), '[]'::jsonb)
     FROM scotus_application_event e WHERE e.docket_number = ${alias}.docket_number
-      AND (e.kind IN ('response_requested', 'response_filed') OR e.description ~* '\\mextend'))`;
+      AND (e.kind IN ('response_requested', 'response_filed') OR e.description ~* '\\m(?:respon|extend|opposition|memorandum)'))`;
 }
 
 type ResponseLine = { filedOn: string | null; kind: string | null; description: string };
