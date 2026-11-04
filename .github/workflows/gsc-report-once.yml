@@ -1,0 +1,60 @@
+name: Google Search Console report (once)
+
+# Dispatch-only (ADR 0079). Read-only: Search Console searchAnalytics/query,
+# sitemaps list and urlInspection only. No sitemap PUT, no submits; it never
+# touches the droplets or the database.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type REPORT to run the read-only Search Console report
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: gsc-report-once
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 10
+    env:
+      GCP_SERVICE_ACCOUNT: jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com
+      GSC_SITE_URL: ${{ vars.GSC_SITE_URL }}
+      GSC_REPORT_OUT: gsc-report.json
+    steps:
+      - name: Check confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "REPORT" ]; then
+            echo "Type REPORT to run this report."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        id: google-auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/936072370485/locations/global/workloadIdentityPools/github-actions/providers/jurvio
+          service_account: jurvio-search-console@jurvio-search-console.iam.gserviceaccount.com
+          access_token_scopes: https://www.googleapis.com/auth/webmasters
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read-only Search Console report
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+        run: node scripts/gsc-report.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gsc-report
+          path: gsc-report.json
+          if-no-files-found: warn
