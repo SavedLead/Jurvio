@@ -9,7 +9,8 @@ export const SOURCES = ["google", "bing", "x", "direct", "other"] as const;
 
 export interface GrowthDashboard {
   accounts: { total: number; verified: number; outside: number; last24h: number; last7d: number; first: string | null; last: string | null };
-  visitors: { today: number; d7: number; d30: number; bySource: Array<{ source: string; today: number; d7: number; d30: number }> };
+  serverPageViewsToday: Array<{ visitorClass: string; events: number }>;
+  visitors: { today: number; d7: number; d30: number; sessionsToday: number; pageViewsToday: number; bySource: Array<{ source: string; today: number; d7: number; d30: number }> };
   topLandingPages: Array<{ path: string; visitors: number }>;
   funnel: { visitors: number; signinRequests: number; verifiedAccounts: number; accountsWithFollow: number; waitlistEntries: number };
   plans: Array<{ plan: string; total: number; paying: number }>;
@@ -30,19 +31,30 @@ export async function getGrowthDashboard(sql: Sql): Promise<GrowthDashboard> {
   const outside = sql`(email NOT LIKE '%@jurvio.com' AND email NOT LIKE '%example%' AND email NOT LIKE '%cleanyourname%')`;
   const today = sql`(date_trunc('day', now() AT TIME ZONE 'America/New_York') AT TIME ZONE 'America/New_York')`;
   const since30 = sql`(now() - interval '30 days')`;
-  const [accounts, visitors, landing, funnel, plans, leads, planWait, follows, trend, recent] = await Promise.all([
+  const [accounts, visitors, uniques, serverClasses, landing, funnel, plans, leads, planWait, follows, trend, recent] = await Promise.all([
     sql`SELECT count(*)::int AS total, count(*) FILTER (WHERE email_verified_at IS NOT NULL)::int AS verified,
           count(*) FILTER (WHERE ${outside})::int AS outside,
           count(*) FILTER (WHERE created_at >= now() - interval '24 hours')::int AS last24h,
           count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS last7d,
           min(created_at) AS first, max(created_at) AS last FROM app_user`,
-    sql`SELECT source, count(*) FILTER (WHERE occurred_at >= ${today})::int AS today,
-          count(*) FILTER (WHERE occurred_at >= now() - interval '7 days')::int AS d7, count(*)::int AS d30
-        FROM visitor_first_touch WHERE occurred_at >= ${since30} GROUP BY source`,
+    sql`SELECT coalesce(metadata->>'firstSource', 'direct') AS source,
+          count(DISTINCT visitor_hash) FILTER (WHERE occurred_at >= ${today})::int AS today,
+          count(DISTINCT visitor_hash) FILTER (WHERE occurred_at >= now() - interval '7 days')::int AS d7,
+          count(DISTINCT visitor_hash)::int AS d30
+        FROM demand_event WHERE event_type = 'page_view' AND metadata->>'channel' = 'beacon' AND occurred_at >= ${since30} GROUP BY 1`,
+    sql`SELECT count(DISTINCT visitor_hash) FILTER (WHERE occurred_at >= ${today})::int AS today,
+          count(DISTINCT visitor_hash) FILTER (WHERE occurred_at >= now() - interval '7 days')::int AS d7,
+          count(DISTINCT visitor_hash)::int AS d30,
+          count(DISTINCT session_hash) FILTER (WHERE occurred_at >= ${today})::int AS "sessionsToday",
+          count(*) FILTER (WHERE occurred_at >= ${today})::int AS "pageViewsToday"
+        FROM demand_event WHERE event_type = 'page_view' AND metadata->>'channel' = 'beacon' AND occurred_at >= ${since30}`,
+    sql`SELECT visitor_class::text AS class, count(*)::int AS events FROM demand_event
+        WHERE event_date = (now() AT TIME ZONE 'UTC')::date AND event_type = 'page_view' AND coalesce(metadata->>'channel', 'html') <> 'beacon'
+        GROUP BY 1 ORDER BY 2 DESC`,
     sql`SELECT landing_path AS path, count(*)::int AS visitors FROM visitor_first_touch
         WHERE occurred_at >= ${since30} GROUP BY landing_path ORDER BY 2 DESC, 1 LIMIT 10`,
     sql`SELECT
-          (SELECT count(*)::int FROM visitor_first_touch WHERE occurred_at >= ${since30}) AS visitors,
+          (SELECT count(DISTINCT visitor_hash)::int FROM demand_event WHERE event_type = 'page_view' AND metadata->>'channel' = 'beacon' AND occurred_at >= ${since30}) AS visitors,
           (SELECT count(*)::int FROM signin_request_event WHERE occurred_at >= ${since30}) AS "signinRequests",
           (SELECT count(*)::int FROM app_user WHERE created_at >= ${since30} AND email_verified_at IS NOT NULL) AS "verifiedAccounts",
           (SELECT count(*)::int FROM app_user u WHERE u.created_at >= ${since30} AND EXISTS (SELECT 1 FROM case_follow f WHERE f.user_id = u.id)) AS "accountsWithFollow",
@@ -58,7 +70,7 @@ export async function getGrowthDashboard(sql: Sql): Promise<GrowthDashboard> {
     sql`WITH days AS (
           SELECT generate_series((now() AT TIME ZONE 'America/New_York')::date - 29, (now() AT TIME ZONE 'America/New_York')::date, interval '1 day')::date AS day),
         ev AS (
-          SELECT 'v' AS k, occurred_at AS at FROM visitor_first_touch WHERE occurred_at >= now() - interval '31 days'
+          SELECT DISTINCT ON (visitor_hash, (occurred_at AT TIME ZONE 'America/New_York')::date) 'v' AS k, occurred_at AS at FROM demand_event WHERE event_type = 'page_view' AND metadata->>'channel' = 'beacon' AND occurred_at >= now() - interval '31 days'
           UNION ALL SELECT 's', occurred_at FROM signin_request_event WHERE occurred_at >= now() - interval '31 days'
           UNION ALL SELECT 'a', created_at FROM app_user WHERE created_at >= now() - interval '31 days'
           UNION ALL SELECT 'w', created_at FROM lead_waitlist WHERE created_at >= now() - interval '31 days'),
@@ -92,10 +104,10 @@ export async function getGrowthDashboard(sql: Sql): Promise<GrowthDashboard> {
     if ((SOURCES as readonly string[]).includes(v.source)) continue;
     other.today += v.today; other.d7 += v.d7; other.d30 += v.d30;
   }
-  const sum = (k: "today" | "d7" | "d30") => bySource.reduce((s, r) => s + r[k], 0);
   return {
     accounts: { total: a.total, verified: a.verified, outside: a.outside, last24h: a.last24h, last7d: a.last7d, first: iso(a.first), last: iso(a.last) },
-    visitors: { today: sum("today"), d7: sum("d7"), d30: sum("d30"), bySource },
+    visitors: { ...(uniques[0] as unknown as Omit<GrowthDashboard["visitors"], "bySource">), bySource },
+    serverPageViewsToday: serverClasses.map((r) => ({ visitorClass: r.class, events: r.events })),
     topLandingPages: landing.map((r) => ({ path: r.path, visitors: r.visitors })),
     funnel: funnel[0] as unknown as GrowthDashboard["funnel"],
     plans: PLANS.map((plan) => { const r = plans.find((p) => p.plan === plan); return { plan, total: r?.total ?? 0, paying: r?.paying ?? 0 }; }),
