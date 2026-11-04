@@ -56,3 +56,39 @@ export function planScotusReclassification(rows: Iterable<StoredScotusEntry>): R
   }
   return { changes, scanned, skippedRestricted, cases: cases.size, byTransition };
 }
+
+/**
+ * The write, run inside one transaction after the changes are loaded into a
+ * temp table `incoming (id uuid, entry_type text, importance text)`. created_at
+ * and updated_at are left alone, so no digest or alert watermark sees these
+ * lines as new. A second run updates nothing.
+ */
+export const RECLASSIFY_UPDATE_SQL = `WITH changed AS (
+  UPDATE docket_entry e SET entry_type = i.entry_type, importance = i.importance
+  FROM incoming i
+  WHERE e.id = i.id AND (e.entry_type IS DISTINCT FROM i.entry_type OR e.importance IS DISTINCT FROM i.importance)
+  RETURNING e.case_id
+)
+SELECT 'updated lines' AS label, count(*)::int AS lines, count(DISTINCT case_id)::int AS cases FROM changed`;
+
+/** psql script for the workflow: load the changes, apply them, commit. */
+export function reclassifyApplyScript(changes: readonly EntryChange[]): string {
+  const rows = changes.map((change) => {
+    if (!/^[0-9a-f-]{36}$/i.test(change.id) || !/^[a-z_]+$/.test(change.toType) || !/^[a-z_]+$/.test(change.toImportance)) {
+      throw new Error(`unexpected value for ${change.id}`);
+    }
+    return `${change.id}\t${change.toType}\t${change.toImportance}\n`;
+  }).join("");
+  return [
+    "\\set ON_ERROR_STOP on",
+    "BEGIN;",
+    "SET LOCAL statement_timeout = '300s';",
+    "SET LOCAL lock_timeout = '10s';",
+    "CREATE TEMP TABLE incoming (id uuid PRIMARY KEY, entry_type text NOT NULL, importance text NOT NULL) ON COMMIT DROP;",
+    "COPY incoming (id, entry_type, importance) FROM STDIN;",
+    `${rows}\\.`,
+    `${RECLASSIFY_UPDATE_SQL};`,
+    "COMMIT;",
+    "",
+  ].join("\n");
+}
