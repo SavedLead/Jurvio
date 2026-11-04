@@ -87,7 +87,11 @@ export async function getGrowthDashboard(sql: Sql): Promise<GrowthDashboard> {
     const row = visitors.find((v) => v.source === source);
     return { source, today: row?.today ?? 0, d7: row?.d7 ?? 0, d30: row?.d30 ?? 0 };
   });
-  for (const v of visitors) if (!SOURCES.includes(v.source)) bySource[4]!.today += v.today, bySource[4]!.d7 += v.d7, bySource[4]!.d30 += v.d30;
+  const other = bySource[4]!;
+  for (const v of visitors) {
+    if ((SOURCES as readonly string[]).includes(v.source)) continue;
+    other.today += v.today; other.d7 += v.d7; other.d30 += v.d30;
+  }
   const sum = (k: "today" | "d7" | "d30") => bySource.reduce((s, r) => s + r[k], 0);
   return {
     accounts: { total: a.total, verified: a.verified, outside: a.outside, last24h: a.last24h, last7d: a.last7d, first: iso(a.first), last: iso(a.last) },
