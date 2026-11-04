@@ -13,7 +13,7 @@
 import { parseDocketJusticeNotes, type JusticeNoteKind } from "./docket-justice-notes";
 import { circuitJusticeForCircuit, circuitOfCourtName, ALLOTMENT, type CircuitId } from "./circuit-justice";
 
-export const EMERGENCY_PARSER_VERSION = "scotus-emergency-v1";
+export const EMERGENCY_PARSER_VERSION = "scotus-emergency-v2";
 
 export type ApplicationKind =
   | "extension" // more time to file a petition (routine; hidden by default)
@@ -145,17 +145,25 @@ function justiceRef(value: string | undefined): string | null {
 
 /** One docket line -> event kind. Ruling words are checked before "referred", since a ruling line says both. */
 export function classifyApplicationEvent(description: string): ApplicationEventKind {
-  const text = description.replace(/\s+/g, " ").trim();
+  // Drop the periods of common abbreviations ("Moshe Bain, et al. filed") so a
+  // "[^.]*" sentence match does not stop inside a party name.
+  const text = description.replace(/\s+/g, " ").trim().replace(ABBREVIATION, "$1");
+  const ruling = orderedRuling(text);
+  if (ruling && !/\badministrative(?:ly)?\s+stay(?:ed)?\b|\bstayed\s+pending\s+further\s+order\b/i.test(text)) return ruling;
   if (/\b(?:construed|treated)\s+as\s+a\s+petition\b|\bcertiorari\s+before\s+judgment\s+(?:is\s+)?granted\b|\bset\s+for\s+(?:oral\s+)?argument\b/i.test(text)) return "converted";
   if (/^Application\b[^.]*\bwithdrawn\b|\bletter\b[^.]*\bwithdraw(?:ing|s)?\s+(?:the\s+)?application\b/i.test(text) && !/\bmotion\b/i.test(text.slice(0, 20))) return "withdrawn";
   if (/\b(?:denied|dismissed)\s+as\s+moot\b/i.test(text)) return "moot";
   if (/\badministrative(?:ly)?\s+stay(?:ed)?\b/i.test(text)
     || new RegExp(String.raw`^Order\s+entered\s+by\s+${JUSTICE_NAME}\b[^.]*\bstayed\s+pending\s+further\s+order`, "i").test(text)
     || /\bis\s+(?:hereby\s+)?stayed\s+pending\s+further\s+order\s+of\s+the\s+(?:undersigned|Chief\s+Justice|Court)\b/i.test(text)) return "administrative_stay";
-  if (/^Application\b[^.]*\b(?:is\s+)?granted\s+in\s+part\b/i.test(text)) return "granted_in_part";
-  if (/^Application\b[^.]*\b(?:is\s+)?granted\b/i.test(text)) return "granted";
-  if (/^Application\b[^.]*\b(?:is\s+)?denied\b/i.test(text)) return "denied";
-  if (/^Application\b[^.]*\breferred\s+to\s+the\s+Court\b/i.test(text)) return "referred";
+  if (/^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?granted\s+in\s+part\b/i.test(text)
+    || /^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?granted\b[^.]*\b(?:otherwise|in\s+all\s+other\s+respects)\s+denied\b/i.test(text)) return "granted_in_part";
+  if (/^(?:The\s+)?Application\b[^.]*\breferred\s+to\s+the\s+Court\b[^.]*\bis\s+(?:hereby\s+)?granted\b/i.test(text)) return "granted";
+  if (/^(?:The\s+)?Application\b[^.]*\breferred\s+to\s+the\s+Court\b[^.]*\bis\s+(?:hereby\s+)?denied\b/i.test(text)) return "denied";
+  if (/^Application\b[^.]*\breferred\s+to\s+the\s+Court\.?$/i.test(text)) return "referred";
+  if (/^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?granted\b/i.test(text)) return "granted";
+  if (/^(?:The\s+)?Application\b[^.]*\b(?:is\s+)?denied\b/i.test(text)) return "denied";
+  if (/^(?:The\s+)?Application\b[^.]*\breferred\s+to\s+the\s+Court\b/i.test(text)) return "referred";
   if (/^Response\s+to\s+application\b[^.]*\brequested\s+by\b/i.test(text) || /^(?:The\s+)?response\s+(?:to\s+the\s+application\s+)?(?:is\s+)?requested\b/i.test(text)) return "response_requested";
   if (/^Response\s+to\s+application\b[^.]*\bfiled\b/i.test(text) || /^(?:Opposition|Memorandum)\s+[^.]*\bto\s+(?:the\s+)?application\b[^.]*\bfiled\b/i.test(text)) return "response_filed";
   if (/^Reply\b[^.]*\b(?:filed|submitted)\b/i.test(text)) return "reply_filed";
@@ -164,6 +172,21 @@ export function classifyApplicationEvent(description: string): ApplicationEventK
   if (/^Application\b[^.]*\bsubmitted\s+to\b/i.test(text)) return "submitted";
   if (/^Letter\b/i.test(text)) return "letter";
   return "other";
+}
+
+const ABBREVIATION = /\b(et\s+al|Inc|Corp|Co|Ltd|Jr|Sr|Dr|Mr|Mrs|Ms|St|No|Nos|U\.\s?S|L\.\s?L\.\s?C)\./g;
+
+/**
+ * A single justice's or the Court's ruling written as an order ("Order entered
+ * by Justice Sotomayor: Upon consideration of ..., it is ordered that the
+ * application for stay is denied without prejudice ...").
+ */
+function orderedRuling(text: string): ApplicationEventKind | null {
+  const match = /\bit\s+is\s+(?:hereby\s+)?ordered\s+that\s+the\s+application\b[^.]*?\bis\s+(?:hereby\s+)?(granted\s+in\s+part|granted|denied)\b([^.]*)/i.exec(text);
+  if (!match?.[1]) return null;
+  const verb = match[1].toLowerCase().replace(/\s+/g, " ");
+  if (verb === "granted in part" || (verb === "granted" && /\b(?:otherwise|in\s+part)\s+denied\b|\bdenied\s+in\s+part\b/i.test(match[2] ?? ""))) return "granted_in_part";
+  return verb === "granted" ? "granted" : "denied";
 }
 
 /** What the application asks for, from its first ("Application ... submitted to Justice X") line. */
@@ -208,8 +231,85 @@ export function administrationOn(date: string | null | undefined): string | null
 export function parseResponseDue(description: string): { dueOn: string | null; dueText: string | null; justice: string | null } {
   const text = description.replace(/\s+/g, " ");
   const justice = justiceRef(new RegExp(String.raw`requested\s+by\s+(${JUSTICE_NAME})`, "i").exec(text)?.[1]);
-  const due = /\bdue\s+(?:by\s+)?((?:\d{1,2}(?::\d{2})?\s*[ap]\.?\s?m\.?\s*(?:\([A-Z]{2,4}\))?\s*(?:on\s+)?)?([A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}))/i.exec(text);
+  const due = /\bdue\s+(?:by\s+)?((?:\d{1,2}(?::\d{2})?\s*[ap]\.?\s?m\.?\s*(?:\([A-Z]{2,4}\))?,?\s*(?:on\s+)?)?([A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}))/i.exec(text);
   return { dueOn: due?.[2] ? longDate(due[2]) : null, dueText: due?.[1]?.replace(/\s+/g, " ").trim() ?? null, justice };
+}
+
+/**
+ * A granted extension of the response deadline, e.g. "Motion to extend the time
+ * to file a response is granted and the time is extended to and including
+ * November 20, 2026." or "Response due date extended to 5 p.m. (EST) on
+ * November 20, 2026." Returns null for requests, denials and anything else.
+ */
+export function parseResponseExtension(description: string): { dueOn: string; dueText: string } | null {
+  const text = description.replace(/\s+/g, " ").trim();
+  if (!/\brespon(?:se|d)\b/i.test(text) || /\bdenied\b/i.test(text)) return null;
+  if (/^Motion\b/i.test(text) && !/\bgranted\b/i.test(text)) return null;
+  const match = /\b(?:time|due\s+date|deadline)\b[^.]*?\bextended\b[^.]*?\b(?:to\s+and\s+including|to|until)\s+((?:\d{1,2}(?::\d{2})?\s*[ap]\.?\s?m\.?\s*(?:\([A-Z]{2,4}\))?,?\s*(?:on\s+)?)?([A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}))/i.exec(text);
+  const dueOn = match?.[2] ? longDate(match[2]) : null;
+  return dueOn && match?.[1] ? { dueOn, dueText: match[1].replace(/\s+/g, " ").trim() } : null;
+}
+
+export interface ResponseStatus {
+  /** The deadline in force: the latest request, moved by any later granted extension. */
+  dueOn: string | null;
+  dueText: string | null;
+  requestedBy: string | null;
+  /** First response filed on or after the latest request; once set, the deadline is met. */
+  filedOn: string | null;
+}
+
+/**
+ * The response deadline from docket lines, oldest first. A newer request
+ * replaces an older one (and resets "filed"); a granted extension moves the
+ * date; a response filed on or after the request day clears it.
+ */
+export function responseStatusFrom(lines: ReadonlyArray<{ filedOn: string | null; description: string; kind?: string | null }>): ResponseStatus {
+  const status: ResponseStatus = { dueOn: null, dueText: null, requestedBy: null, filedOn: null };
+  let requestedOn: string | null = null;
+  for (const line of lines) {
+    // Re-classify from the text: rows stored by an older parser may carry a stale kind.
+    const kind = classifyApplicationEvent(line.description);
+    if (kind === "response_requested") {
+      const due = parseResponseDue(line.description);
+      status.dueOn = due.dueOn;
+      status.dueText = due.dueText;
+      status.requestedBy = due.justice;
+      status.filedOn = null;
+      requestedOn = line.filedOn;
+      continue;
+    }
+    if (kind === "response_filed") {
+      if (requestedOn && !status.filedOn && (!line.filedOn || line.filedOn >= requestedOn)) status.filedOn = line.filedOn ?? requestedOn;
+      continue;
+    }
+    if (requestedOn && !status.filedOn) {
+      const extension = parseResponseExtension(line.description);
+      if (extension && (!status.dueOn || extension.dueOn > status.dueOn)) {
+        status.dueOn = extension.dueOn;
+        status.dueText = extension.dueText;
+      }
+    }
+  }
+  return status;
+}
+
+export type ResponseDisplay =
+  | { state: "due"; on: string; days: number }
+  | { state: "filed"; on: string }
+  | { state: "passed"; on: string }
+  | null;
+
+/**
+ * What a pending application should say about its response. Never "due" for a
+ * date in the past: a met deadline says "filed", a missed one "passed".
+ */
+export function responseDisplay(input: { status: ApplicationStatus; responseDueOn: string | null; responseFiledOn: string | null }, today: string): ResponseDisplay {
+  if (input.status !== "pending") return null;
+  if (input.responseFiledOn) return { state: "filed", on: input.responseFiledOn };
+  if (!input.responseDueOn) return null;
+  if (input.responseDueOn < today) return { state: "passed", on: input.responseDueOn };
+  return { state: "due", on: input.responseDueOn, days: daysApart(today, input.responseDueOn) };
 }
 
 function longDate(value: string): string | null {
@@ -267,6 +367,7 @@ export interface ApplicationState {
   responseDueOn: string | null;
   responseDueText: string | null;
   responseRequestedBy: string | null;
+  responseFiledOn: string | null;
   adminStayOn: string | null;
   adminStayJustice: string | null;
   rulingOn: string | null;
@@ -300,7 +401,7 @@ export function deriveApplicationState(lines: readonly DocketLine[], options: { 
   const kind = classifyApplicationKind(first?.description, options.capital);
   const state: ApplicationState = {
     kind, status: "pending", submittedOn: null, submittedJustice: null, referredOn: null,
-    responseDueOn: null, responseDueText: null, responseRequestedBy: null, adminStayOn: null, adminStayJustice: null,
+    responseDueOn: null, responseDueText: null, responseRequestedBy: null, responseFiledOn: null, adminStayOn: null, adminStayJustice: null,
     rulingOn: null, ruledBy: null, writtenReasons: false, notedVotes: [], amicusCount: 0, lastEntryOn: null, events: [],
   };
   for (const line of lines) {
@@ -319,13 +420,6 @@ export function deriveApplicationState(lines: readonly DocketLine[], options: { 
       case "referred":
         state.referredOn ??= line.filedOn;
         break;
-      case "response_requested": {
-        const due = parseResponseDue(line.description);
-        state.responseDueOn = due.dueOn;
-        state.responseDueText = due.dueText;
-        state.responseRequestedBy = due.justice;
-        break;
-      }
       case "administrative_stay":
         state.adminStayOn ??= line.filedOn;
         state.adminStayJustice ??= justiceRef(new RegExp(String.raw`(${JUSTICE_NAME})`).exec(line.description)?.[1]);
@@ -353,6 +447,11 @@ export function deriveApplicationState(lines: readonly DocketLine[], options: { 
       }
     }
   }
+  const response = responseStatusFrom(state.events);
+  state.responseDueOn = response.dueOn;
+  state.responseDueText = response.dueText;
+  state.responseRequestedBy = response.requestedBy;
+  state.responseFiledOn = response.filedOn;
   return state;
 }
 

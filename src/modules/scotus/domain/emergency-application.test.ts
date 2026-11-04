@@ -5,7 +5,7 @@ import { parseApplicationPage, isWithheldLine } from "@/modules/ingestion/live-f
 import { classifyEvent } from "@/modules/ingestion/providers/scotus/official-docket";
 import {
   EMERGENCY_FEEDS, EMERGENCY_TIMING_NOTE, classifyApplicant, classifyApplicationEvent, classifyApplicationKind, deriveApplicationState,
-  emergencyFeedBySlug, emergencyFeedConditionSql, expectedJusticeFor, normalizeApplicationNumber, parseResponseDue, pollTier, submittedJustice,
+  emergencyFeedBySlug, emergencyFeedConditionSql, expectedJusticeFor, normalizeApplicationNumber, parseResponseDue, parseResponseExtension, pollTier, responseDisplay, responseStatusFrom, submittedJustice,
 } from "./emergency-application";
 
 // Real supremecourt.gov docket pages (Nov 2026), counsel contact blocks removed.
@@ -66,6 +66,52 @@ describe("emergency application pages", () => {
     expect(state.responseDueOn).toBe("2025-04-03");
     expect(state.status).toBe("granted");
     expect(state.notedVotes).toEqual([expect.objectContaining({ justiceRef: "Sotomayor", position: "would_deny" })]);
+  });
+
+  it("treats a response filed on the deadline as met (26A458: due Oct 13, responses filed Oct 13)", () => {
+    const page = parseApplicationPage(fixture("26a458"), "26A458");
+    const state = deriveApplicationState(page.lines);
+    expect(state).toMatchObject({ status: "pending", responseDueOn: "2026-10-13", responseFiledOn: "2026-10-13", responseRequestedBy: "Kagan" });
+    expect(responseDisplay(state, "2026-11-04")).toEqual({ state: "filed", on: "2026-10-13" });
+  });
+
+  it("never shows a past deadline as due", () => {
+    const pending = { status: "pending" as const, responseFiledOn: null };
+    expect(responseDisplay({ ...pending, responseDueOn: "2026-10-13" }, "2026-11-04")).toEqual({ state: "passed", on: "2026-10-13" });
+    expect(responseDisplay({ ...pending, responseDueOn: "2026-11-04" }, "2026-11-04")).toEqual({ state: "due", on: "2026-11-04", days: 0 });
+    expect(responseDisplay({ ...pending, responseDueOn: "2026-11-06" }, "2026-11-04")).toEqual({ state: "due", on: "2026-11-06", days: 2 });
+    expect(responseDisplay({ status: "denied", responseFiledOn: null, responseDueOn: "2026-11-06" }, "2026-11-04")).toBeNull();
+  });
+
+  it("honors granted extensions and newer requests, and ignores responses filed before a new request", () => {
+    expect(parseResponseExtension("Motion to extend the time to file a response is granted and the time is extended to and including November 20, 2026.")).toEqual({ dueOn: "2026-11-20", dueText: "November 20, 2026" });
+    expect(parseResponseExtension("Response due date extended to 5 p.m. (EST) on November 20, 2026.")).toMatchObject({ dueOn: "2026-11-20" });
+    expect(parseResponseExtension("Motion to extend the time to file a response from November 6, 2026 to November 20, 2026, submitted to The Clerk.")).toBeNull();
+    expect(parseResponseExtension("Motion to extend the time to file a response is denied.")).toBeNull();
+    const request = (on: string, due: string) => ({ filedOn: on, description: `Response to application (26A1) requested by Justice Kagan, due by 4 p.m. (EST) on ${due}.` });
+    const filed = (on: string) => ({ filedOn: on, description: "Response to application from respondent Ohio filed." });
+    expect(responseStatusFrom([request("2026-10-01", "October 8, 2026"),
+      { filedOn: "2026-10-03", description: "Motion to extend the time to file a response is granted and the time is extended to and including October 15, 2026." }]))
+      .toMatchObject({ dueOn: "2026-10-15", filedOn: null });
+    expect(responseStatusFrom([request("2026-10-01", "October 8, 2026"), filed("2026-10-08"), request("2026-10-20", "October 27, 2026")]))
+      .toMatchObject({ dueOn: "2026-10-27", filedOn: null });
+    expect(responseStatusFrom([filed("2026-09-30"), request("2026-10-01", "October 8, 2026")])).toMatchObject({ dueOn: "2026-10-08", filedOn: null });
+  });
+
+  it("reads response, ruling and deadline lines the first parser missed (audit, Nov 4 2026)", () => {
+    // "et al." used to end the sentence match, so these responses were not seen.
+    expect(classifyApplicationEvent("Response to application from respondent Moshe Bain, et al. filed.")).toBe("response_filed");
+    expect(classifyApplicationEvent("Response to application from respondent Friends of the Ruidosa Church, et al. filed.")).toBe("response_filed");
+    // 26A382: a single justice's ruling written as an order.
+    expect(classifyApplicationEvent("Order entered by Justice Sotomayor: Upon consideration of the application of counsel for the applicants and the response filed thereto, it is ordered that the application for stay is denied without prejudice to applicants again seeking relief, if necessary, once state court remedies are exhausted.")).toBe("denied");
+    // 25A810: the full Court granted part and denied the rest.
+    expect(classifyApplicationEvent("The application to vacate the Ninth Circuit's stay presented to Justice Kagan and by her referred to the Court is granted as to the parents but is otherwise denied. Opinion per curiam.")).toBe("granted_in_part");
+    expect(classifyApplicationEvent("The application for stay presented to Justice Alito and by him referred to the Court is denied.")).toBe("denied");
+    expect(classifyApplicationEvent("Application (26A624) referred to the Court.")).toBe("referred");
+    // A comma after the time zone used to lose the deadline.
+    expect(parseResponseDue("Response to application (25A810) requested by Justice Kagan, due by 4 p.m. (EST), on January 21, 2026.")).toMatchObject({ dueOn: "2026-01-21", justice: "Kagan" });
+    // An administrative stay order is still an administrative stay.
+    expect(classifyApplicationEvent("Order entered by Justice Alito: Upon consideration of the application, it is ordered that the mandate is stayed pending further order of the undersigned.")).toBe("administrative_stay");
   });
 
   it("marks capital cases and linked dockets", () => {

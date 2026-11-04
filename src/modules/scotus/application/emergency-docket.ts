@@ -10,8 +10,9 @@ import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { alertEligibleSql } from "@/modules/accounts/application/follows";
 import { circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
-import type {
-  ApplicantKind, ApplicationEventKind, ApplicationKind, ApplicationStatus, NotedVote,
+import {
+  easternDate, responseStatusFrom,
+  type ApplicantKind, type ApplicationEventKind, type ApplicationKind, type ApplicationStatus, type NotedVote,
 } from "@/modules/scotus/domain/emergency-application";
 
 type Sql = ReturnType<typeof postgres>;
@@ -24,6 +25,38 @@ function missingRelation(error: unknown) {
 /** A pending status cannot be trusted when the filter withheld lines: the ruling itself may be one of them. */
 export function statusUncertain(row: { status: ApplicationStatus; withheldLines: number }): boolean {
   return row.status === "pending" && row.withheldLines > 0;
+}
+
+/**
+ * The docket lines that decide the response deadline (requests, responses,
+ * extensions), oldest first, so readers derive it from the timeline rather
+ * than trusting the stored column, which only changes when the page does.
+ */
+function responseLinesSql(alias = "a"): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("invalid alias");
+  return `(SELECT coalesce(jsonb_agg(jsonb_build_object('filedOn', e.filed_on::text, 'kind', e.kind, 'description', e.description) ORDER BY e.position), '[]'::jsonb)
+    FROM scotus_application_event e WHERE e.docket_number = ${alias}.docket_number
+      AND (e.kind IN ('response_requested', 'response_filed') OR e.description ~* '\\mextend'))`;
+}
+
+type ResponseLine = { filedOn: string | null; kind: string | null; description: string };
+
+/** Replace the stored deadline with the one the timeline gives, and add when the response was filed. */
+export function withResponseStatus<T extends { responseDueOn: string | null; responseDueText: string | null; responseRequestedBy?: string | null }>(
+  row: T & { responseLines?: unknown },
+): Omit<T, "responseLines"> & { responseFiledOn: string | null } {
+  const { responseLines, ...rest } = row;
+  const lines = (Array.isArray(responseLines) ? responseLines : []).filter((line): line is ResponseLine =>
+    Boolean(line) && typeof (line as ResponseLine).description === "string");
+  if (!lines.some((line) => line.kind === "response_requested")) return { ...rest, responseFiledOn: null };
+  const status = responseStatusFrom(lines);
+  return {
+    ...rest,
+    responseDueOn: status.dueOn,
+    responseDueText: status.dueText,
+    ...("responseRequestedBy" in rest ? { responseRequestedBy: status.requestedBy ?? rest.responseRequestedBy ?? null } : {}),
+    responseFiledOn: status.filedOn,
+  };
 }
 
 /** Not explicitly hidden: no decision (draft) counts as visible here; a "not displayable" decision hides it. */
@@ -46,6 +79,8 @@ export interface EmergencyListRow {
   referredOn: string | null;
   responseDueOn: string | null;
   responseDueText: string | null;
+  /** A response filed on or after the latest request: the deadline was met. */
+  responseFiledOn: string | null;
   adminStayOn: string | null;
   rulingOn: string | null;
   lastEntryOn: string | null;
@@ -78,7 +113,7 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
     return await sql.begin(async (tx) => {
       await tx`SET LOCAL statement_timeout = '3000ms'`;
       const status = filters.status;
-      const rows = await tx<EmergencyListRow[]>`
+      const raw = await tx<Array<Omit<EmergencyListRow, "responseFiledOn"> & { responseLines: unknown }>>`
         SELECT a.docket_number AS "docketNumber", a.caption, a.kind, a.capital, a.applicant_kind AS "applicantKind", a.status,
           a.submitted_justice AS "submittedJustice", a.expected_justice AS "expectedJustice",
           a.submitted_on::text AS "submittedOn", a.docketed_on::text AS "docketedOn", a.referred_on::text AS "referredOn",
@@ -86,7 +121,8 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
           a.ruling_on::text AS "rulingOn", a.last_entry_on::text AS "lastEntryOn", a.lower_court AS "lowerCourt",
           jsonb_array_length(a.noted_votes)::int AS "notedVotes", a.amicus_count AS "amicusCount", a.withheld_lines AS "withheldLines",
           (SELECT jsonb_build_object('kind', e.kind, 'filedOn', e.filed_on::text) FROM scotus_application_event e
-            WHERE e.docket_number = a.docket_number ORDER BY e.position DESC LIMIT 1) AS "lastEvent"
+            WHERE e.docket_number = a.docket_number ORDER BY e.position DESC LIMIT 1) AS "lastEvent",
+          ${tx.unsafe(responseLinesSql("a"))} AS "responseLines"
         FROM scotus_application a
         WHERE ${tx.unsafe(visibleSql("a"))}
           AND (${filters.extensions} OR a.kind <> 'extension')
@@ -95,6 +131,7 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
           AND (${filters.kind}::text IS NULL OR a.kind = ${filters.kind})
         ORDER BY (a.status = 'pending') DESC, coalesce(a.last_entry_on, a.submitted_on) DESC NULLS LAST, a.docket_number DESC
         LIMIT ${Math.min(filters.limit ?? 150, 500)}`;
+      const rows: EmergencyListRow[] = raw.map((row) => withResponseStatus(row));
       const [counts] = await tx<EmergencyList["counts"][]>`
         SELECT count(*) FILTER (WHERE kind <> 'extension' AND status = 'pending')::int AS "openSerious",
           count(*) FILTER (WHERE kind <> 'extension' AND status <> 'pending' AND ruling_on >= current_date - 30)::int AS "decided30",
@@ -148,7 +185,7 @@ export async function getEmergencyApplication(sql: Sql, docketNumber: string): P
   try {
     return await sql.begin(async (tx) => {
       await tx`SET LOCAL statement_timeout = '3000ms'`;
-      const [row] = await tx<Array<Omit<EmergencyDetail, "events" | "jurvioCase" | "linkedLowerCase" | "linkedMerits" | "lastEvent"> & {
+      const [row] = await tx<Array<Omit<EmergencyDetail, "events" | "jurvioCase" | "linkedLowerCase" | "linkedMerits" | "lastEvent" | "responseFiledOn"> & {
         caseId: string | null; casePublicId: string | null; followable: boolean | null; lowerCaseNumbers: unknown; votes: unknown }>>`
         SELECT a.docket_number AS "docketNumber", a.caption, a.applicant, a.kind, a.capital, a.applicant_kind AS "applicantKind",
           a.administration, a.status, a.submitted_justice AS "submittedJustice", a.expected_justice AS "expectedJustice",
@@ -194,7 +231,9 @@ export async function getEmergencyApplication(sql: Sql, docketNumber: string): P
           LIMIT 1`;
         linkedMerits = merits ?? null;
       }
-      const { caseId: _caseId, casePublicId, followable, votes, ...rest } = row;
+      const { caseId: _caseId, casePublicId, followable, votes, ...stored } = row;
+      // The full timeline is already loaded: derive the deadline from it.
+      const rest = withResponseStatus({ ...stored, responseLines: events.map((event) => ({ filedOn: event.filedOn, kind: event.kind, description: event.description })) });
       void _caseId;
       return {
         ...rest,
@@ -261,15 +300,22 @@ export async function loadEmergencyAnalytics(sql: Sql): Promise<EmergencyAnalyti
   }
 }
 
-/** Response deadlines still ahead (or today) for open serious applications, for the Pro calendar. */
-export async function listResponseDeadlines(sql: Sql, options: { userId?: string; followedOnly?: boolean } = {}) {
-  return sql<Array<{ docketNumber: string; caption: string; responseDueOn: string; responseDueText: string | null; requestedBy: string | null }>>`
+/** Response deadlines still ahead (or today) and not yet met, for open serious applications, for the Pro calendar. */
+export async function listResponseDeadlines(sql: Sql, options: { userId?: string; followedOnly?: boolean; today?: string } = {}) {
+  const raw = await sql<Array<{ docketNumber: string; caption: string; responseDueOn: string | null; responseDueText: string | null; responseRequestedBy: string | null; responseLines: unknown }>>`
     SELECT a.docket_number AS "docketNumber", a.caption, a.response_due_on::text AS "responseDueOn",
-      a.response_due_text AS "responseDueText", a.response_requested_by AS "requestedBy"
+      a.response_due_text AS "responseDueText", a.response_requested_by AS "responseRequestedBy",
+      ${sql.unsafe(responseLinesSql("a"))} AS "responseLines"
     FROM scotus_application a
-    WHERE a.status = 'pending' AND a.response_due_on IS NOT NULL AND a.response_due_on >= current_date - 1
+    WHERE a.status = 'pending' AND a.response_due_on IS NOT NULL AND a.response_due_on >= current_date - 120
       AND ${sql.unsafe(visibleSql("a"))}
       AND (${!options.followedOnly} OR EXISTS (SELECT 1 FROM case_follow f WHERE f.case_id = a.case_id AND f.user_id = ${options.userId ?? null}))
-    ORDER BY a.response_due_on, a.docket_number
-    LIMIT 300`;
+    LIMIT 600`;
+  const today = options.today ?? easternDate(new Date());
+  const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  return raw.map((row) => withResponseStatus(row))
+    .filter((row): row is typeof row & { responseDueOn: string } => Boolean(row.responseDueOn) && !row.responseFiledOn && row.responseDueOn! >= yesterday)
+    .map((row) => ({ docketNumber: row.docketNumber, caption: row.caption, responseDueOn: row.responseDueOn, responseDueText: row.responseDueText, requestedBy: row.responseRequestedBy }))
+    .sort((a, b) => a.responseDueOn.localeCompare(b.responseDueOn) || a.docketNumber.localeCompare(b.docketNumber))
+    .slice(0, 300);
 }
