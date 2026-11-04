@@ -53,7 +53,7 @@ export function StackedColumns({ columns, label, medianAt, medianLabel }: { colu
     if (index > 0 && ratePoints[index - 1]) runs[runs.length - 1]!.push(point); else runs.push([point]);
   });
   return <div className={styles.columns} role="img" aria-label={label}>
-    <div className={styles.yAxis} aria-hidden="true">{ticks.map((tick) => <span key={tick} style={{ bottom: `${tick * 100}%` }}>{fmt.format(Math.round(max * tick))}</span>)}</div>
+    <div className={styles.yAxis} aria-hidden="true">{columns.every((column) => column.loading) ? null : ticks.map((tick) => <span key={tick} style={{ bottom: `${tick * 100}%` }}>{fmt.format(Math.round(max * tick))}</span>)}</div>
     <div className={styles.plot}>
       {ticks.slice(1).map((tick) => <div key={tick} className={styles.gridLine} style={{ bottom: `${tick * 100}%` }} aria-hidden="true" />)}
       <div className={styles.bars}>
