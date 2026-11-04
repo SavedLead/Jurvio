@@ -34,13 +34,15 @@ export function followEligibleSql(alias = "c"): string {
  * docket lines come from the Court's public docket and already passed the
  * strict sealed/restricted filter. Every other check of followEligibleSql
  * still applies, and an explicit "not displayable" decision still hides it.
+ * Only current (live-lane) applications count: a history backfill row never
+ * makes a draft case followable.
  */
 export function emergencyApplicationEligibleSql(alias = "c"): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("invalid alias");
   return `(
     ${alias}.publication IN ('published', 'draft')
     AND EXISTS (SELECT 1 FROM scotus_application emergency_app
-      WHERE emergency_app.case_id = ${alias}.id AND emergency_app.kind <> 'extension')
+      WHERE emergency_app.case_id = ${alias}.id AND emergency_app.kind <> 'extension' AND emergency_app.source_lane = 'live')
     AND ${latestPublicationColumnSql("displayable", "legal_case", `${alias}.id`, true)}
     AND ${alias}.caption !~* '\\m(sealed|under seal|grand jury|juvenile|minor child|in re search|search warrant)\\M'
     AND ${alias}.docket_number !~* '-(mj|gj|sw|sealed)-'

@@ -7,12 +7,22 @@ import { matchEntityAlerts } from "@/modules/accounts/application/entity-alerts"
 import { followEntity, resolveEntityTarget } from "@/modules/accounts/application/entity-follows";
 import { alertEligibleSql, followCase, followState } from "@/modules/accounts/application/follows";
 import { getEmergencyApplication, listEmergencyApplications } from "@/modules/scotus/application/emergency-docket";
+import { coverageSql } from "@/modules/scotus/application/emergency-history";
+import { loadEmergencyStats, refreshEmergencyStats, resetEmergencyStatsCache } from "@/modules/scotus/application/emergency-stats";
+import { summarize } from "@/modules/scotus/domain/emergency-stats";
 import { LocalArtifactStore } from "../infrastructure/local-artifact-store";
 import { providerId } from "./persist";
 import { runScotusEmergency } from "./scotus-emergency";
 import { EMERGENCY_PARSER_VERSION } from "@/modules/scotus/domain/emergency-application";
 
 const databaseUrl = process.env.DATABASE_URL;
+
+async function loadFresh() {
+  resetEmergencyStatsCache();
+  const stats = await loadEmergencyStats(postgresForFresh!);
+  return stats!;
+}
+let postgresForFresh: ReturnType<typeof postgres> | null = null;
 const fixture = (name: string) => readFileSync(join(__dirname, "..", "..", "scotus", "fixtures", "emergency", `${name}.html`), "utf8");
 const PAGES: Record<string, string> = { "26A623": fixture("26a623"), "26A624": fixture("26a624"), "26A600": fixture("26a600") };
 const NEW_LINE = `<div class="card"><table class="ProceedingItem"><tr><td class="ProceedingDate">Nov 04 2026</td>
@@ -26,6 +36,7 @@ function withExtraLine(html: string): string {
 
 describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postgres", () => {
   const sql = postgres(databaseUrl ?? "postgres://invalid", { max: 1, onnotice: () => undefined });
+  postgresForFresh = sql;
   const store = new LocalArtifactStore(mkdtempSync(join(tmpdir(), "jurvio-emergency-")));
   const calls: Array<{ url: string; ims: string | null }> = [];
   let pages = { ...PAGES };
@@ -174,5 +185,70 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     // Capital feed: only the stay of execution, never the federal injunction or the extension.
     expect(new Set(items.map((item) => item.docket))).toEqual(new Set(["26A623"]));
     expect(items.some((item) => item.summary.startsWith("Response requested: "))).toBe(true);
+  });
+
+  it("rebuilds the precomputed analytics counts from the applications (migration 0196)", async () => {
+    const result = await refreshEmergencyStats(sql, { force: true });
+    expect(result.refreshed).toBe(true);
+    const [held] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_application`;
+    const stats = await loadEmergencyStats(sql);
+    expect(stats).not.toBeNull();
+    expect(stats!.stats.reduce((sum, row) => sum + row.applications, 0)).toBe(held!.n);
+    expect(stats!.meta.applications).toBe(held!.n);
+    const dashboard = summarize(stats!.stats, stats!.votes, { term: null, applicant: null, circuit: null, extensions: true });
+    expect(dashboard.totals.applications).toBe(held!.n);
+    // Unchanged applications: a second, unforced refresh right away is skipped.
+    expect((await refreshEmergencyStats(sql)).refreshed).toBe(false);
+    const [lane] = await sql<{ lanes: string[] }[]>`SELECT array_agg(DISTINCT source_lane) AS lanes FROM scotus_application WHERE docket_number LIKE '26A%'`;
+    expect(lane!.lanes).toEqual(["live"]);
+  });
+
+  it("flags a docket year complete only after the history scan finished it (migration 0197)", async () => {
+    await sql`DELETE FROM scotus_emergency_history_coverage`;
+    await refreshEmergencyStats(sql, { force: true });
+    expect((await loadFresh()).meta.terms.find((row) => row.term === 2026)?.complete).toBe(false);
+    await sql.unsafe(coverageSql([{ term: 2026, complete: true, highest: 700, pages: 690 }]));
+    // A later partial scan never clears it.
+    await sql.unsafe(coverageSql([{ term: 2026, complete: false, highest: 20, pages: 20 }]));
+    await refreshEmergencyStats(sql, { force: true });
+    const meta = (await loadFresh()).meta;
+    expect(meta.terms.find((row) => row.term === 2026)?.complete).toBe(true);
+    expect(meta.historyFrom).toBe(2017);
+    const [row] = await sql<{ highest: number }[]>`SELECT highest_number AS highest FROM scotus_emergency_history_coverage WHERE term = 2026`;
+    expect(row!.highest).toBe(700);
+    await sql`DELETE FROM scotus_emergency_history_coverage`;
+  });
+
+  it("keeps history rows out of the public list and its header counts", async () => {
+    const filters = { extensions: true, applicant: null, kind: null } as const;
+    const before = await listEmergencyApplications(sql, { status: "all", ...filters });
+    await sql`
+      INSERT INTO scotus_application (docket_number, caption, kind, applicant_kind, status, source_url, parser_version, source_lane, submitted_on, ruling_on, last_entry_on, poll_tier)
+      VALUES ('17A9991', 'Hist v. Extension', 'extension', 'private', 'granted', 'https://www.supremecourt.gov/docket/docketfiles/html/public/17a9991.html',
+          ${EMERGENCY_PARSER_VERSION}, 'history', '2017-08-01', ${new Date().toISOString().slice(0, 10)}, '2017-08-02', 'retired'),
+        ('17A9992', 'Hist v. Stay', 'stay', 'federal', 'denied', 'https://www.supremecourt.gov/docket/docketfiles/html/public/17a9992.html',
+          ${EMERGENCY_PARSER_VERSION}, 'history', '2017-08-01', ${new Date().toISOString().slice(0, 10)}, '2017-08-02', 'retired')`;
+    try {
+      for (const status of ["all", "decided", "open"] as const) {
+        const list = await listEmergencyApplications(sql, { status, ...filters });
+        expect(list!.rows.some((row) => row.docketNumber.startsWith("17A999"))).toBe(false);
+      }
+      const after = await listEmergencyApplications(sql, { status: "all", ...filters });
+      expect(after!.counts).toEqual(before!.counts);
+    } finally {
+      await sql`DELETE FROM scotus_application WHERE docket_number IN ('17A9991', '17A9992')`;
+    }
+  });
+
+  it("never lists an old history application with no ruling as open", async () => {
+    const before = await listEmergencyApplications(sql, { status: "open", extensions: false, applicant: null, kind: null });
+    await sql`
+      INSERT INTO scotus_application (docket_number, caption, kind, applicant_kind, status, source_url, parser_version, source_lane, submitted_on, last_entry_on, poll_tier)
+      VALUES ('26A9998', 'Old v. History', 'stay', 'private', 'pending', 'https://www.supremecourt.gov/docket/docketfiles/html/public/26a9998.html',
+        ${EMERGENCY_PARSER_VERSION}, 'history', '2017-07-31', '2017-08-21', 'retired')`;
+    const after = await listEmergencyApplications(sql, { status: "open", extensions: false, applicant: null, kind: null });
+    expect(after!.rows.some((row) => row.docketNumber === "26A9998")).toBe(false);
+    expect(after!.counts.openSerious).toBe(before!.counts.openSerious);
+    await sql`DELETE FROM scotus_application WHERE docket_number = '26A9998'`;
   });
 });

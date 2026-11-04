@@ -9,6 +9,9 @@ import {
   APPLICANT_KIND_LABEL, EMERGENCY_FEEDS, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, responseDisplay,
   type ApplicantKind, type ApplicationKind,
 } from "@/modules/scotus/domain/emergency-application";
+import { loadEmergencyStats } from "@/modules/scotus/application/emergency-stats";
+import { emergencyProGate } from "@/modules/scotus/http/emergency-pro";
+import { AnalyticsPreview, previewViewer } from "./analytics/preview";
 import styles from "./emergency.module.css";
 import { easternTime, justiceLabel, kindLabel, shortDate } from "./format";
 
@@ -39,7 +42,14 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
   const applicant = APPLICANTS.includes(one(params.applicant) as ApplicantKind) ? one(params.applicant) as ApplicantKind : null;
   const kind = KINDS.find((item) => item.id === one(params.kind))?.id ?? null;
   const extensions = one(params.extensions) === "1";
-  const data = await listEmergencyApplications(db(), { status, applicant, kind, extensions });
+  const [data, stats, gate] = await Promise.all([
+    listEmergencyApplications(db(), { status, applicant, kind, extensions }),
+    loadEmergencyStats(db()).catch(() => null),
+    emergencyProGate(),
+  ]);
+  const preview = <AnalyticsPreview stats={stats} viewer={previewViewer(gate)} />;
+  // After the first few applications, so the list itself stays near the top on a phone.
+  const PREVIEW_AFTER = 3;
   const today = easternDate(new Date());
 
   const href = (patch: Record<string, string | null>) => {
@@ -48,6 +58,35 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
     for (const [key, value] of Object.entries(merged)) if (value) next.set(key, value);
     const query = next.toString();
     return (query ? `/supreme-court/emergency?${query}` : "/supreme-court/emergency") as Route;
+  };
+  const renderRow = (row: NonNullable<typeof data>["rows"][number]) => {
+    const response = statusUncertain(row) ? null : responseDisplay(row, today);
+    return <li key={row.docketNumber} className={styles.item}>
+      <div><span className={styles.docket}>No. {row.docketNumber}</span></div>
+      <div>
+        <h2><Link href={`/supreme-court/emergency/${row.docketNumber}` as Route}>{cleanCaseCaption(row.caption)}</Link></h2>
+        <p>
+          {row.lastEvent ? <>{EVENT_LABEL[row.lastEvent.kind]}{row.lastEvent.filedOn ? ` · ${shortDate(row.lastEvent.filedOn)}` : ""}</> : "Filed"}
+          {row.submittedJustice ? <> · to {justiceLabel(row.submittedJustice)}</> : null}
+        </p>
+        <div className={styles.meta}>
+          <span className={`${styles.chip} ${row.capital ? styles.chipCapital : row.kind === "stay" || row.kind === "injunction" ? styles.chipStay : ""}`}>{kindLabel(row.kind, row.capital)}</span>
+          <span className={styles.chip}>{APPLICANT_KIND_LABEL[row.applicantKind]}</span>
+          {row.adminStayOn && row.status === "pending" ? <span className={styles.chip}>Administrative stay</span> : null}
+          {row.notedVotes ? <span className={styles.chip}>{row.notedVotes} noted {row.notedVotes === 1 ? "vote" : "votes"}</span> : null}
+          {row.lowerCourt ? <span className={styles.chip}>{row.lowerCourt}</span> : null}
+        </div>
+      </div>
+      <div className={styles.side}>
+        {statusUncertain(row)
+          ? <span className={`${styles.status} ${styles.status_withdrawn}`} title="Some docket lines are withheld">Check Court docket</span>
+          : <span className={`${styles.status} ${styles[`status_${row.status}`] ?? ""}`}>{STATUS_LABEL[row.status]}</span>}
+        {response?.state === "due" ? <span className={response.days <= 2 ? styles.due : undefined}>Response due {response.days === 0 ? "today" : response.days === 1 ? "tomorrow" : `in ${response.days} days`}</span>
+          : response?.state === "filed" ? <span>Response filed {shortDate(response.on)}</span>
+          : response?.state === "passed" ? <span>Response deadline passed {shortDate(response.on)}</span> : null}
+        {row.rulingOn ? <span>Ruled {shortDate(row.rulingOn)}</span> : null}
+      </div>
+    </li>;
   };
   const featuredFeeds = EMERGENCY_FEEDS.filter((feed) => !feed.slug.startsWith("justice:"));
   const justiceFeeds = EMERGENCY_FEEDS.filter((feed) => feed.slug.startsWith("justice:"));
@@ -92,38 +131,12 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
         </p>
 
         {!data ? <div className={styles.empty}><h2>The emergency docket is loading</h2><p>Jurvio could not read the emergency docket just now. Try again in a minute, or use the <a href="https://www.supremecourt.gov/docket/docket.aspx">Court&apos;s docket search ↗</a>.</p></div>
-          : data.rows.length === 0 ? <div className={styles.empty}><h2>No applications match</h2><p>Try another filter, or <Link href={"/supreme-court/emergency?status=all" as Route}>see every application</Link>.</p></div>
-          : <ol className={styles.list}>
-            {data.rows.map((row) => {
-              const response = statusUncertain(row) ? null : responseDisplay(row, today);
-              return <li key={row.docketNumber} className={styles.item}>
-                <div><span className={styles.docket}>No. {row.docketNumber}</span></div>
-                <div>
-                  <h2><Link href={`/supreme-court/emergency/${row.docketNumber}` as Route}>{cleanCaseCaption(row.caption)}</Link></h2>
-                  <p>
-                    {row.lastEvent ? <>{EVENT_LABEL[row.lastEvent.kind]}{row.lastEvent.filedOn ? ` · ${shortDate(row.lastEvent.filedOn)}` : ""}</> : "Filed"}
-                    {row.submittedJustice ? <> · to {justiceLabel(row.submittedJustice)}</> : null}
-                  </p>
-                  <div className={styles.meta}>
-                    <span className={`${styles.chip} ${row.capital ? styles.chipCapital : row.kind === "stay" || row.kind === "injunction" ? styles.chipStay : ""}`}>{kindLabel(row.kind, row.capital)}</span>
-                    <span className={styles.chip}>{APPLICANT_KIND_LABEL[row.applicantKind]}</span>
-                    {row.adminStayOn && row.status === "pending" ? <span className={styles.chip}>Administrative stay</span> : null}
-                    {row.notedVotes ? <span className={styles.chip}>{row.notedVotes} noted {row.notedVotes === 1 ? "vote" : "votes"}</span> : null}
-                    {row.lowerCourt ? <span className={styles.chip}>{row.lowerCourt}</span> : null}
-                  </div>
-                </div>
-                <div className={styles.side}>
-                  {statusUncertain(row)
-                    ? <span className={`${styles.status} ${styles.status_withdrawn}`} title="Some docket lines are withheld">Check Court docket</span>
-                    : <span className={`${styles.status} ${styles[`status_${row.status}`] ?? ""}`}>{STATUS_LABEL[row.status]}</span>}
-                  {response?.state === "due" ? <span className={response.days <= 2 ? styles.due : undefined}>Response due {response.days === 0 ? "today" : response.days === 1 ? "tomorrow" : `in ${response.days} days`}</span>
-                    : response?.state === "filed" ? <span>Response filed {shortDate(response.on)}</span>
-                    : response?.state === "passed" ? <span>Response deadline passed {shortDate(response.on)}</span> : null}
-                  {row.rulingOn ? <span>Ruled {shortDate(row.rulingOn)}</span> : null}
-                </div>
-              </li>;
-            })}
-          </ol>}
+          : data.rows.length === 0 ? <><div className={styles.empty}><h2>No applications match</h2><p>Try another filter, or <Link href={"/supreme-court/emergency?status=all" as Route}>see every application</Link>.</p></div>{preview}</>
+          : <>
+            <ol className={styles.list}>{data.rows.slice(0, PREVIEW_AFTER).map(renderRow)}</ol>
+            {preview}
+            {data.rows.length > PREVIEW_AFTER ? <ol className={styles.list} start={PREVIEW_AFTER + 1}>{data.rows.slice(PREVIEW_AFTER).map(renderRow)}</ol> : null}
+          </>}
       </section>
 
       <aside className={styles.aside} aria-label="Emergency docket alerts">

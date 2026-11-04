@@ -540,7 +540,7 @@ export function emergencyFeedConditionSql(alias = "a"): string {
     const slug = feed.slug.slice("justice:".length);
     return `(f.target_key = '${feed.slug}' AND ${alias}.submitted_justice_slug = '${slug}')`;
   }).join("\n        OR ");
-  return `(${alias}.kind <> 'extension' AND (
+  return `(${alias}.kind <> 'extension' AND ${alias}.source_lane = 'live' AND (
         f.target_key = 'all'
         OR (f.target_key = 'federal' AND ${alias}.applicant_kind = 'federal')
         OR (f.target_key = 'state' AND ${alias}.applicant_kind = 'state')

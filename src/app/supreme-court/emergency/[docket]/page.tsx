@@ -11,6 +11,9 @@ import {
   APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor,
   justiceSlugForRef, plainEnglishFor, responseDisplay, type ApplicationEventKind, type NotedVote,
 } from "@/modules/scotus/domain/emergency-application";
+import { loadEmergencyStats } from "@/modules/scotus/application/emergency-stats";
+import { emergencyProGate } from "@/modules/scotus/http/emergency-pro";
+import { AnalyticsPreviewCompact, previewViewer } from "../analytics/preview";
 import styles from "../emergency.module.css";
 import { easternTime, justiceLabel, kindLabel, shortDate } from "../format";
 
@@ -59,7 +62,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const app = await getEmergencyApplication(db(), docket);
+  const [app, stats, gate] = await Promise.all([
+    getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
+  ]);
   if (!app) notFound();
   const caption = cleanCaseCaption(app.caption);
   const today = easternDate(new Date());
@@ -157,6 +162,7 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
       <aside className={styles.aside} aria-label="Follow and sources">
         {app.jurvioCase?.followable ? <FollowCaseBox caseId={app.jurvioCase.publicId} application={{ docketNumber: app.docketNumber }} />
           : <section className={styles.panel}><h2>Follow this application</h2><p>Following is not available for this application.</p></section>}
+        <AnalyticsPreviewCompact stats={stats} viewer={previewViewer(gate)} applicantKind={app.applicantKind} next={`/supreme-court/emergency/${app.docketNumber}`} />
         <section className={styles.panel}>
           <h3>How fast are updates?</h3>
           <p>{EMERGENCY_TIMING_NOTE}</p>

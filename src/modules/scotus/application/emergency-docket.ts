@@ -60,7 +60,7 @@ export function withResponseStatus<T extends { responseDueOn: string | null; res
 }
 
 /** Not explicitly hidden: no decision (draft) counts as visible here; a "not displayable" decision hides it. */
-function visibleSql(alias = "a"): string {
+export function visibleSql(alias = "a"): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(alias)) throw new Error("invalid alias");
   return `(${alias}.case_id IS NULL OR ${latestPublicationColumnSql("displayable", "legal_case", `${alias}.case_id`, true)})`;
 }
@@ -125,10 +125,15 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
           ${tx.unsafe(responseLinesSql("a"))} AS "responseLines"
         FROM scotus_application a
         WHERE ${tx.unsafe(visibleSql("a"))}
+          AND a.source_lane = 'live'
           AND (${filters.extensions} OR a.kind <> 'extension')
           AND (${status} = 'all' OR (${status} = 'open' AND a.status = 'pending') OR (${status} = 'decided' AND a.status <> 'pending'))
           AND (${filters.applicant}::text IS NULL OR a.applicant_kind = ${filters.applicant})
           AND (${filters.kind}::text IS NULL OR a.kind = ${filters.kind})
+        -- The public list and its header counts show current applications only. History rows
+        -- (earlier docket years, source_lane 'history') feed the analytics counts and their own
+        -- application pages, never this list: an old docket that shows no ruling is not a
+        -- pending application. The live lane adopts any history row it re-reads ('live').
         ORDER BY (a.status = 'pending') DESC, coalesce(a.last_entry_on, a.submitted_on) DESC NULLS LAST, a.docket_number DESC
         LIMIT ${Math.min(filters.limit ?? 150, 500)}`;
       const rows: EmergencyListRow[] = raw.map((row) => withResponseStatus(row));
@@ -137,7 +142,7 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
           count(*) FILTER (WHERE kind <> 'extension' AND status <> 'pending' AND ruling_on >= current_date - 30)::int AS "decided30",
           count(*) FILTER (WHERE kind = 'extension')::int AS "extensionsHidden",
           count(*)::int AS total
-        FROM scotus_application a WHERE ${tx.unsafe(visibleSql("a"))}`;
+        FROM scotus_application a WHERE ${tx.unsafe(visibleSql("a"))} AND a.source_lane = 'live'`;
       const [fresh] = await tx<{ lastCheckedAt: string | null; lastChangeAt: string | null }[]>`
         SELECT to_json(max(checked_at))#>>'{}' AS "lastCheckedAt", to_json(max(changed_at))#>>'{}' AS "lastChangeAt"
         FROM scotus_source_poll WHERE docket_number IS NOT NULL`;

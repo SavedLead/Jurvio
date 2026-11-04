@@ -253,7 +253,7 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
           ruling_on = EXCLUDED.ruling_on, ruled_by = EXCLUDED.ruled_by, written_reasons = EXCLUDED.written_reasons,
           noted_votes = EXCLUDED.noted_votes, amicus_count = EXCLUDED.amicus_count, entry_count = EXCLUDED.entry_count,
           withheld_lines = EXCLUDED.withheld_lines, last_entry_on = EXCLUDED.last_entry_on, poll_tier = EXCLUDED.poll_tier,
-          source_url = EXCLUDED.source_url, parser_version = EXCLUDED.parser_version, changed_at = now(), updated_at = now()`;
+          source_url = EXCLUDED.source_url, parser_version = EXCLUDED.parser_version, source_lane = 'live', changed_at = now(), updated_at = now()`;
       // A line is history (not news) when this is the first time this lane reads a docket Jurvio already knew.
       const backfilled = !existing && mode === "seed";
       const known = await db<{ source_record_id: string; filed_on: string | null; description: string }[]>`

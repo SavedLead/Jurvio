@@ -1,0 +1,115 @@
+name: Backfill Supreme Court emergency docket history (once, resumable)
+
+# Loads emergency applications ("A" dockets) of earlier docket years into
+# scotus_application / scotus_application_event (source_lane 'history',
+# docket lines marked backfilled) so the Pro emergency analytics cover the
+# Court's record back to the 2017 docket year, not only the applications the
+# 10-minute lane has seen. See scripts/backfill-scotus-emergency-history.ts.
+#
+# Runs on the builder, never on a web host. Pages come from
+# https://www.supremecourt.gov/docket/docketfiles/html/public/<docket>.html
+# (never /rss/, which robots.txt disallows), one request at a time at least
+# delay_ms apart, with an identifying User-Agent; stops on HTTP 429. Pages are
+# cached gzip in ~/.cache/jurvio/scotus-dockets (shared with the other docket
+# backfills, same concurrency group), so a re-dispatch resumes and pages read
+# once are free. The strict sealed/restricted filter is the live lane's own.
+# Rows the live lane wrote are never overwritten. The database sees one
+# transaction per run; the next scotus-emergency run rebuilds the analytics
+# counts. No cost. Dispatch by hand with confirm=BACKFILL_EMERGENCY_HISTORY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKFILL_EMERGENCY_HISTORY to run this workflow against production"
+        required: true
+        type: string
+      years:
+        description: "Two-digit docket years, e.g. 17-26"
+        required: true
+        default: "17-26"
+        type: string
+      budget_minutes:
+        description: "Stop fetching new pages after this many minutes (re-dispatch to resume)"
+        required: true
+        default: "180"
+        type: string
+      delay_ms:
+        description: "Delay between supremecourt.gov requests (1100-10000 ms)"
+        required: true
+        default: "1500"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-backfill-case-outcome-sources
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 230
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      YEARS: ${{ inputs.years }}
+      BUDGET_MINUTES: ${{ inputs.budget_minutes }}
+      DELAY_MS: ${{ inputs.delay_ms }}
+    steps:
+      - name: Require confirm=BACKFILL_EMERGENCY_HISTORY and validate inputs
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "BACKFILL_EMERGENCY_HISTORY" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=BACKFILL_EMERGENCY_HISTORY."
+            exit 1
+          fi
+          if ! printf '%s' "$YEARS" | grep -Eq '^[0-9]{2}(-[0-9]{2})?(,[0-9]{2}(-[0-9]{2})?)*$'; then echo "::error::years must look like 17-26"; exit 1; fi
+          case "$BUDGET_MINUTES" in ''|*[!0-9]*) echo "::error::budget_minutes must be an integer"; exit 1;; esac
+          if [ "$BUDGET_MINUTES" -lt 1 ] || [ "$BUDGET_MINUTES" -gt 200 ]; then echo "::error::budget_minutes must be 1-200"; exit 1; fi
+          case "$DELAY_MS" in ''|*[!0-9]*) echo "::error::delay_ms must be an integer"; exit 1;; esac
+          if [ "$DELAY_MS" -lt 1100 ] || [ "$DELAY_MS" -gt 10000 ]; then echo "::error::delay_ms must be 1100-10000"; exit 1; fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Check migrations 0196 and 0197 are applied
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }
+          sudo -n docker exec "$pg" psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM scotus_emergency_stat_meta) + (SELECT count(*) FROM scotus_emergency_history_coverage)" \
+            || { echo "::error::analytics tables missing; release migrations 0196-0197 with deploy-production.yml first"; exit 1; }
+          REMOTE
+
+      - name: Read docket pages (cached, polite) and load history
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-history"; mkdir -p "$work"
+          INGESTION_USER_AGENT="Jurvio/0.1 (+https://jurvio.com; public court records)" \
+            pnpm exec tsx scripts/backfill-scotus-emergency-history.ts --years "$YEARS" \
+              --cache-dir "$HOME/.cache/jurvio/scotus-dockets" --out-dir "$work" \
+              --delay-ms "$DELAY_MS" --budget-minutes "$BUDGET_MINUTES" > "$work/stats.out"
+          echo "::notice title=History stats::$(cat "$work/stats.out")"
+          wc -l "$work/applications.tsv" "$work/events.tsv"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/load.sql" | tee "$work/after.txt"
+          { echo '### Emergency docket history'; echo '```'; cat "$work/stats.out" "$work/after.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

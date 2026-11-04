@@ -93,7 +93,7 @@ WITH match_follow AS MATERIALIZED (
       JOIN match_event ev ON ev.event_at > f.created_at
       JOIN scotus_application a ON a.case_id = ev.case_id
       WHERE f.kind = 'emergency' AND ev.event_kind IN ('docket_entry', 'new_case')
-        AND (a.kind <> 'extension' AND (
+        AND (a.kind <> 'extension' AND a.source_lane = 'live' AND (
         f.target_key = 'all'
         OR (f.target_key = 'federal' AND a.applicant_kind = 'federal')
         OR (f.target_key = 'state' AND a.applicant_kind = 'state')
@@ -142,7 +142,7 @@ WITH match_follow AS MATERIALIZED (
   ) OR (
     c.publication IN ('published', 'draft')
     AND EXISTS (SELECT 1 FROM scotus_application emergency_app
-      WHERE emergency_app.case_id = c.id AND emergency_app.kind <> 'extension')
+      WHERE emergency_app.case_id = c.id AND emergency_app.kind <> 'extension' AND emergency_app.source_lane = 'live')
     AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
         WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
     WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
@@ -269,7 +269,7 @@ WITH match_follow AS MATERIALIZED (
       JOIN match_event ev ON ev.event_at > f.created_at
       JOIN scotus_application a ON a.case_id = ev.case_id
       WHERE f.kind = 'emergency' AND ev.event_kind IN ('docket_entry', 'new_case')
-        AND (a.kind <> 'extension' AND (
+        AND (a.kind <> 'extension' AND a.source_lane = 'live' AND (
         f.target_key = 'all'
         OR (f.target_key = 'federal' AND a.applicant_kind = 'federal')
         OR (f.target_key = 'state' AND a.applicant_kind = 'state')
@@ -318,7 +318,7 @@ WITH match_follow AS MATERIALIZED (
   ) OR (
     c.publication IN ('published', 'draft')
     AND EXISTS (SELECT 1 FROM scotus_application emergency_app
-      WHERE emergency_app.case_id = c.id AND emergency_app.kind <> 'extension')
+      WHERE emergency_app.case_id = c.id AND emergency_app.kind <> 'extension' AND emergency_app.source_lane = 'live')
     AND COALESCE((SELECT current_row.displayable FROM publication_current current_row
         WHERE current_row.object_type = 'legal_case' AND current_row.object_id = c.id), (SELECT decision.displayable FROM publication_decision decision
     WHERE decision.object_type = 'legal_case' AND decision.object_id = c.id
