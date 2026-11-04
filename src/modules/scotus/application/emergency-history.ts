@@ -153,8 +153,8 @@ ON CONFLICT (source_record_id) DO NOTHING;`,
 SELECT a.source_url, a.docket_number, 200, now(), now(), now() FROM scotus_application a JOIN loaded l USING (docket_number)
 WHERE a.poll_tier <> 'retired'
 ON CONFLICT (url) DO NOTHING;`,
-    "COMMIT;",
     "SELECT 'loaded', count(*) FROM loaded;",
+    "COMMIT;",
     "SELECT substring(docket_number FROM 1 FOR 2) AS docket_year, source_lane, count(*) AS applications, count(*) FILTER (WHERE kind <> 'extension') AS serious FROM scotus_application GROUP BY 1, 2 ORDER BY 1, 2;",
     "",
   ].join("\n");

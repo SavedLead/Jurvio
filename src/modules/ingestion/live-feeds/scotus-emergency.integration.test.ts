@@ -7,6 +7,8 @@ import { matchEntityAlerts } from "@/modules/accounts/application/entity-alerts"
 import { followEntity, resolveEntityTarget } from "@/modules/accounts/application/entity-follows";
 import { alertEligibleSql, followCase, followState } from "@/modules/accounts/application/follows";
 import { getEmergencyApplication, listEmergencyApplications } from "@/modules/scotus/application/emergency-docket";
+import { loadEmergencyStats, refreshEmergencyStats } from "@/modules/scotus/application/emergency-stats";
+import { summarize } from "@/modules/scotus/domain/emergency-stats";
 import { LocalArtifactStore } from "../infrastructure/local-artifact-store";
 import { providerId } from "./persist";
 import { runScotusEmergency } from "./scotus-emergency";
@@ -174,5 +176,21 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     // Capital feed: only the stay of execution, never the federal injunction or the extension.
     expect(new Set(items.map((item) => item.docket))).toEqual(new Set(["26A623"]));
     expect(items.some((item) => item.summary.startsWith("Response requested: "))).toBe(true);
+  });
+
+  it("rebuilds the precomputed analytics counts from the applications (migration 0196)", async () => {
+    const result = await refreshEmergencyStats(sql, { force: true });
+    expect(result.refreshed).toBe(true);
+    const [held] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_application`;
+    const stats = await loadEmergencyStats(sql);
+    expect(stats).not.toBeNull();
+    expect(stats!.stats.reduce((sum, row) => sum + row.applications, 0)).toBe(held!.n);
+    expect(stats!.meta.applications).toBe(held!.n);
+    const dashboard = summarize(stats!.stats, stats!.votes, { term: null, applicant: null, circuit: null, extensions: true });
+    expect(dashboard.totals.applications).toBe(held!.n);
+    // Unchanged applications: a second, unforced refresh right away is skipped.
+    expect((await refreshEmergencyStats(sql)).refreshed).toBe(false);
+    const [lane] = await sql<{ lanes: string[] }[]>`SELECT array_agg(DISTINCT source_lane) AS lanes FROM scotus_application WHERE docket_number LIKE '26A%'`;
+    expect(lane!.lanes).toEqual(["live"]);
   });
 });
