@@ -281,7 +281,7 @@ function PathCards({ dashboard }: { dashboard: Dashboard }) {
         { key: "referred", label: "Went to the full Court", value: t.referred, note: `${pct(t.referred, t.applications)} of filed`, color: "#0b5bd7" },
         { key: "granted", label: "Granted by the full Court", value: t.grantedReferred, note: `${pct(t.grantedReferred, t.decidedByCourt)} of full-Court rulings`, color: "#e3483e" },
       ]} />
-      <p className={styles.note}>Administrative stays (a pause while the Court decides): {fmt.format(t.adminStay)}. Rulings with written reasons: {fmt.format(t.written)}.</p>
+      {t.adminStay || t.written ? <p className={styles.note}>{t.adminStay ? `Administrative stays (a pause while the Court decides): ${fmt.format(t.adminStay)}. ` : ""}{t.written ? `Rulings with written reasons: ${fmt.format(t.written)}.` : ""}</p> : null}
     </section>
     <section className={`${styles.card} ${styles.span7}`} aria-labelledby="days-title">
       <div className={styles.cardHead}><div><h2 id="days-title">Time from filing to ruling</h2><p>Days from the application to the grant or denial. Most single-justice rulings are fast; full-Court rulings take longer.</p></div>
@@ -309,7 +309,7 @@ function JusticeCard({ dashboard }: { dashboard: Dashboard }) {
           data-tip={`${justiceName(row.key)}\n${fmt.format(row.applications)} applications\n${pct(row.referred, row.applications)} went to the full Court (${row.referred})\n${pct(row.granted, row.decided)} granted (${row.granted} of ${row.decided} decided)`}>
           <span className={styles.justiceName}>{justiceName(row.key)} <span className={styles.phoneApps}>· {fmt.format(row.applications)} applications</span>{detail ? <small>{detail}</small> : null}</span>
           <span className={`${styles.miniBar} ${styles.apps}`} data-label="Apps"><span className={styles.miniTrack}><span className={styles.miniFill} style={{ width: `${(row.applications / max) * 100}%` }} /></span>{fmt.format(row.applications)}</span>
-          <span className={styles.miniBar} data-label="Full Court"><span className={styles.miniTrack}><span className={`${styles.miniFill} ${styles.miniFillBlue}`} style={{ width: `${(row.applications ? row.referred / row.applications : 0) * 100}%` }} /></span>{pct(row.referred, row.applications)}</span>
+          <span className={styles.miniBar} data-label="Full Court"><span className={styles.miniTrack}><span className={`${styles.miniFill} ${styles.miniFillBlue}`} style={{ width: `${(row.applications >= 5 ? row.referred / row.applications : 0) * 100}%` }} /></span>{pct(row.referred, row.applications)}</span>
           <span className={styles.miniBar} data-label="Granted"><span className={styles.miniTrack}><span className={`${styles.miniFill} ${styles.miniFillRed}`} style={{ width: `${(row.decided >= 5 ? row.granted / row.decided : 0) * 100}%` }} /></span>{pct(row.granted, row.decided)}</span>
         </li>;
       })}
