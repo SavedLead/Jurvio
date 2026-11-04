@@ -97,6 +97,28 @@ export const HIGH_IMPORTANCE_EVENTS: ReadonlySet<string> = new Set([
   "application_granted", "application_granted_in_part", "application_denied", "administrative_stay", "application_referred", "response_requested",
 ]);
 
+const APPLICATION_RULINGS: ReadonlySet<string> = new Set(["application_granted", "application_granted_in_part", "application_denied"]);
+// Routine filing requests ruled on by a justice: more time, longer briefs, leave to file.
+const PROCEDURAL_REQUEST = /\b(?:to\s+extend\s+the\s+time|extension\s+of\s+(?:the\s+)?time|extend(?:ing)?\s+the\s+time|word\s+limit|page\s+limit|in\s+excess\s+of\s+the\b|leave\s+to\s+file|to\s+file\s+(?:a\s+|an\s+)?(?:consolidated\s+)?(?:reply|response|amicus|supplemental)?\s*brief|consolidated\s+(?:response\s+)?brief|divided\s+argument|enlargement\s+of\s+time)\b/i;
+
+/** True for an emergency ("A") application docket such as 26A458. */
+export function isApplicationDocket(docketNumber: string | null | undefined): boolean {
+  return /^\d{2}A\d{1,5}$/i.test((docketNumber ?? "").trim());
+}
+
+/**
+ * "high" for events that matter on a case page and in alerts. On merits dockets
+ * (not "A" applications), a justice granting or denying a routine filing request
+ * (more time, a longer brief, leave to file) stays routine; emergency
+ * applications and real rulings stay high.
+ */
+export function entryImportance(eventType: string, description: string, docketNumber: string | null | undefined): "high" | "routine" {
+  if (!HIGH_IMPORTANCE_EVENTS.has(eventType)) return "routine";
+  if (APPLICATION_RULINGS.has(eventType) && !isApplicationDocket(docketNumber)
+    && PROCEDURAL_REQUEST.test(description.replace(/\s+/g, " "))) return "routine";
+  return "high";
+}
+
 export function classifyEvent(description: string) {
   const application = classifyApplicationLine(description);
   if (application) return application;

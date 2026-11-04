@@ -1,7 +1,7 @@
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import type { ArtifactStore } from "./artifact-store";
-import { fetchOfficialDocket, HIGH_IMPORTANCE_EVENTS } from "../providers/scotus/official-docket";
+import { entryImportance, fetchOfficialDocket } from "../providers/scotus/official-docket";
 import { extractQuestionPresentedFromPdf, fetchOfficialFilingPdf } from "../providers/scotus/official-filing";
 
 type Sql = ReturnType<typeof postgres>;
@@ -17,9 +17,6 @@ function dispositionScope(value: string) {
   return null;
 }
 
-function importance(eventType: string) {
-  return HIGH_IMPORTANCE_EVENTS.has(eventType) ? "high" : "routine";
-}
 
 export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: ArtifactStore, options: { limit: number }) {
   if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) throw new Error("Docket limit must be between 1 and 100");
@@ -126,7 +123,7 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
             INSERT INTO docket_entry (public_id, case_id, provider_id, provider_entry_id, entry_number,
               filed_on, description, entry_type, importance, source_artifact_id)
             VALUES (${createPublicId("docketEntry")}, ${legalCase.id}, ${provider.id}, ${event.sourceRecordId},
-              ${String(index + 1)}, ${event.filedOn}, ${event.description}, ${event.eventType}, ${importance(event.eventType)}, ${artifact.id})
+              ${String(index + 1)}, ${event.filedOn}, ${event.description}, ${event.eventType}, ${entryImportance(event.eventType, event.description, docket.docketNumber)}, ${artifact.id})
             ON CONFLICT (provider_id, provider_entry_id) DO UPDATE SET filed_on = EXCLUDED.filed_on,
               description = EXCLUDED.description, entry_type = EXCLUDED.entry_type,
               importance = EXCLUDED.importance, source_artifact_id = EXCLUDED.source_artifact_id, updated_at = now()

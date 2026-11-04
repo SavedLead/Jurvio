@@ -1,0 +1,105 @@
+name: Reclassify Supreme Court docket lines (once, idempotent)
+
+# One-time re-typing of stored Supreme Court docket lines with the current
+# classifier (PR #684: "et al."-safe application lines, rulings written as
+# orders, partial grants) and importance rules (routine filing requests on
+# merits dockets stay routine; emergency applications and real rulings are
+# "high").
+#
+# Changes ONLY docket_entry.entry_type and docket_entry.importance. It never
+# touches created_at (case digests and entity alerts select new lines by
+# created_at against their watermarks, so no alert or email is sent), the
+# description, publication decisions, or any line the strict restricted-text
+# filter matches (skipped). Running it again changes nothing.
+#
+# apply=false (default) is a dry run: read-only export + plan summary.
+# Dispatch by hand with confirm=RECLASSIFY_SCOTUS_ENTRIES.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RECLASSIFY_SCOTUS_ENTRIES to run this workflow against production"
+        required: true
+        type: string
+      apply:
+        description: "true to write the changes; false for a dry run (plan only)"
+        required: true
+        default: "false"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-reclassify-scotus-entries
+  cancel-in-progress: false
+
+jobs:
+  reclassify:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 45
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      APPLY: ${{ inputs.apply }}
+    steps:
+      - name: Require confirm=RECLASSIFY_SCOTUS_ENTRIES and validate inputs
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "RECLASSIFY_SCOTUS_ENTRIES" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=RECLASSIFY_SCOTUS_ENTRIES."
+            exit 1
+          fi
+          case "$APPLY" in true|false) ;; *) echo "::error::apply must be true or false"; exit 1;; esac
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Export Supreme Court application lines (read-only)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/reclassify"; mkdir -p "$work"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" > "$work/rows.jsonl" <<'REMOTE'
+          set -euo pipefail
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          [ -n "$pg" ] || { echo "postgres missing" >&2; exit 1; }
+          sudo -n docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=600s' "$pg" \
+            psql -U jurvio -d jurvio -At -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT json_build_object('id', e.id, 'caseId', e.case_id, 'docketNumber', c.docket_number,
+            'entryType', coalesce(e.entry_type, ''), 'importance', e.importance, 'description', e.description)
+          FROM docket_entry e
+          JOIN legal_case c ON c.id = e.case_id
+          JOIN court ON court.id = c.court_id AND lower(court.provider_court_id) = 'scotus'
+          WHERE e.description ~* 'application|ordered\s+that';
+          SQL
+          REMOTE
+          echo "::notice title=Lines read::$(wc -l < "$work/rows.jsonl")"
+          pnpm exec tsx scripts/reclassify-scotus-docket-entries.ts --input "$work/rows.jsonl" --out "$work/apply.sql" | tee "$work/plan.json"
+          { echo '### Plan'; echo '```'; cat "$work/plan.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply entry_type / importance only (apply=true)
+        if: ${{ inputs.apply == 'true' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/reclassify"
+          # apply.sql (written by the planner): COPY the changes into a temp table, one UPDATE of
+          # entry_type/importance only (created_at/updated_at untouched), COMMIT.
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -F " | "' < "$work/apply.sql" | tee "$work/applied.txt"
+          { echo '### Applied'; echo '```'; cat "$work/applied.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
