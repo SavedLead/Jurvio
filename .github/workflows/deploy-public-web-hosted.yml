@@ -104,10 +104,26 @@ jobs:
           fi
           conclusion="$(gh_api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$TARGET_SHA&status=completed&per_page=20" \
             | jq -r '[.workflow_runs[] | select(.conclusion=="success")][0].conclusion // empty')"
-          test "$conclusion" = success || {
-            echo "::error::Current main does not have a successful CI run."
-            exit 1
-          }
+          if [ "$conclusion" != success ]; then
+            # TARGET_SHA itself may be a CI-ignored commit (docs, scripts/diag,
+            # workflow-only) with no CI run of its own, e.g. a manual dispatch
+            # right after a diag merge. Accept it when the newest CI-green main
+            # commit is a strict ancestor and everything since is CI-ignored,
+            # i.e. the app code is identical to what CI verified.
+            green="$(gh_api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" \
+              | jq -r '.workflow_runs[0].head_sha // empty')"
+            test -n "$green" || { echo "::error::Current main does not have a successful CI run."; exit 1; }
+            compare="$(gh_api "repos/$GITHUB_REPOSITORY/compare/$green...$TARGET_SHA")"
+            status="$(jq -r .status <<<"$compare")"
+            files="$(jq -r '.files | length' <<<"$compare")"
+            app_files="$(jq -r '[.files[].filename
+              | select((test("\\.md$") or startswith("scripts/diag/") or startswith(".github/workflows/")) | not)] | length' <<<"$compare")"
+            if [ "$status" != "ahead" ] || [ "$files" -ge 300 ] || [ "$app_files" != "0" ]; then
+              echo "::error::Current main does not have a successful CI run (last green $green; status=$status, files=$files, app_files=$app_files)."
+              exit 1
+            fi
+            echo "$TARGET_SHA differs from CI-green $green only by CI-ignored files ($files); releasing."
+          fi
 
       - name: Open temporary /32 SSH access
         run: |
