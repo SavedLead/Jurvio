@@ -17,7 +17,7 @@ const navigation = [
   { href: "/internal#alerts", icon: "◉", label: "Case alerts" },
   { href: "/internal/governance", icon: "◇", label: "Costs & governance" },
   { href: "/internal/analytics", icon: "↗", label: "Product analytics" },
-  { href: "/internal/signups", icon: "+", label: "Sign-ups" },
+  { href: "/internal/signups", icon: "+", label: "Growth" },
   { href: "/internal#users", icon: "♙", label: "Users & access" },
   { href: "/internal/publication", icon: "✓", label: "Content review" },
   { href: "/internal/case-news", icon: "✎", label: "Case news review" },
