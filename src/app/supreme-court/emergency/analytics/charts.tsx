@@ -12,12 +12,15 @@ export function pct(part: number, whole: number, min = 5): string {
 }
 function share(part: number, whole: number) { return whole ? part / whole : 0; }
 
-/** A round axis maximum (1, 2, 2.5, 5 x 10^n) at or above `value`. */
-export function niceMax(value: number): number {
-  if (value <= 0) return 1;
-  const power = 10 ** Math.floor(Math.log10(value));
-  for (const step of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (step * power >= value) return step * power;
-  return 10 * power;
+/** Round tick values (1, 2, 5 x 10^n apart) covering `value`; ticks as fractions of the axis maximum. */
+export function axisTicks(value: number): { max: number; ticks: number[] } {
+  const raw = Math.max(1, value) / 4;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * power).find((candidate) => candidate >= raw && Number.isInteger(candidate)) ?? Math.ceil(raw);
+  const max = Math.ceil(Math.max(1, value) / step) * step;
+  const ticks: number[] = [];
+  for (let tick = 0; tick <= max + 1e-9; tick += step) ticks.push(tick / max);
+  return { max, ticks };
 }
 
 export function DataTable({ summary = "View as table", caption, head, rows }: { summary?: string; caption: string; head: string[]; rows: Array<Array<ReactNode>> }) {
@@ -39,8 +42,7 @@ export interface Column { id: string; label: string; sublabel?: string; segments
 
 /** Stacked columns with an optional rate line (0-100%) drawn over them. */
 export function StackedColumns({ columns, label, medianAt, medianLabel }: { columns: Column[]; label: string; medianAt?: number | null; medianLabel?: string }) {
-  const max = niceMax(Math.max(1, ...columns.map((column) => column.segments.reduce((sum, segment) => sum + segment.value, 0))));
-  const ticks = [0, 0.25, 0.5, 0.75, 1];
+  const { max, ticks } = axisTicks(Math.max(1, ...columns.map((column) => column.segments.reduce((sum, segment) => sum + segment.value, 0))));
   const n = columns.length;
   const ratePoints = columns.map((column, index) => column.rate === null || column.rate === undefined ? null : { x: ((index + 0.5) / n) * 100, y: 100 - column.rate, label: column.rateLabel ?? "" });
   const line = ratePoints.filter((point): point is NonNullable<typeof point> => point !== null);
