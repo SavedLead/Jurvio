@@ -219,6 +219,27 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     await sql`DELETE FROM scotus_emergency_history_coverage`;
   });
 
+  it("keeps history rows out of the public list and its header counts", async () => {
+    const filters = { extensions: true, applicant: null, kind: null } as const;
+    const before = await listEmergencyApplications(sql, { status: "all", ...filters });
+    await sql`
+      INSERT INTO scotus_application (docket_number, caption, kind, applicant_kind, status, source_url, parser_version, source_lane, submitted_on, ruling_on, last_entry_on, poll_tier)
+      VALUES ('17A9991', 'Hist v. Extension', 'extension', 'private', 'granted', 'https://www.supremecourt.gov/docket/docketfiles/html/public/17a9991.html',
+          ${EMERGENCY_PARSER_VERSION}, 'history', '2017-08-01', ${new Date().toISOString().slice(0, 10)}, '2017-08-02', 'retired'),
+        ('17A9992', 'Hist v. Stay', 'stay', 'federal', 'denied', 'https://www.supremecourt.gov/docket/docketfiles/html/public/17a9992.html',
+          ${EMERGENCY_PARSER_VERSION}, 'history', '2017-08-01', ${new Date().toISOString().slice(0, 10)}, '2017-08-02', 'retired')`;
+    try {
+      for (const status of ["all", "decided", "open"] as const) {
+        const list = await listEmergencyApplications(sql, { status, ...filters });
+        expect(list!.rows.some((row) => row.docketNumber.startsWith("17A999"))).toBe(false);
+      }
+      const after = await listEmergencyApplications(sql, { status: "all", ...filters });
+      expect(after!.counts).toEqual(before!.counts);
+    } finally {
+      await sql`DELETE FROM scotus_application WHERE docket_number IN ('17A9991', '17A9992')`;
+    }
+  });
+
   it("never lists an old history application with no ruling as open", async () => {
     const before = await listEmergencyApplications(sql, { status: "open", extensions: false, applicant: null, kind: null });
     await sql`
