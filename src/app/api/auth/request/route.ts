@@ -5,6 +5,7 @@ import { followKindsToBits, parseFollowKinds } from "@/modules/accounts/applicat
 import { captureLead, honeypotTripped, LEAD_SUCCESS_MESSAGE, type LeadStatus } from "@/modules/accounts/application/waitlist";
 import { safeCasePublicId, safeRedirectPath } from "@/modules/accounts/domain/tokens";
 import { absoluteUrl, signInDeps } from "@/modules/accounts/http/config";
+import { attributionFromCookies } from "@/modules/growth/attribution";
 import { clientIp, isSameOriginRequest, noStore, readBody, wantsJson } from "@/modules/accounts/http/request";
 
 export const dynamic = "force-dynamic";
@@ -21,12 +22,13 @@ export async function POST(request: NextRequest) {
   const follow = safeCasePublicId(body.follow);
   // Follow box checkboxes; unticking both still follows docket activity.
   const followKindBits = followKindsToBits(parseFollowKinds(body) ?? { activity: true, citations: false });
+  const attribution = attributionFromCookies(request.headers.get("cookie"));
   let status: Status;
   if (honeypotTripped(body.company)) {
     status = "waitlisted";
   } else {
     try {
-      status = await requestSignIn(sql, { email: body.email, ip, redirectPath: body.next, followCasePublicId: body.follow, followKindBits }, signInDeps());
+      status = await requestSignIn(sql, { email: body.email, ip, redirectPath: body.next, followCasePublicId: body.follow, followKindBits, attribution }, signInDeps());
     } catch (error) {
       console.error(JSON.stringify({ signin: "request_failed", error: error instanceof Error ? error.message : "error" }));
       status = "unavailable";
@@ -36,13 +38,18 @@ export async function POST(request: NextRequest) {
     if (status === "unavailable") {
       try {
         const lead = await captureLead(sql, follow
-          ? { email: body.email, ip, source: "case_follow", casePublicId: follow, followKindBits }
-          : { email: body.email, ip, source: "signin" });
+          ? { email: body.email, ip, source: "case_follow", casePublicId: follow, followKindBits, attribution }
+          : { email: body.email, ip, source: "signin", attribution });
         status = LEAD_TO_STATUS[lead];
       } catch (error) {
         console.error(JSON.stringify({ waitlist: "capture_failed", error: error instanceof Error ? error.message : "error" }));
       }
     }
+  }
+  if (!honeypotTripped(body.company)) {
+    await sql`INSERT INTO signin_request_event (outcome, source, signin_from_path)
+      VALUES (${status}, ${typeof attribution?.source === "string" ? attribution.source : null},
+        ${typeof attribution?.signinFromPath === "string" ? attribution.signinFromPath : null})`.catch(() => undefined);
   }
   if (wantsJson(request)) {
     return noStore(NextResponse.json(status === "waitlisted" ? { status, message: LEAD_SUCCESS_MESSAGE } : { status }, { status: HTTP_STATUS[status] }));
