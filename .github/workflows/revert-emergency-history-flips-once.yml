@@ -1,0 +1,59 @@
+name: Revert emergency history rows the live lane flipped (once)
+
+# One-off data fix for the regression fixed in PR #702: history rows (loaded by
+# backfill 41970173942) that the 10-minute lane re-read and marked source_lane
+# 'live'. See scripts/sql/revert-emergency-history-flips.sql for the exact
+# selection. Dry run by default; mode=apply changes only source_lane, skips rows
+# with withheld lines, and is idempotent. Dispatch by hand from main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type REVERT_EMERGENCY_HISTORY_FLIPS to run against production"
+        required: true
+        type: string
+      mode:
+        description: "dry-run (list only) or apply"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-revert-emergency-history-flips
+  cancel-in-progress: false
+
+jobs:
+  revert:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - name: Require confirm and main
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "REVERT_EMERGENCY_HISTORY_FLIPS" ]; then echo "::error::type REVERT_EMERGENCY_HISTORY_FLIPS"; exit 1; fi
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then echo "::error::dispatch from main"; exit 1; fi
+          case "$MODE" in dry-run|apply) ;; *) echo "::error::mode must be dry-run or apply"; exit 1;; esac
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run the selection (${{ inputs.mode }})
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          apply=0; [ "$MODE" = apply ] && apply=1
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "pg=\"\$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format '{{.ID}}' | head -n1)\"; sudo -n docker exec -i \"\$pg\" psql -U jurvio -d jurvio -q -At -F ' | ' -v apply=$apply" \
+            < scripts/sql/revert-emergency-history-flips.sql | tee "$RUNNER_TEMP/revert.txt"
+          { echo "### Emergency history flips ($MODE)"; echo '```'; cat "$RUNNER_TEMP/revert.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
