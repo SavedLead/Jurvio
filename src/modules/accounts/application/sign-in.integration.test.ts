@@ -32,6 +32,7 @@ describe.skipIf(!databaseUrl)("passwordless sign-in", () => {
 
     const verified = await verifySignIn(sql, token);
     expect(verified).toMatchObject({ email, redirectPath: "/case/jv-x" });
+    expect(verified!.created).toBe(true); // first sign-in creates the account (owner notification trigger)
     expect(await verifySignIn(sql, token)).toBeNull(); // single use
     const user = await getSessionUser(sql, verified!.sessionToken);
     expect(user).toEqual({ userId: verified!.userId, email });

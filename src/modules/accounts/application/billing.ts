@@ -20,7 +20,10 @@ function text(value: unknown): string | null {
  * Applies one verified Stripe event to the entitlement projection, once.
  * Returns false when the event id was already processed (Stripe retries).
  */
-export async function applyStripeEvent(sql: Sql, event: StripeEvent, config: BillingConfig): Promise<boolean> {
+/** Called (never awaited for correctness) when a user moves onto a paid plan or to a different paid plan. */
+export type PaidPlanHook = (userId: string, previousPlan: string) => void;
+
+export async function applyStripeEvent(sql: Sql, event: StripeEvent, config: BillingConfig, onPaidPlan?: PaidPlanHook): Promise<boolean> {
   const [inserted] = await sql<{ id: string }[]>`
     INSERT INTO stripe_webhook_event (id, type, livemode, payload)
     VALUES (${event.id}, ${event.type}, ${Boolean(event.livemode)}, ${sql.json(event as never)})
@@ -49,6 +52,8 @@ export async function applyStripeEvent(sql: Sql, event: StripeEvent, config: Bil
         UNION ALL SELECT id FROM app_user WHERE id::text = ${metadataUser ?? ""}
         LIMIT 1`;
       if (owner && SUBSCRIPTION_STATUSES.has(status) && isPlanId(plan)) {
+        const [prev] = await sql<{ plan: string; status: string }[]>`
+          SELECT plan::text AS plan, status FROM account_subscription WHERE user_id = ${owner.userId}`;
         await sql`
           INSERT INTO account_subscription (user_id, plan, status, stripe_customer_id, stripe_subscription_id, stripe_price_id, current_period_end, cancel_at_period_end)
           VALUES (${owner.userId}, ${plan}::account_plan, ${status}, ${customerId}, ${text(object.id)}, ${priceId}, ${periodEnd}, ${Boolean(object.cancel_at_period_end)})
@@ -56,6 +61,11 @@ export async function applyStripeEvent(sql: Sql, event: StripeEvent, config: Bil
             stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, account_subscription.stripe_customer_id),
             stripe_subscription_id = EXCLUDED.stripe_subscription_id, stripe_price_id = EXCLUDED.stripe_price_id,
             current_period_end = EXCLUDED.current_period_end, cancel_at_period_end = EXCLUDED.cancel_at_period_end, updated_at = now()`;
+        const paidNow = plan !== "free" && (status === "active" || status === "trialing");
+        const wasSame = prev && prev.plan === plan && (prev.status === "active" || prev.status === "trialing");
+        if (paidNow && !wasSame && onPaidPlan) {
+          try { onPaidPlan(owner.userId, prev?.plan ?? "free"); } catch { /* notification only */ }
+        }
       }
     }
     await sql`UPDATE stripe_webhook_event SET processed_at = now() WHERE id = ${event.id}`;

@@ -100,6 +100,8 @@ export interface VerifiedSignIn {
   redirectPath: string;
   followCasePublicId: string | null;
   followKindBits?: number;
+  /** True only when this sign-in created the account (first sign-in for the address). */
+  created?: boolean;
 }
 
 /** Consumes a magic-link token (single use, unexpired) and opens a session. */
@@ -111,11 +113,11 @@ export async function verifySignIn(sql: Sql, token: unknown): Promise<VerifiedSi
       WHERE token_hash = ${hashToken(token)} AND consumed_at IS NULL AND expires_at > now()
       RETURNING email, redirect_path AS "redirectPath", follow_case_public_id AS "followCasePublicId", follow_kinds AS "followKindBits", attribution`;
     if (!login) return null;
-    const [user] = await tx<{ id: string }[]>`
+    const [user] = await tx<{ id: string; created: boolean }[]>`
       INSERT INTO app_user (email, email_verified_at, last_signed_in_at) VALUES (${login.email}, now(), now())
       ON CONFLICT (email) DO UPDATE SET
         email_verified_at = COALESCE(app_user.email_verified_at, now()), last_signed_in_at = now(), updated_at = now()
-      RETURNING id`;
+      RETURNING id, (xmax = 0) AS created`;
     await tx`INSERT INTO account_subscription (user_id) VALUES (${user!.id}) ON CONFLICT (user_id) DO NOTHING`;
     await recordSignupAttribution(tx as unknown as Sql, user!.id, login.attribution);
     const sessionToken = generateToken();
@@ -129,6 +131,7 @@ export async function verifySignIn(sql: Sql, token: unknown): Promise<VerifiedSi
       redirectPath: safeRedirectPath(login.redirectPath),
       followCasePublicId: login.followCasePublicId,
       followKindBits: followKindBits(login.followKindBits),
+      created: Boolean(user!.created),
     };
   });
 }
