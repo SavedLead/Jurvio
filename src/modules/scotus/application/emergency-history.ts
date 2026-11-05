@@ -166,12 +166,9 @@ function yearBlock(applicationsTsv: string, eventsTsv: string, coverage: readonl
     copyData(eventsTsv),
     "ANALYZE in_app;",
     "ANALYZE in_event;",
-    "CREATE TEMP TABLE scotus_court ON COMMIT DROP AS SELECT id FROM court WHERE lower(provider_court_id) = 'scotus';",
-    `CREATE TEMP TABLE case_link ON COMMIT DROP AS
-SELECT DISTINCT ON (i.docket_number) i.docket_number, link.id AS case_id
-FROM in_app i CROSS JOIN scotus_court sc
-JOIN LATERAL (SELECT lc.id FROM legal_case lc WHERE lc.court_id = sc.id AND lc.docket_number = i.docket_number ORDER BY lc.id LIMIT 1) link ON true
-ORDER BY i.docket_number, link.id;`,
+    // Join against the session's scotus_a_case (built once, below); a per-row
+    // probe of legal_case has no usable index for SCOTUS rows in production.
+    "CREATE TEMP TABLE case_link ON COMMIT DROP AS SELECT i.docket_number, s.case_id FROM (SELECT DISTINCT docket_number FROM in_app) i JOIN scotus_a_case s USING (docket_number);",
     "CREATE TEMP TABLE loaded (docket_number text PRIMARY KEY) ON COMMIT DROP;",
     `WITH upserted AS (
   INSERT INTO scotus_application (${appColumns}, case_id, source_lane, changed_at, updated_at)
@@ -204,6 +201,25 @@ const copyData = (tsv: string) => (tsv.trim() ? `${tsv.replace(/\n+$/, "")}\n\\.
 const yearOf = (line: string) => line.slice(0, line.indexOf("A")).replace(/[^0-9]/g, "");
 
 /** The load script: one transaction per docket year (rows and that year's coverage flag together). */
+/**
+ * SCOTUS legal_case rows with an emergency-style docket ("24A123"), resolved once
+ * per load with a single scan. legal_case's SCOTUS indexes lead with citation, so a
+ * per-application lookup scanned the table for every row and hit statement_timeout.
+ */
+function caseLinkPrelude(): string[] {
+  return [
+    "\\echo 'resolving case links'",
+    "SET statement_timeout = '900s';",
+    `CREATE TEMP TABLE scotus_a_case AS
+SELECT DISTINCT ON (lc.docket_number) lc.docket_number, lc.id AS case_id
+FROM legal_case lc
+WHERE lc.court_id IN (SELECT id FROM court WHERE lower(provider_court_id) = 'scotus') AND lc.docket_number LIKE '__A%'
+ORDER BY lc.docket_number, lc.id;`,
+    "ANALYZE scotus_a_case;",
+    "RESET statement_timeout;",
+  ];
+}
+
 export function historyLoadSql(applicationsTsv: string, eventsTsv: string, coverage: readonly YearCoverage[] = []): string {
   const apps = new Map<string, string[]>();
   const events = new Map<string, string[]>();
@@ -215,6 +231,7 @@ export function historyLoadSql(applicationsTsv: string, eventsTsv: string, cover
   return [
     "\\set ON_ERROR_STOP on",
     "\\timing on",
+    ...caseLinkPrelude(),
     ...(blocks.length ? blocks : yearBlock("", "", [], "nothing")),
     "SELECT substring(docket_number FROM 1 FOR 2) AS docket_year, source_lane, count(*) AS applications, count(*) FILTER (WHERE kind <> 'extension') AS serious FROM scotus_application GROUP BY 1, 2 ORDER BY 1, 2;",
     "",
