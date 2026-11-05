@@ -13,8 +13,11 @@ import {
   planScotusReclassification,
   reclassifyApplyScript,
   sampleChanges,
+  type EntryChange,
   type StoredScotusEntry,
 } from "@/modules/ingestion/application/reclassify-scotus-entries";
+
+const isHighToRoutine = (c: EntryChange) => c.fromImportance === "high" && c.toImportance === "routine";
 
 function arg(name: string): string {
   const index = process.argv.indexOf(`--${name}`);
@@ -37,8 +40,10 @@ writeFileSync(arg("out"), reclassifyApplyScript(plan.changes));
 const samples = {
   routineToHigh: sampleChanges(plan.changes, 25, isRoutineToHigh),
   generalToGrantedRoutine: sampleChanges(plan.changes, 15, isGeneralToGrantedRoutine),
+  highToRoutine: sampleChanges(plan.changes, 10, isHighToRoutine),
   routineToHighCount: plan.changes.filter(isRoutineToHigh).length,
   generalToGrantedRoutineCount: plan.changes.filter(isGeneralToGrantedRoutine).length,
+  highToRoutineCount: plan.changes.filter(isHighToRoutine).length,
 };
 const samplesPath = optionalArg("samples");
 if (samplesPath) writeFileSync(samplesPath, `${JSON.stringify(samples, null, 2)}\n`);
@@ -50,4 +55,5 @@ process.stdout.write(`${JSON.stringify({
   byTransition: plan.byTransition,
   routineToHighCount: samples.routineToHighCount,
   generalToGrantedRoutineCount: samples.generalToGrantedRoutineCount,
+  highToRoutineCount: samples.highToRoutineCount,
 })}\n`);
