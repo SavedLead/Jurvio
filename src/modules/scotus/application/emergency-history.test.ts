@@ -71,7 +71,11 @@ describe("historyLoadSql", () => {
     expect(block17).toContain("17A3\t");
     expect(block17).not.toContain("18A2\t");
     expect(block17).toContain("(2017, true, 3, 3)");
-    expect(sql).toContain("JOIN LATERAL (SELECT lc.id FROM legal_case lc WHERE lc.court_id = sc.id AND lc.docket_number = i.docket_number");
+    expect(sql).not.toContain("LATERAL");
+    expect(sql.indexOf("CREATE TEMP TABLE scotus_a_case")).toBeGreaterThan(-1);
+    expect(sql.indexOf("CREATE TEMP TABLE scotus_a_case")).toBeLessThan(sql.indexOf("loading "));
+    expect(sql.match(/FROM legal_case/g)).toHaveLength(1);
+    expect(sql).toContain("JOIN scotus_a_case s USING (docket_number)");
     expect(sql).not.toContain("JOIN court c ON c.id = lc.court_id");
   });
 });
