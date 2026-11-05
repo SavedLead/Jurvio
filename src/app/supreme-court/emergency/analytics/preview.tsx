@@ -10,6 +10,7 @@ import type { EmergencyStats } from "@/modules/scotus/application/emergency-stat
 import type { ApplicantKind } from "@/modules/scotus/domain/emergency-application";
 import { summarize, type Dashboard, type RateCell } from "@/modules/scotus/domain/emergency-stats";
 import type { ProGate } from "@/modules/scotus/http/emergency-pro";
+import { SignedInSwap } from "./signed-in-swap";
 import styles from "./preview.module.css";
 
 const ANALYTICS = "/supreme-court/emergency/analytics" as Route;
@@ -65,16 +66,23 @@ function Ctas({ viewer, next }: { viewer: PreviewViewer; next: string }) {
   </div>;
 }
 
-/** Full teaser for the emergency docket list. */
+function ProLink({ stats }: { stats: EmergencyStats | null }) {
+  return <aside className={styles.proLink} aria-label="Emergency docket analytics">
+    <span className={styles.badge}>PRO</span>
+    <span><b>Emergency docket analytics</b><small>Grant rates, time to ruling and noted dissents{stats ? `, ${yearSpan(stats)}` : ""}.</small></span>
+    <Link href={ANALYTICS}>Open analytics →</Link>
+  </aside>;
+}
+
+/** Full teaser for the emergency docket list. Signed-in browsers served the cached anonymous page get the plain link. */
 export function AnalyticsPreview({ stats, viewer, next = "/supreme-court/emergency" }: { stats: EmergencyStats | null; viewer: PreviewViewer; next?: string }) {
-  if (viewer === "pro") {
-    return <aside className={styles.proLink} aria-label="Emergency docket analytics">
-      <span className={styles.badge}>PRO</span>
-      <span><b>Emergency docket analytics</b><small>Grant rates, time to ruling and noted dissents{stats ? `, ${yearSpan(stats)}` : ""}.</small></span>
-      <Link href={ANALYTICS}>Open analytics →</Link>
-    </aside>;
-  }
+  if (viewer === "pro") return <ProLink stats={stats} />;
   if (!stats) return null;
+  if (viewer === "signed_out") return <SignedInSwap anonymous={<Teaser stats={stats} viewer={viewer} next={next} />} signedIn={<ProLink stats={stats} />} />;
+  return <Teaser stats={stats} viewer={viewer} next={next} />;
+}
+
+function Teaser({ stats, viewer, next }: { stats: EmergencyStats; viewer: PreviewViewer; next: string }) {
   const dashboard = dashboardOf(stats);
   const cells = new Map(dashboard.byApplicant.map((cell) => [cell.key as ApplicantKind, cell]));
   const federal = cells.get("federal");
@@ -120,7 +128,13 @@ export function AnalyticsPreview({ stats, viewer, next = "/supreme-court/emergen
 }
 
 /** Compact version for an application page: the rate for this applicant type. */
-export function AnalyticsPreviewCompact({ stats, viewer, applicantKind, next }: { stats: EmergencyStats | null; viewer: PreviewViewer; applicantKind: ApplicantKind; next: string }) {
+export function AnalyticsPreviewCompact(props: { stats: EmergencyStats | null; viewer: PreviewViewer; applicantKind: ApplicantKind; next: string }) {
+  if (!props.stats) return null;
+  if (props.viewer === "signed_out") return <SignedInSwap anonymous={<Compact {...props} />} signedIn={<Compact {...props} viewer="pro" />} />;
+  return <Compact {...props} />;
+}
+
+function Compact({ stats, viewer, applicantKind, next }: { stats: EmergencyStats | null; viewer: PreviewViewer; applicantKind: ApplicantKind; next: string }) {
   if (!stats) return null;
   const dashboard = dashboardOf(stats);
   const cell = dashboard.byApplicant.find((item) => item.key === applicantKind);

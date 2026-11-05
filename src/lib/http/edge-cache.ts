@@ -114,8 +114,14 @@ export function hasAuthCookie(cookieHeader: string | null): boolean {
 /** Query flag the subscriber gate adds so a paid customer's view is always rendered at the origin. */
 export const SUBSCRIBER_VIEW_PARAM = "subscriber";
 
+// Never shared, even for anonymous visitors: Cloudflare serves a cached copy to
+// signed-in visitors too, so a page whose content depends on the viewer's plan
+// must always render at the origin (the Pro analytics page vs. its teaser).
+const PRIVATE_PATH_PREFIXES = ["/supreme-court/emergency/analytics"] as const;
+
 export function isPublicCacheablePath(pathname: string, searchParams: URLSearchParams): boolean {
   if (searchParams.has("_rsc")) return false;
+  if (PRIVATE_PATH_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) return false;
   if (searchParams.has(SUBSCRIBER_VIEW_PARAM)) return false;
   if (pathname === "/cases") {
     return CASES_FREE_TEXT_PARAMS.every((name) => !(searchParams.get(name) ?? "").trim());
