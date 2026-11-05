@@ -76,6 +76,12 @@ export interface EmergencyRunOptions {
   reparsePerRun?: number;
   /** Docket years to seed (two-digit). Default: this docket year and the one before. */
   seedYears?: number[];
+  /**
+   * Numbers below the frontier of this docket year that Jurvio holds no row for
+   * (never seeded because the JSON discovery lane never had them) to read per run,
+   * newest first. Read like seeds (lines are history, not news). Default 5.
+   */
+  gapPerRun?: number;
 }
 
 export interface EmergencyRunResult {
@@ -85,6 +91,8 @@ export interface EmergencyRunResult {
   changed: number;
   discovered: string[];
   seeded: number;
+  /** Numbers below the frontier read by the gap sweep. */
+  gapsRead: number;
   newEvents: number;
   withheldLines: number;
   skippedRestricted: number;
@@ -140,7 +148,7 @@ export function parseApplicationPage(html: string, docketNumber: string): Parsed
 }
 
 function emptyResult(): EmergencyRunResult {
-  return { ok: false, requests: 0, notModified: 0, changed: 0, discovered: [], seeded: 0, newEvents: 0, withheldLines: 0,
+  return { ok: false, requests: 0, notModified: 0, changed: 0, discovered: [], seeded: 0, gapsRead: 0, newEvents: 0, withheldLines: 0,
     skippedRestricted: 0, errors: [], retryAfterUntil: null };
 }
 
@@ -356,13 +364,15 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
       misses = outcome === "missing" ? misses + 1 : 0;
     }
 
-    // 2. Due pages, hottest first. History rows (earlier docket years, loaded by the
+    // 2. Due pages, hottest first. History rows of earlier docket years (loaded by the
     // one-off backfill) are never polled here: re-reading them would flip them to
     // source_lane 'live' and pull them into the list, counts, follows and feeds.
+    // History rows of the current docket year are current applications this lane
+    // missed, so it adopts them (its upsert marks them live).
     const due = await sql<{ docket_number: string; last_modified: string | null }[]>`
       SELECT p.docket_number, p.last_modified
       FROM scotus_source_poll p JOIN scotus_application a ON a.docket_number = p.docket_number
-      WHERE p.next_check_at <= ${now} AND a.poll_tier <> 'retired' AND a.source_lane = 'live'
+      WHERE p.next_check_at <= ${now} AND a.poll_tier <> 'retired' AND (a.source_lane = 'live' OR a.docket_number LIKE ${`${yy}A%`})
       ORDER BY CASE a.poll_tier WHEN 'hot' THEN 0 WHEN 'open' THEN 1 WHEN 'closed' THEN 2 ELSE 3 END, p.next_check_at
       LIMIT 200`;
     for (const row of due) {
@@ -376,7 +386,7 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
     if (reparseLimit > 0 && budget.canFetch) {
       const stale = await sql<{ docket_number: string }[]>`
         SELECT a.docket_number FROM scotus_application a
-        WHERE a.parser_version <> ${EMERGENCY_PARSER_VERSION} AND a.poll_tier <> 'retired' AND a.source_lane = 'live'
+        WHERE a.parser_version <> ${EMERGENCY_PARSER_VERSION} AND a.poll_tier <> 'retired' AND (a.source_lane = 'live' OR a.docket_number LIKE ${`${yy}A%`})
         ORDER BY (a.status = 'pending') DESC, a.last_entry_on DESC NULLS LAST
         LIMIT ${reparseLimit}`;
       for (const row of stale) {
@@ -406,6 +416,26 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
         const docketNumber = normalizeApplicationNumber(seed.docket_number);
         if (!docketNumber || !parseApplicationNumber(docketNumber)) continue;
         await handle(docketNumber, null, "seed");
+      }
+    }
+    // 4. Gaps: numbers below the frontier this lane never read (no row, no pending
+    // re-check). Read like seeds; a missing page is tried again in a week.
+    const gapLimit = Math.min(options.gapPerRun ?? 5, budget.remainingRequests);
+    const high = frontier?.high ?? 0;
+    if (gapLimit > 0 && high > 1 && budget.canFetch) {
+      const gaps = await sql<{ docket_number: string }[]>`
+        SELECT ${`${yy}A`} || n AS docket_number FROM generate_series(1, ${high}::int) n
+        WHERE NOT EXISTS (SELECT 1 FROM scotus_application a WHERE a.docket_number = ${`${yy}A`} || n)
+          AND NOT EXISTS (SELECT 1 FROM scotus_source_poll p WHERE p.docket_number = ${`${yy}A`} || n AND p.next_check_at > ${now})
+        ORDER BY n DESC LIMIT ${gapLimit}`;
+      for (const gap of gaps) {
+        if (!budget.canFetch) break;
+        const outcome = await handle(gap.docket_number, null, "seed");
+        result.gapsRead += 1;
+        if (outcome === "missing") {
+          await sql`UPDATE scotus_source_poll SET next_check_at = ${addMinutes(now, 7 * 24 * 60)}, updated_at = now()
+            WHERE url = ${docketPageUrl(gap.docket_number)}`;
+        }
       }
     }
     result.ok = result.errors.length === 0;
