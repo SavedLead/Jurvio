@@ -90,6 +90,7 @@ jobs:
           REMOTE
           echo "::notice title=Lines read::$(wc -l < "$work/rows.jsonl")"
           pnpm exec tsx scripts/reclassify-scotus-docket-entries.ts --input "$work/rows.jsonl" --out "$work/apply.sql" --samples "$work/samples.json" | tee "$work/plan.json"
+          echo "--- spot-check samples (also in the job summary) ---"; cat "$work/samples.json"
           { echo '### Plan'; echo '```'; cat "$work/plan.json"; echo '```'; echo; echo '### Spot-check samples'; echo '```json'; cat "$work/samples.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Apply entry_type / importance only (apply=true)
