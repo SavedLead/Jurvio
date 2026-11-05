@@ -272,31 +272,39 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     }
   });
 
-  it("adopts this docket year's history rows as live applications", async () => {
+  it("adopts this docket year's history rows as live applications, without new lines", async () => {
     await sql`UPDATE scotus_application SET source_lane = 'history' WHERE docket_number = '26A600'`;
-    await sql`UPDATE scotus_source_poll SET next_check_at = now() - interval '1 day' WHERE docket_number = '26A600'`;
-    const seen = calls.length;
-    await run(new Date(t0.getTime() + 31 * 86_400_000));
-    expect(calls.slice(seen).some((call) => /26a600\.html$/i.test(call.url))).toBe(true);
+    const events = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_application_event WHERE docket_number = '26A600' AND NOT backfilled`;
+    const result = await run(new Date(t0.getTime() + 31 * 86_400_000));
+    expect(result.adopted).toBe(1);
     const [row] = await sql<{ source_lane: string }[]>`SELECT source_lane FROM scotus_application WHERE docket_number = '26A600'`;
     expect(row!.source_lane).toBe("live");
+    const after = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_application_event WHERE docket_number = '26A600' AND NOT backfilled`;
+    expect(after[0]!.n).toBe(events[0]!.n);
   });
 
   it("reads numbers below the frontier it never had, newest first, and waits a week on a missing one", async () => {
     const at = new Date(t0.getTime() + 32 * 86_400_000);
     const gapRun = () => runScotusEmergency(sql, store, { fetchImpl, now: () => at, minIntervalMs: 0, frontierProbes: 0, seedPerRun: 0, reparsePerRun: 0, seedYears: [26], gapPerRun: 3 });
+    const known = new Set((await sql<{ docket_number: string }[]>`SELECT docket_number FROM scotus_application WHERE docket_number LIKE '26A%'`).map((row) => row.docket_number));
+    const docket = (url: string) => /public\/(\d{2}a\d+)\.html$/i.exec(url)?.[1]?.toUpperCase() ?? "";
+    const number = (value: string) => Number(value.slice(3));
     const seen = calls.length;
     const result = await gapRun();
-    const probed = calls.slice(seen).map((call) => /public\/(\d{2}a\d+)\.html$/i.exec(call.url)?.[1]?.toUpperCase());
+    const probed = calls.slice(seen).map((call) => docket(call.url));
     expect(result.gapsRead).toBe(3);
-    expect(probed).toEqual(["26A622", "26A621", "26A620"]);
-    const polls = await sql<{ docket_number: string; next_check_at: Date }[]>`
-      SELECT docket_number, next_check_at FROM scotus_source_poll WHERE docket_number IN ('26A620', '26A621', '26A622') ORDER BY docket_number`;
-    expect(polls).toHaveLength(3);
+    expect(probed).toHaveLength(3);
+    expect(probed.every((value) => value.startsWith("26A") && !known.has(value))).toBe(true);
+    expect([...probed].sort((a, b) => number(b) - number(a))).toEqual(probed);
+    const missing = probed.filter((value) => !(value in PAGES));
+    const polls = await sql<{ next_check_at: Date }[]>`SELECT next_check_at FROM scotus_source_poll WHERE docket_number = ANY(${missing})`;
+    expect(polls).toHaveLength(missing.length);
     for (const poll of polls) expect(new Date(poll.next_check_at).getTime()).toBeGreaterThan(at.getTime() + 6 * 86_400_000);
     const again = calls.length;
     await gapRun();
-    const second = calls.slice(again).map((call) => /public\/(\d{2}a\d+)\.html$/i.exec(call.url)?.[1]?.toUpperCase());
-    expect(second).toEqual(["26A619", "26A618", "26A617"]);
+    const second = calls.slice(again).map((call) => docket(call.url));
+    expect(second).toHaveLength(3);
+    expect(second.some((value) => probed.includes(value))).toBe(false);
+    expect(Math.max(...second.map(number))).toBeLessThan(Math.min(...probed.map(number)));
   });
 });

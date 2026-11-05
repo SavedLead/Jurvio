@@ -93,6 +93,8 @@ export interface EmergencyRunResult {
   seeded: number;
   /** Numbers below the frontier read by the gap sweep. */
   gapsRead: number;
+  /** History rows of the current docket year adopted as live. */
+  adopted: number;
   newEvents: number;
   withheldLines: number;
   skippedRestricted: number;
@@ -148,7 +150,7 @@ export function parseApplicationPage(html: string, docketNumber: string): Parsed
 }
 
 function emptyResult(): EmergencyRunResult {
-  return { ok: false, requests: 0, notModified: 0, changed: 0, discovered: [], seeded: 0, gapsRead: 0, newEvents: 0, withheldLines: 0,
+  return { ok: false, requests: 0, notModified: 0, changed: 0, discovered: [], seeded: 0, gapsRead: 0, adopted: 0, newEvents: 0, withheldLines: 0,
     skippedRestricted: 0, errors: [], retryAfterUntil: null };
 }
 
@@ -364,15 +366,22 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
       misses = outcome === "missing" ? misses + 1 : 0;
     }
 
+    // 1b. History rows of the current docket year are current applications this lane
+    // missed (the one-off backfill read them with the same parser and privacy
+    // filter): adopt them as live. Their lines stay backfilled, so no alerts.
+    const adopted = await sql`
+      UPDATE scotus_application SET source_lane = 'live'
+      WHERE source_lane = 'history' AND docket_number LIKE ${`${yy}A%`} RETURNING docket_number`;
+    result.adopted = adopted.length;
+
     // 2. Due pages, hottest first. History rows of earlier docket years (loaded by the
     // one-off backfill) are never polled here: re-reading them would flip them to
     // source_lane 'live' and pull them into the list, counts, follows and feeds.
-    // History rows of the current docket year are current applications this lane
-    // missed, so it adopts them (its upsert marks them live).
+    // History rows of the current docket year are adopted as live just below.
     const due = await sql<{ docket_number: string; last_modified: string | null }[]>`
       SELECT p.docket_number, p.last_modified
       FROM scotus_source_poll p JOIN scotus_application a ON a.docket_number = p.docket_number
-      WHERE p.next_check_at <= ${now} AND a.poll_tier <> 'retired' AND (a.source_lane = 'live' OR a.docket_number LIKE ${`${yy}A%`})
+      WHERE p.next_check_at <= ${now} AND a.poll_tier <> 'retired' AND a.source_lane = 'live'
       ORDER BY CASE a.poll_tier WHEN 'hot' THEN 0 WHEN 'open' THEN 1 WHEN 'closed' THEN 2 ELSE 3 END, p.next_check_at
       LIMIT 200`;
     for (const row of due) {
@@ -386,7 +395,7 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
     if (reparseLimit > 0 && budget.canFetch) {
       const stale = await sql<{ docket_number: string }[]>`
         SELECT a.docket_number FROM scotus_application a
-        WHERE a.parser_version <> ${EMERGENCY_PARSER_VERSION} AND a.poll_tier <> 'retired' AND (a.source_lane = 'live' OR a.docket_number LIKE ${`${yy}A%`})
+        WHERE a.parser_version <> ${EMERGENCY_PARSER_VERSION} AND a.poll_tier <> 'retired' AND a.source_lane = 'live'
         ORDER BY (a.status = 'pending') DESC, a.last_entry_on DESC NULLS LAST
         LIMIT ${reparseLimit}`;
       for (const row of stale) {
