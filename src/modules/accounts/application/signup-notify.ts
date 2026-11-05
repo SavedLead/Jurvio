@@ -7,7 +7,8 @@ import { escapeHtml } from "../infrastructure/email";
 // a sign-up never fails because the notification did. One email per account:
 // the sign-up trigger runs only when verifySignIn actually inserted the
 // app_user row (xmax = 0), which happens exactly once per email address.
-// Never includes the full address: domain plus a masked local part.
+// The owner email carries the full sign-up address (owner request, Nov 4 2026);
+// logs never do (only kind and error).
 
 export const DEFAULT_SIGNUP_NOTIFY_TO = "research@jurvio.com";
 export const GROWTH_URL = "https://z.jurvio.com/signups";
@@ -53,15 +54,14 @@ export interface SignupDetails {
 export type SignupEventKind = "signup" | "plan_change";
 
 export function signupNotificationEmail(d: SignupDetails, kind: SignupEventKind = "signup", previousPlan: string | null = null) {
-  const domain = d.email.slice(d.email.lastIndexOf("@") + 1);
   const subject = kind === "signup"
-    ? `New Jurvio sign-up: ${domain} (${d.plan})`
-    : `Jurvio plan change: ${domain} ${previousPlan ?? "free"} → ${d.plan}`;
+    ? `New Jurvio sign-up: ${d.email} (${d.plan})`
+    : `Jurvio plan change: ${d.email} ${previousPlan ?? "free"} → ${d.plan}`;
   const a = d.attribution;
   const utm = a && (a.utmSource || a.utmMedium || a.utmCampaign)
     ? [a.utmSource, a.utmMedium, a.utmCampaign].map((v) => v ?? "-").join(" / ") : "none";
   const rows: Array<[string, string]> = [
-    ["Account", maskEmail(d.email)],
+    ["Account", d.email],
     [kind === "signup" ? "Signed up" : "Account created", formatEt(d.createdAt)],
     ...(kind === "plan_change" ? [["Plan changed", formatEt(new Date())] as [string, string]] : []),
     ["Tier", d.status && d.status !== "active" ? `${d.plan} (${d.status})` : d.plan],

@@ -19,10 +19,10 @@ describe("signup notification", () => {
     expect(signupNotifyRecipient({ SIGNUP_NOTIFY_TO: "x@y.com" })).toBe("x@y.com");
     expect(signupNotifyRecipient({ SIGNUP_NOTIFY_TO: "off" })).toBeNull();
   });
-  it("never includes the full address; has ET time, tier, attribution, follows, Growth link", () => {
+  it("includes the full address; has ET time, tier, attribution, follows, Growth link", () => {
     const m = signupNotificationEmail(details);
-    for (const body of [m.subject, m.text, m.html]) expect(body).not.toContain("jane.doe");
-    expect(m.subject).toBe("New Jurvio sign-up: gmail.com (free)");
+    expect(m.subject).toBe("New Jurvio sign-up: jane.doe@gmail.com (free)");
+    expect(m.text).toContain("Account: jane.doe@gmail.com");
     expect(m.text).toContain("Nov 4, 2026, 10:22 PM EST");
     expect(m.text).toContain("Referrer: google.com");
     expect(m.text).toContain("Landing page: /case/jv-abc");
