@@ -35,14 +35,16 @@ jobs:
       - name: Bundle list helper
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD":/w -w /w node:20-bookworm-slim bash -lc '
-            set -euo pipefail
-            npm install --no-save esbuild@0.25.9 >/dev/null
-            npx esbuild scripts/list-offsite-backup-keys.ts \
-              --bundle --platform=node --format=esm --packages=bundle \
-              --outfile=/w/list-offsite-backup-keys.mjs
-          '
-          test -s list-offsite-backup-keys.mjs
+          out="$RUNNER_TEMP/list-offsite-backup-keys.mjs"
+          docker run --rm --user "$(id -u):$(id -g)"             -v "$PWD":/w:ro -v "$RUNNER_TEMP":/out -w /w             node:20-bookworm-slim bash -lc '
+              set -euo pipefail
+              export npm_config_cache=/out/npm-cache
+              mkdir -p /out/npm-cache
+              npm install --no-save esbuild@0.25.9 >/dev/null
+              npx esbuild scripts/list-offsite-backup-keys.ts                 --bundle --platform=node --format=esm --packages=bundle                 --outfile=/out/list-offsite-backup-keys.mjs
+            '
+          test -s "$out"
+          cp -f "$out" list-offsite-backup-keys.mjs
       - name: List Spaces keys (read-only)
         run: |
           set -euo pipefail
