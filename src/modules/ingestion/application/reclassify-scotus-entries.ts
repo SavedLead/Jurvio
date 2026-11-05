@@ -21,7 +21,10 @@ export interface StoredScotusEntry {
   description: string;
 }
 
-export interface EntryChange { id: string; caseId: string; fromType: string; toType: string; fromImportance: string; toImportance: string }
+export interface EntryChange {
+  id: string; caseId: string; docketNumber: string | null; description: string;
+  fromType: string; toType: string; fromImportance: string; toImportance: string;
+}
 
 export interface ReclassifyPlan {
   changes: EntryChange[];
@@ -49,7 +52,8 @@ export function planScotusReclassification(rows: Iterable<StoredScotusEntry>): R
     const toImportance = entryImportance(toType, row.description, row.docketNumber);
     if (!TARGET_TYPES.has(toType)) continue;
     if (toType === row.entryType && toImportance === row.importance) continue;
-    changes.push({ id: row.id, caseId: row.caseId, fromType: row.entryType, toType, fromImportance: row.importance, toImportance });
+    changes.push({ id: row.id, caseId: row.caseId, docketNumber: row.docketNumber, description: row.description,
+      fromType: row.entryType, toType, fromImportance: row.importance, toImportance });
     cases.add(row.caseId);
     const key = `${row.entryType}/${row.importance} -> ${toType}/${toImportance}`;
     byTransition[key] = (byTransition[key] ?? 0) + 1;
@@ -92,3 +96,46 @@ export function reclassifyApplyScript(changes: readonly EntryChange[]): string {
     "",
   ].join("\n");
 }
+
+export interface SampleLine {
+  docketNumber: string;
+  fromType: string;
+  toType: string;
+  fromImportance: string;
+  toImportance: string;
+  text: string;
+}
+
+/** Deterministic sample (stable by id) of planned changes matching a predicate. */
+export function sampleChanges(
+  changes: readonly EntryChange[],
+  take: number,
+  match: (change: EntryChange) => boolean,
+): SampleLine[] {
+  const matched = changes.filter(match).slice().sort((a, b) => a.id.localeCompare(b.id));
+  // Spread across the sorted list so the sample is not just the first N by id.
+  if (matched.length <= take) {
+    return matched.map(toSample);
+  }
+  const out: SampleLine[] = [];
+  for (let i = 0; i < take; i += 1) {
+    const index = Math.floor((i * matched.length) / take);
+    out.push(toSample(matched[index]!));
+  }
+  return out;
+}
+
+function toSample(change: EntryChange): SampleLine {
+  return {
+    docketNumber: change.docketNumber ?? "",
+    fromType: change.fromType,
+    toType: change.toType,
+    fromImportance: change.fromImportance,
+    toImportance: change.toImportance,
+    text: change.description.replace(/\s+/g, " ").trim().slice(0, 160),
+  };
+}
+
+export const isRoutineToHigh = (c: EntryChange) => c.fromImportance === "routine" && c.toImportance === "high";
+export const isGeneralToGrantedRoutine = (c: EntryChange) =>
+  c.fromType === "docket_activity" && c.toType === "application_granted" && c.toImportance === "routine";
