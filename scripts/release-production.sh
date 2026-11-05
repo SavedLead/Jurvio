@@ -72,16 +72,56 @@ run_with_timeout "Postgres startup" "$START_TIMEOUT_SECONDS" docker compose -f "
 # The pre-release backup guards against a bad MIGRATION. An app-only release (no
 # pending migration) changes no data and can always be rolled back by image, so
 # the slow full backup is skipped for it — this is what makes ordinary deploys
-# fast. The nightly out-of-band backup (nightly-db-backup.yml) keeps the recovery
-# point fresh regardless. FAIL-SAFE: the check prints "unknown" on any error, and
-# the backup is skipped ONLY when the count is exactly "0"; every other value
-# (including "unknown") backs up, so this can never reduce safety on a migration.
+# fast. The nightly out-of-band backup (nightly-db-backup.yml) still runs on its
+# schedule. FAIL-SAFE: the check prints "unknown" on any error, and the backup is
+# skipped ONLY when the count is exactly "0"; every other value (including
+# "unknown") backs up, so this can never reduce safety on a migration.
+#
+# IMPORTANT: a local dump alone is not disaster recovery. Before 2026-11-05,
+# migration deploys wrote /opt/jurvio/backups/jurvio-*.sql.gz and never copied
+# them to Spaces (jurvio-db-backups). Nightly was the only uploader, so any
+# pre-release dump taken between nightlies left no off-site recovery point for
+# that stamp (see dumps 20261104T233142Z / 20261105T011008Z / 20261105T051612Z).
+# After the local dump succeeds we upload the same file with the same job the
+# nightly uses. Upload failure fails the release — better than shipping a
+# migration without an off-site recovery point.
 PENDING_MIGRATIONS=$(docker compose -f "$COMPOSE" run --rm --no-deps -T app node jobs/list-pending-migrations.mjs 2>/dev/null || echo unknown)
 if [ "$PENDING_MIGRATIONS" = "0" ]; then
   printf 'No pending migrations — skipping pre-release backup (nightly backup covers recovery).\n'
 elif docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
   printf 'Pending migrations (%s) — compressed database backup first (deadline: %ss)\n' "$PENDING_MIGRATIONS" "$BACKUP_TIMEOUT_SECONDS"
-  run_with_timeout "Database backup" "$BACKUP_TIMEOUT_SECONDS" "$DEPLOY_DIR/scripts/backup-production.sh"
+  # Capture the dump path (last line of backup-production.sh). Write to a temp
+  # file first so a failed dump cannot be masked by tee/tail exit status
+  # (this script is #!/bin/sh — often dash — with no pipefail).
+  BACKUP_LOG=$(mktemp)
+  if ! timeout --signal=TERM --kill-after=30s "${BACKUP_TIMEOUT_SECONDS}s" \
+      "$DEPLOY_DIR/scripts/backup-production.sh" >"$BACKUP_LOG"; then
+    cat "$BACKUP_LOG" >&2 || true
+    rm -f "$BACKUP_LOG"
+    fail "Database backup did not complete within ${BACKUP_TIMEOUT_SECONDS}s"
+  fi
+  cat "$BACKUP_LOG" >&2 || true
+  BACKUP_PATH=$(tail -n 1 "$BACKUP_LOG")
+  rm -f "$BACKUP_LOG"
+  case "$BACKUP_PATH" in
+    /opt/jurvio/backups/jurvio-????????T??????Z.sql.gz) ;;
+    *) fail "Database backup reported unexpected path: $BACKUP_PATH" ;;
+  esac
+  test -s "$BACKUP_PATH" || fail "Database backup produced no file at $BACKUP_PATH"
+
+  # Use the image we just pulled (NEW_IMAGE). The running app container may still
+  # be the previous tag until later in this script; the uploader lives in every
+  # recent image and only needs .env.production + a read-only backups mount.
+  printf 'Uploading pre-release dump to encrypted off-site storage: %s\n' "$BACKUP_PATH"
+  if ! timeout --signal=TERM --kill-after=30s 3600s docker run --rm \
+      --user "$(id -u):$(id -g)" \
+      --env-file .env.production \
+      -v /opt/jurvio/backups:/backups:ro \
+      "$NEW_IMAGE" \
+      node jobs/upload-database-backup.mjs --file "/backups/$(basename "$BACKUP_PATH")" </dev/null; then
+    fail "Off-site backup upload failed for $BACKUP_PATH"
+  fi
+  printf 'Off-site upload completed for %s\n' "$BACKUP_PATH"
 fi
 
 # Readiness guard: a release must not proceed to replace the app/workers if

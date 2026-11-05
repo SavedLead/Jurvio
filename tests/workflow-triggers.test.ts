@@ -457,5 +457,12 @@ describe("workflow trigger policy", () => {
       const release = readFileSync(join(process.cwd(), "scripts", "release-production.sh"), "utf8");
       expect(release).toContain("printf 'Pending migrations (%s)");
     });
+
+    it("uploads the pre-release dump to Spaces before migrating", () => {
+      const release = readFileSync(join(process.cwd(), "scripts", "release-production.sh"), "utf8");
+      expect(release).toContain("upload-database-backup.mjs");
+      expect(release).toContain("Off-site backup upload failed");
+      expect(release).toContain("Uploading pre-release dump to encrypted off-site storage");
+    });
   });
 });
