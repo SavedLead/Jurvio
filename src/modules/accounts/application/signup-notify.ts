@@ -133,3 +133,23 @@ export async function notifySignupEvent(sql: Sql, userId: string, deps: SignupNo
     return false;
   }
 }
+
+/** Row shape produced by notify-existing-signups-once.yml (psql json_agg). */
+export interface SignupNotifyRow {
+  id: string; email: string; created_at: string; plan: string | null; status: string | null;
+  attribution: Record<string, string | null> | null; follows: string[] | null;
+}
+
+export function signupDetailsFromRow(r: SignupNotifyRow): SignupDetails {
+  const a = r.attribution;
+  const date = (v: string | null | undefined) => (v ? new Date(v) : null);
+  return {
+    email: r.email, createdAt: new Date(r.created_at), plan: r.plan ?? "free", status: r.status,
+    attribution: a ? {
+      source: a.source ?? null, referrerHost: a.referrer_host ?? null, landingPath: a.landing_path ?? null,
+      utmSource: a.utm_source ?? null, utmMedium: a.utm_medium ?? null, utmCampaign: a.utm_campaign ?? null,
+      firstTouchAt: date(a.first_touch_at), signinFromPath: a.signin_from_path ?? null,
+    } : null,
+    follows: r.follows ?? [],
+  };
+}
