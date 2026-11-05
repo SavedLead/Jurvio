@@ -356,11 +356,13 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
       misses = outcome === "missing" ? misses + 1 : 0;
     }
 
-    // 2. Due pages, hottest first.
+    // 2. Due pages, hottest first. History rows (earlier docket years, loaded by the
+    // one-off backfill) are never polled here: re-reading them would flip them to
+    // source_lane 'live' and pull them into the list, counts, follows and feeds.
     const due = await sql<{ docket_number: string; last_modified: string | null }[]>`
       SELECT p.docket_number, p.last_modified
       FROM scotus_source_poll p JOIN scotus_application a ON a.docket_number = p.docket_number
-      WHERE p.next_check_at <= ${now} AND a.poll_tier <> 'retired'
+      WHERE p.next_check_at <= ${now} AND a.poll_tier <> 'retired' AND a.source_lane = 'live'
       ORDER BY CASE a.poll_tier WHEN 'hot' THEN 0 WHEN 'open' THEN 1 WHEN 'closed' THEN 2 ELSE 3 END, p.next_check_at
       LIMIT 200`;
     for (const row of due) {
@@ -374,7 +376,7 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
     if (reparseLimit > 0 && budget.canFetch) {
       const stale = await sql<{ docket_number: string }[]>`
         SELECT a.docket_number FROM scotus_application a
-        WHERE a.parser_version <> ${EMERGENCY_PARSER_VERSION} AND a.poll_tier <> 'retired'
+        WHERE a.parser_version <> ${EMERGENCY_PARSER_VERSION} AND a.poll_tier <> 'retired' AND a.source_lane = 'live'
         ORDER BY (a.status = 'pending') DESC, a.last_entry_on DESC NULLS LAST
         LIMIT ${reparseLimit}`;
       for (const row of stale) {
