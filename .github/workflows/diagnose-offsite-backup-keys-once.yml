@@ -28,6 +28,14 @@ jobs:
       DB_HOST: 10.116.0.2
       PREFIX: ${{ inputs.prefix || 'database/2026/11/' }}
     steps:
+      - name: Remove root-owned leftover node_modules from prior docker builds
+        run: |
+          set -euo pipefail
+          # checkout@v4 cannot delete root-owned files left when an earlier job
+          # ran `docker ... npm install` as root inside GITHUB_WORKSPACE.
+          if [ -d "$GITHUB_WORKSPACE/node_modules" ]; then
+            docker run --rm -v "$GITHUB_WORKSPACE:/w" alpine:3.20 rm -rf /w/node_modules /w/list-offsite-backup-keys.mjs || true
+          fi
       - uses: actions/checkout@v4
       - uses: ./.github/actions/vpc-ssh
         with:
