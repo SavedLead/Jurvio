@@ -31,15 +31,15 @@ describe("one-time SCOTUS docket line reclassification", () => {
   it("keeps procedural filing requests on merits dockets routine, but not emergency applications", () => {
     expect(byId["4"]).toMatchObject({ toType: "application_granted_in_part", toImportance: "routine" });
     expect(byId["5"]).toMatchObject({ toType: "application_granted_in_part", toImportance: "routine" });
-    expect(byId["7"]).toBeUndefined(); // "A" docket: stays high
-    expect(entryImportance("application_granted", "Application (26A600) granted by Justice Kagan extending the time to file.", "26A600")).toBe("high");
+    expect(byId["7"]).toMatchObject({ toType: "application_granted", toImportance: "routine" }); // time extension: routine even on its "A" docket
+    expect(entryImportance("application_granted", "Application (26A600) granted by Justice Kagan extending the time to file.", "26A600")).toBe("routine");
   });
 
   it("leaves other lines and anything the restricted filter matches untouched", () => {
     expect(byId["8"]).toBeUndefined();
     expect(byId["9"]).toBeUndefined();
     expect(plan.skippedRestricted).toBe(1);
-    expect(plan).toMatchObject({ scanned: 9, cases: 5 });
+    expect(plan).toMatchObject({ scanned: 9, cases: 6 });
   });
 
   it("is idempotent: applying the plan and planning again changes nothing", () => {
@@ -68,5 +68,17 @@ describe("plural page/word limits on merits dockets", () => {
   it("keeps them routine", () => {
     expect(entryImportance("application_granted", "Application (25A1097) to file petition for a writ of certiorari in excess of page limits granted by Justice Jackson.", "26-5639")).toBe("routine");
     expect(entryImportance("application_granted", "Application (22A702) granted by Justice Barrett expanding the word limits to file consolidated briefs on the merits.", "21-1326")).toBe("routine");
+  });
+});
+
+describe("time extensions on emergency A dockets", () => {
+  it("are routine, while real emergency rulings stay high", () => {
+    expect(entryImportance("application_granted", "Application (26A533) granted by Justice Thomas extending the time to file until December 10, 2026.", "26A533")).toBe("routine");
+    expect(entryImportance("application_denied", "Application (26A20) to extend the time to file a petition for a writ of certiorari denied by Justice Alito.", "26A20")).toBe("routine");
+    expect(entryImportance("application_granted", "Application (26A10) for an extension of time granted by Justice Kagan.", "26A10")).toBe("routine");
+    expect(entryImportance("application_denied", "Application (26A358) denied by Justice Alito.", "26A358")).toBe("high");
+    expect(entryImportance("application_granted", "The application for stay presented to Justice Alito and by him referred to the Court is granted.", "26A458")).toBe("high");
+    expect(entryImportance("application_granted", "The application for an injunction pending appeal is granted.", "26A1")).toBe("high");
+    expect(entryImportance("application_granted_in_part", "The application to vacate the stay is granted in part.", "25A810")).toBe("high");
   });
 });
