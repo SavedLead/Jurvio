@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
-
-const HINT = "jurvio_signed_in=1";
+import type { ReactNode } from "react";
+import { useSignedInHint } from "@/modules/accounts/ui/use-signed-in-hint";
 
 /**
  * The emergency pages are edge-cached for anonymous visitors, and Cloudflare
@@ -10,9 +9,6 @@ const HINT = "jurvio_signed_in=1";
  * rendered for everyone; a signed-in browser swaps it for the plain link.
  */
 export function SignedInSwap({ anonymous, signedIn }: { anonymous: ReactNode; signedIn: ReactNode }) {
-  const [isSignedIn, setSignedIn] = useState(false);
-  useEffect(() => {
-    setSignedIn(document.cookie.split(";").some((part) => part.trim() === HINT));
-  }, []);
+  const isSignedIn = useSignedInHint();
   return <>{isSignedIn ? signedIn : anonymous}</>;
 }
