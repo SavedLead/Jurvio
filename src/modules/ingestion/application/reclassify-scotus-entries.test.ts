@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { entryImportance } from "@/modules/ingestion/providers/scotus/official-docket";
-import { planScotusReclassification, type StoredScotusEntry } from "./reclassify-scotus-entries";
+import { isRoutineToHigh, planScotusReclassification, sampleChanges, type StoredScotusEntry } from "./reclassify-scotus-entries";
 
 const row = (id: number, docketNumber: string, description: string, entryType: string, importance = "routine"): StoredScotusEntry => ({
   id: `00000000-0000-4000-8000-${String(id).padStart(12, "0")}`, caseId: `case-${docketNumber}`, docketNumber, entryType, importance, description,
@@ -48,5 +48,18 @@ describe("one-time SCOTUS docket line reclassification", () => {
       return change ? { ...entry, entryType: change.toType, importance: change.toImportance } : entry;
     });
     expect(planScotusReclassification(applied).changes).toEqual([]);
+  });
+});
+
+describe("spot-check samples", () => {
+  it("spreads a deterministic sample across matching changes", () => {
+    const rows = Array.from({ length: 10 }, (_, i) => row(i + 1, "26A100", `The application for stay is denied. Sample ${i}.`, "order", "routine"));
+    const plan = planScotusReclassification(rows);
+    expect(plan.changes.filter(isRoutineToHigh)).toHaveLength(10);
+    const sample = sampleChanges(plan.changes, 3, isRoutineToHigh);
+    expect(sample).toHaveLength(3);
+    expect(sample.map((s) => s.docketNumber)).toEqual(["26A100", "26A100", "26A100"]);
+    expect(sample[0]!.toType).toBe("application_denied");
+    expect(sample[0]!.text.length).toBeLessThanOrEqual(160);
   });
 });
