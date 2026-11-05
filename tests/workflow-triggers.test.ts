@@ -76,6 +76,7 @@ const READ_ONLY = new Set([
   "diagnose-federal-holds-once.yml",
   "diagnose-federal-write-perf-once.yml",
   "diagnose-ingestion-disk-once.yml",
+  "diagnose-offsite-backup-keys-once.yml",
   "diagnose-ingestion-lanes-once.yml",
   "diagnose-migration-state-once.yml",
   "diagnose-public-traffic-once.yml",
