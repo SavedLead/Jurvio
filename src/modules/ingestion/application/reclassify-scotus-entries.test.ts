@@ -63,3 +63,10 @@ describe("spot-check samples", () => {
     expect(sample[0]!.text.length).toBeLessThanOrEqual(160);
   });
 });
+
+describe("plural page/word limits on merits dockets", () => {
+  it("keeps them routine", () => {
+    expect(entryImportance("application_granted", "Application (25A1097) to file petition for a writ of certiorari in excess of page limits granted by Justice Jackson.", "26-5639")).toBe("routine");
+    expect(entryImportance("application_granted", "Application (22A702) granted by Justice Barrett expanding the word limits to file consolidated briefs on the merits.", "21-1326")).toBe("routine");
+  });
+});
