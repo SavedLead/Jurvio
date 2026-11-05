@@ -20,7 +20,7 @@
 // day old. --offline reads only the cache.
 //
 // Output: applications.tsv and events.tsv (COPY text format), stats.json, and
-// load.sql (psql script that loads both in one transaction; see historyLoadSql).
+// load.sql (psql script that loads them one transaction per docket year; see historyLoadSql).
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";

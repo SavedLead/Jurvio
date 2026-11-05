@@ -142,35 +142,48 @@ ON CONFLICT (term) DO UPDATE SET complete = scotus_emergency_history_coverage.co
   completed_at = COALESCE(scotus_emergency_history_coverage.completed_at, EXCLUDED.completed_at);`;
 }
 
-export function historyLoadSql(applicationsTsv: string, eventsTsv: string, coverage: readonly YearCoverage[] = []): string {
+/**
+ * psql script for one docket year's rows, in its own transaction, so a large
+ * backfill commits year by year and one slow year never rolls back the rest.
+ * Jurvio case links are resolved once per load through the
+ * (court_id, docket_number) index, not with a correlated subquery per row.
+ */
+function yearBlock(applicationsTsv: string, eventsTsv: string, coverage: readonly YearCoverage[], label: string): string[] {
   const appColumns = HISTORY_APPLICATION_COLUMNS.join(", ");
   const eventColumns = HISTORY_EVENT_COLUMNS.join(", ");
   const updates = HISTORY_APPLICATION_COLUMNS.filter((column) => column !== "docket_number")
     .map((column) => `${column} = EXCLUDED.${column}`).join(", ");
   return [
-    "\\set ON_ERROR_STOP on",
+    `\\echo 'loading ${label}'`,
     "BEGIN;",
-    "SET LOCAL statement_timeout = '900s';",
+    "SET LOCAL statement_timeout = '600s';",
     "SET LOCAL lock_timeout = '10s';",
-    "CREATE TEMP TABLE in_app ON COMMIT DROP AS SELECT " + HISTORY_APPLICATION_COLUMNS.map((column) => column).join(", ") + " FROM scotus_application WITH NO DATA;",
+    "CREATE TEMP TABLE in_app ON COMMIT DROP AS SELECT " + appColumns + " FROM scotus_application WITH NO DATA;",
     `COPY in_app (${appColumns}) FROM STDIN;`,
-    applicationsTsv.replace(/\n?$/, "\n") + "\\.",
+    copyData(applicationsTsv),
     "CREATE TEMP TABLE in_event ON COMMIT DROP AS SELECT " + eventColumns + " FROM scotus_application_event WITH NO DATA;",
     `COPY in_event (${eventColumns}) FROM STDIN;`,
-    eventsTsv.replace(/\n?$/, "\n") + "\\.",
+    copyData(eventsTsv),
+    "ANALYZE in_app;",
+    "ANALYZE in_event;",
+    "CREATE TEMP TABLE scotus_court ON COMMIT DROP AS SELECT id FROM court WHERE lower(provider_court_id) = 'scotus';",
+    `CREATE TEMP TABLE case_link ON COMMIT DROP AS
+SELECT DISTINCT ON (i.docket_number) i.docket_number, link.id AS case_id
+FROM in_app i CROSS JOIN scotus_court sc
+JOIN LATERAL (SELECT lc.id FROM legal_case lc WHERE lc.court_id = sc.id AND lc.docket_number = i.docket_number ORDER BY lc.id LIMIT 1) link ON true
+ORDER BY i.docket_number, link.id;`,
     "CREATE TEMP TABLE loaded (docket_number text PRIMARY KEY) ON COMMIT DROP;",
     `WITH upserted AS (
   INSERT INTO scotus_application (${appColumns}, case_id, source_lane, changed_at, updated_at)
   SELECT DISTINCT ON (i.docket_number) ${HISTORY_APPLICATION_COLUMNS.map((column) => `i.${column}`).join(", ")},
-    (SELECT lc.id FROM legal_case lc JOIN court c ON c.id = lc.court_id
-      WHERE lower(c.provider_court_id) = 'scotus' AND lc.docket_number = i.docket_number LIMIT 1),
-    'history', now(), now()
-  FROM in_app i ORDER BY i.docket_number
+    cl.case_id, 'history', now(), now()
+  FROM in_app i LEFT JOIN case_link cl USING (docket_number) ORDER BY i.docket_number
   ON CONFLICT (docket_number) DO UPDATE SET ${updates}, case_id = COALESCE(EXCLUDED.case_id, scotus_application.case_id),
     changed_at = now(), updated_at = now()
   WHERE scotus_application.source_lane = 'history'
   RETURNING docket_number)
 INSERT INTO loaded SELECT docket_number FROM upserted;`,
+    "ANALYZE loaded;",
     "DELETE FROM scotus_application_event e USING loaded l WHERE e.docket_number = l.docket_number;",
     `INSERT INTO scotus_application_event (${eventColumns}, backfilled)
 SELECT ${HISTORY_EVENT_COLUMNS.map((column) => `e.${column}`).join(", ")}, true FROM in_event e JOIN loaded l USING (docket_number)
@@ -180,8 +193,29 @@ SELECT a.source_url, a.docket_number, 200, now(), now(), now() FROM scotus_appli
 WHERE a.poll_tier <> 'retired'
 ON CONFLICT (url) DO NOTHING;`,
     coverageSql(coverage),
-    "SELECT 'loaded', count(*) FROM loaded;",
+    `SELECT 'loaded ${label}', count(*) FROM loaded;`,
     "COMMIT;",
+  ];
+}
+
+/** COPY body: the rows then the end marker; no blank line when there are no rows. */
+const copyData = (tsv: string) => (tsv.trim() ? `${tsv.replace(/\n+$/, "")}\n\\.` : "\\.");
+
+const yearOf = (line: string) => line.slice(0, line.indexOf("A")).replace(/[^0-9]/g, "");
+
+/** The load script: one transaction per docket year (rows and that year's coverage flag together). */
+export function historyLoadSql(applicationsTsv: string, eventsTsv: string, coverage: readonly YearCoverage[] = []): string {
+  const apps = new Map<string, string[]>();
+  const events = new Map<string, string[]>();
+  for (const line of applicationsTsv.split("\n")) if (line) apps.set(yearOf(line), [...(apps.get(yearOf(line)) ?? []), line]);
+  for (const line of eventsTsv.split("\n")) if (line) events.set(yearOf(line), [...(events.get(yearOf(line)) ?? []), line]);
+  const years = new Set<string>([...apps.keys(), ...coverage.map((row) => String(row.term % 100).padStart(2, "0"))]);
+  const blocks = [...years].sort().flatMap((yy) => yearBlock((apps.get(yy) ?? []).join("\n"), (events.get(yy) ?? []).join("\n"),
+    coverage.filter((row) => String(row.term % 100).padStart(2, "0") === yy), `${yy}A`));
+  return [
+    "\\set ON_ERROR_STOP on",
+    "\\timing on",
+    ...(blocks.length ? blocks : yearBlock("", "", [], "nothing")),
     "SELECT substring(docket_number FROM 1 FOR 2) AS docket_year, source_lane, count(*) AS applications, count(*) FILTER (WHERE kind <> 'extension') AS serious FROM scotus_application GROUP BY 1, 2 ORDER BY 1, 2;",
     "",
   ].join("\n");

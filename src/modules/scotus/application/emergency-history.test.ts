@@ -58,6 +58,22 @@ describe("historyLoadSql", () => {
     expect(sql).toContain("ON CONFLICT (url) DO NOTHING");
     expect(sql).not.toMatch(/\/rss\//);
   });
+
+  it("commits each docket year on its own and links cases through one indexed lookup", () => {
+    const app = (docket: string) => [docket, ...HISTORY_APPLICATION_COLUMNS.slice(1).map(() => "\\N")].join("\t");
+    const sql = historyLoadSql(`${app("17A1")}\n${app("18A2")}\n${app("17A3")}`, "", [
+      { term: 2017, complete: true, highest: 3, pages: 3 }, { term: 2018, complete: false, highest: 2, pages: 2 }, { term: 2019, complete: true, highest: 0, pages: 0 },
+    ]);
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(3);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(3);
+    const block17 = sql.slice(sql.indexOf("loading 17A"), sql.indexOf("loading 18A"));
+    expect(block17).toContain("17A1\t");
+    expect(block17).toContain("17A3\t");
+    expect(block17).not.toContain("18A2\t");
+    expect(block17).toContain("(2017, true, 3, 3)");
+    expect(sql).toContain("JOIN LATERAL (SELECT lc.id FROM legal_case lc WHERE lc.court_id = sc.id AND lc.docket_number = i.docket_number");
+    expect(sql).not.toContain("JOIN court c ON c.id = lc.court_id");
+  });
 });
 
 describe("coverageSql", () => {
