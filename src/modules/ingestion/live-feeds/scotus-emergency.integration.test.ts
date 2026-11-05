@@ -291,10 +291,11 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     const number = (value: string) => Number(value.slice(3));
     const seen = calls.length;
     const result = await gapRun();
-    const probed = calls.slice(seen).map((call) => docket(call.url));
+    // Due re-checks of known applications run too; the gap reads are the unknown numbers.
+    const probed = calls.slice(seen).map((call) => docket(call.url)).filter((value) => !known.has(value));
     expect(result.gapsRead).toBe(3);
     expect(probed).toHaveLength(3);
-    expect(probed.every((value) => value.startsWith("26A") && !known.has(value))).toBe(true);
+    expect(probed.every((value) => value.startsWith("26A"))).toBe(true);
     expect([...probed].sort((a, b) => number(b) - number(a))).toEqual(probed);
     const missing = probed.filter((value) => !(value in PAGES));
     const polls = await sql<{ next_check_at: Date }[]>`SELECT next_check_at FROM scotus_source_poll WHERE docket_number = ANY(${missing})`;
@@ -302,7 +303,7 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     for (const poll of polls) expect(new Date(poll.next_check_at).getTime()).toBeGreaterThan(at.getTime() + 6 * 86_400_000);
     const again = calls.length;
     await gapRun();
-    const second = calls.slice(again).map((call) => docket(call.url));
+    const second = calls.slice(again).map((call) => docket(call.url)).filter((value) => !known.has(value));
     expect(second).toHaveLength(3);
     expect(second.some((value) => probed.includes(value))).toBe(false);
     expect(Math.max(...second.map(number))).toBeLessThan(Math.min(...probed.map(number)));
