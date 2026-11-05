@@ -251,4 +251,19 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     expect(after!.counts.openSerious).toBe(before!.counts.openSerious);
     await sql`DELETE FROM scotus_application WHERE docket_number = '26A9998'`;
   });
+
+  it("never polls or re-parses a history row, so it stays out of the live lane", async () => {
+    await sql`
+      INSERT INTO scotus_application (docket_number, caption, kind, applicant_kind, status, source_url, parser_version, source_lane, submitted_on, last_entry_on, poll_tier)
+      VALUES ('26A9997', 'Hist v. Polled', 'stay', 'private', 'denied', 'https://www.supremecourt.gov/docket/docketfiles/html/public/26a9997.html',
+        'old-parser', 'history', '2017-07-31', '2017-08-21', 'closed')`;
+    await sql`
+      INSERT INTO scotus_source_poll (url, docket_number, last_status, checked_at, next_check_at, updated_at)
+      VALUES ('https://www.supremecourt.gov/docket/docketfiles/html/public/26a9997.html', '26A9997', 200, now(), now() - interval '1 day', now())`;
+    const seen = calls.length;
+    await run(new Date(t0.getTime() + 30 * 86_400_000));
+    expect(calls.slice(seen).some((call) => /26a9997/i.test(call.url))).toBe(false);
+    const [row] = await sql<{ source_lane: string }[]>`SELECT source_lane FROM scotus_application WHERE docket_number = '26A9997'`;
+    expect(row!.source_lane).toBe("history");
+  });
 });
