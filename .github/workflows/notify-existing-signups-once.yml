@@ -3,8 +3,7 @@ name: Notify owner of pre-existing sign-ups (once)
 # Sends the owner "new sign-up" email (same template as the live notifier) for
 # every account created before the notifier shipped. Each account is CLAIMED
 # (app_user.signup_notified_at set) in the same statement that selects it, so
-# a re-run or a concurrent live sign-up can never double-send. Skips clearly
-# marked test accounts (+signuptest@ addresses, example.* / .test domains).
+# a re-run or a concurrent live sign-up can never double-send. Skips the internal @jurvio.com account, +signuptest@ addresses, and example/cleanyourname/.test domains.
 # Logs print only counts and domains. dry_run=true claims nothing.
 # Dispatch from main with confirm=NOTIFY_EXISTING_SIGNUPS.
 
@@ -78,7 +77,7 @@ jobs:
             FROM picked p JOIN app_user u ON u.id = p.id LEFT JOIN account_subscription s ON s.user_id = u.id;"
           printf '%s\n' "$sql" | vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -v ON_ERROR_STOP=1' > "$work/rows.json"
         env:
-          FILTER: "email NOT LIKE '%+signuptest@%' AND email NOT LIKE '%@example.%' AND email NOT LIKE '%.test'"
+          FILTER: "email NOT LIKE '%@jurvio.com' AND email NOT LIKE '%+signuptest@%' AND email NOT LIKE '%example%' AND email NOT LIKE '%.test' AND email NOT LIKE '%cleanyourname%'"
       - name: Send (same template as the live notifier)
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
