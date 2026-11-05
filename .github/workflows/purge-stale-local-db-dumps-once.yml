@@ -1,0 +1,163 @@
+name: Purge stale local db dumps (once)
+
+# David-approved one-shot (2026-11-05): after proving the two newer dumps exist
+# in Spaces bucket jurvio-db-backups at plausible size, delete EXACTLY these two
+# local paths on web-01 and nothing else:
+#   /opt/jurvio/restore-check/jurvio-restore.sql.gz
+#   /opt/jurvio/backups/jurvio-20261104T233142Z.sql.gz
+# No globs. Does not touch postgres, artifacts, docker, or the two newer dumps.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type PURGE_STALE_LOCAL_DB_DUMPS to run against production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-purge-stale-local-db-dumps
+  cancel-in-progress: false
+
+jobs:
+  purge:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Require confirm=PURGE_STALE_LOCAL_DB_DUMPS
+        run: |
+          if [ "$CONFIRM" != "PURGE_STALE_LOCAL_DB_DUMPS" ]; then
+            echo "::error::Refusing to run. Re-run with confirm=PURGE_STALE_LOCAL_DB_DUMPS."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Bundle Spaces list helper on the builder
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/w -w /w node:20-bookworm-slim bash -lc '
+            set -euo pipefail
+            npm install --no-save esbuild@0.25.9 >/dev/null
+            npx esbuild scripts/list-offsite-backup-keys.ts \
+              --bundle --platform=node --format=esm --packages=bundle \
+              --outfile=/w/list-offsite-backup-keys.mjs
+          '
+          test -s list-offsite-backup-keys.mjs
+      - name: Verify Spaces holds the newer dumps, then delete the two approved local files
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+
+          NEWER1_KEY='database/2026/11/jurvio-20261105T051612Z.sql.gz.enc'
+          NEWER2_KEY='database/2026/11/jurvio-20261105T011008Z.sql.gz.enc'
+          OLDER_KEY='database/2026/11/jurvio-20261104T233142Z.sql.gz.enc'
+          DEL_RESTORE='/opt/jurvio/restore-check/jurvio-restore.sql.gz'
+          DEL_OLDEST='/opt/jurvio/backups/jurvio-20261104T233142Z.sql.gz'
+          # Encrypted object should be near the ~21 GiB plaintext; require >=15 GiB.
+          MIN_BYTES=$((15 * 1024 * 1024 * 1024))
+
+          # Copy the bundled helper to web-01 (exact file; no secrets).
+          scp -q list-offsite-backup-keys.mjs "$INGESTION_USER@$DB_HOST:/tmp/list-offsite-backup-keys.mjs"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "NEWER1_KEY='$NEWER1_KEY' NEWER2_KEY='$NEWER2_KEY' OLDER_KEY='$OLDER_KEY' DEL_RESTORE='$DEL_RESTORE' DEL_OLDEST='$DEL_OLDEST' MIN_BYTES='$MIN_BYTES' bash -s" <<'REMOTE'
+          set -euo pipefail
+          chmod 600 /tmp/list-offsite-backup-keys.mjs
+          test -s /tmp/list-offsite-backup-keys.mjs
+
+          cd /opt/jurvio
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          test -n "$image" || { echo "::error::could not resolve running app image"; exit 1; }
+
+          echo "=== BEFORE: root disk ==="
+          df -h /
+          echo "=== BEFORE: local dumps ==="
+          ls -lh /opt/jurvio/backups/jurvio-*.sql.gz 2>/dev/null || true
+          ls -lh /opt/jurvio/restore-check/jurvio-restore.sql.gz 2>/dev/null || true
+
+          echo "=== Spaces list (jurvio-db-backups) ==="
+          report="$(docker run --rm --network=host \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            -v /tmp/list-offsite-backup-keys.mjs:/job.mjs:ro \
+            --entrypoint node \
+            "$image" /job.mjs \
+            --keys "${NEWER1_KEY},${NEWER2_KEY},${OLDER_KEY}" </dev/null)"
+          printf '%s\n' "$report"
+
+          bucket="$(jq -r .bucket <<<"$report")"
+          if [ "$bucket" != "jurvio-db-backups" ]; then
+            echo "::error::expected bucket jurvio-db-backups, got $bucket — refusing to delete"
+            exit 1
+          fi
+
+          check_key() {
+            local key="$1" label="$2" required="$3"
+            local present size
+            present="$(jq -r --arg k "$key" '.objects[] | select(.key==$k) | .present' <<<"$report")"
+            size="$(jq -r --arg k "$key" '.objects[] | select(.key==$k) | .sizeBytes' <<<"$report")"
+            echo "spaces $label: present=$present sizeBytes=$size key=$key"
+            if [ "$required" = "1" ]; then
+              if [ "$present" != "true" ]; then
+                echo "::error::$label missing from Spaces — refusing to delete local dumps"
+                exit 1
+              fi
+              case "$size" in ''|null|*[!0-9]*) echo "::error::$label has no numeric size"; exit 1;; esac
+              if [ "$size" -lt "$MIN_BYTES" ]; then
+                echo "::error::$label size $size < ${MIN_BYTES} (not ~20GB) — refusing to delete"
+                exit 1
+              fi
+            else
+              if [ "$present" = "true" ]; then
+                echo "spaces $label: optional older dump also present (size=$size)"
+              else
+                echo "spaces $label: optional older dump NOT in Spaces (ok; we still keep two newer)"
+              fi
+            fi
+          }
+
+          check_key "$NEWER1_KEY" "newer-051612Z" 1
+          check_key "$NEWER2_KEY" "newer-011008Z" 1
+          check_key "$OLDER_KEY" "older-233142Z" 0
+
+          echo "=== Spaces check PASSED — deleting the two approved local files ==="
+          for f in "$DEL_RESTORE" "$DEL_OLDEST"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::expected file missing before delete: $f"
+              exit 1
+            fi
+            # Exact path only — no globs.
+            case "$f" in
+              /opt/jurvio/restore-check/jurvio-restore.sql.gz|/opt/jurvio/backups/jurvio-20261104T233142Z.sql.gz) ;;
+              *) echo "::error::refusing unexpected path $f"; exit 1;;
+            esac
+            ls -lh "$f"
+            rm -f -- "$f"
+            if [ -e "$f" ]; then
+              echo "::error::file still present after rm: $f"
+              exit 1
+            fi
+            echo "deleted $f"
+          done
+
+          echo "=== AFTER: local dumps ==="
+          ls -lh /opt/jurvio/backups/jurvio-*.sql.gz 2>/dev/null || true
+          ls -lh /opt/jurvio/restore-check/ 2>/dev/null || true
+          echo "=== AFTER: root disk ==="
+          df -h /
+          df -P / | awk 'NR==2 {printf "free_pct=%.1f free_gib=%.1f used_gib=%.1f size_gib=%.1f\n", $4*100/$2, $4/1024/1024, $3/1024/1024, $2/1024/1024}'
+          rm -f /tmp/list-offsite-backup-keys.mjs
+          echo "=== DONE ==="
+          REMOTE
