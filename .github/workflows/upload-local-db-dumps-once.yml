@@ -1,0 +1,167 @@
+name: Upload local db dumps to Spaces (once)
+
+# David-approved (2026-11-05): encrypt-and-upload EXISTING local dumps under
+# /opt/jurvio/backups/ to jurvio-db-backups. Does NOT create new pg_dump files
+# (disk is tight; a fresh dump would push free space under ~32%). Idempotent:
+# upload-database-backup.mjs skips keys that are already stored.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type UPLOAD_LOCAL_DB_DUMPS to run against production"
+        required: true
+        type: string
+      basenames:
+        description: "Comma-separated jurvio-<stamp>.sql.gz basenames under /opt/jurvio/backups/"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-upload-local-db-dumps
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 90
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      BASENAMES: ${{ inputs.basenames }}
+    steps:
+      - name: Require confirm=UPLOAD_LOCAL_DB_DUMPS
+        run: |
+          if [ "$CONFIRM" != "UPLOAD_LOCAL_DB_DUMPS" ]; then
+            echo "::error::Refusing to run. Re-run with confirm=UPLOAD_LOCAL_DB_DUMPS."
+            exit 1
+          fi
+      - name: Remove root-owned leftover node_modules from prior docker builds
+        run: |
+          set -euo pipefail
+          if [ -d "$GITHUB_WORKSPACE/node_modules" ]; then
+            docker run --rm -v "$GITHUB_WORKSPACE:/w" alpine:3.20 rm -rf /w/node_modules /w/list-offsite-backup-keys.mjs || true
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Bundle Spaces list helper on the builder
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/list-offsite-backup-keys.mjs"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD":/w:ro -v "$RUNNER_TEMP":/out -w /out \
+            node:20-bookworm-slim bash -lc '
+              set -euo pipefail
+              export npm_config_cache=/out/npm-cache
+              mkdir -p /out/npm-cache
+              npm install esbuild@0.25.9 >/dev/null
+              ./node_modules/.bin/esbuild /w/scripts/list-offsite-backup-keys.ts \
+                --bundle --platform=node --format=esm --packages=bundle \
+                --outfile=/out/list-offsite-backup-keys.mjs
+            '
+          test -s "$out"
+          cp -f "$out" list-offsite-backup-keys.mjs
+      - name: Upload named local dumps (no new pg_dump) and verify Spaces
+        run: |
+          set -euo pipefail
+          source "$HOME/vpc-ssh.sh"
+
+          # Validate basenames before touching production.
+          keys_csv=""
+          for base in $(printf '%s' "$BASENAMES" | tr ',' ' '); do
+            base="$(printf '%s' "$base" | tr -d '[:space:]')"
+            [ -n "$base" ] || continue
+            if ! printf '%s' "$base" | grep -Eq '^jurvio-[0-9]{8}T[0-9]{6}Z\.sql\.gz$'; then
+              echo "::error::refusing unexpected basename: $base"
+              exit 1
+            fi
+            stamp="${base#jurvio-}"
+            stamp="${stamp%.sql.gz}"
+            key="database/${stamp:0:4}/${stamp:4:2}/${base}.enc"
+            if [ -n "$keys_csv" ]; then keys_csv="${keys_csv},"; fi
+            keys_csv="${keys_csv}${key}"
+          done
+          test -n "$keys_csv" || { echo "::error::no basenames provided"; exit 1; }
+
+          scp -q list-offsite-backup-keys.mjs "$INGESTION_USER@$DB_HOST:/tmp/list-offsite-backup-keys.mjs"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "BASENAMES='$BASENAMES' KEYS_CSV='$keys_csv' bash -s" <<'REMOTE'
+          set -euo pipefail
+          chmod 600 /tmp/list-offsite-backup-keys.mjs
+          cd /opt/jurvio
+
+          echo "=== BEFORE: root disk ==="
+          df -h /
+          df -P / | awk 'NR==2 {printf "free_pct=%.1f\n", $4*100/$2}'
+
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          test -n "$image" || { echo "::error::could not resolve running app image"; exit 1; }
+
+          uploaded=0
+          for base in $(printf '%s' "$BASENAMES" | tr ',' ' '); do
+            base="$(printf '%s' "$base" | tr -d '[:space:]')"
+            [ -n "$base" ] || continue
+            path="/opt/jurvio/backups/$base"
+            if [ ! -f "$path" ]; then
+              echo "::error::local dump missing: $path"
+              exit 1
+            fi
+            ls -lh "$path"
+            echo "=== uploading $path ==="
+            docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              --env-file .env.production \
+              -v /opt/jurvio/backups:/backups:ro \
+              "$image" \
+              node jobs/upload-database-backup.mjs --file "/backups/$base" </dev/null
+            uploaded=$((uploaded + 1))
+          done
+          echo "uploaded_or_skipped_count=$uploaded"
+
+          echo "=== Spaces verify ==="
+          report="$(docker run --rm --network=host \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            -v /tmp/list-offsite-backup-keys.mjs:/job.mjs:ro \
+            --entrypoint node \
+            "$image" /job.mjs --keys "$KEYS_CSV" </dev/null)"
+          printf '%s\n' "$report"
+          bucket="$(jq -r .bucket <<<"$report")"
+          [ "$bucket" = "jurvio-db-backups" ] || { echo "::error::unexpected bucket $bucket"; exit 1; }
+
+          MIN_BYTES=$((15 * 1024 * 1024 * 1024))
+          missing=0
+          while IFS= read -r key; do
+            [ -n "$key" ] || continue
+            present="$(jq -r --arg k "$key" '.objects[] | select(.key==$k) | .present' <<<"$report")"
+            size="$(jq -r --arg k "$key" '.objects[] | select(.key==$k) | .sizeBytes' <<<"$report")"
+            echo "spaces key=$key present=$present sizeBytes=$size"
+            if [ "$present" != "true" ]; then
+              echo "::error::missing in Spaces after upload: $key"
+              missing=1
+              continue
+            fi
+            case "$size" in ''|null|*[!0-9]*) echo "::error::bad size for $key"; missing=1; continue;; esac
+            if [ "$size" -lt "$MIN_BYTES" ]; then
+              echo "::error::$key size $size < ${MIN_BYTES}"
+              missing=1
+            fi
+          done <<KEYS
+          $(printf '%s' "$KEYS_CSV" | tr ',' '\n')
+          KEYS
+          [ "$missing" -eq 0 ] || exit 1
+
+          echo "=== AFTER: root disk (unchanged by upload; no new dump) ==="
+          df -h /
+          rm -f /tmp/list-offsite-backup-keys.mjs
+          echo "=== DONE ==="
+          REMOTE
