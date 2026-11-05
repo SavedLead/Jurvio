@@ -1,0 +1,71 @@
+name: Diagnose offsite backup keys (once, read-only)
+
+# Lists encrypted objects under a prefix in jurvio-db-backups. No deletes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: "Spaces key prefix to list (default database/2026/11/)"
+        required: false
+        default: "database/2026/11/"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-diagnose-offsite-backup-keys
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      PREFIX: ${{ inputs.prefix || 'database/2026/11/' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Bundle list helper
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD":/w -w /w node:20-bookworm-slim bash -lc '
+            set -euo pipefail
+            npm install --no-save esbuild@0.25.9 >/dev/null
+            npx esbuild scripts/list-offsite-backup-keys.ts \
+              --bundle --platform=node --format=esm --packages=bundle \
+              --outfile=/w/list-offsite-backup-keys.mjs
+          '
+          test -s list-offsite-backup-keys.mjs
+      - name: List Spaces keys (read-only)
+        run: |
+          set -euo pipefail
+          source "$HOME/vpc-ssh.sh"
+          if ! printf '%s' "$PREFIX" | grep -Eq '^database/([0-9]{4}/[0-9]{2}/)?$'; then
+            echo "::error::prefix must look like database/ or database/YYYY/MM/"
+            exit 1
+          fi
+          scp -q list-offsite-backup-keys.mjs "$INGESTION_USER@$DB_HOST:/tmp/list-offsite-backup-keys.mjs"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "PREFIX='$PREFIX' bash -s" <<'REMOTE'
+          set -euo pipefail
+          chmod 600 /tmp/list-offsite-backup-keys.mjs
+          cd /opt/jurvio
+          image="$(docker inspect -f '{{.Config.Image}}' \
+            "$(docker ps --filter 'label=com.docker.compose.project=jurvio' \
+                         --filter 'label=com.docker.compose.service=app' \
+                         --format '{{.ID}}' | head -n1)")"
+          test -n "$image"
+          docker run --rm --network=host \
+            --user "$(id -u):$(id -g)" \
+            --env-file .env.production \
+            -v /tmp/list-offsite-backup-keys.mjs:/job.mjs:ro \
+            --entrypoint node \
+            "$image" /job.mjs --prefix "$PREFIX" </dev/null
+          rm -f /tmp/list-offsite-backup-keys.mjs
+          REMOTE
