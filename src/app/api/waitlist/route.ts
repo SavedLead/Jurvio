@@ -6,6 +6,7 @@ import { captureLead, LEAD_SUCCESS_MESSAGE } from "@/modules/accounts/applicatio
 import { isPlanId } from "@/modules/accounts/domain/plans";
 import { SESSION_COOKIE } from "@/modules/accounts/domain/tokens";
 import { absoluteUrl } from "@/modules/accounts/http/config";
+import { attributionFromCookies } from "@/modules/growth/attribution";
 import { clientIp, isSameOriginRequest, noStore, readBody, wantsJson } from "@/modules/accounts/http/request";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
     if (wantsJson(request)) return noStore(NextResponse.json({ error: "email_required" }, { status: 400 }));
     return noStore(NextResponse.redirect(absoluteUrl(`/pricing?waitlist_error=invalid#plan-${plan}`, request.nextUrl.origin), 303));
   }
-  const status = await captureLead(sql, { email: body.email, ip: clientIp(request), source: "plan", plan, honeypot: body.company });
+  const status = await captureLead(sql, { email: body.email, ip: clientIp(request), source: "plan", plan, honeypot: body.company, attribution: attributionFromCookies(request.headers.get("cookie")) });
   if (wantsJson(request)) {
     if (status === "joined") return noStore(NextResponse.json({ ok: true, plan, status: "waitlisted", message: LEAD_SUCCESS_MESSAGE }));
     return noStore(NextResponse.json({ error: status }, { status: status === "rate_limited" ? 429 : 400 }));

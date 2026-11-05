@@ -11,7 +11,7 @@ import { readSourceWatermark, recordSourceWatermark, refreshCourtFreshness } fro
 import { coaEntryDescription, normalizeDocket } from "./coa-feeds";
 import { CIRCUIT_ADAPTERS, circuitAdapter, dedupeAdapterItems, type AdapterItem } from "../providers/appellate/adapters";
 import { FetchBudget, RateLimitedError } from "./polite-fetcher";
-import { HIGH_IMPORTANCE_EVENTS } from "../providers/scotus/official-docket";
+import { entryImportance } from "../providers/scotus/official-docket";
 import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
 import { matchOrCreateDraftCase, insertDocketEntryOnce, providerId, resolveCourt, storeFeedArtifact, hasEquivalentEntry } from "./persist";
 import {
@@ -144,7 +144,7 @@ async function persistScotusDocket(sql: Sql, store: ArtifactStore, provider: str
       const created = await insertDocketEntryOnce(tx, {
         caseId: match.caseId, providerId: provider, providerEntryId: entry.sourceRecordId, entryNumber: entry.entryNumber,
         filedOn: entry.filedOn, description: entry.description, entryType: entry.eventType,
-        importance: HIGH_IMPORTANCE_EVENTS.has(entry.eventType) ? "high" : "routine",
+        importance: entryImportance(entry.eventType, entry.description, docket.docketNumber),
         artifactId,
       });
       if (created) newEntries += 1;
