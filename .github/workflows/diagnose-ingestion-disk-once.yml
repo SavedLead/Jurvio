@@ -87,5 +87,49 @@ jobs:
           if [ -n "$app" ]; then
             sudo -n docker exec "$app" sh -lc 'du -x -h -d2 /var/lib/jurvio/artifacts 2>/dev/null | sort -rh | head -20' || echo "(artifacts du failed)"
           fi
+
+          echo "=== lsblk ==="
+          lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT 2>/dev/null || true
+          echo "=== DO volume devices ==="
+          ls -l /dev/disk/by-id/ 2>/dev/null | grep -i DO_Volume || echo "(no DO volume devices)"
+
+          echo "=== df -h (all) ==="
+          df -hT
+
+          echo "=== largest top-level dirs on / (one-filesystem) ==="
+          sudo -n du -x -h -d1 / 2>/dev/null | sort -rh | head -20 || true
+
+          echo "=== /var/lib breakdown ==="
+          sudo -n du -x -h -d2 /var/lib 2>/dev/null | sort -rh | head -25 || true
+
+          echo "=== docker system df ==="
+          sudo -n docker system df || true
+
+          echo "=== postgres PGDATA internals (pg_wal, log, base) ==="
+          pg="$(sudo -n docker ps --filter 'label=com.docker.compose.project=jurvio' --filter 'label=com.docker.compose.service=postgres' --format '{{.ID}}' | head -n1)"
+          if [ -n "$pg" ]; then
+            sudo -n docker exec "$pg" sh -lc 'du -x -h -d1 /var/lib/postgresql/data 2>/dev/null | sort -rh | head -20' || true
+            sudo -n docker exec "$pg" sh -lc 'du -x -sh /var/lib/postgresql/data/pg_wal /var/lib/postgresql/data/log /var/lib/postgresql/data/base /var/lib/postgresql/data/pg_tblspc 2>/dev/null' || true
+            sudo -n docker exec "$pg" sh -lc 'ls -lah /var/lib/postgresql/data/log 2>/dev/null | tail -20' || true
+          fi
+
+          echo "=== /tmp and /var/tmp ==="
+          sudo -n du -x -sh /tmp /var/tmp 2>/dev/null || true
+          sudo -n du -x -h -d1 /tmp 2>/dev/null | sort -rh | head -15 || true
+
+          echo "=== journal disk use ==="
+          sudo -n journalctl --disk-usage 2>/dev/null || true
+
+          echo "=== likely on-box dumps / backups (names only + sizes) ==="
+          for d in /var/lib/jurvio /var/backups /opt/jurvio /home /root /tmp /var/lib/docker/volumes/jurvio_jurvio_artifacts/_data; do
+            if sudo -n test -d "$d"; then
+              echo "-- under $d --"
+              sudo -n find "$d" -maxdepth 3 \( -name '*.sql.gz' -o -name '*.dump' -o -name '*.dump.gz' -o -name 'jurvio-*.gz' -o -name '*backup*' -o -name '*.tar.gz' \) -printf '%s %p\n' 2>/dev/null | sort -nr | head -30 || true
+            fi
+          done
+
+          echo "=== artifacts top dirs (host path) ==="
+          sudo -n du -x -h -d2 /var/lib/docker/volumes/jurvio_jurvio_artifacts/_data 2>/dev/null | sort -rh | head -30 || true
+
           echo "=== DONE ==="
           REMOTE
