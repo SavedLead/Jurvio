@@ -51,7 +51,7 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     return new Response(body, { status: 200, headers: { "content-type": "text/html", "last-modified": "Wed, 04 Nov 2026 14:00:00 GMT" } });
   }) as unknown as typeof fetch;
   const t0 = new Date("2026-11-04T15:00:00Z");
-  const run = (now: Date) => runScotusEmergency(sql, store, { fetchImpl, now: () => now, minIntervalMs: 0, frontierProbes: 5, seedPerRun: 5, seedYears: [26] });
+  const run = (now: Date) => runScotusEmergency(sql, store, { fetchImpl, now: () => now, minIntervalMs: 0, frontierProbes: 5, seedPerRun: 5, seedYears: [26], gapPerRun: 0 });
 
   const cleanup = async () => {
     await sql`DELETE FROM scotus_application_event WHERE docket_number LIKE '26A%'`;
@@ -252,18 +252,60 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     await sql`DELETE FROM scotus_application WHERE docket_number = '26A9998'`;
   });
 
-  it("never polls or re-parses a history row, so it stays out of the live lane", async () => {
+  it("never polls or re-parses an earlier year's history row, so it stays out of the live lane", async () => {
     await sql`
       INSERT INTO scotus_application (docket_number, caption, kind, applicant_kind, status, source_url, parser_version, source_lane, submitted_on, last_entry_on, poll_tier)
-      VALUES ('26A9997', 'Hist v. Polled', 'stay', 'private', 'denied', 'https://www.supremecourt.gov/docket/docketfiles/html/public/26a9997.html',
-        'old-parser', 'history', '2017-07-31', '2017-08-21', 'closed')`;
+      VALUES ('25A9997', 'Hist v. Polled', 'stay', 'private', 'denied', 'https://www.supremecourt.gov/docket/docketfiles/html/public/25a9997.html',
+        'old-parser', 'history', '2025-07-31', '2025-08-21', 'closed')`;
     await sql`
       INSERT INTO scotus_source_poll (url, docket_number, last_status, checked_at, next_check_at, updated_at)
-      VALUES ('https://www.supremecourt.gov/docket/docketfiles/html/public/26a9997.html', '26A9997', 200, now(), now() - interval '1 day', now())`;
+      VALUES ('https://www.supremecourt.gov/docket/docketfiles/html/public/25a9997.html', '25A9997', 200, now(), now() - interval '1 day', now())`;
+    try {
+      const seen = calls.length;
+      await run(new Date(t0.getTime() + 30 * 86_400_000));
+      expect(calls.slice(seen).some((call) => /25a9997/i.test(call.url))).toBe(false);
+      const [row] = await sql<{ source_lane: string }[]>`SELECT source_lane FROM scotus_application WHERE docket_number = '25A9997'`;
+      expect(row!.source_lane).toBe("history");
+    } finally {
+      await sql`DELETE FROM scotus_source_poll WHERE docket_number = '25A9997'`;
+      await sql`DELETE FROM scotus_application WHERE docket_number = '25A9997'`;
+    }
+  });
+
+  it("adopts this docket year's history rows as live applications, without new lines", async () => {
+    await sql`UPDATE scotus_application SET source_lane = 'history' WHERE docket_number = '26A600'`;
+    const events = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_application_event WHERE docket_number = '26A600' AND NOT backfilled`;
+    const result = await run(new Date(t0.getTime() + 31 * 86_400_000));
+    expect(result.adopted).toBe(1);
+    const [row] = await sql<{ source_lane: string }[]>`SELECT source_lane FROM scotus_application WHERE docket_number = '26A600'`;
+    expect(row!.source_lane).toBe("live");
+    const after = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM scotus_application_event WHERE docket_number = '26A600' AND NOT backfilled`;
+    expect(after[0]!.n).toBe(events[0]!.n);
+  });
+
+  it("reads numbers below the frontier it never had, newest first, and waits a week on a missing one", async () => {
+    const at = new Date(t0.getTime() + 32 * 86_400_000);
+    const gapRun = () => runScotusEmergency(sql, store, { fetchImpl, now: () => at, minIntervalMs: 0, frontierProbes: 0, seedPerRun: 0, reparsePerRun: 0, seedYears: [26], gapPerRun: 3 });
+    const known = new Set((await sql<{ docket_number: string }[]>`SELECT docket_number FROM scotus_application WHERE docket_number LIKE '26A%'`).map((row) => row.docket_number));
+    const docket = (url: string) => /public\/(\d{2}a\d+)\.html$/i.exec(url)?.[1]?.toUpperCase() ?? "";
+    const number = (value: string) => Number(value.slice(3));
     const seen = calls.length;
-    await run(new Date(t0.getTime() + 30 * 86_400_000));
-    expect(calls.slice(seen).some((call) => /26a9997/i.test(call.url))).toBe(false);
-    const [row] = await sql<{ source_lane: string }[]>`SELECT source_lane FROM scotus_application WHERE docket_number = '26A9997'`;
-    expect(row!.source_lane).toBe("history");
+    const result = await gapRun();
+    // Due re-checks of known applications run too; the gap reads are the unknown numbers.
+    const probed = calls.slice(seen).map((call) => docket(call.url)).filter((value) => !known.has(value));
+    expect(result.gapsRead).toBe(3);
+    expect(probed).toHaveLength(3);
+    expect(probed.every((value) => value.startsWith("26A"))).toBe(true);
+    expect([...probed].sort((a, b) => number(b) - number(a))).toEqual(probed);
+    const missing = probed.filter((value) => !(value in PAGES));
+    const polls = await sql<{ next_check_at: Date }[]>`SELECT next_check_at FROM scotus_source_poll WHERE docket_number = ANY(${missing})`;
+    expect(polls).toHaveLength(missing.length);
+    for (const poll of polls) expect(new Date(poll.next_check_at).getTime()).toBeGreaterThan(at.getTime() + 6 * 86_400_000);
+    const again = calls.length;
+    await gapRun();
+    const second = calls.slice(again).map((call) => docket(call.url)).filter((value) => !known.has(value));
+    expect(second).toHaveLength(3);
+    expect(second.some((value) => probed.includes(value))).toBe(false);
+    expect(Math.max(...second.map(number))).toBeLessThan(Math.min(...probed.map(number)));
   });
 });
