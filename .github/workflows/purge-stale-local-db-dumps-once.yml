@@ -54,12 +54,18 @@ jobs:
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/list-offsite-backup-keys.mjs"
-          docker run --rm --user "$(id -u):$(id -g)"             -v "$PWD":/w:ro -v "$RUNNER_TEMP":/out -w /w             node:20-bookworm-slim bash -lc '
+          # Install esbuild under $RUNNER_TEMP (/out), not the checkout (/w:ro).
+          # npm install --no-save writes node_modules into cwd; with /w:ro that ENOENTs.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD":/w:ro -v "$RUNNER_TEMP":/out -w /out \
+            node:20-bookworm-slim bash -lc '
               set -euo pipefail
               export npm_config_cache=/out/npm-cache
               mkdir -p /out/npm-cache
-              npm install --no-save esbuild@0.25.9 >/dev/null
-              npx esbuild scripts/list-offsite-backup-keys.ts                 --bundle --platform=node --format=esm --packages=bundle                 --outfile=/out/list-offsite-backup-keys.mjs
+              npm install esbuild@0.25.9 >/dev/null
+              ./node_modules/.bin/esbuild /w/scripts/list-offsite-backup-keys.ts \
+                --bundle --platform=node --format=esm --packages=bundle \
+                --outfile=/out/list-offsite-backup-keys.mjs
             '
           test -s "$out"
           cp -f "$out" list-offsite-backup-keys.mjs
