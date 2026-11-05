@@ -1,0 +1,93 @@
+name: Notify owner of pre-existing sign-ups (once)
+
+# Sends the owner "new sign-up" email (same template as the live notifier) for
+# every account created before the notifier shipped. Each account is CLAIMED
+# (app_user.signup_notified_at set) in the same statement that selects it, so
+# a re-run or a concurrent live sign-up can never double-send. Skips clearly
+# marked test accounts (+signuptest@ addresses, example.* / .test domains).
+# Logs print only counts and domains. dry_run=true claims nothing.
+# Dispatch from main with confirm=NOTIFY_EXISTING_SIGNUPS.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type NOTIFY_EXISTING_SIGNUPS"
+        required: true
+        type: string
+      dry_run:
+        description: "Only count (no claim, no email)"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-notify-existing-signups
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 15
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Require confirm=NOTIFY_EXISTING_SIGNUPS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "NOTIFY_EXISTING_SIGNUPS" ]; then echo "::error::Refusing to run without confirm=NOTIFY_EXISTING_SIGNUPS"; exit 1; fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Select (and unless dry run, claim) pre-existing accounts
+        run: |
+          set -euo pipefail
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/notify-existing"; mkdir -p "$work"; chmod 700 "$work"
+          if [ "$DRY_RUN" = "true" ]; then
+            pick="SELECT id FROM app_user WHERE signup_notified_at IS NULL AND $FILTER"
+          else
+            pick="UPDATE app_user SET signup_notified_at = now() WHERE signup_notified_at IS NULL AND $FILTER RETURNING id"
+          fi
+          sql="WITH picked AS ($pick)
+            SELECT coalesce(json_agg(json_build_object(
+              'id', u.id, 'email', u.email, 'created_at', u.created_at, 'plan', s.plan::text, 'status', s.status,
+              'attribution', (SELECT to_json(a) FROM signup_attribution a WHERE a.user_id = u.id),
+              'follows', (SELECT coalesce(json_agg(label ORDER BY created_at), '[]'::json) FROM (
+                  SELECT 'case ' || c.public_id || coalesce(': ' || left(c.caption, 80), '') AS label, f.created_at
+                    FROM case_follow f JOIN legal_case c ON c.id = f.case_id WHERE f.user_id = u.id
+                  UNION ALL SELECT e.kind || ': ' || left(e.label, 80), e.created_at FROM entity_follow e WHERE e.user_id = u.id) x)
+            ) ORDER BY u.created_at), '[]'::json)
+            FROM picked p JOIN app_user u ON u.id = p.id LEFT JOIN account_subscription s ON s.user_id = u.id;"
+          printf '%s\n' "$sql" | vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -q -At -v ON_ERROR_STOP=1' > "$work/rows.json"
+        env:
+          FILTER: "email NOT LIKE '%+signuptest@%' AND email NOT LIKE '%@example.%' AND email NOT LIKE '%.test'"
+      - name: Send (same template as the live notifier)
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/notify-existing"
+          if [ "$DRY_RUN" = "true" ]; then flag=--dry-run; else flag=; fi
+          out="$(pnpm exec tsx scripts/notify-existing-signups.ts "$work/rows.json" $flag)"
+          echo "$out"
+          echo "::notice title=Pre-existing sign-ups::$out"
+          rm -f "$work/rows.json"

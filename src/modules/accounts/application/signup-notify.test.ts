@@ -41,3 +41,15 @@ describe("signup notification", () => {
     await expect(notifySignupEvent(badSql, "u1", { provider: null, to: "r@x.com" })).resolves.toBe(false);
   });
 });
+
+describe("pre-existing sign-up backfill", () => {
+  it("maps psql rows onto the live template", async () => {
+    const { toDetails } = await import("../../../../scripts/notify-existing-signups");
+    const d = toDetails({ id: "u", email: "a@b.com", created_at: "2026-11-01T12:00:00Z", plan: null, status: null,
+      attribution: { source: "x", referrer_host: "x.com", landing_path: "/", utm_source: null, utm_medium: null, utm_campaign: null, first_touch_at: null, signin_from_path: null },
+      follows: null });
+    const m = signupNotificationEmail(d);
+    expect(m.subject).toBe("New Jurvio sign-up: a@b.com (free)");
+    expect(m.text).toContain("Referrer: x.com");
+  });
+});

@@ -5,8 +5,9 @@ import { escapeHtml } from "../infrastructure/email";
 // Owner notification for each new account (and paid-plan starts/upgrades).
 // Fire-and-forget: every entry point here swallows and logs its own errors so
 // a sign-up never fails because the notification did. One email per account:
-// the sign-up trigger runs only when verifySignIn actually inserted the
-// app_user row (xmax = 0), which happens exactly once per email address.
+// the trigger runs only when verifySignIn inserted the app_user row (xmax = 0),
+// and the send is claimed first via app_user.signup_notified_at (0200), which
+// the one-off backfill (scripts/notify-existing-signups.ts) honours too.
 // The owner email carries the full sign-up address (owner request, Nov 4 2026);
 // logs never do (only kind and error).
 
@@ -113,6 +114,11 @@ export async function notifySignupEvent(sql: Sql, userId: string, deps: SignupNo
   try {
     const to = deps.to === undefined ? signupNotifyRecipient() : deps.to;
     if (!to || !deps.provider) return false;
+    if (kind === "signup") {
+      const [claimed] = await sql<{ id: string }[]>`
+        UPDATE app_user SET signup_notified_at = now() WHERE id = ${userId} AND signup_notified_at IS NULL RETURNING id`;
+      if (!claimed) return false;
+    }
     const details = await loadSignupDetails(sql, userId);
     if (!details) return false;
     const message = signupNotificationEmail(details, kind, previousPlan);
