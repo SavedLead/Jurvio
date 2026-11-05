@@ -19,6 +19,19 @@ export interface DemandEventInput {
   rawSearchQuery?: string;
   resultCount?: number;
   requestKind?: "explain_case" | "summarize_filing" | "explain_order" | "next_steps";
+  /** Request headers: bot signals and the first-party jv_vid / jv_sid cookies (stored only as salted hashes). */
+  headers?: Pick<Headers, "get"> | null;
+}
+
+export const VISITOR_ID_COOKIE = "jv_vid";
+export const SESSION_ID_COOKIE = "jv_sid";
+
+export function cookieId(headers: Pick<Headers, "get"> | null | undefined, name: string): string | null {
+  for (const part of (headers?.get("cookie") ?? "").split(";")) {
+    const [k, v] = part.trim().split("=");
+    if (k === name && v && /^[A-Za-z0-9_-]{16,64}$/.test(v)) return v;
+  }
+  return null;
 }
 
 function referrerHost(value: string | null): string | null {
@@ -62,7 +75,10 @@ export async function recordDemandEvent(sql: Sql, input: DemandEventInput): Prom
     const visitor = classifyVisitor(input.userAgent, {
       channel: input.channel ?? "html",
       internal: input.internal,
+      headers: input.headers,
     });
+    const visitorId = cookieId(input.headers, VISITOR_ID_COOKIE);
+    const sessionId = cookieId(input.headers, SESSION_ID_COOKIE);
     const safeMetadata = {
       pathTemplate: analyticsPathTemplate(input.path),
       channel: input.channel ?? "html",
@@ -76,7 +92,7 @@ export async function recordDemandEvent(sql: Sql, input: DemandEventInput): Prom
     await sql`
       INSERT INTO demand_event (
         event_type, visitor_class, case_id, entity_id, document_id, court_id,
-        referrer_host, bot_family, search_query, metadata
+        referrer_host, bot_family, search_query, metadata, visitor_hash, session_hash
       )
       SELECT
         ${input.eventType}::demand_event_type,
@@ -98,7 +114,8 @@ export async function recordDemandEvent(sql: Sql, input: DemandEventInput): Prom
           'jurisdiction', COALESCE(direct_court.jurisdiction, case_court.jurisdiction, document_court.jurisdiction),
           'natureOfSuitCode', COALESCE(legal_case.nature_of_suit_code, document_case.nature_of_suit_code),
           'proceduralPhase', COALESCE(legal_case.procedural_phase, document_case.procedural_phase)
-        ))
+        )),
+        demand_id_hash('visitor', ${visitorId}), demand_id_hash('session', ${sessionId})
       FROM (SELECT 1) seed
       LEFT JOIN legal_case ON ${input.targetType ?? null} = 'case' AND legal_case.public_id = ${input.targetPublicId ?? null}
       LEFT JOIN document ON ${input.targetType ?? null} = 'document' AND document.public_id = ${input.targetPublicId ?? null}

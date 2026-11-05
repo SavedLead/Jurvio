@@ -6,9 +6,27 @@ import { describe, expect, it } from "vitest";
 import { requestSignIn, verifySignIn } from "@/modules/accounts/application/sign-in";
 import { captureLead } from "@/modules/accounts/application/waitlist";
 import { attributionFromCookies, classifySource, isTrackablePublicPath, parseFirstTouch } from "@/modules/growth/attribution";
+import { classifyVisitor } from "@/modules/demand/domain/classify-visitor";
 import { getGrowthDashboard, isOutsideEmail } from "@/modules/growth/get-growth-dashboard";
 
 const ftCookie = (o: Record<string, unknown>) => `jv_ft=${encodeURIComponent(JSON.stringify(o))}`;
+
+describe("visitor classification", () => {
+  const chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  const browser = new Headers({ "accept-language": "en-US", "sec-fetch-mode": "navigate", "sec-ch-ua": "\"Chromium\";v=\"130\"" });
+  it("keeps real browsers human and catches scripted, headless, preview and SEO clients", () => {
+    expect(classifyVisitor(chrome, { headers: browser }).visitorClass).toBe("human");
+    expect(classifyVisitor(chrome, { headers: new Headers() })).toEqual({ visitorClass: "agent", botFamily: "no-accept-language" });
+    expect(classifyVisitor(chrome, { headers: new Headers({ "accept-language": "en" }) }).botFamily).toBe("chrome-ua-without-client-hints");
+    expect(classifyVisitor(chrome.replace("Chrome/", "HeadlessChrome/"), { headers: browser }).botFamily).toBe("headless-browser");
+    expect(classifyVisitor("Mozilla/5.0 (compatible; AhrefsBot/7.0)", {}).visitorClass).not.toBe("human");
+    expect(classifyVisitor("facebookexternalhit/1.1", {}).botFamily).toBe("link-preview");
+    expect(classifyVisitor("Go-http-client/2.0", {}).visitorClass).toBe("agent");
+    expect(classifyVisitor(chrome, { headers: new Headers({ "accept-language": "en", "sec-fetch-mode": "navigate", "cf-verified-bot": "true" }) }).visitorClass).toBe("search_bot");
+    const safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+    expect(classifyVisitor(safari, { headers: new Headers({ "accept-language": "en-US" }) }).visitorClass).toBe("human");
+  });
+});
 
 describe("growth attribution", () => {
   it("buckets referrers and utm tags into Google, Bing, X, direct and other", () => {
@@ -63,9 +81,19 @@ describe.skipIf(!databaseUrl || !hasPsql)("growth dashboard against Postgres", (
     try {
       execFileSync("node", ["scripts/migrate.mjs"], { env: { ...process.env, DATABASE_URL: url.toString() }, stdio: "pipe" });
       await sql`INSERT INTO visitor_first_touch (source, referrer_host, landing_path) VALUES
-        ('google', 'google.com', '/pricing'), ('google', 'google.com', '/pricing'), ('direct', NULL, '/'), ('x', 't.co', '/case/jv-x'),
-        ('bing', 'bing.com', '/old')`;
-      await sql`UPDATE visitor_first_touch SET occurred_at = now() - interval '10 days' WHERE landing_path = '/old'`;
+        ('google', 'google.com', '/pricing'), ('google', 'google.com', '/pricing'), ('direct', NULL, '/'), ('x', 't.co', '/case/jv-x')`;
+      // Beacon page views: 4 browsers today (one with 2 views), one 10 days ago; a server-rendered crawler row is not a visitor.
+      const views: Array<[string, string, string]> = [["vvvvvvvvvvvvvvvvvvv1", "google", "0"], ["vvvvvvvvvvvvvvvvvvv1", "google", "0"], ["vvvvvvvvvvvvvvvvvvv2", "google", "0"],
+        ["vvvvvvvvvvvvvvvvvvv3", "direct", "0"], ["vvvvvvvvvvvvvvvvvvv4", "x", "0"], ["vvvvvvvvvvvvvvvvvvv5", "bing", "10"]];
+      for (const [vid, src, ago] of views) {
+        await sql`INSERT INTO demand_event (event_type, visitor_class, visitor_hash, session_hash, occurred_at, metadata)
+          VALUES ('page_view', 'human', demand_id_hash('visitor', ${vid}), demand_id_hash('session', ${vid}), now() - make_interval(days => ${Number(ago)}),
+            ${sql.json({ channel: "beacon", firstSource: src })})`;
+      }
+      await sql`INSERT INTO demand_event (event_type, visitor_class) VALUES ('page_view', 'agent')`;
+      const [hashes] = await sql`SELECT count(DISTINCT visitor_hash)::int AS n, bool_and(length(visitor_hash) = 64) AS ok,
+        bool_and(visitor_hash <> encode(digest('visitor:vvvvvvvvvvvvvvvvvvv1', 'sha256'), 'hex')) AS salted FROM demand_event WHERE visitor_hash IS NOT NULL`;
+      expect(hashes).toEqual({ n: 5, ok: true, salted: true });
       await sql`INSERT INTO signin_request_event (outcome, source, signin_from_path) VALUES ('logged', 'google', '/pricing')`;
 
       const attribution = attributionFromCookies(`${ftCookie({ r: "google.com", l: "/pricing", t: Date.now() })}; jv_lp=%2Fpricing`);
@@ -84,7 +112,8 @@ describe.skipIf(!databaseUrl || !hasPsql)("growth dashboard against Postgres", (
       expect(await captureLead(sql, { email: "lead@gmail.com", ip: "5.6.7.8", source: "plan", plan: "plus", attribution: { source: "x", landingPath: "/case/jv-x" } })).toBe("joined");
 
       const d = await getGrowthDashboard(sql);
-      expect(d.visitors).toMatchObject({ today: 4, d7: 4, d30: 5 });
+      expect(d.visitors).toMatchObject({ today: 4, d7: 4, d30: 5, sessionsToday: 4, pageViewsToday: 5 });
+      expect(d.serverPageViewsToday).toEqual([{ visitorClass: "agent", events: 1 }]);
       expect(d.visitors.bySource.find((r) => r.source === "google")).toMatchObject({ today: 2, d30: 2 });
       expect(d.topLandingPages[0]).toEqual({ path: "/pricing", visitors: 2 });
       expect(d.funnel).toEqual({ visitors: 5, signinRequests: 1, verifiedAccounts: 1, accountsWithFollow: 0, waitlistEntries: 1 });

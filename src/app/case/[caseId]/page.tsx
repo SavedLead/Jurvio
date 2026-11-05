@@ -392,7 +392,7 @@ export default async function CasePage({ params }: CasePageProps) {
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
     eventType: "page_view",
-    userAgent: requestHeaders.get("user-agent"),
+    userAgent: requestHeaders.get("user-agent"), headers: requestHeaders,
     referrer: requestHeaders.get("referer"),
     path: canonicalPath,
     contentKind: "case",

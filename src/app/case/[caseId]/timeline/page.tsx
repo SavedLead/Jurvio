@@ -42,7 +42,7 @@ export default async function TimelinePage({ params }: {
   const records = await listPublicDocketEntries(sql, caseId);
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
-    eventType: "page_view", userAgent: requestHeaders.get("user-agent"),
+    eventType: "page_view", userAgent: requestHeaders.get("user-agent"), headers: requestHeaders,
     referrer: requestHeaders.get("referer"), path: `/case/${caseId}/timeline`,
     contentKind: "case", targetType: "case", targetPublicId: caseId,
   });

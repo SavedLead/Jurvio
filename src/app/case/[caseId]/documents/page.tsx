@@ -56,7 +56,7 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
     : null;
   const requestHeaders = await headers();
   await recordDemandEvent(sql, {
-    eventType: "page_view", userAgent: requestHeaders.get("user-agent"),
+    eventType: "page_view", userAgent: requestHeaders.get("user-agent"), headers: requestHeaders,
     referrer: requestHeaders.get("referer"), path: `/case/${caseId}/documents`,
     contentKind: "case", targetType: "case", targetPublicId: caseId,
   });

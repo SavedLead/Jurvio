@@ -26,7 +26,7 @@ export default async function GrowthPage() {
   const a = d.accounts;
   const paying = d.plans.reduce((s, p) => s + p.paying, 0);
   const kpis: Array<[string, number, string]> = [
-    ["Visitors today", d.visitors.today, `${n(d.visitors.d7)} in 7 days · ${n(d.visitors.d30)} in 30`],
+    ["Visitors today", d.visitors.today, `${n(d.visitors.sessionsToday)} sessions · ${n(d.visitors.pageViewsToday)} views · ${n(d.visitors.d7)} in 7 days · ${n(d.visitors.d30)} in 30`],
     ["Accounts", a.total, `First ${when(a.first)}`],
     ["Verified", a.verified, `Last ${when(a.last)}`],
     ["Outside people", a.outside, "Excludes jurvio.com, example, cleanyourname"],
@@ -42,7 +42,7 @@ export default async function GrowthPage() {
   const peak = Math.max(1, ...d.trend.map((t) => t.visitors + t.accounts + t.waitlist));
   return <main className={styles.main}>
     <h1>Growth</h1>
-    <p>Live from the production database. Visitors are humans only (bots excluded), counted once at their first visit. Times are Eastern.</p>
+    <p>Live from the production database. Visitors are unique browsers confirmed by a JavaScript page-view beacon and classified human (bots, crawlers, headless and scripted clients excluded). Times are Eastern.</p>
     <section className={styles.kpis} aria-label="Growth totals">
       {kpis.map(([label, value, meta]) => <article className={styles.kpi} key={label}><span>{label}</span><strong>{n(value)}</strong><p>{meta}</p></article>)}
     </section>
@@ -82,6 +82,15 @@ export default async function GrowthPage() {
           <s style={{ height: `${((t.accounts + t.waitlist) / peak) * 100}%` }} /><b style={{ height: `${(t.visitors / peak) * 100}%` }} /></div>)}
       </div>
       <p className={styles.legend}><i style={{ background: "#084cc8" }} />Visitors<i style={{ background: "#0f9d58" }} />Accounts + waitlist · {d.trend[0]?.day} to {d.trend.at(-1)?.day}</p>
+    </section>
+
+    <section className={styles.section}><h2>Server-rendered page views today, by class</h2>
+      <p className={styles.legend}>Pages are edge-cached, so server renders skew to crawlers. These are a bot check, not visitors.</p>
+      {d.serverPageViewsToday.length === 0 ? <p className={styles.empty}>None today.</p> :
+      <div className={styles.scroll}><table className={styles.table}>
+        <thead><tr><th>Class</th><th>Events</th></tr></thead>
+        <tbody>{d.serverPageViewsToday.map((r) => <tr key={r.visitorClass}><td>{r.visitorClass}</td><td>{n(r.events)}</td></tr>)}</tbody>
+      </table></div>}
     </section>
 
     <div className={styles.grid2}>
