@@ -1,7 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { db } from "@/db/client";
 import { verifySignIn } from "@/modules/accounts/application/sign-in";
 import { completeSignInIntent } from "@/modules/accounts/application/sign-in-intent";
+import { notifySignupEvent } from "@/modules/accounts/application/signup-notify";
+import { getEmailProvider } from "@/modules/accounts/infrastructure/email";
 import { absoluteUrl } from "@/modules/accounts/http/config";
 import { isSameOriginRequest, noStore, readBody, setSessionCookies } from "@/modules/accounts/http/request";
 
@@ -19,6 +21,12 @@ export async function POST(request: NextRequest) {
   });
   if (!verified) return noStore(NextResponse.redirect(absoluteUrl("/signin?error=expired", request.nextUrl.origin), 303));
   const destination = await completeSignInIntent(sql, verified).catch(() => verified.redirectPath);
+  // Owner "new sign-up" email after the response (initial follows are saved by now). Never blocks or fails sign-in.
+  if (verified.created) {
+    try { after(() => notifySignupEvent(sql, verified.userId, { provider: getEmailProvider() })); } catch (error) {
+      console.error(JSON.stringify({ signupNotify: "schedule_failed", error: error instanceof Error ? error.message : "error" }));
+    }
+  }
   const response = NextResponse.redirect(absoluteUrl(destination, request.nextUrl.origin), 303);
   setSessionCookies(response, verified.sessionToken);
   return noStore(response);
