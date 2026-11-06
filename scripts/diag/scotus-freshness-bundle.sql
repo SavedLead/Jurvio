@@ -123,7 +123,7 @@ SELECT 'scotus_case_enrichment', count(*),
 FROM scotus_case_enrichment
 UNION ALL
 SELECT 'official_opinion_candidate', count(*),
-  timezone('America/New_York', max(created_at)), timezone('America/New_York', max(updated_at))
+  timezone('America/New_York', max(created_at)), timezone('America/New_York', max(last_seen_at))
 FROM official_opinion_candidate
 UNION ALL
 SELECT 'docket_entry_scotus', count(*),
@@ -154,7 +154,7 @@ SELECT 'scotus_question_presented', count(*), NULL, NULL,
 FROM scotus_question_presented
 UNION ALL
 SELECT 'scotus_docket_justice_note', count(*), NULL, NULL,
-  timezone('America/New_York', max(created_at))
+  timezone('America/New_York', max(updated_at))
 FROM scotus_docket_justice_note;
 
 \echo == C1 followed-case feeds freshness (follows + alerts + lower-court lanes)
@@ -190,7 +190,7 @@ SELECT source,
   timezone('America/New_York', max(last_success_at)) AS newest_success_et,
   max(consecutive_failures) AS max_fails
 FROM court_source_watermark
-WHERE source IN ('district_rss','coa_feed','appellate_rss','courtlistener_feed','govinfo','scotus_official')
+WHERE source IN ('district_rss','coa_feed','appellate_pacer_rss','appellate_official','courtlistener_feed','govinfo','scotus_official','court_site')
 GROUP BY source ORDER BY source;
 
 \echo == D1 plain-English / structured signals on SCOTUS (counts only)
