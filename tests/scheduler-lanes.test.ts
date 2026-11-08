@@ -31,6 +31,21 @@ describe("scheduler lanes", () => {
     expect(new Set(SCHEDULED_JOBS.map(job => job.name)).size).toBe(SCHEDULED_JOBS.length);
   });
 
+  it("verifies the SCOTUS cadences and keeps the orders monitor off those intervals", () => {
+    const interval = (name: string) => SCHEDULED_JOBS.find((job) => job.name === name)?.intervalMs;
+    expect(interval("scotus-emergency")).toBe(10 * 60_000);
+    expect(interval("scotus-live-dockets")).toBe(3 * 60 * 60_000);
+    expect(interval("scotus-enriched")).toBe(20 * 60_000);
+    const orders = SCHEDULED_JOBS.find((job) => job.name === "scotus-orders");
+    expect(orders?.lane).toBe("core");
+    expect(orders?.intervalMs).toBe(60 * 60_000);
+    expect(orders?.command).toEqual(["jobs/run-scotus-orders.mjs", "--max-pdfs=1"]);
+    expect(orders?.command.join(" ")).not.toContain("backfill");
+    expect(interval("scotus-orders")).not.toBe(interval("scotus-emergency"));
+    expect(interval("scotus-orders")).not.toBe(interval("scotus-live-dockets"));
+    expect(interval("scotus-orders")).not.toBe(interval("scotus-enriched"));
+  });
+
   it("rejects unknown lanes and keeps SCOTUS jobs in core only", () => {
     expect(() => jobsForLane("bogus")).toThrow(/must be one of/);
     for (const lane of SCHEDULER_LANES.filter(lane => lane !== "core")) {
