@@ -35,6 +35,10 @@ Docket entries use the same ids as the HTML docket enrichment
 enrichment job then picks the new draft cases up (it orders by missing
 enrichment first) and adds documents and the question presented.
 
+**Orders lists.** A separate core job, `scotus-orders-lists` (every 30 minutes),
+reads the official Order List PDFs. It does not change this docket feed.
+See `docs/operations/scotus-orders-lists.md`.
+
 **Courts of appeals.** Checked 2026-10-30:
 
 | Court | Source |
