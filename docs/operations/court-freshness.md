@@ -12,7 +12,7 @@ One row per tracked federal court: the Supreme Court, the 13 courts of appeals a
 | --- | --- |
 | Cases / Published / Draft | `legal_case` rows for every `court` record with that court code (CourtListener, official CM/ECF and official SCOTUS court rows are merged). Restricted and suppressed cases are counted as "withheld". |
 | Newest filing | `max(coalesce(filed_on, decided_on))`, ignoring dates more than a day in the future. |
-| Live feed | Latest success of the court's own feed: `court_source_watermark` (`scotus_official`, `coa_feed`, `district_rss`), `appellate_source_registry` / `direct_court_registry.last_successful_retrieval`, and for SCOTUS the newest completed slip-opinion run. |
+| Live feed | Latest success of the court's own feed: `court_source_watermark` (`scotus_official`, `coa_feed`, `district_rss`), `appellate_source_registry` / `direct_court_registry.last_successful_retrieval`, and for SCOTUS the newest completed slip-opinion run. A successful slip run does not mean the orders list is complete. Orders-list coverage is `scotus_orders_coverage` (`run_succeeded` is the index check; `complete` means every current order list was parsed). |
 | CourtListener | `court_source_watermark` source `courtlistener` (the date_modified tail). Shows "rate-limited" while a 429 Retry-After is pending. |
 | Bulk | `court_source_watermark` source `bulk`, written by the bulk docket loader for each court in each merged chunk. |
 | Lag | Time since the newest update from any source. |

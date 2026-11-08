@@ -120,6 +120,22 @@ minutes later created only the 5 cafc items posted in between.
 - **New cases.** Matched by `courtlistener_docket_id`, then by court + normalized docket number. Unmatched dockets become draft cases.
 - **429 handling.** The first 429 stops the run and stores Retry-After (15 min when absent). Runs before that time make no requests; the admin page shows the pause. This uses the same stop-on-rate-limit request policy as `federal-active-cases`.
 
+## Supreme Court orders lists
+
+`jobs/run-scotus-orders.mjs` (core lane `scotus-orders`, every 60 minutes, budget 8 minutes, `--max-pdfs=1`).
+
+Verified lanes this job does not call:
+
+| Job | Every | What it already covers |
+| --- | --- | --- |
+| `scotus-emergency` | 10 minutes | Open emergency application docket pages |
+| `scotus-live-dockets` | 3 hours | New docket numbers from the Court's JSON |
+| `scotus-enriched` | 20 minutes | Current-term slip opinions, metadata, and publication |
+
+Each run reads `https://www.supremecourt.gov/orders/ordersofthecourt/{term}` and `https://www.supremecourt.gov/opinions/relatingtoorders/{term}`. The term page changes on October 1, not on the July docket-year boundary. It conditionally rechecks the newest parsed order list and downloads at most one other order-list PDF (`zor` in the file name). Miscellaneous orders are stored from the index only. `JURVIO_SCOTUS_ORDERS=off` skips the run. `--backfill` is not on the scheduler; it marks every list historical.
+
+Rows live in `scotus_orders_list`, `scotus_orders_entry`, and `scotus_orders_coverage`. `run_succeeded` means the orders index was read. `complete` means that check succeeded, the relating-to-orders index was read, and no current order list is missing, unparsed, or stale. A PDF error is a failure on a run that can still be `run_succeeded`. Sealed and restricted lines are counted and not stored. `alert_eligible` is constrained to false. Case-follow mail is not wired. Set the kill switch, or remove the `scotus-orders` job from `scripts/scheduler-jobs.ts`, to roll back.
+
 ## Known follow-up
 
 When a SCOTUS case is decided, `publish-official-scotus-opinions` keys cases

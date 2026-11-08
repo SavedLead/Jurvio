@@ -138,6 +138,20 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     budgetMs: 8 * minute,
     command: ["jobs/run-scotus-emergency.mjs", "--max-requests=60", "--seed=15"],
   },
+  {
+    // Orders of the Court (approved phase 1). Verified cadences this does not
+    // reuse: scotus-emergency every 10 minutes, scotus-live-dockets every 3 hours,
+    // scotus-enriched (slip opinions) every 20 minutes. One index read plus at
+    // most one order-list PDF body. --backfill is manual only. Mail stays off
+    // (ORDERS_FEED_NOTIFICATIONS_ENABLED and alert_eligible). JURVIO_SCOTUS_ORDERS=off
+    // skips a run without a deploy.
+    lane: "core",
+    name: "scotus-orders",
+    initialDelayMs: 5 * minute,
+    intervalMs: 60 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-scotus-orders.mjs", "--max-pdfs=1"],
+  },
   // The CourtListener API live tail ("courtlistener-tail") was dropped on
   // 2026-10-31 (David Rosenberg): it shared the API token's daily quota and kept
   // hitting 429. New federal data comes from the official court feeds and the
