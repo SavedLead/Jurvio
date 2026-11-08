@@ -138,6 +138,19 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     budgetMs: 8 * minute,
     command: ["jobs/run-scotus-emergency.mjs", "--max-requests=60", "--seed=15"],
   },
+  {
+    // Official orders lists only (supremecourt.gov Order List PDFs). One index
+    // page plus a few PDFs, one request a second. Not the 3-hour docket feed,
+    // the emergency checker, or the opinion jobs. Subscriber mail stays off.
+    // Pause with JURVIO_PAUSE_SCOTUS_ORDERS_LISTS=1. See
+    // docs/operations/scotus-orders-lists.md.
+    lane: "core",
+    name: "scotus-orders-lists",
+    initialDelayMs: 7 * minute,
+    intervalMs: 30 * minute,
+    budgetMs: 8 * minute,
+    command: ["jobs/run-scotus-orders-lists.mjs", "--max-requests=8", "--max-pdfs=3"],
+  },
   // The CourtListener API live tail ("courtlistener-tail") was dropped on
   // 2026-10-31 (David Rosenberg): it shared the API token's daily quota and kept
   // hitting 429. New federal data comes from the official court feeds and the
