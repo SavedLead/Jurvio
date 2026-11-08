@@ -16,6 +16,7 @@ export interface PublicScotusOpinionSummary {
   precedentialStatus: string | null;
   citationCount: number;
   wordCount: number;
+  sourceDownloadUrl: string | null;
 }
 
 export interface PublicScotusDiscovery {
@@ -102,12 +103,13 @@ export async function listPublicScotusOpinions(
         judicial.per_curiam AS "perCuriam",
         cluster.precedential_status AS "precedentialStatus",
         cluster.citation_count AS "citationCount",
-        content.word_count AS "wordCount"
+        COALESCE(content.word_count, 0) AS "wordCount",
+        judicial.source_download_url AS "sourceDownloadUrl"
       FROM legal_case
       JOIN document ON document.case_id = legal_case.id
       JOIN judicial_opinion judicial ON judicial.document_id = document.id
       JOIN opinion_cluster cluster ON cluster.id = judicial.cluster_id
-      JOIN document_content content ON content.document_id = document.id
+      LEFT JOIN document_content content ON content.document_id = document.id
       WHERE legal_case.court_id = ${court.id}
         AND legal_case.publication = 'published'
         AND document.publication = 'published'

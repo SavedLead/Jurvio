@@ -393,6 +393,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // drains and then just keeps pace with newly approved opinions.
     command: ["jobs/publish-official-scotus-opinions.mjs", "--limit=500"],
   },
+  {
+    lane: "core",
+    name: "scotus-orders-index",
+    initialDelayMs: 15 * minute,
+    intervalMs: 6 * 60 * minute,
+    budgetMs: 5 * minute,
+    // Index rows only. No PDF fetch, no docket_entry write, no subscriber alert.
+    // Skips itself until migration 0201 is present.
+    command: ["jobs/sync-official-scotus-orders.mjs"],
+  },
   // Federal loops self-throttle via a bounded adaptive worker pool:
   // --start-concurrency climbs only after clean windows and halves on distress
   // (source 429s or DB pressure), capped by --max-concurrency, with a finite

@@ -5,7 +5,7 @@ import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
 import { listPublicScotusOpinions } from "@/modules/scotus/application/list-public-scotus-opinions";
 import { currentJustices, officialScotusLinks } from "@/modules/scotus/domain/court-reference";
-import { scotusTermLabel } from "@/modules/scotus/domain/term";
+import { currentOctoberTerm, scotusTermLabel } from "@/modules/scotus/domain/term";
 import styles from "./supreme-court.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
@@ -44,6 +44,10 @@ function Term({ slug, children }: { slug: string; children: React.ReactNode }) {
 
 export default async function SupremeCourtPage() {
   const discovery = await getCachedScotusDiscovery();
+  const term = currentOctoberTerm(new Date());
+  const slipOpinionsUrl = `https://www.supremecourt.gov/opinions/slipopinion/${term.yy}`;
+  const ordersUrl = `https://www.supremecourt.gov/orders/ordersofthecourt/${term.yy}`;
+  const sourceLinks = officialScotusLinks(new Date());
   const origin = siteOrigin();
   const jsonLd = {
     "@context": "https://schema.org", "@type": "CollectionPage",
@@ -60,7 +64,7 @@ export default async function SupremeCourtPage() {
 
     <header className={styles.hero}>
       <nav className={styles.breadcrumb} aria-label="Breadcrumb"><Link href="/">Jurvio</Link><span>/</span>Supreme Court</nav>
-      <div className={styles.termStatus}><span aria-hidden="true" /> October Term 2025</div>
+      <div className={styles.termStatus}><span aria-hidden="true" /> {term.label}</div>
       <h1>The Supreme Court, organized and <span className="brandHeadlineEnd">explained<span className="signatureDot" aria-hidden="true">.</span></span></h1>
       <p className={styles.lede}>Follow cases from petition to decision. Explore the Justices, calendar, orders, opinions, history, and the public record behind the Court.</p>
       <div className={styles.actions}>
@@ -79,7 +83,7 @@ export default async function SupremeCourtPage() {
       <div className={styles.statusGrid}>
         <article><span>Current membership</span><strong>9</strong><p>One Chief Justice and eight Associate Justices.</p><a href="#justices">Meet the Court ↓</a></article>
         <article><span>Argument season</span><strong>Oct–Apr</strong><p>Arguments are generally held on selected Monday, Tuesday, and Wednesday mornings.</p><a href="https://www.supremecourt.gov/oral_arguments/calendarsandlists.aspx">Current calendar ↗</a></article>
-        <article><span>Decisions and orders</span><strong>Term-long</strong><p>Orders appear throughout the term. Opinions often accelerate after arguments end.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">Latest official opinions ↗</a></article>
+        <article><span>Decisions and orders</span><strong>Term-long</strong><p>Orders appear throughout the term. Opinions often accelerate after arguments end.</p><a href={slipOpinionsUrl}>Latest official opinions ↗</a></article>
         <article><span>Jurvio corpus</span><strong>{discovery.caseCount.toLocaleString()}</strong><p>Supreme Court cases you can read about on Jurvio.</p><Link href="/cases">Browse records →</Link></article>
       </div>
       <aside className={styles.freshness}><strong>Freshness matters</strong><p>Calendar, docket, order, and opinion status can change. Jurvio links to the controlling official source and does not infer an outcome from silence or an incomplete import.</p></aside>
@@ -100,8 +104,8 @@ export default async function SupremeCourtPage() {
       <div className={styles.pipelineLinks}>
         <a href="https://www.supremecourt.gov/orders/grantednotedlists.aspx"><strong>Granted cases</strong><span>The Court’s official granted and noted lists →</span></a>
         <a href="https://www.supremecourt.gov/oral_arguments/calendarsandlists.aspx"><strong>Scheduled arguments</strong><span>Dates, cases, and day-call lists →</span></a>
-        <a href="https://www.supremecourt.gov/opinions/slipopinion/25"><strong>Decided cases</strong><span>Slip opinions for the current term →</span></a>
-        <a href="https://www.supremecourt.gov/orders/ordersofthecourt/25"><strong>Orders and petitions</strong><span>Order lists and miscellaneous orders →</span></a>
+        <a href={slipOpinionsUrl}><strong>Decided cases</strong><span>Slip opinions for {term.label} →</span></a>
+        <a href={ordersUrl}><strong>Orders and petitions</strong><span>Order lists and miscellaneous orders →</span></a>
       </div>
     </section>
 
@@ -141,15 +145,15 @@ export default async function SupremeCourtPage() {
       </div>
       {discovery.opinions.length ? <div className={styles.opinionList}>{discovery.opinions.map((opinion) => <article key={opinion.documentPublicId}>
         <div className={styles.opinionMeta}><time dateTime={opinion.filedOn ?? undefined}>{formatDate(opinion.filedOn)}</time>{scotusTermLabel(opinion.filedOn) ? <span>{scotusTermLabel(opinion.filedOn)}</span> : null}</div>
-        <div><p>Docket {opinion.docketNumber}</p><h3><Link href={`/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` as Route}>{cleanCaseCaption(opinion.caseCaption)}</Link></h3>
+        <div><p>Docket {opinion.docketNumber}{opinion.sourceDownloadUrl?.startsWith("https://") ? <> · <a href={opinion.sourceDownloadUrl}>Official PDF</a></> : null}</p><h3><Link href={`/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` as Route}>{cleanCaseCaption(opinion.caseCaption)}</Link></h3>
           <div className={styles.tags}>{publicOpinionType(opinion.opinionType) ? <span>{publicOpinionType(opinion.opinionType)}</span> : null}{opinion.perCuriam ? <span>Per curiam</span> : null}{opinion.authorName ? <span>{opinion.authorName}</span> : null}{opinion.precedentialStatus ? <span>{opinion.precedentialStatus}</span> : null}</div>
-        </div><div className={styles.reading}><strong>{opinion.wordCount.toLocaleString()}</strong><span>words</span></div>
-      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Opinions</p><h3>Full opinion text is on its way.</h3><p>{discovery.caseCount.toLocaleString()} Supreme Court cases are on Jurvio. Full opinion text appears on each case page as we add it.</p><a href="https://www.supremecourt.gov/opinions/slipopinion/25">See current official opinions ↗</a></div>}
+        </div><div className={styles.reading}>{opinion.wordCount > 0 ? <><strong>{opinion.wordCount.toLocaleString()}</strong><span>words</span></> : <span>Text not extracted</span>}</div>
+      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Opinions</p><h3>No published opinion text is on this list.</h3><p>{discovery.caseCount.toLocaleString()} Supreme Court cases are published on Jurvio. This list only shows opinions that have published text here. The Court’s {term.label} slip opinions are on its site.</p><a href={slipOpinionsUrl}>See {term.label} official opinions ↗</a></div>}
     </section>
 
     <section id="sources" className={styles.sourceDirectory}>
       <div><p className={styles.sectionLabel}>Go to the record</p><h2>Official Supreme Court sources</h2><p>Use Jurvio to understand and connect the record. Use the Court’s own docket, calendars, orders, and opinions as the controlling source.</p></div>
-      <nav aria-label="Official Supreme Court sources">{officialScotusLinks.map(([label, href]) => <a key={href} href={href}><span>{label}</span><b>↗</b></a>)}</nav>
+      <nav aria-label="Official Supreme Court sources">{sourceLinks.map(([label, href]) => <a key={href} href={href}><span>{label}</span><b>↗</b></a>)}</nav>
     </section>
   </main>;
 }

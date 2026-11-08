@@ -32,6 +32,7 @@ describe("scheduler lanes", () => {
   });
 
   it("rejects unknown lanes and keeps SCOTUS jobs in core only", () => {
+    expect(SCHEDULED_JOBS.find((job) => job.name === "scotus-orders-index")?.command).toEqual(["jobs/sync-official-scotus-orders.mjs"]);
     expect(() => jobsForLane("bogus")).toThrow(/must be one of/);
     for (const lane of SCHEDULER_LANES.filter(lane => lane !== "core")) {
       expect(jobsForLane(lane).some(job => job.name.startsWith("scotus-"))).toBe(false);
