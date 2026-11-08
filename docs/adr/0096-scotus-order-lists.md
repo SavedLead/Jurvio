@@ -24,8 +24,9 @@ Parse the public orders index and order-list text into `scotus_order_list` and
 - PDF checksums are stored only from bytes that were fetched.
 
 The dry-run workflow fetches the public index and prints a coverage report. It
-does not write. Applying the load waits until migration 0201 is deployed and is
-not part of this workflow.
+does not write. The `scotus-orders-index` scheduler, every six hours, upserts
+those index rows and skips when migration 0201 is absent. It does not download
+PDFs or send alerts. PDF text remains a later bounded apply.
 
 ## Alternatives considered
 

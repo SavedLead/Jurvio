@@ -38,6 +38,37 @@ function pdfHash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+/** Upsert index rows only. No PDF download, no docket entries, no alerts. */
+export async function syncOfficialOrderIndex(
+  sql: Sql,
+  entries: readonly OfficialOrderIndexEntry[],
+  indexRetrievedAt: string,
+): Promise<{ lists: number; skipped: boolean }> {
+  if (ORDER_INGEST_ALERTS_ENABLED) throw new Error("Order ingestion must not enable alerts");
+  if (Number.isNaN(Date.parse(indexRetrievedAt))) throw new Error("Order index retrieval time is missing");
+  const [table] = await sql<{ present: string | null }[]>`SELECT to_regclass('scotus_order_list')::text AS present`;
+  if (!table?.present) return { lists: 0, skipped: true };
+  for (const entry of entries) {
+    await sql`
+      INSERT INTO scotus_order_list (
+        source_record_id, term_year, source_url, list_date, list_kind, label, amended,
+        index_entry_hash, index_retrieved_at, withheld_items, parser_version
+      ) VALUES (
+        ${entry.sourceRecordId}, ${entry.termYear}, ${entry.sourceUrl}, ${entry.listDate},
+        ${entry.kind}, ${entry.label}, ${entry.amended}, ${entry.indexEntryHash},
+        ${indexRetrievedAt}, 0, ${ORDER_LIST_PARSER_VERSION}
+      )
+      ON CONFLICT (source_record_id) DO UPDATE SET
+        label = EXCLUDED.label,
+        amended = EXCLUDED.amended,
+        index_entry_hash = EXCLUDED.index_entry_hash,
+        index_retrieved_at = EXCLUDED.index_retrieved_at,
+        updated_at = now()
+    `;
+  }
+  return { lists: entries.length, skipped: false };
+}
+
 export async function ingestOfficialOrderLists(sql: Sql, lists: readonly OrderListIngest[]): Promise<OrderIngestResult> {
   if (ORDER_INGEST_ALERTS_ENABLED) throw new Error("Order ingestion must not enable alerts");
   let items = 0;

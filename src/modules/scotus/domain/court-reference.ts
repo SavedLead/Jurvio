@@ -1,3 +1,5 @@
+import { currentOctoberTerm } from "./term";
+
 export interface Justice {
   name: string;
   role: "Chief Justice" | "Associate Justice";
@@ -44,12 +46,15 @@ export const courtMilestones: readonly CourtMilestone[] = [
   { year: 2010, title: "Argument audio moves online", description: "The Court begins posting argument audio on its website at the end of each argument week.", category: "publication", importance: "context" },
 ] as const;
 
-export const officialScotusLinks = [
-  ["Docket search", "https://www.supremecourt.gov/docket/docket.aspx"],
-  ["Argument calendars", "https://www.supremecourt.gov/oral_arguments/calendarsandlists.aspx"],
-  ["Granted and noted list", "https://www.supremecourt.gov/orders/grantednotedlists.aspx"],
-  ["Orders of the Court", "https://www.supremecourt.gov/orders/ordersofthecourt.aspx"],
-  ["Opinions of the Court", "https://www.supremecourt.gov/opinions/slipopinion/25"],
-  ["Argument transcripts", "https://www.supremecourt.gov/oral_arguments/argument_transcript.aspx"],
-  ["Argument audio", "https://www.supremecourt.gov/oral_arguments/argument_audio.aspx"],
-] as const;
+export function officialScotusLinks(now = new Date()): ReadonlyArray<readonly [string, string]> {
+  const { yy } = currentOctoberTerm(now);
+  return [
+    ["Docket search", "https://www.supremecourt.gov/docket/docket.aspx"],
+    ["Argument calendars", "https://www.supremecourt.gov/oral_arguments/calendarsandlists.aspx"],
+    ["Granted and noted list", "https://www.supremecourt.gov/orders/grantednotedlists.aspx"],
+    ["Orders of the Court", `https://www.supremecourt.gov/orders/ordersofthecourt/${yy}`],
+    ["Opinions of the Court", `https://www.supremecourt.gov/opinions/slipopinion/${yy}`],
+    ["Argument transcripts", "https://www.supremecourt.gov/oral_arguments/argument_transcript.aspx"],
+    ["Argument audio", "https://www.supremecourt.gov/oral_arguments/argument_audio.aspx"],
+  ];
+}
