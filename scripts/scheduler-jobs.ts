@@ -476,6 +476,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   },
   {
     lane: "core",
+    name: "docket-display-backfill",
+    initialDelayMs: 4 * minute,
+    intervalMs: 10 * minute,
+    budgetMs: 8 * minute,
+    // One pass over stored lines. Writes publication_decision only, so follower
+    // alerts still key off docket_entry.created_at. Stops after an empty pass.
+    command: ["jobs/run-docket-display-backfill.mjs", "--limit=2000"],
+  },
+  {
+    lane: "core",
     name: "federal-active-cases",
     initialDelayMs: 32 * minute,
     intervalMs: 6 * 60 * minute,

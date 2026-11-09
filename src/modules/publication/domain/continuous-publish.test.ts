@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { continuousPublishBucket, continuousPublishEnabled, metadataPublicationEnabled, orderContinuousCases, pacedPublishLimit } from "./continuous-publish";
+import { continuousPublishBucket, continuousPublishEnabled, docketDisplayBackfillEnabled, metadataPublicationEnabled, orderContinuousCases, pacedPublishLimit } from "./continuous-publish";
 
 describe("continuous publish flag", () => {
   it("is on unless paused or explicitly disabled", () => {
@@ -21,6 +21,13 @@ describe("metadata publication", () => {
     expect(metadataPublicationEnabled({})).toBe(true);
     expect(metadataPublicationEnabled({ JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT: "0" })).toBe(false);
     expect(metadataPublicationEnabled({ JURVIO_PAUSE_FEDERAL_METADATA: "1" })).toBe(false);
+  });
+});
+
+describe("docket display backfill", () => {
+  it("runs unless paused", () => {
+    expect(docketDisplayBackfillEnabled({})).toBe(true);
+    expect(docketDisplayBackfillEnabled({ JURVIO_PAUSE_DOCKET_DISPLAY_BACKFILL: "1" })).toBe(false);
   });
 });
 

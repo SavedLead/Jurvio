@@ -10,6 +10,9 @@ describe("scheduler lanes", () => {
     expect(citationJobs.every(job => job.lane === "citations")).toBe(true);
     expect(jobsForLane("citations").map(job => job.name).sort()).toEqual(["case-citation-graph", "citation-edges", "citation-nightly", "cited-case-bulk-resolution", "public-case-search", "public-directory-stats", "sitemap-snapshot"]);
     expect(jobsForLane("core").some(job => job.name === "case-citation-graph")).toBe(false);
+    const backfill = jobsForLane("core").find(job => job.name === "docket-display-backfill");
+    expect(backfill?.command).toEqual(["jobs/run-docket-display-backfill.mjs", "--limit=2000"]);
+    expect(readFileSync("package.json", "utf8")).toContain("scripts/run-docket-display-backfill.ts");
   });
 
   it("gives every child a hard time budget and caps active docket refreshes", () => {
