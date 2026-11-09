@@ -10,8 +10,9 @@ import {
 } from "@/modules/ingestion/domain/federal-stream";
 import { federalPublicationIncludesCourt } from "@/modules/ingestion/domain/federal-publication-hold";
 import {
-  continuousPublishBucket, continuousPublishEnabled, orderContinuousCases, type ContinuousBucket,
+  continuousPublishBucket, continuousPublishEnabled, orderContinuousCases, pacedPublishLimit, type ContinuousBucket,
 } from "../domain/continuous-publish";
+import { measurePublicSearchMs, slowPublicQueryCount } from "./search-pace";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -40,7 +41,13 @@ export async function runContinuousPublish(sql: Sql, options: { limit?: number; 
   if (!continuousPublishEnabled()) {
     return { skipped: "off" as const, published: 0, held: 0, entriesShown: 0, alertsQueued: 0 as const };
   }
-  const limit = Math.min(200, Math.max(1, options.limit ?? 100));
+  const requested = Math.min(3000, Math.max(1, options.limit ?? 2000));
+  const searchMs = await measurePublicSearchMs();
+  const slowQueries = await slowPublicQueryCount(sql).catch(() => 0);
+  const limit = pacedPublishLimit(requested, searchMs, slowQueries);
+  if (limit === 0) {
+    return { skipped: "search_slow" as const, published: 0, held: 0, entriesShown: 0, alertsQueued: 0 as const, searchMs, slowQueries };
+  }
   const now = options.now ?? new Date();
   return sql.begin(async (tx) => {
     await tx`SET LOCAL statement_timeout = '8s'`;
@@ -124,7 +131,7 @@ export async function runContinuousPublish(sql: Sql, options: { limit?: number; 
       }
       const indexable = row.has_opinion_text;
       await tx`
-        UPDATE legal_case SET verification = 'verified', publication = 'published', updated_at = now()
+        UPDATE legal_case SET verification = 'verified', publication = 'published'
         WHERE id = ${row.id}::uuid AND publication = 'draft'`;
       await tx`
         INSERT INTO publication_decision (
@@ -165,6 +172,6 @@ export async function runContinuousPublish(sql: Sql, options: { limit?: number; 
         )`;
       entriesShown += 1;
     }
-    return { skipped: null, published, held, entriesShown, alertsQueued: 0 as const, buckets: ranked.map((row) => row.bucket as ContinuousBucket) };
+    return { skipped: null, published, held, entriesShown, alertsQueued: 0 as const, searchMs, slowQueries, buckets: ranked.map((row) => row.bucket as ContinuousBucket) };
   });
 }
