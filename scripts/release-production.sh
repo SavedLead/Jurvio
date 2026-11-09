@@ -61,6 +61,7 @@ if docker compose -f "$COMPOSE" ps -q app >/dev/null 2>&1; then
   fi
 fi
 
+printf 'Previous image (rollback target): %s\n' "${PREVIOUS_IMAGE:-none}"
 export JURVIO_IMAGE="$NEW_IMAGE"
 # worker-supervisor runs the Judge Autopilot control loop and the durable-queue
 # self-repair supervisor (run-ingestion-supervisor.mjs). It MUST be pulled and
