@@ -14,6 +14,7 @@ describe("docket display backfill", () => {
     expect(source).not.toMatch(/last_alerted/);
     expect(source).not.toMatch(/entity_alert/);
     expect(source).toContain("alertsQueued: 0");
+    expect(source).toContain("jv-c7mxm55hg0");
     expect(script).not.toMatch(/UPDATE\s+docket_entry/i);
   });
 
