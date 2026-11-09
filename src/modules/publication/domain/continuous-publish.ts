@@ -1,7 +1,7 @@
 /**
- * Continuous publishing stays off until CONTINUOUS_PUBLISH=1.
- * JURVIO_PAUSE_CONTINUOUS_PUBLISH=1 turns it off again even if the first flag is set.
- * SCOTUS stays on the official Court pipeline. Sealed text is never selected.
+ * Continuous publishing is on unless CONTINUOUS_PUBLISH=0 or
+ * JURVIO_PAUSE_CONTINUOUS_PUBLISH=1. SCOTUS stays on the official Court pipeline.
+ * Sealed text is never selected.
  */
 export type ContinuousBucket = "substantial" | "recent" | "pre2000_thin";
 
@@ -9,7 +9,26 @@ const RANK: Record<ContinuousBucket, number> = { substantial: 0, recent: 1, pre2
 
 export function continuousPublishEnabled(env?: Record<string, string | undefined>): boolean {
   const source = env ?? process.env;
-  return source.CONTINUOUS_PUBLISH === "1" && source.JURVIO_PAUSE_CONTINUOUS_PUBLISH !== "1";
+  if (source.JURVIO_PAUSE_CONTINUOUS_PUBLISH === "1" || source.CONTINUOUS_PUBLISH === "0") return false;
+  return true;
+}
+
+/** Metadata-only federal publication. Off when paused or explicitly set to 0. */
+export function metadataPublicationEnabled(env?: Record<string, string | undefined>): boolean {
+  const source = env ?? process.env;
+  if (source.JURVIO_PAUSE_FEDERAL_METADATA === "1") return false;
+  return source.JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT !== "0";
+}
+
+/**
+ * Shrink a publish batch when public search is slow or the database already
+ * has slow web queries. A failed probe uses a small batch rather than stopping.
+ */
+export function pacedPublishLimit(requested: number, searchMs: number | null, slowDbQueries: number): number {
+  const capped = Math.max(0, Math.floor(requested));
+  if (searchMs !== null && (searchMs >= 6000 || slowDbQueries >= 3)) return 0;
+  if (searchMs === null || searchMs >= 3000 || slowDbQueries > 0) return Math.min(capped, Math.max(1, Math.floor(capped / 4)));
+  return capped;
 }
 
 export function continuousPublishBucket(input: {

@@ -1,5 +1,7 @@
 import { closeDb, db } from "@/db/client";
 import { env } from "@/lib/config/env";
+import { metadataPublicationEnabled, pacedPublishLimit } from "@/modules/publication/domain/continuous-publish";
+import { measurePublicSearchMs, slowPublicQueryCount } from "@/modules/publication/application/search-pace";
 import { ingestCourtListenerDocket } from "@/modules/ingestion/application/ingest-courtlistener-docket";
 import { ingestCourtListenerOpinionCluster } from "@/modules/ingestion/application/ingest-courtlistener-opinion-cluster";
 import {
@@ -130,7 +132,7 @@ const preferDocumentCandidates =
 // holds. Metadata-only rows are displayable and not indexable.
 const metadataWithoutTextRaw = option(
   "publish-metadata-without-text",
-  process.env.JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT ?? "0",
+  metadataPublicationEnabled() ? "1" : "0",
 );
 if (metadataWithoutTextRaw !== "0" && metadataWithoutTextRaw !== "1") {
   throw new Error("--publish-metadata-without-text must be 0 or 1");
@@ -1068,7 +1070,7 @@ async function runPublicationAndQuarantine() {
       await sql.begin(async (tx) => {
         await tx`
           UPDATE legal_case SET verification = 'verified', publication = 'published',
-            updated_at = now()
+            updated_at = CASE WHEN ${metadataOnly} THEN updated_at ELSE now() END
           WHERE id = ${candidate.id}
         `;
         // A published case is no longer held; drop any stale hold row so a future rule
@@ -1131,11 +1133,15 @@ async function runPublicationAndQuarantine() {
   }
 
   try {
+    const searchMs = await measurePublicSearchMs();
+    const slowQueries = await slowPublicQueryCount(sql).catch(() => 0);
+    const publishCap = pacedPublishLimit(runawayItemLimit, searchMs, slowQueries);
+    console.log(JSON.stringify({ phase: "publication-pace", searchMs, slowQueries, publishCap }));
     // Drain in bounded chunks. Every processed row leaves the draft/not-needs_review
     // predicate (it becomes published or needs_review), so the same LIMITed query
     // returns the next slice each pass until the queue is empty or the runaway cap hits.
-    while (discovered < runawayItemLimit && withinBudget()) {
-      const chunkSize = Math.min(PUBLICATION_CHUNK_SIZE, runawayItemLimit - discovered);
+    while (discovered < publishCap && withinBudget()) {
+      const chunkSize = Math.min(PUBLICATION_CHUNK_SIZE, publishCap - discovered);
       const candidates = await selectPublicationCandidates(chunkSize);
       if (candidates.length === 0) break;
       await attachRestrictedText(candidates);

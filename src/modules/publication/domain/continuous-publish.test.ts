@@ -1,12 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { continuousPublishBucket, continuousPublishEnabled, orderContinuousCases } from "./continuous-publish";
+import { continuousPublishBucket, continuousPublishEnabled, metadataPublicationEnabled, orderContinuousCases, pacedPublishLimit } from "./continuous-publish";
 
 describe("continuous publish flag", () => {
-  it("stays off unless explicitly enabled and not paused", () => {
-    expect(continuousPublishEnabled({})).toBe(false);
+  it("is on unless paused or explicitly disabled", () => {
+    expect(continuousPublishEnabled({})).toBe(true);
     expect(continuousPublishEnabled({ CONTINUOUS_PUBLISH: "0" })).toBe(false);
-    expect(continuousPublishEnabled({ CONTINUOUS_PUBLISH: "1" })).toBe(true);
-    expect(continuousPublishEnabled({ CONTINUOUS_PUBLISH: "1", JURVIO_PAUSE_CONTINUOUS_PUBLISH: "1" })).toBe(false);
+    expect(continuousPublishEnabled({ JURVIO_PAUSE_CONTINUOUS_PUBLISH: "1" })).toBe(false);
+  });
+
+  it("shrinks the batch when search slows and stops when search is badly degraded", () => {
+    expect(pacedPublishLimit(2000, 400, 0)).toBe(2000);
+    expect(pacedPublishLimit(2000, 3500, 0)).toBe(500);
+    expect(pacedPublishLimit(2000, 7000, 0)).toBe(0);
+    expect(pacedPublishLimit(2000, null, 0)).toBe(500);
+  });
+});
+
+describe("metadata publication", () => {
+  it("is on unless paused or set to 0", () => {
+    expect(metadataPublicationEnabled({})).toBe(true);
+    expect(metadataPublicationEnabled({ JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT: "0" })).toBe(false);
+    expect(metadataPublicationEnabled({ JURVIO_PAUSE_FEDERAL_METADATA: "1" })).toBe(false);
   });
 });
 

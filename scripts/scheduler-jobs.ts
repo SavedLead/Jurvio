@@ -469,10 +469,10 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     name: "continuous-publish",
     initialDelayMs: 20 * minute,
     intervalMs: 60 * minute,
-    budgetMs: 8 * minute,
-    // Off unless CONTINUOUS_PUBLISH=1. The script exits before it opens the
-    // database. Pause with JURVIO_PAUSE_CONTINUOUS_PUBLISH=1.
-    command: ["jobs/run-continuous-publish.mjs", "--limit=100"],
+    budgetMs: 12 * minute,
+    // On unless CONTINUOUS_PUBLISH=0 or JURVIO_PAUSE_CONTINUOUS_PUBLISH=1.
+    // Up to 2,000 cases an hour, cut back when public search is slow.
+    command: ["jobs/run-continuous-publish.mjs", "--limit=2000"],
   },
   {
     lane: "core",

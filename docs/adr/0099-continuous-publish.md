@@ -1,6 +1,6 @@
 # Continuous publishing, off until enabled
 
-Status: Proposed. The job does not publish while `CONTINUOUS_PUBLISH` is unset.
+Status: Accepted for the Nov 9, 2026 approval. The job publishes unless paused.
 
 ## Context
 
@@ -18,8 +18,13 @@ is not sealed. It does not update `docket_entry`, so follower alerts still key
 off the original insert time. SCOTUS is excluded. Metadata-only cases are
 displayable and not indexable.
 
-The worker opens the database only when `CONTINUOUS_PUBLISH=1` and
-`JURVIO_PAUSE_CONTINUOUS_PUBLISH` is not `1`.
+The worker publishes unless `CONTINUOUS_PUBLISH=0` or
+`JURVIO_PAUSE_CONTINUOUS_PUBLISH=1`. Metadata-only federal publication is on
+unless `JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT=0` or
+`JURVIO_PAUSE_FEDERAL_METADATA=1`. A metadata publish does not change
+`legal_case.updated_at`, so the follower alert for a new case does not fire.
+The batch shrinks when `https://jurvio.com/search?q=smith` takes 3 seconds or
+more, and it stops for that cycle at 6 seconds.
 
 ## Alternatives considered
 
@@ -45,6 +50,7 @@ one of the three buckets.
 
 ## Rollout
 
-Leave both environment variables unset. To start: set `CONTINUOUS_PUBLISH=1`
-on worker-core and recreate that worker. To stop: set
-`JURVIO_PAUSE_CONTINUOUS_PUBLISH=1` or remove the first variable.
+Deploy with the variables unset. To stop the hourly job, set
+`JURVIO_PAUSE_CONTINUOUS_PUBLISH=1` on worker-core and recreate it. To stop
+metadata-only publication, set `JURVIO_PAUSE_FEDERAL_METADATA=1` the same way.
+`JURVIO_PAUSE_FEDERAL_PUBLICATION=1` still stops the 12-minute publisher entirely.
