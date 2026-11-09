@@ -15,5 +15,7 @@ describe("legal explainers", () => {
     expect(explainerGlossary()).toHaveLength(17);
     expect(getExplainer("summary-judgment")?.term).toBe("Summary judgment");
     expect(getExplainer("per-curiam")?.term).toBe("Per curiam");
+    expect(getExplainer("certiorari")?.slug).toBe("writ-of-certiorari");
+    expect(getExplainer("writ-of-certiorari")?.slug).toBe("writ-of-certiorari");
   });
 });

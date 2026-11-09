@@ -163,7 +163,7 @@ export default async function SupremeCourtPage() {
         <p>Most filings never reach merits briefing. A denial of review does not approve the lower court’s reasoning.</p>
       </div>
       <ol>
-        <li><span>01</span><div><small>Review requested</small><h3>Petition filed</h3><p>A party asks the Court to review a lower-court judgment, usually through a petition for a writ of <Term slug="certiorari">certiorari</Term>.</p></div></li>
+        <li><span>01</span><div><small>Review requested</small><h3>Petition filed</h3><p>A party asks the Court to review a lower-court judgment, usually through a petition for a writ of <Term slug="writ-of-certiorari">certiorari</Term>.</p></div></li>
         <li><span>02</span><div><small>Conference stage</small><h3>Grant, deny, or hold</h3><p>At least four Justices must vote to grant review. The Court may also call for a response, request the Solicitor General’s views, relist, or hold a petition.</p></div></li>
         <li><span>03</span><div><small>Merits stage</small><h3>Briefing and argument</h3><p>The parties and amici file briefs. The Court may hear oral argument and publishes a same-day transcript.</p></div></li>
         <li><span>04</span><div><small>Decision pending</small><h3>Conference and drafting</h3><p>The Justices vote, assign an opinion, exchange drafts, and may write separate concurrences or dissents. There is no fixed public decision date.</p></div></li>
