@@ -34,10 +34,56 @@ export interface PublicDocument {
   hasReportersNote: boolean;
 }
 
-/** A full ordinary docket, including the initial filing. Callers that only need a preview pass a smaller limit. */
+/**
+ * One page of a docket. The case-id index
+ * (docket_entry_case_filed_idx) serves the newest-first order. Callers that
+ * only need a preview pass a smaller limit.
+ */
+export const PUBLIC_DOCKET_PAGE_SIZE = 50;
 export const PUBLIC_DOCKET_LIST_LIMIT = 2000;
+/** Keeps a deep page from walking an unbounded offset. */
+const MAX_DOCKET_OFFSET = 200_000;
+/**
+ * POSIX twin of isRestrictedDocketText. A line that says it is sealed stays off
+ * the page even when no publication decision exists.
+ */
+const SEALED_DOCKET_TEXT = String.raw`\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M`;
+/** A withholding decision with one of these reasons is a seal, not a missing marker. */
+const SEAL_DECISION_REASON = "(seal|restrict|sensitive|suppress|privacy|minor|juvenile)";
 
-export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = PUBLIC_DOCKET_LIST_LIMIT) {
+export function docketPageWindow(page: number, pageSize = PUBLIC_DOCKET_PAGE_SIZE): { page: number; limit: number; offset: number } {
+  const limit = Math.min(PUBLIC_DOCKET_LIST_LIMIT, Math.max(1, Math.floor(pageSize) || PUBLIC_DOCKET_PAGE_SIZE));
+  const requested = Number.isFinite(page) ? Math.floor(page) : 1;
+  const offset = Math.min(MAX_DOCKET_OFFSET, Math.max(0, requested - 1) * limit);
+  return { page: Math.floor(offset / limit) + 1, limit, offset };
+}
+
+/**
+ * Stored lines on a published case are public. A line is hidden only when its
+ * text is sealed or a publication decision withholds it for a seal reason.
+ * Missing decisions are not a hide. This reads docket_entry; it does not write.
+ */
+function visibleEntry(sql: Sql) {
+  return sql`
+    entry.description !~* ${SEALED_DOCKET_TEXT}
+    AND NOT EXISTS (
+      SELECT 1 FROM publication_decision withheld
+      WHERE withheld.object_type = 'docket_entry'
+        AND withheld.object_id = entry.id
+        AND NOT withheld.displayable
+        AND withheld.reason_code ~* ${SEAL_DECISION_REASON}
+    )
+  `;
+}
+
+export async function listPublicDocketEntries(
+  sql: Sql,
+  casePublicId: string,
+  limit = PUBLIC_DOCKET_LIST_LIMIT,
+  offset = 0,
+) {
+  const boundedLimit = Math.min(PUBLIC_DOCKET_LIST_LIMIT, Math.max(1, Math.floor(limit) || 1));
+  const boundedOffset = Math.min(MAX_DOCKET_OFFSET, Math.max(0, Math.floor(offset) || 0));
   return sql<PublicDocketEntry[]>`
     SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
       entry.filed_on::text AS "filedOn", entry.description, entry.importance
@@ -46,10 +92,24 @@ export async function listPublicDocketEntries(sql: Sql, casePublicId: string, li
     WHERE legal_case.public_id = ${casePublicId}
       AND legal_case.publication = 'published'
       AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      AND ${visible(sql, "displayable", "docket_entry", "entry.id")}
-    ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST
-    LIMIT ${limit}
+      AND ${visibleEntry(sql)}
+    ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST, entry.public_id DESC
+    LIMIT ${boundedLimit}
+    OFFSET ${boundedOffset}
   `;
+}
+
+export async function countPublicDocketEntries(sql: Sql, casePublicId: string): Promise<number> {
+  const [row] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+    FROM docket_entry entry
+    JOIN legal_case legal_case ON legal_case.id = entry.case_id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+      AND ${visibleEntry(sql)}
+  `;
+  return row?.n ?? 0;
 }
 
 export async function listPublicParties(sql: Sql, casePublicId: string) {

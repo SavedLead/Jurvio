@@ -13,6 +13,7 @@ import {
 } from "@/modules/cases/domain/opinion-availability";
 import { robotsFor } from "@/lib/seo/indexing";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { CaseRecordFacts } from "@/modules/cases/ui/case-record-facts";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { publicDocumentType } from "@/modules/cases/domain/public-labels";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
@@ -66,6 +67,7 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn}
         decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode} />
+      <CaseRecordFacts caseId={caseId} legalCase={legalCase} />
       {opinionNotice ? (
         <section className="opinionPendingNotice" aria-labelledby="opinion-official-source">
           <h2 id="opinion-official-source">{opinionNotice.heading}</h2>

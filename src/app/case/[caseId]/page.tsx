@@ -7,9 +7,11 @@ import { db } from "@/db/client";
 import { loadCaseForViewer } from "@/app/case/load-public-case";
 import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import {
+  countPublicDocketEntries,
   listPublicDocketEntries,
   listPublicDocuments,
   listPublicParties,
+  PUBLIC_DOCKET_PAGE_SIZE,
 } from "@/modules/cases/application/list-public-case-sections";
 import { buildCaseMetaDescription, buildRecordAnswers } from "@/modules/cases/domain/record-answers";
 import { buildCaseTitle } from "@/modules/cases/domain/case-title";
@@ -23,6 +25,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { casePageIndexable } from "@/modules/cases/application/get-public-case";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { CaseRecordFacts } from "@/modules/cases/ui/case-record-facts";
 import { caseSections } from "@/modules/cases/ui/case-nav";
 import { CaseGlossary, CaseSection, CaseSourceList, CaseSources, CaseSummaryCard, SourceRef } from "@/modules/cases/ui/case-declutter";
 import { CaseSectionOpener } from "@/modules/cases/ui/case-section-opener";
@@ -155,8 +158,9 @@ export default async function CasePage({ params }: CasePageProps) {
   const { caseId, legalCase } = loaded;
   const sql = db();
   const isSupremeCourt = legalCase.courtKind === "supreme" || (legalCase.courtCode ?? "").toLowerCase() === "scotus";
-  const [docketEntries, parties, documents, citations, newsLinks, agencyItems, followEligible, scdbLineup, justiceNotes] = await Promise.all([
-    listPublicDocketEntries(sql, caseId),
+  const [docketEntries, docketCount, parties, documents, citations, newsLinks, agencyItems, followEligible, scdbLineup, justiceNotes] = await Promise.all([
+    listPublicDocketEntries(sql, caseId, PUBLIC_DOCKET_PAGE_SIZE),
+    countPublicDocketEntries(sql, caseId).catch(() => 0),
     listPublicParties(sql, caseId),
     listPublicDocuments(sql, caseId),
     loadCachedCaseCitations(caseId),
@@ -228,7 +232,7 @@ export default async function CasePage({ params }: CasePageProps) {
     decidedOn: legalCase.decidedOn,
     natureOfSuit: legalCase.natureOfSuit ?? null,
     causeOfAction: legalCase.causeOfAction ?? null,
-    docketEntryCount: docketEntries.length,
+    docketEntryCount: docketCount,
     citedByCount: citationCounts.citedBy,
     hasReadableOpinion: legalCase.hasReadableOpinion,
     opinionFiledOn: primaryOpinion?.filedOn ?? null,
@@ -524,7 +528,7 @@ export default async function CasePage({ params }: CasePageProps) {
     justices: hasJustices,
     motions: motionGuide.length > 0,
     citations: citationTotal > 0 || similarCases.length > 0,
-    docket: timelineEvents.length > 0,
+    docket: docketCount > 0 || timelineEvents.length > 0,
     documents: documents.length > 0 || Boolean(opinionNotice) || Boolean(opinionPath) || (!isSupremeCourt && Boolean(decisionDetail)),
     parties: parties.length > 0,
     record: true,
@@ -563,6 +567,7 @@ export default async function CasePage({ params }: CasePageProps) {
             courtCode={legalCase.courtCode}
             showNavigation={false}
           />
+          <CaseRecordFacts caseId={caseId} legalCase={legalCase} parties={parties} />
         </div>
 
         <aside className="cdRail" aria-label="Case summary">
@@ -623,7 +628,7 @@ export default async function CasePage({ params }: CasePageProps) {
         </CaseSection> : null}
 
         {show.docket ? <CaseSection id="docket" title="Docket & timeline"
-          hint={`${timelineEvents.length.toLocaleString("en-US")} dated ${timelineEvents.length === 1 ? "event" : "events"}${latestEvent ? `, latest ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}` : ""}`}>
+          hint={`${docketCount.toLocaleString("en-US")} ${docketCount === 1 ? "entry" : "entries"}${latestEvent ? `, latest ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}` : ""}`}>
           <ol className="caseMilestones" id="case-timeline">
             {timelineEvents.map((event) => (
               <li key={event.date + event.label}>
