@@ -198,7 +198,11 @@ export default async function CasePage({ params }: CasePageProps) {
   const sourceDocument = documents.find((document) => document.sourceDownloadUrl);
   // No opinion text to show: link the official copy, or say nothing.
   const opinionNotice = opinionTextPending ? officialOpinionNotice(sourceDocument?.sourceDownloadUrl) : null;
-  const primaryOpinion = readableDocuments.find((document) => document.opinionType || document.documentType.includes("opinion")) ?? readableDocuments[0];
+  const opinionDocuments = documents.filter((document) => document.opinionType);
+  const primaryOpinion = readableDocuments.find((document) => document.opinionType || document.documentType.includes("opinion"))
+    ?? opinionDocuments.find((document) => document.sourceDownloadUrl)
+    ?? readableDocuments[0]
+    ?? opinionDocuments[0];
   const opinionPath = primaryOpinion ? `/case/${caseId}/documents/${primaryOpinion.publicId}` : null;
   const decisionLabel = primaryOpinion?.perCuriam ? "Per curiam" : primaryOpinion?.authorName;
   const opinionType = publicOpinionType(primaryOpinion?.opinionType);
@@ -656,7 +660,7 @@ export default async function CasePage({ params }: CasePageProps) {
               {documents.map((document) => (
                 <li key={document.publicId}>
                   <span className="cdDocType">{marked(publicDocumentType(document.documentType), documentsMarker)}{document.filedOn ? <> · <time dateTime={document.filedOn}>{formatPublicCaseDate(document.filedOn) ?? document.filedOn}</time></> : null}</span>
-                  <span className="cdDocTitle">{document.hasReadableContent ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>{document.title}</Link> : document.title}
+                  <span className="cdDocTitle">{document.hasReadableContent || document.opinionType ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>{document.title}</Link> : document.title}
                     {document.sourceDownloadUrl ? <> · official copy{ref(document.sourceDownloadUrl)}</> : null}</span>
                 </li>
               ))}

@@ -87,7 +87,7 @@ export default async function DocumentsPage({ params }: DocumentsPageProps) {
                 {document.filedOn ? <time dateTime={document.filedOn}>{formatPublicCaseDate(document.filedOn) ?? document.filedOn}</time> : null}
               </div>
               <div className="documentActions">
-                {document.hasReadableContent ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>Read on Jurvio</Link> : null}
+                {document.hasReadableContent || document.opinionType ? <Link href={`/case/${caseId}/documents/${document.publicId}` as Route}>Read on Jurvio</Link> : null}
                 {document.sourceDownloadUrl ? <a href={document.sourceDownloadUrl} target="_blank" rel="nofollow noopener noreferrer">Official source</a> : null}
               </div>
             </li>

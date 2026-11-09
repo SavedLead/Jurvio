@@ -47,23 +47,27 @@ export async function getPublicOpinion(
       judicial.per_curiam AS "perCuriam",
       cluster.precedential_status AS "precedentialStatus",
       cluster.citations,
-      cluster.citation_count AS "citationCount",
-      content.content_html AS "contentHtml",
-      content.content_text AS "contentText",
-      content.word_count AS "wordCount",
+      COALESCE(cluster.citation_count, 0) AS "citationCount",
+      COALESCE(content.content_html, '') AS "contentHtml",
+      COALESCE(content.content_text, '') AS "contentText",
+      COALESCE(content.word_count, 0) AS "wordCount",
       judicial.source_download_url AS "sourceDownloadUrl",
+      -- A published opinion with no extracted text is still a real page (the
+      -- official PDF). It is not a page for a search engine.
       COALESCE((
         SELECT decision.indexable FROM publication_decision decision
         WHERE decision.object_type = 'document' AND decision.object_id = document.id
         ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-      ), false) AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))} AS indexable,
+      ), false)
+        AND COALESCE(content.word_count, 0) > 0
+        AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))} AS indexable,
       ${sql.unsafe(searchExcludedCaseSql("legal_case"))} AS "subscriberOnly"
     FROM document
     JOIN legal_case ON legal_case.id = document.case_id
     JOIN court ON court.id = legal_case.court_id
     JOIN judicial_opinion judicial ON judicial.document_id = document.id
     JOIN opinion_cluster cluster ON cluster.id = judicial.cluster_id
-    JOIN document_content content ON content.document_id = document.id
+    LEFT JOIN document_content content ON content.document_id = document.id
     WHERE legal_case.public_id = ${casePublicId}
       AND document.public_id = ${documentPublicId}
       AND legal_case.publication = 'published'

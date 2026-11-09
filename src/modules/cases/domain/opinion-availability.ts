@@ -37,3 +37,34 @@ export function officialOpinionNotice(officialUrl: string | null | undefined): O
 export function opinionTextIsPending(hasReadableOpinion: boolean): boolean {
   return !hasReadableOpinion;
 }
+
+const PDF_HOSTS = [
+  "supremecourt.gov",
+  "www.supremecourt.gov",
+  "tile.loc.gov",
+  "www.loc.gov",
+  "www.govinfo.gov",
+  "govinfo.gov",
+];
+
+/** An https PDF on a court or official-reporter host that the opinion page can embed. */
+export function viewableOpinionPdf(value: string | null | undefined): string | null {
+  if (!value) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  const host = url.hostname.toLowerCase();
+  const allowed = PDF_HOSTS.includes(host) || host.endsWith(".uscourts.gov") || host.endsWith(".loc.gov");
+  if (!allowed) return null;
+  const path = `${url.pathname}${url.search}`.toLowerCase();
+  if (!path.includes(".pdf")) return null;
+  return url.toString();
+}
+
+export function opinionHasExtractedText(opinion: { wordCount: number; contentText: string }): boolean {
+  return opinion.wordCount > 0 && /\S/.test(opinion.contentText);
+}

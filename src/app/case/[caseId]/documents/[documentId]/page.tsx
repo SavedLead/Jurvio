@@ -21,6 +21,7 @@ import { linkCaseCitations } from "@/modules/citations/domain/link-citations";
 import { citationKey } from "@/modules/citations/domain/citations";
 import { citationCountLine, summarizeCitations } from "@/modules/citations/domain/citation-summary";
 import { publicOpinionType } from "@/modules/cases/domain/public-labels";
+import { opinionHasExtractedText, viewableOpinionPdf } from "@/modules/cases/domain/opinion-availability";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 
 export const dynamic = "force-dynamic";
@@ -55,13 +56,15 @@ export async function generateMetadata({ params }: OpinionPageProps): Promise<Me
     opinion.docketNumber,
     opinion.courtName,
   ].filter(Boolean).join(" | ");
-  const description = opinion.contentText.replace(/\s+/g, " ").trim().slice(0, 155);
+  const description = opinionHasExtractedText(opinion)
+    ? opinion.contentText.replace(/\s+/g, " ").trim().slice(0, 155)
+    : `${caption}, No. ${opinion.docketNumber}. Official opinion from ${opinion.courtName}.`;
   return {
     title,
     description,
     alternates: { canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` },
     openGraph: { title, description, type: "article" },
-    robots: robotsFor(opinion.indexable),
+    robots: robotsFor(opinion.indexable && opinionHasExtractedText(opinion)),
   };
 }
 
@@ -77,6 +80,8 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
   const canonicalPath = `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
   const officialCitation = opinion.officialCitation;
+  const hasText = opinionHasExtractedText(opinion);
+  const pdfUrl = viewableOpinionPdf(opinion.sourceDownloadUrl);
   const requestHeaders = await headers();
   await recordDemandEvent(db(), {
     eventType: "document_view",
@@ -87,7 +92,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     targetType: "document",
     targetPublicId: opinion.documentPublicId,
   });
-  const citationTargets = await publicCitationTargets(db(), opinion.contentText, opinion.contentHtml);
+  const citationTargets = hasText ? await publicCitationTargets(db(), opinion.contentText, opinion.contentHtml) : [];
   // The opinion header usually repeats the case's own citation; never count,
   // link or mark it as a citation to another case.
   const ownTargets = new Set(citationTargets.filter(target => target.casePublicId === opinion.casePublicId).map(target => target.citationKey));
@@ -142,26 +147,29 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
             {officialCitation ? <div><dt>Official citation</dt><dd>{officialCitation}</dd></div> : null}
           </dl>
           <aside className="sourceNotice">
-            <strong>Official court text.</strong> Jurvio reformats the published opinion for readability without changing the Court&apos;s words.
-            {opinion.sourceDownloadUrl ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View the official source</a>.</> : null}
+            {hasText ? <><strong>Official court text.</strong> Jurvio reformats the published opinion for readability without changing the Court&apos;s words.</> : <><strong>Official court PDF.</strong> The court&apos;s file is shown here.</>}
+            {pdfUrl ? <> <a href={pdfUrl} rel="nofollow noopener">Official PDF</a>.</> : opinion.sourceDownloadUrl?.startsWith("https://") ? <> <a href={opinion.sourceDownloadUrl} rel="nofollow noopener">View the official source</a>.</> : null}
           </aside>
-          <p className="legalTermHelp">Hover, tap, or tab to any dotted-underlined legal term for a plain-English definition.</p>
+          {hasText ? <p className="legalTermHelp">Hover, tap, or tab to any dotted-underlined legal term for a plain-English definition.</p> : null}
         </header>
 
         <div className="opinionWorkspace">
-          <OpinionReaderTools
+          {hasText ? <OpinionReaderTools
             targetId="opinion-text"
             permanentUrl={permanentUrl}
             shareTitle={`${caption} — Judicial Opinion`}
             citation={officialCitation}
-          />
+          /> : null}
           <div id="opinion-text" className="opinionTextSurface" data-reader-size="regular" data-reader-width="standard" data-reader-theme="paper">
-            <AnnotatedLegalText
+            {hasText ? <AnnotatedLegalText
               className="opinionBody"
               html={distinguishReportersNote(linkedHtml)}
               terms={opinionTerms}
               labels={opinionTermLabels}
-            />
+            /> : pdfUrl ? <figure className="opinionPdf">
+              <iframe className="opinionPdfFrame" title={`Official opinion PDF, ${caption}`} src={pdfUrl} />
+              <figcaption><a href={pdfUrl} rel="nofollow noopener">Official PDF</a></figcaption>
+            </figure> : <p className="opinionBody">This opinion is published here. The court has not attached a PDF to this record.</p>}
           </div>
           <aside className="readerMetadataRail" aria-label="Opinion source and record details">
             <section>
