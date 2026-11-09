@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { ORDER_LINE_PATTERN } from "@/modules/cases/domain/docket-classification";
 import { latestPublicationColumnSql, type PublicationFlag } from "@/modules/publication/application/current-visibility";
 
 type Sql = ReturnType<typeof postgres>;
@@ -97,6 +98,54 @@ export async function listPublicDocketEntries(
     LIMIT ${boundedLimit}
     OFFSET ${boundedOffset}
   `;
+}
+
+export async function countPublicOrderEntries(sql: Sql, casePublicId: string): Promise<number> {
+  const [row] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+    FROM docket_entry entry
+    JOIN legal_case legal_case ON legal_case.id = entry.case_id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+      AND ${visibleEntry(sql)}
+      AND entry.description ~* ${ORDER_LINE_PATTERN}
+  `;
+  return row?.n ?? 0;
+}
+
+export async function listPublicOrderEntries(sql: Sql, casePublicId: string, limit = PUBLIC_DOCKET_PAGE_SIZE) {
+  const boundedLimit = Math.min(PUBLIC_DOCKET_LIST_LIMIT, Math.max(1, Math.floor(limit) || 1));
+  return sql<PublicDocketEntry[]>`
+    SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
+      entry.filed_on::text AS "filedOn", entry.description, entry.importance
+    FROM docket_entry entry
+    JOIN legal_case legal_case ON legal_case.id = entry.case_id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+      AND ${visibleEntry(sql)}
+      AND entry.description ~* ${ORDER_LINE_PATTERN}
+    ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST, entry.public_id DESC
+    LIMIT ${boundedLimit}
+  `;
+}
+
+/** A few stored lines that state a jury demand or a jurisdiction basis. */
+export async function listStoredFactLines(sql: Sql, casePublicId: string): Promise<string[]> {
+  const rows = await sql<{ description: string }[]>`
+    SELECT entry.description
+    FROM docket_entry entry
+    JOIN legal_case legal_case ON legal_case.id = entry.case_id
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+      AND ${visibleEntry(sql)}
+      AND (entry.description ~* 'jury demand' OR entry.description ~* '\\mjurisdiction\\M')
+    ORDER BY entry.filed_on DESC NULLS LAST
+    LIMIT 30
+  `.catch(() => []);
+  return rows.map((row) => row.description);
 }
 
 export async function countPublicDocketEntries(sql: Sql, casePublicId: string): Promise<number> {
