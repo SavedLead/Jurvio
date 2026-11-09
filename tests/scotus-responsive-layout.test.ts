@@ -30,7 +30,7 @@ describe("SCOTUS responsive layout contract", () => {
     // Decluttered layout: each block renders only when its verified input exists (no empty headings).
     expect(casePage).toContain("{outcome || (legalCase.exactHolding && !quickAnswerTexts.has(legalCase.exactHolding)) ? <>");
     expect(casePage).toContain("const decisionDetail = decisionLabel || opinionType || decisionLineup?.voteBreakdown?.label");
-    expect(casePage).toContain("docket: timelineEvents.length > 0,");
+    expect(casePage).toContain("docket: docketCount > 0 || timelineEvents.length > 0,");
     expect(casePage).toContain("{show.docket ? <CaseSection");
     expect(casePage).toContain("{documents.length > 0 ? <>");
     expect(casePage).toContain("{opinionPath ? <nav");

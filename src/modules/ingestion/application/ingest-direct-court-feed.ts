@@ -3,6 +3,7 @@ import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import type { ArtifactStore } from "./artifact-store";
 import { shouldCreateCase } from "../domain/direct-court";
+import { publishDraftFeedCase, recordFeedPublication } from "../live-feeds/persist";
 import { fetchCmecfRss } from "../providers/courts/cmecf-rss";
 import type { FederalCourtSource } from "../providers/courts/registry";
 import { errorText, httpStatusOf, recordCourtFetch } from "@/modules/operations/application/court-fetch-log";
@@ -141,7 +142,8 @@ async function ingestOneDirectCourtFeed(
               = lower(regexp_replace(${event.docketNumber}, '[^a-zA-Z0-9]', '', 'g'))
           ORDER BY legal_case.created_at LIMIT 2
         `;
-        let legalCase = cases.length === 1 ? cases[0] : null;
+        let legalCase: { id: string; public_id: string; publication: string; inserted?: boolean } | null =
+          cases.length === 1 ? cases[0] ?? null : null;
         if (cases.length > 1) legalCase = null;
 
         if (!legalCase && cases.length === 0 && shouldCreateCase(event)) {
@@ -160,21 +162,29 @@ async function ingestOneDirectCourtFeed(
             RETURNING id
           `;
           if (!courtRecord) throw new Error("Official court was not persisted");
-          [legalCase] = await tx<{ id: string; public_id: string; publication: string }[]>`
+          const [insertedCase] = await tx<{ id: string; public_id: string; publication: string; inserted: boolean }[]>`
             INSERT INTO legal_case (
               public_id, court_id, docket_number, caption, filed_on,
-              verification, publication, source_artifact_id, source_updated_at
+              verification, publication, source_artifact_id, source_updated_at, updated_at
             ) VALUES (
               ${createPublicId("case")}, ${courtRecord.id}, ${event.docketNumber},
               ${event.caption}, ${event.eventType === "case_filed" ? event.filedAt.slice(0, 10) : null},
-              'verified', 'draft', ${artifact.id}, ${event.filedAt}
+              'verified', 'published', ${artifact.id}, ${event.filedAt}, now() - interval '31 days'
             )
             ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
             DO UPDATE SET source_artifact_id = EXCLUDED.source_artifact_id,
-              source_updated_at = EXCLUDED.source_updated_at, updated_at = now()
-            RETURNING id, public_id, publication::text
+              source_updated_at = EXCLUDED.source_updated_at, updated_at = legal_case.updated_at
+            RETURNING id, public_id, publication::text, (xmax = 0) AS inserted
           `;
-          if (legalCase) created += 1;
+          legalCase = insertedCase ?? null;
+          if (legalCase?.inserted) {
+            created += 1;
+            await recordFeedPublication(tx, legalCase.id);
+          }
+        }
+        if (legalCase && legalCase.publication === "draft" && shouldCreateCase(event)) {
+          await publishDraftFeedCase(tx, legalCase.id);
+          legalCase = { ...legalCase, publication: "published" };
         }
         if (legalCase) matched += 1;
 
@@ -212,19 +222,21 @@ async function ingestOneDirectCourtFeed(
         await tx`
           INSERT INTO docket_entry (
             public_id, case_id, provider_id, provider_entry_id,
-            entry_number, filed_on, description, source_artifact_id
+            entry_number, filed_on, description, source_artifact_id, created_at, updated_at
           ) VALUES (
             ${createPublicId("docketEntry")}, ${legalCase.id}, ${provider.id},
             ${event.deduplicationKey}, ${event.documentNumber},
-            ${event.filedAt.slice(0, 10)}, ${event.exactText}, ${artifact.id}
+            ${event.filedAt.slice(0, 10)}, ${event.exactText}, ${artifact.id},
+            now() - interval '15 days', now() - interval '15 days'
           )
           ON CONFLICT (provider_id, provider_entry_id)
           DO UPDATE SET description = EXCLUDED.description,
-            source_artifact_id = EXCLUDED.source_artifact_id, updated_at = now()
+            source_artifact_id = EXCLUDED.source_artifact_id,
+            updated_at = docket_entry.updated_at
         `;
         await tx`
           INSERT INTO direct_court_alert_event (
-            direct_event_id, case_id, public_payload, deduplication_key
+            direct_event_id, case_id, public_payload, deduplication_key, created_at, available_at
           ) VALUES (
             ${directEvent.id}, ${legalCase.id},
             ${tx.json({
@@ -240,7 +252,8 @@ async function ingestOneDirectCourtFeed(
               materiality: event.eventType === "filing" ? "routine" : "material",
               deduplicationKey: event.deduplicationKey,
             })},
-            ${event.deduplicationKey}
+            ${event.deduplicationKey},
+            now() - interval '15 days', now() - interval '15 days'
           ) ON CONFLICT (deduplication_key) DO NOTHING
         `;
         published += 1;

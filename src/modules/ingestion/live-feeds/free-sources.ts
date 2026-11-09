@@ -220,7 +220,8 @@ async function persistAppellateRssItem(sql: Sql, provider: string, artifactId: s
     const match = await matchOrCreateDraftCase(tx, { providerId: provider, courtId, courtCode: item.courtCode,
       docketNumber: item.docketNumber, caption: item.caption, filedOn: null,
       decidedOn: item.kind === "opinion" || item.kind === "judgment" ? item.filedOn : null, artifactId,
-      identifierType: "official_appellate_docket", identifierValue: `${item.courtCode}:${item.docketNumber}` });
+      identifierType: "official_appellate_docket", identifierValue: `${item.courtCode}:${item.docketNumber}`,
+      publishFeed: true });
     if (match.kind === "restricted") return done("restricted");
     if (match.kind === "ambiguous") return done("ambiguous");
     const created = match.kind === "created";
@@ -231,7 +232,7 @@ async function persistAppellateRssItem(sql: Sql, provider: string, artifactId: s
     await insertDocketEntryOnce(tx, { caseId: match.caseId, providerId: provider,
       providerEntryId: `appellate-rss:${item.courtCode}:${item.entryKey}`, entryNumber: null, filedOn: item.filedOn,
       description: item.entryText, entryType: item.kind === "opinion" ? "opinion" : item.kind === "other" ? "filing" : "order",
-      importance: item.kind === "other" ? "routine" : "high", artifactId });
+      importance: item.kind === "other" ? "routine" : "high", artifactId, history: true });
     return done(created ? "new_case" : "entry", match.caseId);
   });
 }

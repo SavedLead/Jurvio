@@ -51,7 +51,11 @@ export interface OpinionSearchResponse {
 export const OPINION_SEARCH_PAGE_SIZE = 20;
 /** Stop the GIN scan after this many hits. Ranking every match of a common
  * word such as "securities" exceeds the statement budget on the live corpus. */
-export const OPINION_SEARCH_CANDIDATE_CAP = 2_000;
+export const OPINION_SEARCH_CANDIDATE_CAP = 400;
+/** Soft cap on a GIN posting list. A common word otherwise reads every match before LIMIT. */
+export const OPINION_SEARCH_GIN_FUZZY_LIMIT = 400;
+/** How much of an opinion body an excerpt may scan. The rest stays toasted. */
+export const OPINION_SEARCH_EXCERPT_SCAN_CHARS = 8_000;
 /** Per statement, well under the ~60s edge timeout, above a cold-cache spike. */
 export const OPINION_SEARCH_STATEMENT_TIMEOUT_MS = 8_000;
 /**
@@ -332,7 +336,7 @@ async function hydrateHits(sql: Sql, hits: SearchHit[], anchor: string): Promise
     CROSS JOIN LATERAL (
       SELECT CASE
         WHEN ${anchor} = '' THEN 0
-        ELSE strpos(lower(projection.body), lower(${anchor}))
+        ELSE strpos(lower(substring(projection.body from 1 for ${OPINION_SEARCH_EXCERPT_SCAN_CHARS})), lower(${anchor}))
       END AS anchor_at
     ) located
     WHERE projection.document_id IN ${sql(ids)}
@@ -375,7 +379,12 @@ export async function searchPublicOpinions(
       // A sequential scan applies @@ by detoasting every stored opinion vector.
       // The planner will pick that over the GIN index when it thinks a term is
       // common, which is the production timeout. Prefer the index for keyword search.
-      if (hasQuery) await tx`SELECT set_config('enable_seqscan', 'off', true)`;
+      if (hasQuery) {
+        await tx`SELECT set_config('enable_seqscan', 'off', true)`;
+        // A common word's GIN posting list is the whole corpus. The fuzzy limit
+        // stops that scan after a few hundred matches instead of reading it all.
+        await tx`SELECT set_config('gin_fuzzy_search_limit', ${String(OPINION_SEARCH_GIN_FUZZY_LIMIT)}, true)`;
+      }
 
       const hits: { rows: SearchHit[]; total: number; countTimedOut?: boolean; totalCapped?: boolean } = hasQuery
         ? await keywordHits(tx, filters, courtId, pageSize, offset)

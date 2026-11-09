@@ -96,8 +96,31 @@ export function isRestrictedDirectEvent(text: string): boolean {
   return restrictedPattern.test(text);
 }
 
+const DISTRICT_DOCKET = /^\d{1,2}:\d{2}-(?:cv|cr|mc|mj|md|bk|ap)-\d{5,7}$/i;
+const APPELLATE_DOCKET = /^\d{2}-\d{1,6}$/;
+
+/** Longest gap between polls. A court's own polling_minutes can be shorter. */
+export const DIRECT_COURT_MAX_GAP_MINUTES = 30;
+
+/**
+ * How long a court may wait. The registry's polling_minutes is the polite
+ * rate (5 for every district). Never wait longer than the 30-minute ceiling:
+ * the public feeds only keep about 24 hours, and a 2-hour rotation was
+ * dropping entries when a run did not reach every court.
+ */
+export function directCourtGapMinutes(pollingMinutes: number | null | undefined, maxGapMinutes = DIRECT_COURT_MAX_GAP_MINUTES): number {
+  const ceiling = Math.max(0, maxGapMinutes);
+  const polite = Math.max(2, pollingMinutes ?? ceiling);
+  return Math.min(ceiling, polite);
+}
+
 export function shouldCreateCase(event: Pick<DirectCourtEvent, "docketNumber" | "caption" | "restricted">): boolean {
   return !event.restricted &&
-    /^\d{1,2}:\d{2}-(?:cv|cr|mc|mj|md|bk|ap)-\d{5,7}$/i.test(event.docketNumber) &&
+    DISTRICT_DOCKET.test(event.docketNumber) &&
     event.caption.trim().length >= 3;
+}
+
+/** District or appellate docket numbers a feed entry may publish. Sealed text is a separate check. */
+export function isPublishableFeedDocket(docketNumber: string): boolean {
+  return DISTRICT_DOCKET.test(docketNumber) || APPELLATE_DOCKET.test(docketNumber);
 }

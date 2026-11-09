@@ -9,6 +9,8 @@ import {
   isStatementTimeout,
   listOpinionSearchFacets,
   normalizeOpinionSearchFilters,
+  OPINION_SEARCH_CANDIDATE_CAP,
+  OPINION_SEARCH_GIN_FUZZY_LIMIT,
   OPINION_SEARCH_STATEMENT_TIMEOUT_MS,
   QueryTimedOutError,
   readQueryTimeout,
@@ -86,6 +88,8 @@ describe("opinion search degradation", () => {
 
   it("keeps the keyword guard and gives facets a shorter one", () => {
     expect(OPINION_SEARCH_STATEMENT_TIMEOUT_MS).toBe(8_000);
+    expect(OPINION_SEARCH_CANDIDATE_CAP).toBe(400);
+    expect(OPINION_SEARCH_GIN_FUZZY_LIMIT).toBe(400);
     expect(FACET_STATEMENT_TIMEOUT_MS).toBeLessThan(OPINION_SEARCH_STATEMENT_TIMEOUT_MS);
   });
 
