@@ -42,6 +42,7 @@ export default async function GrowthPage() {
   const peak = Math.max(1, ...d.trend.map((t) => t.visitors + t.accounts + t.waitlist));
   return <main className={styles.main}>
     <h1>Growth</h1>
+    <p><Link href="/internal/alert-subscribers">Alert subscribers</Link> shows follow counts only, with no addresses.</p>
     <p>Live from the production database. Visitors are unique browsers confirmed by a JavaScript page-view beacon and classified human (bots, crawlers, headless and scripted clients excluded). Times are Eastern.</p>
     <section className={styles.kpis} aria-label="Growth totals">
       {kpis.map(([label, value, meta]) => <article className={styles.kpi} key={label}><span>{label}</span><strong>{n(value)}</strong><p>{meta}</p></article>)}
