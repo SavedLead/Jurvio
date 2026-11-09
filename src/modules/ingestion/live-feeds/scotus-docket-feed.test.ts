@@ -75,7 +75,7 @@ function fakeCourt(existing: Set<number>, options: { known?: Set<string>; budget
       remaining -= 1;
       probed.push(docketNumber);
       const n = Number(docketNumber.split("-")[1]);
-      return existing.has(n) ? { docketNumber, caption: "A v. B", docketedOn: null, caseType: "Paid", lowerCourt: null, entries: [] } : null;
+      return existing.has(n) ? { docketNumber, caption: "A v. B", docketedOn: null, caseType: "Paid", lowerCourt: null, entries: [], counsel: [], filings: [] } : null;
     },
     known: async (docketNumber: string) => options.known?.has(docketNumber) ?? false,
     persist: async (docket: ScotusDocket) => { stored.push(docket.docketNumber); },

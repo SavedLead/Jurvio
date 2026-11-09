@@ -99,10 +99,10 @@ async function boundedBody(response: Response, maxBytes: number) {
   return body;
 }
 
-export async function fetchOfficialSlipOpinionIndex(termYear: string): Promise<RetrievedOfficialIndex> {
+export async function fetchOfficialSlipOpinionIndex(termYear: string, fetchImpl: typeof fetch = fetch): Promise<RetrievedOfficialIndex> {
   if (!/^\d{2}$/.test(termYear)) throw new Error("Supreme Court term must be a two-digit year");
   const sourceUri = `${OFFICIAL_ORIGIN}/opinions/slipopinion/${termYear}`;
-  const response = await fetch(sourceUri, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
+  const response = await fetchImpl(sourceUri, { headers: { "user-agent": process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1" }, redirect: "error" });
   if (!response.ok) throw new Error(`Supreme Court index returned HTTP ${response.status}`);
   const bytes = await boundedBody(response, MAX_INDEX_BYTES);
   const rawBody = new TextDecoder().decode(bytes);
