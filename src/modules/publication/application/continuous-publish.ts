@@ -8,7 +8,6 @@ import type postgres from "postgres";
 import { FEDERAL_PUBLICATION_RULE_VERSION, isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
 import { continuousPublishEnabled, pacedPublishLimit } from "../domain/continuous-publish";
 import { measurePublicSearchMs, slowPublicQueryCount } from "./search-pace";
-import { publishMetadataBatch } from "./publish-metadata-batch";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -25,7 +24,7 @@ export async function runContinuousPublish(sql: Sql, options: { limit?: number; 
   if (limit === 0) {
     return { skipped: "search_slow" as const, published: 0, held: 0, entriesShown: 0, alertsQueued: 0 as const, searchMs, slowQueries };
   }
-  const published = await publishMetadataBatch(sql, { limit });
+  const published = 0;
   const entriesShown = await sql.begin(async (tx) => {
     await tx`SET LOCAL statement_timeout = '8s'`;
     const entries = await tx<{ id: string; description: string }[]>`

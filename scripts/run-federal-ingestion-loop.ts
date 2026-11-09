@@ -1,6 +1,7 @@
 import { closeDb, db } from "@/db/client";
 import { env } from "@/lib/config/env";
-import { publishMetadataBatch } from "@/modules/publication/application/publish-metadata-batch";
+import { runAdaptiveMetadataPublish } from "@/modules/publication/application/publish-metadata-batch";
+import { draftCaseEstimate } from "@/modules/publication/application/search-pace";
 import { metadataPublicationEnabled, pacedPublishLimit } from "@/modules/publication/domain/continuous-publish";
 import { measurePublicSearchMs, slowPublicQueryCount } from "@/modules/publication/application/search-pace";
 import { ingestCourtListenerDocket } from "@/modules/ingestion/application/ingest-courtlistener-docket";
@@ -1145,11 +1146,39 @@ async function runPublicationAndQuarantine() {
     console.log(JSON.stringify({ phase: "publication-pace", searchMs, slowQueries, publishCap }));
     // Metadata publication is a set of short commits. The per-row candidate
     // query was spending the whole cycle before it could publish.
-    if (allowMetadataWithoutOpinionText && publishCap > 0) {
-      const batchPublished = await publishMetadataBatch(sql, { limit: publishCap });
-      published += batchPublished;
-      discovered += batchPublished;
+    if (allowMetadataWithoutOpinionText) {
+      const remainingMs = Math.max(20_000, jobDeadlineMs - Date.now());
+      const batch = publishCap === 0
+        ? { published: 0, scanned: 0, held: 0, heldByReason: { search_slow: 1 }, batchSize: 0, searchMs, casePageMs: null, slowQueries, lockWaits: 0, elapsedMs: 0 }
+        : await runAdaptiveMetadataPublish(sql, { budgetMs: remainingMs, startBatch: 500 });
+      published += batch.published;
+      discovered += batch.scanned;
+      held = batch.held;
+      Object.assign(holdReasons, batch.heldByReason);
+      const draftEstimate = await draftCaseEstimate(sql);
+      const perHour = batch.elapsedMs > 0 ? Math.round(batch.published * 3_600_000 / batch.elapsedMs) : 0;
       await finishIngestionRun(sql, runId);
+      await sql`
+        UPDATE ingestion_run SET
+          succeeded_count = ${batch.published},
+          records_changed = ${batch.published},
+          records_seen = ${batch.scanned},
+          selection = selection || ${sql.json({
+            published: batch.published,
+            scanned: batch.scanned,
+            held: batch.held,
+            heldByReason: batch.heldByReason,
+            searchMs: batch.searchMs,
+            casePageMs: batch.casePageMs,
+            slowQueries: batch.slowQueries,
+            lockWaits: batch.lockWaits,
+            batchSize: batch.batchSize,
+            elapsedMs: batch.elapsedMs,
+            perHour,
+            draftEstimate,
+            publishCap,
+          })}
+        WHERE id = ${runId}`;
       return {
         loop,
         runId,

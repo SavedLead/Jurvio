@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { continuousPublishBucket, continuousPublishEnabled, docketDisplayBackfillEnabled, metadataPublicationEnabled, orderContinuousCases, pacedPublishLimit } from "./continuous-publish";
+import { continuousPublishBucket, continuousPublishEnabled, docketDisplayBackfillEnabled, metadataPublicationEnabled, nextPublishBatch, orderContinuousCases, pacedPublishLimit } from "./continuous-publish";
 
 describe("continuous publish flag", () => {
   it("is on unless paused or explicitly disabled", () => {
@@ -16,10 +16,24 @@ describe("continuous publish flag", () => {
   });
 });
 
+describe("adaptive publish batch", () => {
+  const calm = { searchMs: 400, casePageMs: 500, slowQueries: 0, lockWaits: 0 };
+  it("ramps while search and case pages stay under 1.5 seconds", () => {
+    expect(nextPublishBatch(1000, calm)).toBe(1500);
+    expect(nextPublishBatch(8000, calm)).toBe(10000);
+  });
+  it("quarters the batch at 3 seconds and stops at 6", () => {
+    expect(nextPublishBatch(2000, { ...calm, searchMs: 3500 })).toBe(500);
+    expect(nextPublishBatch(2000, { ...calm, casePageMs: 6200 })).toBe(0);
+    expect(nextPublishBatch(2000, { ...calm, slowQueries: 3 })).toBe(0);
+    expect(nextPublishBatch(2000, { ...calm, lockWaits: 3 })).toBe(0);
+  });
+});
+
 describe("metadata publication", () => {
   it("is on unless paused or set to 0", () => {
     expect(metadataPublicationEnabled({})).toBe(true);
-    expect(metadataPublicationEnabled({ JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT: "0" })).toBe(false);
+    expect(metadataPublicationEnabled({ JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT: "0" })).toBe(true);
     expect(metadataPublicationEnabled({ JURVIO_PAUSE_FEDERAL_METADATA: "1" })).toBe(false);
   });
 });

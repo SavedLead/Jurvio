@@ -46,7 +46,7 @@ describe("robots.txt", () => {
     expect(rules).toContainEqual({
       userAgent: "*",
       allow: "/",
-      disallow: ["/internal", "/in", "/preview", "/heartbeat"],
+      disallow: ["/internal", "/in", "/preview", "/heartbeat", "/publish-status"],
     });
     expect(rules.some((rule) => /googlebot|bingbot/i.test(String(rule.userAgent)))).toBe(false);
     expect(result.sitemap).toBe("https://jurvio.com/sitemap.xml");

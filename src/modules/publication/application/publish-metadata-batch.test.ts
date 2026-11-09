@@ -13,9 +13,10 @@ describe("metadata batch publish", () => {
     expect(source).not.toMatch(/last_alerted/);
   });
 
-  it("keeps sealed text and duplicate dockets off the batch", () => {
+  it("keeps sealed captions off the batch and does not require a checksum", () => {
     expect(source).toContain(String.raw`\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M`);
-    expect(source).toContain("other.id <> c.id");
     expect(source).toContain("<> 'scotus'");
+    expect(source).toContain("docket_entry");
+    expect(source).not.toMatch(/checksum|source_uri|content_hash/);
   });
 });

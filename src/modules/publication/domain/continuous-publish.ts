@@ -13,11 +13,10 @@ export function continuousPublishEnabled(env?: Record<string, string | undefined
   return true;
 }
 
-/** Metadata-only federal publication. Off when paused or explicitly set to 0. */
+/** Metadata publication stays on unless JURVIO_PAUSE_FEDERAL_METADATA=1. */
 export function metadataPublicationEnabled(env?: Record<string, string | undefined>): boolean {
   const source = env ?? process.env;
-  if (source.JURVIO_PAUSE_FEDERAL_METADATA === "1") return false;
-  return source.JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT !== "0";
+  return source.JURVIO_PAUSE_FEDERAL_METADATA !== "1";
 }
 
 /** One-time docket display backfill. Off only when explicitly paused. */
@@ -35,6 +34,30 @@ export function pacedPublishLimit(requested: number, searchMs: number | null, sl
   if (searchMs !== null && (searchMs >= 6000 || slowDbQueries >= 3)) return 0;
   if (searchMs === null || searchMs >= 3000 || slowDbQueries > 0) return Math.min(capped, Math.max(1, Math.floor(capped / 4)));
   return capped;
+}
+
+export interface PublishPace {
+  searchMs: number | null;
+  casePageMs: number | null;
+  slowQueries: number;
+  lockWaits: number;
+}
+
+/** Next short-commit size. Ramp while search and case pages stay under 1.5s. Quarter at 3s. Stop at 6s. */
+export function nextPublishBatch(previous: number, pace: PublishPace): number {
+  const search = pace.searchMs;
+  const page = pace.casePageMs;
+  const known = [search, page].filter((value): value is number => value !== null);
+  const slowest = known.length ? Math.max(...known) : null;
+  if ((search !== null && search >= 6000) || (page !== null && page >= 6000) || pace.slowQueries >= 3 || pace.lockWaits >= 3) {
+    return 0;
+  }
+  const base = Math.max(400, Math.floor(previous) || 400);
+  if (slowest === null || slowest >= 3000 || pace.slowQueries > 0 || pace.lockWaits > 0) {
+    return Math.max(200, Math.floor(base / 4));
+  }
+  if (slowest < 1500) return Math.min(10_000, Math.floor(base * 1.5));
+  return Math.min(10_000, base);
 }
 
 export function continuousPublishBucket(input: {
