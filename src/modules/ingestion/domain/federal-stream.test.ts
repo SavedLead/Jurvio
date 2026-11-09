@@ -270,7 +270,7 @@ describe("federal ingestion stream controls", () => {
     expect(waived.eligible).toBe(true);
   });
 
-  it("does not waive unverified courts when metadata-only publication is on", () => {
+  it("does not waive unverified courts when only opinion text is waived", () => {
     const decision = evaluateFederalPublicationCandidate(
       { ...publishable, hasReadableContent: false, courtVerification: "not_verified" },
       { allowMissingReadableContent: true },
@@ -278,6 +278,50 @@ describe("federal ingestion stream controls", () => {
     expect(decision.eligible).toBe(false);
     expect(decision.reasons).toContain("unverified_court_record");
     expect(decision.reasons).not.toContain("missing_readable_content");
+  });
+
+  it("publishes a caption and docket without an opinion, source checksum, or verified court when that waiver is on", () => {
+    const decision = evaluateFederalPublicationCandidate(
+      {
+        ...publishable,
+        hasReadableContent: false,
+        courtVerification: "not_verified",
+        sourceArtifactId: null,
+        sourceUri: null,
+        sourceContentHash: null,
+        sourceRetrievedAt: null,
+      },
+      { allowMissingReadableContent: true, allowIncompleteSource: true },
+    );
+    expect(decision.eligible).toBe(true);
+    expect(decision.reasons).toEqual([]);
+  });
+
+  it("still holds sealed text, a collision, and a non-federal court when source checks are waived", () => {
+    const options = { allowMissingReadableContent: true, allowIncompleteSource: true };
+    expect(evaluateFederalPublicationCandidate(
+      { ...publishable, sourceUri: null, restrictedText: "Filed under seal" },
+      options,
+    ).reasons).toContain("restricted_or_sensitive");
+    expect(evaluateFederalPublicationCandidate(
+      { ...publishable, sourceContentHash: null, identityCollisionCount: 2 },
+      options,
+    ).reasons).toContain("duplicate_identity_collision");
+    expect(evaluateFederalPublicationCandidate(
+      { ...publishable, sourceRetrievedAt: null, courtJurisdiction: "State" },
+      options,
+    ).reasons).toContain("unverified_federal_court");
+    expect(evaluateFederalPublicationCandidate(
+      {
+        ...publishable,
+        sourceUri: null,
+        docketNumber: "  ",
+        providerScopedIdentifier: null,
+        sourceRecordResolvesIdentity: false,
+        courtCaseLinkageVerified: false,
+      },
+      options,
+    ).reasons).toContain("missing_stable_identity");
   });
 
   it("marks restricted matters as restricted for publication downgrade", () => {

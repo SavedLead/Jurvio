@@ -33,6 +33,7 @@ import {
   type FederalLoop,
   type StreamCursor,
 } from "@/modules/ingestion/domain/federal-stream";
+import { metadataHoldReopenSql } from "@/modules/ingestion/domain/federal-publication-hold";
 import { createArtifactStore } from "@/modules/ingestion/infrastructure/create-artifact-store";
 import {
   CourtListenerRateLimited,
@@ -946,11 +947,12 @@ async function selectPublicationCandidates(limit: number): Promise<PublicationCa
         SELECT 1 FROM federal_publication_hold hold
         WHERE hold.case_id = legal_case.id
           AND hold.rule_version = ${FEDERAL_PUBLICATION_RULE_VERSION}
-          -- Mirrors federalHoldSuppressesCandidate: a sole missing-text hold is
-          -- re-opened only while metadata-only publication is explicitly enabled.
+          -- Mirrors federalHoldSuppressesCandidate. Metadata publication reopens
+          -- holds that are only missing text, source provenance, or an unverified
+          -- court. Sealed, collision, and identity holds stay in force.
           AND NOT (
             ${allowMetadataWithoutOpinionText}
-            AND hold.reasons = ARRAY['missing_readable_content']::text[]
+            AND ${sql.unsafe(metadataHoldReopenSql())}
           )
       )
       AND (
@@ -1033,7 +1035,10 @@ async function runPublicationAndQuarantine() {
         providerScopedIdentifier: candidate.provider_scoped_identifier,
         sourceRecordResolvesIdentity: candidate.source_record_resolves_identity,
         courtCaseLinkageVerified: candidate.court_case_linkage_verified,
-      }, { allowMissingReadableContent: allowMetadataWithoutOpinionText });
+      }, {
+        allowMissingReadableContent: allowMetadataWithoutOpinionText,
+        allowIncompleteSource: allowMetadataWithoutOpinionText,
+      });
       const publicationReason = metadataOnly
         ? "deterministic_federal_metadata_without_opinion_text"
         : "deterministic_federal_source_validation";

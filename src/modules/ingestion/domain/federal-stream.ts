@@ -205,6 +205,12 @@ export interface FederalPublicationEvaluationOptions {
    * Issue #179: publish verified metadata before opinion text.
    */
   allowMissingReadableContent?: boolean;
+  /**
+   * When true, a caption and docket at a federal court may publish without a
+   * source URL, checksum, retrieval time, or a verified court row. Sealed text,
+   * collisions, and missing identity still hold. Used by the metadata publisher.
+   */
+  allowIncompleteSource?: boolean;
 }
 
 export function evaluateFederalPublicationCandidate(
@@ -233,16 +239,18 @@ export function evaluateFederalPublicationCandidate(
     reasons.push("unverified_federal_court");
   }
   if (!candidate.courtProviderId) reasons.push("missing_court_provider_identity");
-  if (candidate.courtVerification !== "verified") reasons.push("unverified_court_record");
-  if (!candidate.sourceArtifactId) reasons.push("missing_source_artifact");
-  if (!isValidHttpSourceUri(candidate.sourceUri)) {
-    reasons.push("missing_source_url");
-  }
-  if (!candidate.sourceContentHash || !/^[a-f0-9]{64}$/i.test(candidate.sourceContentHash)) {
-    reasons.push("invalid_source_checksum");
-  }
-  if (!candidate.sourceRetrievedAt || Number.isNaN(Date.parse(candidate.sourceRetrievedAt))) {
-    reasons.push("missing_retrieval_timestamp");
+  if (!options.allowIncompleteSource) {
+    if (candidate.courtVerification !== "verified") reasons.push("unverified_court_record");
+    if (!candidate.sourceArtifactId) reasons.push("missing_source_artifact");
+    if (!isValidHttpSourceUri(candidate.sourceUri)) {
+      reasons.push("missing_source_url");
+    }
+    if (!candidate.sourceContentHash || !/^[a-f0-9]{64}$/i.test(candidate.sourceContentHash)) {
+      reasons.push("invalid_source_checksum");
+    }
+    if (!candidate.sourceRetrievedAt || Number.isNaN(Date.parse(candidate.sourceRetrievedAt))) {
+      reasons.push("missing_retrieval_timestamp");
+    }
   }
   if (!candidate.hasReadableContent && !options.allowMissingReadableContent) {
     reasons.push("missing_readable_content");
