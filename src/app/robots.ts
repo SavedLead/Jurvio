@@ -31,7 +31,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        disallow: ["/internal", "/in", "/preview", "/heartbeat"],
+        disallow: ["/internal", "/in", "/preview", "/heartbeat", "/publish-status"],
       },
     ],
     sitemap: `${siteOrigin()}/sitemap.xml`,

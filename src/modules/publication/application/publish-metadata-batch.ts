@@ -17,26 +17,44 @@ const REASON = "metadata_batch_without_opinion_text";
 const RESTRICTED = String.raw`\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M`;
 const CHUNK = 500;
 
-export async function publishMetadataBatch(sql: Sql, options: { limit: number }): Promise<number> {
+export interface MetadataBatchStats {
+  published: number;
+  scanned: number;
+  held: number;
+  heldByReason: Record<string, number>;
+}
+
+interface ChunkStats {
+  published: number;
+  scanned: number;
+  sealed: number;
+  collisions: number;
+}
+
+export async function publishMetadataBatch(sql: Sql, options: { limit: number }): Promise<MetadataBatchStats> {
   const target = Math.min(5000, Math.max(0, Math.floor(options.limit)));
-  let published = 0;
-  while (published < target) {
+  const stats: MetadataBatchStats = { published: 0, scanned: 0, held: 0, heldByReason: {} };
+  while (stats.scanned < target && stats.published < target) {
     try {
-      const count = await publishChunk(sql, Math.min(CHUNK, target - published));
-      published += count;
-      if (count === 0) break;
+      const chunk = await publishChunk(sql, Math.min(CHUNK, target - stats.scanned));
+      stats.published += chunk.published;
+      stats.scanned += chunk.scanned;
+      stats.held += chunk.sealed + chunk.collisions;
+      if (chunk.sealed) stats.heldByReason.restricted_or_sensitive = (stats.heldByReason.restricted_or_sensitive ?? 0) + chunk.sealed;
+      if (chunk.collisions) stats.heldByReason.duplicate_identity_collision = (stats.heldByReason.duplicate_identity_collision ?? 0) + chunk.collisions;
+      if (chunk.scanned === 0) break;
     } catch (error) {
-      if (published > 0) return published;
+      if (stats.scanned > 0) return stats;
       throw error;
     }
   }
-  return published;
+  return stats;
 }
 
-async function publishChunk(sql: Sql, limit: number): Promise<number> {
+async function publishChunk(sql: Sql, limit: number): Promise<ChunkStats> {
   return sql.begin(async (tx) => {
     await tx`SET LOCAL statement_timeout = '20s'`;
-    const [row] = await tx<{ published: number }[]>`
+    const [row] = await tx<{ published: number; scanned: number; sealed: number; collisions: number }[]>`
       WITH picked AS (
         SELECT c.id, c.court_id, c.docket_number,
           (concat_ws(' ', c.caption, c.docket_number) ~* ${RESTRICTED}) AS sealed
@@ -109,7 +127,16 @@ async function publishChunk(sql: Sql, limit: number): Promise<number> {
           reasons = EXCLUDED.reasons, rule_version = EXCLUDED.rule_version, held_at = now()
         RETURNING case_id
       )
-      SELECT count(*)::int AS published FROM updated`;
-    return row?.published ?? 0;
+      SELECT
+        (SELECT count(*)::int FROM updated) AS published,
+        (SELECT count(*)::int FROM picked) AS scanned,
+        (SELECT count(*)::int FROM marked WHERE sealed) AS sealed,
+        (SELECT count(*)::int FROM marked WHERE collision AND NOT sealed) AS collisions`;
+    return {
+      published: row?.published ?? 0,
+      scanned: row?.scanned ?? 0,
+      sealed: row?.sealed ?? 0,
+      collisions: row?.collisions ?? 0,
+    };
   });
 }

@@ -1146,10 +1146,27 @@ async function runPublicationAndQuarantine() {
     // Metadata publication is a set of short commits. The per-row candidate
     // query was spending the whole cycle before it could publish.
     if (allowMetadataWithoutOpinionText && publishCap > 0) {
-      const batchPublished = await publishMetadataBatch(sql, { limit: publishCap });
-      published += batchPublished;
-      discovered += batchPublished;
+      const batch = await publishMetadataBatch(sql, { limit: publishCap });
+      published += batch.published;
+      discovered += batch.scanned;
+      held = batch.held;
+      Object.assign(holdReasons, batch.heldByReason);
       await finishIngestionRun(sql, runId);
+      await sql`
+        UPDATE ingestion_run SET
+          succeeded_count = ${batch.published},
+          records_changed = ${batch.published},
+          records_seen = ${batch.scanned},
+          selection = selection || ${sql.json({
+            published: batch.published,
+            scanned: batch.scanned,
+            held: batch.held,
+            heldByReason: batch.heldByReason,
+            searchMs,
+            slowQueries,
+            publishCap,
+          })}
+        WHERE id = ${runId}`;
       return {
         loop,
         runId,
