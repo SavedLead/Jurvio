@@ -3,6 +3,8 @@ import {
   classifyDirectEvent,
   isRestrictedDirectEvent,
   normalizeDocketNumber,
+  directCourtGapMinutes,
+  isPublishableFeedDocket,
   shouldCreateCase,
   stableDirectEventIdentity,
   visitorFriendlyDescription,
@@ -101,5 +103,16 @@ describe("direct federal court ingestion", () => {
       caption: "United States v. X",
       restricted: false,
     })).toBe(false);
+  });
+  it("polls each court at its own rate and never less often than every 30 minutes", () => {
+    expect(directCourtGapMinutes(5)).toBe(5);
+    expect(directCourtGapMinutes(5, 30)).toBe(5);
+    expect(directCourtGapMinutes(60, 30)).toBe(30);
+    expect(directCourtGapMinutes(null, 30)).toBe(30);
+  });
+  it("publishes a feed case only for a district or appellate docket number", () => {
+    expect(isPublishableFeedDocket("1:25-cv-06662")).toBe(true);
+    expect(isPublishableFeedDocket("25-1150")).toBe(true);
+    expect(isPublishableFeedDocket("not-a-docket")).toBe(false);
   });
 });

@@ -99,9 +99,9 @@ describe.skipIf(!databaseUrl)("court-site opinions and appellate RSS against Pos
       FROM docket_entry JOIN legal_case ON legal_case.id = docket_entry.case_id
       WHERE docket_entry.provider_entry_id LIKE 'appellate-rss:cadc:%' ORDER BY 1, 2`;
     expect(rows).toEqual([
-      { docket_number: "25-1150", description: "Judgment Filed", entry_type: "order", publication: "draft" },
-      { docket_number: "25-1150", description: "Opinion Filed for the Court by Judge Pillard", entry_type: "opinion", publication: "draft" },
-      { docket_number: "26-1287", description: "Per Curiam Order Filed Special Panel", entry_type: "order", publication: "draft" },
+      { docket_number: "25-1150", description: "Judgment Filed", entry_type: "order", publication: "published" },
+      { docket_number: "25-1150", description: "Opinion Filed for the Court by Judge Pillard", entry_type: "opinion", publication: "published" },
+      { docket_number: "26-1287", description: "Per Curiam Order Filed Special Panel", entry_type: "order", publication: "published" },
     ]);
     expect(await sql`SELECT 1 FROM legal_case WHERE docket_number = '26-3001'`).toHaveLength(0);
     const [again] = await runAppellatePacerRss(sql, store, { fetchImpl, courts: ["cadc"] });

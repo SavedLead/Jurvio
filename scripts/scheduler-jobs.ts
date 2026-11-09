@@ -237,13 +237,14 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   },
   {
     lane: "coa",
-    // District CM/ECF RSS (79 courts): 16 courts per run, each court at most
-    // every 2 h (feeds cover 24 h), one isolated try/catch per court.
+    // Every enabled district RSS court. Registry polling_minutes is 5, and the
+    // longest gap is 30 minutes, inside the 24-hour feed window. One run takes
+    // every court that is due. Courts whose public feed answered empty stay off.
     name: "direct-court",
     initialDelayMs: 0,
     intervalMs: 10 * minute,
     budgetMs: 8 * minute,
-    command: ["jobs/ingest-direct-court-feeds.mjs", "--court=all", "--max-courts=16", "--budget-ms=360000", "--min-interval-minutes=120"],
+    command: ["jobs/ingest-direct-court-feeds.mjs", "--court=all", "--max-courts=94", "--budget-ms=420000", "--min-interval-minutes=30"],
   },
   {
     lane: "coa",
@@ -309,11 +310,13 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   },
   {
     // Appellate CM/ECF public RSS (orders, opinions, judgments) for the seven
-    // circuits that publish it; one request per court, cross-source deduped.
+    // circuits that publish it (ca2, ca4, ca6, ca10, ca11, cadc, cafc). The
+    // other six circuits do not offer this feed. Every 15 minutes, so a missed
+    // run still lands inside 30. One request per court.
     lane: "coa",
     name: "appellate-pacer-rss",
     initialDelayMs: 13 * minute,
-    intervalMs: 30 * minute,
+    intervalMs: 15 * minute,
     budgetMs: 8 * minute,
     command: ["jobs/run-live-feeds.mjs", "--source=appellate-rss"],
   },
