@@ -124,7 +124,7 @@ export async function runContinuousPublish(sql: Sql, options: { limit?: number; 
         providerScopedIdentifier: null,
         sourceRecordResolvesIdentity: false,
         courtCaseLinkageVerified: false,
-      }, { allowMissingReadableContent: true });
+      }, { allowMissingReadableContent: true, allowIncompleteSource: true });
       if (!decision.eligible || decision.restricted) {
         held += 1;
         continue;
