@@ -1,5 +1,6 @@
 import { closeDb, db } from "@/db/client";
 import { env } from "@/lib/config/env";
+import { publishMetadataBatch } from "@/modules/publication/application/publish-metadata-batch";
 import { metadataPublicationEnabled, pacedPublishLimit } from "@/modules/publication/domain/continuous-publish";
 import { measurePublicSearchMs, slowPublicQueryCount } from "@/modules/publication/application/search-pace";
 import { ingestCourtListenerDocket } from "@/modules/ingestion/application/ingest-courtlistener-docket";
@@ -1142,6 +1143,29 @@ async function runPublicationAndQuarantine() {
     const slowQueries = await slowPublicQueryCount(sql).catch(() => 0);
     const publishCap = pacedPublishLimit(runawayItemLimit, searchMs, slowQueries);
     console.log(JSON.stringify({ phase: "publication-pace", searchMs, slowQueries, publishCap }));
+    // Metadata publication is a set of short commits. The per-row candidate
+    // query was spending the whole cycle before it could publish.
+    if (allowMetadataWithoutOpinionText && publishCap > 0) {
+      const batchPublished = await publishMetadataBatch(sql, { limit: publishCap });
+      published += batchPublished;
+      discovered += batchPublished;
+      await finishIngestionRun(sql, runId);
+      return {
+        loop,
+        runId,
+        discovered,
+        published,
+        held,
+        holdReasons,
+        publishedDocuments,
+        heldDocuments,
+        documentHoldReasons,
+        failed,
+        finalConcurrency: controllerState.concurrency,
+        costs: 0,
+        metadataBatch: true,
+      };
+    }
     // Drain in bounded chunks. Every processed row leaves the draft/not-needs_review
     // predicate (it becomes published or needs_review), so the same LIMITed query
     // returns the next slice each pass until the queue is empty or the runaway cap hits.
