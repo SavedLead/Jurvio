@@ -20,6 +20,12 @@ export function metadataPublicationEnabled(env?: Record<string, string | undefin
   return source.JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT !== "0";
 }
 
+/** One-time docket display backfill. Off only when explicitly paused. */
+export function docketDisplayBackfillEnabled(env?: Record<string, string | undefined>): boolean {
+  const source = env ?? process.env;
+  return source.JURVIO_PAUSE_DOCKET_DISPLAY_BACKFILL !== "1";
+}
+
 /**
  * Shrink a publish batch when public search is slow or the database already
  * has slow web queries. A failed probe uses a small batch rather than stopping.

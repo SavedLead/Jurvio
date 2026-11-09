@@ -34,7 +34,10 @@ export interface PublicDocument {
   hasReportersNote: boolean;
 }
 
-export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = 250) {
+/** A full ordinary docket, including the initial filing. Callers that only need a preview pass a smaller limit. */
+export const PUBLIC_DOCKET_LIST_LIMIT = 2000;
+
+export async function listPublicDocketEntries(sql: Sql, casePublicId: string, limit = PUBLIC_DOCKET_LIST_LIMIT) {
   return sql<PublicDocketEntry[]>`
     SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
       entry.filed_on::text AS "filedOn", entry.description, entry.importance
