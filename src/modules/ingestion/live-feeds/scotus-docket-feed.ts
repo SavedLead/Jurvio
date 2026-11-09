@@ -5,6 +5,7 @@
  * docket year, so new filings are found by probing just past the highest known
  * number. Pure logic here; fetching and storage are injected.
  */
+import { isRestrictedDocketText } from "../domain/federal-stream";
 import { classifyEvent, decodeHtml, isoLongDate } from "../providers/scotus/official-docket";
 
 export const SCOTUS_JSON_ORIGIN = "https://www.supremecourt.gov/RSS/Cases/JSON";
@@ -22,6 +23,19 @@ export interface ScotusDocketEntry {
   eventType: string;
 }
 
+export interface ScotusCounsel {
+  side: "petitioner" | "respondent" | "other";
+  name: string;
+  firm: string | null;
+  counselOfRecord: boolean;
+}
+
+export interface ScotusFilingLink {
+  sourceUrl: string;
+  description: string;
+  filedOn: string;
+}
+
 export interface ScotusDocket {
   docketNumber: string;
   caption: string;
@@ -29,6 +43,10 @@ export interface ScotusDocket {
   caseType: string | null;
   lowerCourt: string | null;
   entries: ScotusDocketEntry[];
+  /** Counsel named on the Court's JSON. No CourtListener party record. */
+  counsel: ScotusCounsel[];
+  /** Filing PDF links. Bytes are not downloaded here, so there is no checksum yet. */
+  filings: ScotusFilingLink[];
 }
 
 function partyName(value: unknown): string {
@@ -49,6 +67,7 @@ export function parseScotusDocketJson(input: unknown): ScotusDocket | null {
   if (caption.length < 3) return null;
   const proceedings = Array.isArray(record.ProceedingsandOrder) ? record.ProceedingsandOrder : [];
   const entries: ScotusDocketEntry[] = [];
+  const filings: ScotusFilingLink[] = [];
   for (const raw of proceedings) {
     if (!raw || typeof raw !== "object") continue;
     const row = raw as Record<string, unknown>;
@@ -63,6 +82,20 @@ export function parseScotusDocketJson(input: unknown): ScotusDocket | null {
       description,
       eventType: classifyEvent(description),
     });
+    const links = Array.isArray(row.Links) ? row.Links : [];
+    for (const link of links) {
+      if (!link || typeof link !== "object") continue;
+      const url = typeof (link as { DocumentUrl?: unknown }).DocumentUrl === "string"
+        ? (link as { DocumentUrl: string }).DocumentUrl.trim() : "";
+      let parsed: URL;
+      try { parsed = new URL(url); } catch { continue; }
+      if (parsed.protocol !== "https:" || parsed.hostname !== "www.supremecourt.gov") continue;
+      if (isRestrictedDocketText(description)) continue;
+      const label = typeof (link as { Description?: unknown }).Description === "string"
+        ? decodeHtml((link as { Description: string }).Description) : "Filing";
+      if (isRestrictedDocketText(label)) continue;
+      filings.push({ sourceUrl: parsed.toString(), description: label, filedOn });
+    }
   }
   return {
     docketNumber,
@@ -71,7 +104,27 @@ export function parseScotusDocketJson(input: unknown): ScotusDocket | null {
     caseType: typeof record.sJsonCaseType === "string" ? record.sJsonCaseType : null,
     lowerCourt: typeof record.LowerCourt === "string" && record.LowerCourt.trim() ? decodeHtml(record.LowerCourt) : null,
     entries,
+    counsel: readCounsel(record),
+    filings,
   };
+}
+
+function readCounsel(record: Record<string, unknown>): ScotusCounsel[] {
+  const groups = [["Petitioner", "petitioner"], ["Respondent", "respondent"], ["Other", "other"]] as const;
+  const counsel: ScotusCounsel[] = [];
+  for (const [key, side] of groups) {
+    const rows = record[key];
+    if (!Array.isArray(rows)) continue;
+    for (const raw of rows) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const name = typeof row.Attorney === "string" ? decodeHtml(row.Attorney).trim() : "";
+      if (name.length < 2 || isRestrictedDocketText(name)) continue;
+      const firm = typeof row.Title === "string" && row.Title.trim() ? decodeHtml(row.Title).trim() : null;
+      counsel.push({ side, name, firm, counselOfRecord: row.IsCounselofRecord === true });
+    }
+  }
+  return counsel;
 }
 
 export interface ScotusSeries {

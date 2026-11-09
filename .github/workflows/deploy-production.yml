@@ -1,9 +1,15 @@
 name: Deploy production
 
 on:
-  # Dispatch-only, by policy (tests/workflow-triggers.test.ts). No push,
-  # pull_request, workflow_run or schedule trigger may start this workflow;
-  # every job fails closed unless confirm=DEPLOY_PRODUCTION.
+  # Manual runs still require confirm=DEPLOY_PRODUCTION. A successful CI run
+  # on main (push only) may also start this workflow. workflow_run reads this
+  # file from the default branch, so the trigger is inert until this file is
+  # on main. Docs-only pushes do not start CI (ci.yml paths-ignore), so they
+  # do not deploy. Set repository variable AUTO_DEPLOY_PRODUCTION to false to pause.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       confirm:
@@ -35,6 +41,15 @@ concurrency:
 
 jobs:
   release-gate:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.event == 'push' &&
+          vars.AUTO_DEPLOY_PRODUCTION != 'false')
+      }}
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     outputs:
       current: ${{ steps.resolve.outputs.current }}
@@ -43,7 +58,11 @@ jobs:
       - name: Require confirm=DEPLOY_PRODUCTION
         env:
           CONFIRM: ${{ inputs.confirm }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            exit 0
+          fi
           if [ "$CONFIRM" != "DEPLOY_PRODUCTION" ]; then
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DEPLOY_PRODUCTION."
             exit 1
@@ -52,7 +71,7 @@ jobs:
         name: Resolve deploy commit (always current main, never older)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_SHA: ${{ inputs.commit_sha }}
+          INPUT_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit_sha }}
         run: |
           set -euo pipefail
           # builder-01 has no gh CLI; the raw-SHA media type needs only curl.
@@ -100,7 +119,11 @@ jobs:
       - name: Require confirm=DEPLOY_PRODUCTION
         env:
           CONFIRM: ${{ inputs.confirm }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            exit 0
+          fi
           if [ "$CONFIRM" != "DEPLOY_PRODUCTION" ]; then
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DEPLOY_PRODUCTION."
             exit 1
@@ -143,7 +166,11 @@ jobs:
       - name: Require confirm=DEPLOY_PRODUCTION
         env:
           CONFIRM: ${{ inputs.confirm }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            exit 0
+          fi
           if [ "$CONFIRM" != "DEPLOY_PRODUCTION" ]; then
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=DEPLOY_PRODUCTION."
             exit 1
@@ -409,7 +436,8 @@ jobs:
           # grep for the uppercase string never matched the served markup, which
           # false-failed every deploy at this gate even though the release succeeded.
           printf '%s' "$login_body" | grep -Fiq "PRIVATE COMMAND CENTER" || {
-            echo "::error::z.jurvio.com/login did not return the hosted Jurvio login page"
+            rollback="$(grep 'Previous image (rollback target):' "$RUNNER_TEMP/release-production.log" | tail -1 || true)"
+            echo "::error::Health check failed. No automatic rollback was performed. ${rollback:-Previous image was not recorded.}"
             exit 1
           }
           public_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 30 https://jurvio.com/login)"

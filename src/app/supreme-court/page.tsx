@@ -4,6 +4,7 @@ import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
 import { listPublicScotusOpinions } from "@/modules/scotus/application/list-public-scotus-opinions";
+import { isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
 import { fetchOfficialSlipOpinionIndex } from "@/modules/ingestion/providers/scotus/official-opinions";
 import { currentJustices, officialScotusLinks } from "@/modules/scotus/domain/court-reference";
 import { currentOctoberTerm, scotusTermLabel } from "@/modules/scotus/domain/term";
@@ -19,8 +20,19 @@ const getCachedOfficialSlips = unstable_cache(
   async () => {
     const term = currentOctoberTerm(new Date()).yy;
     try {
+      const stored = await db()`
+        SELECT source_record_id AS "sourceRecordId", filed_on::text AS "filedOn",
+          docket_number AS "docketNumber", case_name AS "caseName", source_url AS "pdfUrl"
+        FROM scotus_slip_index WHERE term_year = ${term}
+        ORDER BY filed_on DESC LIMIT 8` as { sourceRecordId: string; filedOn: string; docketNumber: string; caseName: string; pdfUrl: string }[];
+      const visible = stored.filter((row) => !isRestrictedDocketText(row.caseName));
+      if (visible.length) return visible;
+    } catch {
+      // The slip index is filled by the history job. Until then, read the Court page.
+    }
+    try {
       const index = await fetchOfficialSlipOpinionIndex(term);
-      return index.records.slice(-8).reverse();
+      return index.records.slice(-8).reverse().filter((row) => !isRestrictedDocketText(row.caseName));
     } catch {
       return [];
     }

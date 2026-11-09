@@ -29,6 +29,10 @@ const AUTO_TRIGGERS: Record<string, readonly string[]> = {
   // Merge-to-main deploy of the public web app after CI passes. It never runs
   // migrations (Deploy production does, after its backup).
   "deploy-public-web-hosted.yml": ["workflow_run"],
+  // Approved by David Rosenberg, 2026-11-08. Manual runs still require
+  // confirm=DEPLOY_PRODUCTION. Auto runs follow a successful push CI on main
+  // and can be paused with repository variable AUTO_DEPLOY_PRODUCTION=false.
+  "deploy-production.yml": ["workflow_run"],
   // Read-only monitors.
   "disk-alarm.yml": ["schedule"],
   "lane-watchdog.yml": ["schedule"],
@@ -190,11 +194,29 @@ describe("workflow trigger policy", () => {
     expect(other, `${file} has unexpected trigger(s)`).toEqual([]);
   });
 
-  it("only lets the public web deploy follow CI", () => {
-    const on = triggers(parsed.get("deploy-public-web-hosted.yml")!);
-    const run = on.workflow_run as { workflows?: string[]; branches?: string[] };
-    expect(run.workflows).toEqual(["CI"]);
-    expect(run.branches).toEqual(["main"]);
+  it("lets production and the public web follow successful CI on main", () => {
+    for (const file of ["deploy-public-web-hosted.yml", "deploy-production.yml"]) {
+      const run = triggers(parsed.get(file)!).workflow_run as { workflows?: string[]; branches?: string[]; types?: string[] };
+      expect(run.workflows, file).toEqual(["CI"]);
+      expect(run.branches, file).toEqual(["main"]);
+      expect(run.types, file).toEqual(["completed"]);
+    }
+    const production = parsed.get("deploy-production.yml")! as Workflow & {
+      concurrency?: { group?: string; "cancel-in-progress"?: boolean };
+    };
+    const gate = production.jobs?.["release-gate"];
+    expect(JSON.stringify(gate?.if)).toContain("workflow_run.event == 'push'");
+    expect(JSON.stringify(gate?.if)).toContain("conclusion == 'success'");
+    expect(JSON.stringify(gate?.if)).toContain("AUTO_DEPLOY_PRODUCTION != 'false'");
+    expect(production.concurrency?.group).toBe("jurvio-production");
+    expect(production.concurrency?.["cancel-in-progress"]).toBe(false);
+    const resolve = (gate?.steps ?? []).find((step) => step.name?.includes("Resolve deploy"));
+    expect(JSON.stringify(resolve?.env)).toContain("workflow_run.head_sha");
+    const health = (production.jobs?.deploy?.steps ?? []).find((step) => step.name === "Verify hosted command-center login externally");
+    expect(health?.run).toContain("No automatic rollback");
+    expect(health?.run).toContain("exit 1");
+    const push = triggers(parsed.get("ci.yml")!).push as { "paths-ignore"?: string[] };
+    expect(push["paths-ignore"]).toEqual(expect.arrayContaining(["**.md", "scripts/diag/**", ".github/workflows/**"]));
   });
 
   it.each(files.filter((file) => !READ_ONLY.has(file)))(
@@ -255,7 +277,6 @@ describe("workflow trigger policy", () => {
     for (const file of [
       "reboot-ingestion-once.yml",
       "emergency-production-recovery.yml",
-      "deploy-production.yml",
       "reboot-builder-once.yml",
       "recover-builder.yml",
       "repair-builder-runner-once.yml",

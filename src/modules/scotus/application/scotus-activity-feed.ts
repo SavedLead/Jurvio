@@ -17,33 +17,47 @@ export async function listScotusActivity(sql: Sql): Promise<ActivityFeedItem[]> 
   return sql.begin(async (tx) => listScotusActivityIn(tx));
 }
 
+/** Live emergency applications only. Does not read docket_entry. */
+export async function listEmergencyFeed(sql: Sql): Promise<ActivityFeedItem[]> {
+  return sql.begin(async (tx) => {
+    await tx`SET LOCAL statement_timeout = '4s'`;
+    return mapEmergency(await emergencyRows(tx));
+  });
+}
+
+async function scotusCourtId(sql: Queryable): Promise<string | null> {
+  const [court] = await sql<{ id: string }[]>`
+    SELECT id::text FROM court
+    WHERE lower(COALESCE(provider_court_id, '')) = 'scotus'
+    ORDER BY updated_at DESC
+    LIMIT 1`;
+  return court?.id ?? null;
+}
+
 async function listScotusActivityIn(sql: Queryable): Promise<ActivityFeedItem[]> {
   const origin = siteOrigin();
   await sql`SET LOCAL statement_timeout = '4s'`;
-  const entries = await sql<{ id: string; filed_on: string; docket_number: string; caption: string; description: string; public_id: string }[]>`
+  const courtId = await scotusCourtId(sql);
+  // Ninety days, one court id, and the (case_id, filed_on) index. Not a corpus scan.
+  const entries = courtId ? await sql<{ id: string; filed_on: string; docket_number: string; caption: string; description: string; public_id: string }[]>`
       SELECT e.id::text, e.filed_on::text, c.docket_number, c.caption, left(e.description, 240) AS description, c.public_id
-      FROM docket_entry e
-      JOIN legal_case c ON c.id = e.case_id
-      JOIN court ct ON ct.id = c.court_id
-      WHERE lower(ct.provider_court_id) = 'scotus' AND c.publication = 'published' AND e.filed_on IS NOT NULL
+      FROM legal_case c
+      JOIN docket_entry e ON e.case_id = c.id
+      WHERE c.court_id = ${courtId} AND c.publication = 'published'
+        AND e.filed_on >= CURRENT_DATE - 90
       ORDER BY e.filed_on DESC, e.id DESC
-      LIMIT 15`;
-  const opinions = await sql<{ id: string; filed_on: string | null; docket_number: string; caption: string; title: string; public_id: string; document_id: string }[]>`
+      LIMIT 15` : [];
+  const opinions = courtId ? await sql<{ id: string; filed_on: string | null; docket_number: string; caption: string; title: string; public_id: string; document_id: string }[]>`
       SELECT d.id::text, cl.date_filed::text AS filed_on, c.docket_number, c.caption, d.title, c.public_id, d.public_id AS document_id
-      FROM document d
-      JOIN legal_case c ON c.id = d.case_id
-      JOIN court ct ON ct.id = c.court_id
+      FROM legal_case c
+      JOIN document d ON d.case_id = c.id
       JOIN judicial_opinion j ON j.document_id = d.id
       JOIN opinion_cluster cl ON cl.id = j.cluster_id
-      WHERE lower(ct.provider_court_id) = 'scotus' AND c.publication = 'published' AND d.publication = 'published'
+      WHERE c.court_id = ${courtId} AND c.publication = 'published' AND d.publication = 'published'
+        AND cl.date_filed >= CURRENT_DATE - 400
       ORDER BY cl.date_filed DESC NULLS LAST
-      LIMIT 10`;
-  const emergency = await sql<{ docket_number: string; caption: string; status: string; last_entry_on: string | null; kind: string }[]>`
-      SELECT docket_number, caption, status::text, coalesce(last_entry_on, submitted_on)::text AS last_entry_on, kind::text
-      FROM scotus_application a
-      WHERE ${sql.unsafe(visibleSql("a"))} AND a.kind <> 'extension' AND a.source_lane = 'live'
-      ORDER BY coalesce(a.last_entry_on, a.submitted_on) DESC NULLS LAST
-      LIMIT 15`;
+      LIMIT 10` : [];
+  const emergency = await emergencyRows(sql);
   const orders = await listOrderItems(sql);
   const items: ActivityFeedItem[] = [
     ...entries.map((row) => ({
@@ -62,19 +76,33 @@ async function listScotusActivityIn(sql: Queryable): Promise<ActivityFeedItem[]>
       summary: "Published opinion on Jurvio.",
       category: "opinion",
     })),
-    ...emergency.map((row) => ({
-      id: `${origin}/feeds/scotus#emergency-${row.docket_number}`,
-      title: `${row.docket_number}: ${row.caption}`,
-      url: `${origin}/supreme-court/emergency/${row.docket_number}`,
-      updated: stamp(row.last_entry_on),
-      summary: `${row.kind} application, ${row.status}.`,
-      category: "emergency",
-    })),
+    ...mapEmergency(emergency),
     ...orders,
   ];
   return items.filter((item) => !isRestrictedDocketText(`${item.title} ${item.summary}`))
     .sort((a, b) => b.updated.localeCompare(a.updated))
     .slice(0, 40);
+}
+
+async function emergencyRows(sql: Queryable) {
+  return sql<{ docket_number: string; caption: string; status: string; last_entry_on: string | null; kind: string }[]>`
+      SELECT docket_number, caption, status::text, coalesce(last_entry_on, submitted_on)::text AS last_entry_on, kind::text
+      FROM scotus_application a
+      WHERE ${sql.unsafe(visibleSql("a"))} AND a.kind <> 'extension' AND a.source_lane = 'live'
+      ORDER BY coalesce(a.last_entry_on, a.submitted_on) DESC NULLS LAST
+      LIMIT 15`;
+}
+
+function mapEmergency(rows: { docket_number: string; caption: string; status: string; last_entry_on: string | null; kind: string }[]): ActivityFeedItem[] {
+  const origin = siteOrigin();
+  return rows.map((row) => ({
+    id: `${origin}/feeds/scotus#emergency-${row.docket_number}`,
+    title: `${row.docket_number}: ${row.caption}`,
+    url: `${origin}/supreme-court/emergency/${row.docket_number}`,
+    updated: stamp(row.last_entry_on),
+    summary: `${row.kind} application, ${row.status}.`,
+    category: "emergency",
+  }));
 }
 
 async function listOrderItems(sql: Queryable): Promise<ActivityFeedItem[]> {
