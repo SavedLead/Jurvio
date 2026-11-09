@@ -450,7 +450,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   {
     lane: "core",
     name: "federal-publication",
-    initialDelayMs: 22 * minute,
+    initialDelayMs: 2 * minute,
     intervalMs: 12 * minute,
     budgetMs: 10 * minute,
     // Publication is pure DB work (each publish opens a transaction). Runs often and
