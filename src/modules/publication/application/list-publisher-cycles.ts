@@ -18,6 +18,9 @@ export interface PublisherCycle {
   searchMs: number | null;
   slowQueries: number | null;
   publishCap: number | null;
+  batchSize: number | null;
+  perHour: number | null;
+  draftEstimate: number | null;
 }
 
 const REASON = /^[a-z0-9_]+$/;
@@ -62,6 +65,9 @@ export async function listPublisherCycles(sql: Sql, limit = 12): Promise<Publish
       searchMs: typeof selection.searchMs === "number" ? selection.searchMs : null,
       slowQueries: typeof selection.slowQueries === "number" ? selection.slowQueries : null,
       publishCap: typeof selection.publishCap === "number" ? selection.publishCap : null,
+      batchSize: typeof selection.batchSize === "number" ? selection.batchSize : null,
+      perHour: typeof selection.perHour === "number" ? selection.perHour : null,
+      draftEstimate: typeof selection.draftEstimate === "number" ? selection.draftEstimate : null,
     };
   });
 }

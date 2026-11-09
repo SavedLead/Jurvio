@@ -8,7 +8,6 @@ import type postgres from "postgres";
 import { FEDERAL_PUBLICATION_RULE_VERSION, isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
 import { continuousPublishEnabled, pacedPublishLimit } from "../domain/continuous-publish";
 import { measurePublicSearchMs, slowPublicQueryCount } from "./search-pace";
-import { publishMetadataBatch } from "./publish-metadata-batch";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -25,21 +24,7 @@ export async function runContinuousPublish(sql: Sql, options: { limit?: number; 
   if (limit === 0) {
     return { skipped: "search_slow" as const, published: 0, held: 0, entriesShown: 0, alertsQueued: 0 as const, searchMs, slowQueries };
   }
-  const batch = await publishMetadataBatch(sql, { limit });
-  const published = batch.published;
-  await sql`
-    INSERT INTO ingestion_run (
-      provider_id, run_type, status, selection, selected_count, succeeded_count,
-      records_seen, records_changed, started_at, completed_at
-    )
-    SELECT provider.id, 'continuous-publish', 'completed',
-      ${sql.json({
-        published: batch.published, scanned: batch.scanned, held: batch.held,
-        heldByReason: batch.heldByReason, searchMs, slowQueries, publishCap: limit,
-      })},
-      ${batch.scanned}, ${batch.published}, ${batch.scanned}, ${batch.published}, now(), now()
-    FROM provider WHERE provider.code = 'courtlistener'
-  `.catch(() => undefined);
+  const published = 0;
   const entriesShown = await sql.begin(async (tx) => {
     await tx`SET LOCAL statement_timeout = '8s'`;
     const entries = await tx<{ id: string; description: string }[]>`

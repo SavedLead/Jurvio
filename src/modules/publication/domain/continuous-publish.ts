@@ -36,6 +36,30 @@ export function pacedPublishLimit(requested: number, searchMs: number | null, sl
   return capped;
 }
 
+export interface PublishPace {
+  searchMs: number | null;
+  casePageMs: number | null;
+  slowQueries: number;
+  lockWaits: number;
+}
+
+/** Next short-commit size. Ramp while search and case pages stay under 1.5s. Quarter at 3s. Stop at 6s. */
+export function nextPublishBatch(previous: number, pace: PublishPace): number {
+  const search = pace.searchMs;
+  const page = pace.casePageMs;
+  const known = [search, page].filter((value): value is number => value !== null);
+  const slowest = known.length ? Math.max(...known) : null;
+  if ((search !== null && search >= 6000) || (page !== null && page >= 6000) || pace.slowQueries >= 3 || pace.lockWaits >= 3) {
+    return 0;
+  }
+  const base = Math.max(400, Math.floor(previous) || 400);
+  if (slowest === null || slowest >= 3000 || pace.slowQueries > 0 || pace.lockWaits > 0) {
+    return Math.max(200, Math.floor(base / 4));
+  }
+  if (slowest < 1500) return Math.min(10_000, Math.floor(base * 1.5));
+  return Math.min(10_000, base);
+}
+
 export function continuousPublishBucket(input: {
   filedOn: string | null;
   hasOpinionText: boolean;

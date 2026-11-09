@@ -450,18 +450,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   {
     lane: "core",
     name: "federal-publication",
-    initialDelayMs: 2 * minute,
-    intervalMs: 12 * minute,
-    budgetMs: 10 * minute,
-    // Publication is pure DB work (each publish opens a transaction). Runs often and
-    // drains a large batch per cycle so the publish backlog (and the outbox that
-    // depends on it) keeps pace with ingestion instead of falling behind.
+    initialDelayMs: 1 * minute,
+    intervalMs: 6 * minute,
+    budgetMs: 5 * minute,
+    // Short commits, then the next pass. The batch grows while search stays
+    // under 1.5s and stops when search or a case page reaches 6s.
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=publication-quarantine",
-      "--start-concurrency=2",
-      "--max-concurrency=4",
-      "--max-items=5000",
+      "--start-concurrency=1",
+      "--max-concurrency=1",
     ],
   },
   {

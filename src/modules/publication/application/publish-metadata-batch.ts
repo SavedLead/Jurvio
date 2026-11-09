@@ -80,6 +80,7 @@ export async function publishMetadataBatch(sql: Sql, options: { limit: number })
 async function publishChunk(sql: Sql, limit: number, tier: Tier): Promise<ChunkStats> {
   return sql.begin(async (tx) => {
     await tx`SET LOCAL statement_timeout = '20s'`;
+    await tx`SELECT set_config('jurvio.defer_search_refresh', 'on', true)`;
     const [row] = await tx<{ published: number; scanned: number; sealed: number }[]>`
       WITH picked AS (
         SELECT c.id,
@@ -112,6 +113,15 @@ async function publishChunk(sql: Sql, limit: number, tier: Tier): Promise<ChunkS
         )
         SELECT 'legal_case', id, true, ${tier === "opinion"}, true, false, false, ${REASON}, ${RULE}
         FROM updated
+        RETURNING id, object_id, decided_at
+      ),
+      mirrored AS (
+        INSERT INTO publication_current (object_type, object_id, displayable, decided_at, decision_id)
+        SELECT 'legal_case', object_id, true, decided_at, id FROM decided
+        ON CONFLICT (object_type, object_id) DO UPDATE SET
+          displayable = EXCLUDED.displayable,
+          decided_at = EXCLUDED.decided_at,
+          decision_id = EXCLUDED.decision_id
         RETURNING object_id
       ),
       cleared AS (
@@ -139,4 +149,75 @@ async function publishChunk(sql: Sql, limit: number, tier: Tier): Promise<ChunkS
       sealed: row?.sealed ?? 0,
     };
   });
+}
+
+export interface AdaptivePublishStats extends MetadataBatchStats {
+  batchSize: number;
+  searchMs: number | null;
+  casePageMs: number | null;
+  slowQueries: number;
+  lockWaits: number;
+  elapsedMs: number;
+}
+
+/** One short commit of the thickest tier that still has rows. */
+export async function publishMetadataSlice(sql: Sql, limit: number): Promise<MetadataBatchStats> {
+  const size = Math.min(2000, Math.max(1, Math.floor(limit)));
+  for (const tier of ["opinion", "docket", "record"] as const) {
+    try {
+      const chunk = await publishChunk(sql, size, tier);
+      if (chunk.scanned === 0) continue;
+      return {
+        published: chunk.published,
+        scanned: chunk.scanned,
+        held: chunk.sealed,
+        heldByReason: chunk.sealed ? { restricted_or_sensitive: chunk.sealed } : {},
+      };
+    } catch {
+      return { published: 0, scanned: 0, held: 0, heldByReason: { query_timeout: 1 } };
+    }
+  }
+  return { published: 0, scanned: 0, held: 0, heldByReason: {} };
+}
+
+/** Keep committing while the site stays fast, until the time budget or the draft pool runs out. */
+export async function runAdaptiveMetadataPublish(
+  sql: Sql,
+  options: { budgetMs: number; startBatch?: number },
+): Promise<AdaptivePublishStats> {
+  const { nextPublishBatch } = await import("../domain/continuous-publish");
+  const { lockWaitCount, measurePublicSearchMs, medianMs, slowPublicQueryCount } = await import("./search-pace");
+  const deadline = Date.now() + Math.max(15_000, options.budgetMs);
+  let batch = Math.min(10_000, Math.max(400, options.startBatch ?? 500));
+  const stats: AdaptivePublishStats = {
+    published: 0, scanned: 0, held: 0, heldByReason: {}, batchSize: batch,
+    searchMs: null, casePageMs: null, slowQueries: 0, lockWaits: 0, elapsedMs: 0,
+  };
+  const started = Date.now();
+  const searches: Array<number | null> = [];
+  while (Date.now() < deadline) {
+    const searchMs = await measurePublicSearchMs();
+    const casePageMs = await measurePublicSearchMs("https://jurvio.com/case/jv-c7mxm55hg0");
+    searches.push(searchMs);
+    const slowQueries = await slowPublicQueryCount(sql).catch(() => 0);
+    const lockWaits = await lockWaitCount(sql).catch(() => 0);
+    const pace = { searchMs: medianMs(searches), casePageMs, slowQueries, lockWaits };
+    stats.searchMs = pace.searchMs;
+    stats.casePageMs = casePageMs;
+    stats.slowQueries = slowQueries;
+    stats.lockWaits = lockWaits;
+    batch = nextPublishBatch(batch, pace);
+    stats.batchSize = batch;
+    if (batch === 0) break;
+    const slice = await publishMetadataSlice(sql, batch);
+    stats.published += slice.published;
+    stats.scanned += slice.scanned;
+    stats.held += slice.held;
+    for (const [reason, count] of Object.entries(slice.heldByReason)) {
+      stats.heldByReason[reason] = (stats.heldByReason[reason] ?? 0) + count;
+    }
+    if (slice.scanned === 0 && !slice.heldByReason.query_timeout) break;
+  }
+  stats.elapsedMs = Date.now() - started;
+  return stats;
 }

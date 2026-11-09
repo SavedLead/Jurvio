@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { continuousPublishBucket, continuousPublishEnabled, docketDisplayBackfillEnabled, metadataPublicationEnabled, orderContinuousCases, pacedPublishLimit } from "./continuous-publish";
+import { continuousPublishBucket, continuousPublishEnabled, docketDisplayBackfillEnabled, metadataPublicationEnabled, nextPublishBatch, orderContinuousCases, pacedPublishLimit } from "./continuous-publish";
 
 describe("continuous publish flag", () => {
   it("is on unless paused or explicitly disabled", () => {
@@ -13,6 +13,20 @@ describe("continuous publish flag", () => {
     expect(pacedPublishLimit(2000, 3500, 0)).toBe(500);
     expect(pacedPublishLimit(2000, 7000, 0)).toBe(0);
     expect(pacedPublishLimit(2000, null, 0)).toBe(500);
+  });
+});
+
+describe("adaptive publish batch", () => {
+  const calm = { searchMs: 400, casePageMs: 500, slowQueries: 0, lockWaits: 0 };
+  it("ramps while search and case pages stay under 1.5 seconds", () => {
+    expect(nextPublishBatch(1000, calm)).toBe(1500);
+    expect(nextPublishBatch(8000, calm)).toBe(10000);
+  });
+  it("quarters the batch at 3 seconds and stops at 6", () => {
+    expect(nextPublishBatch(2000, { ...calm, searchMs: 3500 })).toBe(500);
+    expect(nextPublishBatch(2000, { ...calm, casePageMs: 6200 })).toBe(0);
+    expect(nextPublishBatch(2000, { ...calm, slowQueries: 3 })).toBe(0);
+    expect(nextPublishBatch(2000, { ...calm, lockWaits: 3 })).toBe(0);
   });
 });
 
