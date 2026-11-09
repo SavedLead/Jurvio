@@ -38,14 +38,14 @@ async function publishChunk(sql: Sql, limit: number): Promise<number> {
     await tx`SET LOCAL statement_timeout = '20s'`;
     const [row] = await tx<{ published: number }[]>`
       WITH picked AS (
-        SELECT c.id
+        SELECT c.id, c.court_id, c.docket_number,
+          (concat_ws(' ', c.caption, c.docket_number) ~* ${RESTRICTED}) AS sealed
         FROM legal_case c
         JOIN court ON court.id = c.court_id
         WHERE c.publication = 'draft'
           AND lower(coalesce(court.provider_court_id, '')) <> 'scotus'
           AND length(btrim(c.caption)) > 0
           AND length(btrim(c.docket_number)) > 0
-          AND concat_ws(' ', c.caption, c.docket_number) !~* ${RESTRICTED}
           AND (
             lower(coalesce(court.jurisdiction, '')) IN ('f', 'fd', 'fb', 'fbp', 'fs', 'federal')
             OR lower(coalesce(court.jurisdiction, '')) LIKE '%federal district%'
@@ -60,22 +60,26 @@ async function publishChunk(sql: Sql, limit: number): Promise<number> {
               AND hold.rule_version = ${RULE}
               AND NOT (${tx.unsafe(metadataHoldReopenSql())})
           )
-          AND NOT EXISTS (
-            SELECT 1 FROM legal_case other
-            WHERE other.court_id = c.court_id
-              AND other.id <> c.id
-              AND nullif(lower(regexp_replace(other.docket_number, '[^a-zA-Z0-9]', '', 'g')), '') IS NOT NULL
-              AND lower(regexp_replace(other.docket_number, '[^a-zA-Z0-9]', '', 'g'))
-                = lower(regexp_replace(c.docket_number, '[^a-zA-Z0-9]', '', 'g'))
-          )
         ORDER BY c.created_at
         LIMIT ${limit}
+      ),
+      marked AS (
+        SELECT picked.id, picked.sealed,
+          EXISTS (
+            SELECT 1 FROM legal_case other
+            WHERE other.court_id = picked.court_id
+              AND other.id <> picked.id
+              AND nullif(lower(regexp_replace(other.docket_number, '[^a-zA-Z0-9]', '', 'g')), '') IS NOT NULL
+              AND lower(regexp_replace(other.docket_number, '[^a-zA-Z0-9]', '', 'g'))
+                = lower(regexp_replace(picked.docket_number, '[^a-zA-Z0-9]', '', 'g'))
+          ) AS collision
+        FROM picked
       ),
       updated AS (
         UPDATE legal_case AS c
         SET verification = 'verified', publication = 'published'
-        FROM picked
-        WHERE c.id = picked.id AND c.publication = 'draft'
+        FROM marked
+        WHERE c.id = marked.id AND NOT marked.sealed AND NOT marked.collision AND c.publication = 'draft'
         RETURNING c.id
       ),
       decided AS (
@@ -92,6 +96,18 @@ async function publishChunk(sql: Sql, limit: number): Promise<number> {
         USING updated
         WHERE hold.case_id = updated.id
         RETURNING hold.case_id
+      ),
+      held AS (
+        INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
+        SELECT marked.id,
+          CASE WHEN marked.sealed THEN ARRAY['restricted_or_sensitive']::text[]
+            ELSE ARRAY['duplicate_identity_collision']::text[] END,
+          ${RULE}
+        FROM marked
+        WHERE marked.sealed OR marked.collision
+        ON CONFLICT (case_id) DO UPDATE SET
+          reasons = EXCLUDED.reasons, rule_version = EXCLUDED.rule_version, held_at = now()
+        RETURNING case_id
       )
       SELECT count(*)::int AS published FROM updated`;
     return row?.published ?? 0;

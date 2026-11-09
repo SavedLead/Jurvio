@@ -17,6 +17,8 @@ It does not need opinion text, a source URL, a checksum, or a verified court
 row. Sealed captions and a second case with the same docket in the same court
 stay draft. The case row's update time is not changed. The search slowdown
 still shrinks or stops the cap. The hourly pass uses the same batch.
+`JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT=0` does not stop it.
+`JURVIO_PAUSE_FEDERAL_METADATA=1` does.
 
 ## Alternatives considered
 

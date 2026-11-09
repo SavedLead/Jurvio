@@ -13,11 +13,10 @@ export function continuousPublishEnabled(env?: Record<string, string | undefined
   return true;
 }
 
-/** Metadata-only federal publication. Off when paused or explicitly set to 0. */
+/** Metadata publication stays on unless JURVIO_PAUSE_FEDERAL_METADATA=1. */
 export function metadataPublicationEnabled(env?: Record<string, string | undefined>): boolean {
   const source = env ?? process.env;
-  if (source.JURVIO_PAUSE_FEDERAL_METADATA === "1") return false;
-  return source.JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT !== "0";
+  return source.JURVIO_PAUSE_FEDERAL_METADATA !== "1";
 }
 
 /** One-time docket display backfill. Off only when explicitly paused. */

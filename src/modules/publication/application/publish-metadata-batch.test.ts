@@ -15,7 +15,7 @@ describe("metadata batch publish", () => {
 
   it("keeps sealed text and duplicate dockets off the batch", () => {
     expect(source).toContain(String.raw`\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\M`);
-    expect(source).toContain("other.id <> c.id");
+    expect(source).toContain("other.id <> picked.id");
     expect(source).toContain("<> 'scotus'");
   });
 });

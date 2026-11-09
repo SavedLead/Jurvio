@@ -19,7 +19,7 @@ describe("continuous publish flag", () => {
 describe("metadata publication", () => {
   it("is on unless paused or set to 0", () => {
     expect(metadataPublicationEnabled({})).toBe(true);
-    expect(metadataPublicationEnabled({ JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT: "0" })).toBe(false);
+    expect(metadataPublicationEnabled({ JURVIO_PUBLISH_FEDERAL_METADATA_WITHOUT_OPINION_TEXT: "0" })).toBe(true);
     expect(metadataPublicationEnabled({ JURVIO_PAUSE_FEDERAL_METADATA: "1" })).toBe(false);
   });
 });
