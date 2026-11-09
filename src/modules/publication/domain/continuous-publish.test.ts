@@ -22,9 +22,12 @@ describe("adaptive publish batch", () => {
     expect(nextPublishBatch(1000, calm)).toBe(1500);
     expect(nextPublishBatch(8000, calm)).toBe(10000);
   });
-  it("quarters the batch at 3 seconds and stops at 6", () => {
-    expect(nextPublishBatch(2000, { ...calm, searchMs: 3500 })).toBe(500);
+  it("does not publish once search is at 2 seconds, quarters at 3, and stops at 6", () => {
+    expect(nextPublishBatch(2000, { ...calm, searchMs: 2000 })).toBe(0);
+    expect(nextPublishBatch(2000, { ...calm, searchMs: 3500 })).toBe(0);
     expect(nextPublishBatch(2000, { ...calm, casePageMs: 6200 })).toBe(0);
+    expect(nextPublishBatch(2000, { ...calm, searchMs: null, casePageMs: null })).toBe(0);
+    expect(nextPublishBatch(2000, { ...calm, slowQueries: 1 })).toBe(500);
     expect(nextPublishBatch(2000, { ...calm, slowQueries: 3 })).toBe(0);
     expect(nextPublishBatch(2000, { ...calm, lockWaits: 3 })).toBe(0);
   });

@@ -43,20 +43,23 @@ export interface PublishPace {
   lockWaits: number;
 }
 
-/** Next short-commit size. Ramp while search and case pages stay under 1.5s. Quarter at 3s. Stop at 6s. */
+/**
+ * Next short-commit size.
+ * No commit while search or a case page is already at 2s: that is the line
+ * where publishing waits. Ramp only while both stay under 1.5s. Quarter at 3s.
+ * Stop at 6s, or when the probe itself fails, or when slow queries or lock waits pile up.
+ */
 export function nextPublishBatch(previous: number, pace: PublishPace): number {
   const search = pace.searchMs;
   const page = pace.casePageMs;
-  const known = [search, page].filter((value): value is number => value !== null);
-  const slowest = known.length ? Math.max(...known) : null;
-  if ((search !== null && search >= 6000) || (page !== null && page >= 6000) || pace.slowQueries >= 3 || pace.lockWaits >= 3) {
-    return 0;
-  }
+  if (search === null || page === null) return 0;
+  if (search >= 6000 || page >= 6000 || pace.slowQueries >= 3 || pace.lockWaits >= 3) return 0;
+  if (search >= 2000 || page >= 2000) return 0;
   const base = Math.max(400, Math.floor(previous) || 400);
-  if (slowest === null || slowest >= 3000 || pace.slowQueries > 0 || pace.lockWaits > 0) {
+  if (search >= 3000 || page >= 3000 || pace.slowQueries > 0 || pace.lockWaits > 0) {
     return Math.max(200, Math.floor(base / 4));
   }
-  if (slowest < 1500) return Math.min(10_000, Math.floor(base * 1.5));
+  if (search < 1500 && page < 1500) return Math.min(10_000, Math.floor(base * 1.5));
   return Math.min(10_000, base);
 }
 
