@@ -75,6 +75,8 @@ import { buildMotionGuide } from "@/modules/plain-english/domain/motion-guide";
 import { CaseMotionsSection } from "@/modules/plain-english/ui/case-motions";
 import { loadCaseJourney, loadJourneyBenchmarks, loadOnwardSupremeCourt } from "@/modules/scotus/application/case-journey";
 import { CaseJourneySection, OnwardSupremeCourtSection } from "@/modules/scotus/ui/case-journey";
+import { loadScotusPublicRecord, scotusRecordHasFacts } from "@/modules/scotus/application/public-case-record";
+import { ScotusCaseRecord } from "@/modules/scotus/ui/scotus-case-record";
 
 export const dynamic = "force-dynamic";
 
@@ -158,7 +160,7 @@ export default async function CasePage({ params }: CasePageProps) {
   const { caseId, legalCase } = loaded;
   const sql = db();
   const isSupremeCourt = legalCase.courtKind === "supreme" || (legalCase.courtCode ?? "").toLowerCase() === "scotus";
-  const [docketEntries, docketCount, parties, documents, citations, newsLinks, agencyItems, followEligible, scdbLineup, justiceNotes] = await Promise.all([
+  const [docketEntries, docketCount, parties, documents, citations, newsLinks, agencyItems, followEligible, scdbLineup, justiceNotes, scotusRecord] = await Promise.all([
     listPublicDocketEntries(sql, caseId, PUBLIC_DOCKET_PAGE_SIZE),
     countPublicDocketEntries(sql, caseId).catch(() => 0),
     listPublicParties(sql, caseId),
@@ -176,6 +178,7 @@ export default async function CasePage({ params }: CasePageProps) {
     legalCase.supremeCourtTerm !== null ? loadCaseLineup(sql, caseId).catch(() => null) : Promise.resolve(null),
     // Justice notes from the official docket (dissents from denial, would-grant, statements); optional like news.
     isSupremeCourt ? loadCaseJusticeNotes(sql, caseId).catch(() => null) : Promise.resolve(null),
+    isSupremeCourt ? loadScotusPublicRecord(sql, caseId).catch(() => null) : Promise.resolve(null),
   ]);
   // Case journey: Supreme Court docket steps (with typical times), or, on an appeals case, the Supreme Court case it went on to.
   const journeyEntries = docketEntries.map((entry) => ({ filedOn: entry.filedOn, description: entry.description }));
@@ -589,6 +592,7 @@ export default async function CasePage({ params }: CasePageProps) {
 
         <div className="cdMain">
         <CaseSectionBar chips={chips} />
+        {scotusRecord && scotusRecordHasFacts(scotusRecord) ? <ScotusCaseRecord record={scotusRecord} /> : null}
 
         {show.stands && stands ? <CaseSection id="stands" title="Where this case stands" open hint={standsHint(stands.inside)}>
           <CaseStandingSection standing={stands.standing} compact sourceRef={ref} renderText={(text) => marked(text, standsMarker)} />
