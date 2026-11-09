@@ -76,6 +76,8 @@ export interface PublicCase {
   tierReleaseIndexable?: boolean;
   /** Sealed-related case (search-exclusion rule): displayable, but never indexed or listed in sitemaps. */
   searchExcluded?: boolean;
+  /** Stored court.jurisdiction value, such as "Federal District". */
+  courtJurisdiction?: string | null;
 }
 
 export { TIER_RELEASE_RULE_VERSION, INDEXABLE_TIER_RELEASE_REASONS } from "@/modules/cases/domain/readable-opinion";
@@ -132,6 +134,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
   const courtKind = courtKindFromJurisdiction(courtJurisdiction, record.courtName, record.courtCode);
   return {
     ...record,
+    courtJurisdiction,
     captionCategory: captionTag(record.caption),
     caption: displayCaption(record.caption, record.docketNumber, courtKind),
     courtName: cleanCourtName(record.courtName),

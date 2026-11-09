@@ -8,6 +8,7 @@ import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/u
 import { listPublicParties } from "@/modules/cases/application/list-public-case-sections";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
+import { CaseRecordFacts } from "@/modules/cases/ui/case-record-facts";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { createTermMarker, TermText } from "@/modules/plain-english/ui/term-text";
 import { publicPartyRole } from "@/modules/cases/domain/public-labels";
@@ -57,6 +58,7 @@ export default async function PartiesPage({ params }: {
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn}
         decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode} />
+      <CaseRecordFacts caseId={caseId} legalCase={legalCase} parties={records} />
       {records.length > 0 ? (
         <section className="contentSection">
           <p className="sectionKicker">Named in the court record</p>
