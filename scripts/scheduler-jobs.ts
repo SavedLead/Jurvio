@@ -403,6 +403,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // Skips itself until migration 0201 is present.
     command: ["jobs/sync-official-scotus-orders.mjs"],
   },
+  {
+    lane: "core",
+    name: "scotus-official-history",
+    initialDelayMs: 2 * minute,
+    intervalMs: 20 * minute,
+    budgetMs: 12 * minute,
+    // supremecourt.gov only, docket years 2017 through now. Drafts, no PDFs,
+    // no subscriber alerts. Checkpointed. Not run on the public web.
+    command: ["jobs/backfill-scotus-official-history.mjs", "--max-requests=120", "--min-interval-ms=1500"],
+  },
   // Federal loops self-throttle via a bounded adaptive worker pool:
   // --start-concurrency climbs only after clean windows and halves on distress
   // (source 429s or DB pressure), capped by --max-concurrency, with a finite
