@@ -50,7 +50,9 @@ INSERT INTO search_catchup_cursor (singleton) VALUES (1) ON CONFLICT DO NOTHING;
 SQL
 
 case_batch() {
-  psql_sql -q -tA <<'SQL'
+  # :batch_size is a psql variable. The heredoc stays quoted so the shell
+  # cannot rewrite it (an unquoted $$ became the process id in the bulk job).
+  psql_sql -q -tA -v batch_size="$1" <<'SQL'
 BEGIN;
 SET LOCAL statement_timeout = '30s';
 SET LOCAL lock_timeout = '3s';
@@ -58,29 +60,69 @@ WITH state AS (
   SELECT * FROM search_catchup_cursor WHERE singleton = 1
 ),
 windowed AS MATERIALIZED (
-  SELECT c.id, c.public_id, c.caption, c.docket_number, c.official_citation, c.filed_on,
-         COALESCE(c.decided_on, c.filed_on) AS sort_date
-  FROM legal_case c
-  CROSS JOIN state
-  WHERE state.phase = 'cases'
-    AND c.publication = 'published'
-    AND (
-      (NOT state.passed_dates AND COALESCE(c.decided_on, c.filed_on) IS NOT NULL AND (
-        state.cursor_id IS NULL
-        OR COALESCE(c.decided_on, c.filed_on) < state.cursor_date
-        OR (
-          COALESCE(c.decided_on, c.filed_on) = state.cursor_date
-          AND (c.caption > state.cursor_caption OR (c.caption = state.cursor_caption AND c.id > state.cursor_id))
-        )
-      ))
-      OR (state.passed_dates AND COALESCE(c.decided_on, c.filed_on) IS NULL AND (
-        state.cursor_id IS NULL
-        OR c.caption > state.cursor_caption
-        OR (c.caption = state.cursor_caption AND c.id > state.cursor_id)
-      ))
-    )
-  ORDER BY COALESCE(c.decided_on, c.filed_on) DESC NULLS LAST, c.caption, c.id
-  LIMIT 500
+  -- legal_case_published_recency_idx is (COALESCE(decided_on, filed_on) DESC, caption, id)
+  -- WHERE publication = 'published'. The date < cursor branch is a range on that
+  -- index. The same-day branch is only the rows still after the checkpoint.
+  SELECT page.id, page.public_id, page.caption, page.docket_number, page.official_citation,
+         page.filed_on, page.sort_date
+  FROM state
+  CROSS JOIN LATERAL (
+    SELECT picked.id, picked.public_id, picked.caption, picked.docket_number,
+           picked.official_citation, picked.filed_on, picked.sort_date
+    FROM (
+      (
+        SELECT c.id, c.public_id, c.caption, c.docket_number, c.official_citation, c.filed_on,
+               COALESCE(c.decided_on, c.filed_on) AS sort_date
+        FROM legal_case c
+        WHERE state.phase = 'cases'
+          AND NOT state.passed_dates
+          AND c.publication = 'published'
+          AND COALESCE(c.decided_on, c.filed_on) IS NOT NULL
+          AND (
+            state.cursor_id IS NULL
+            OR COALESCE(c.decided_on, c.filed_on) < state.cursor_date
+          )
+        ORDER BY COALESCE(c.decided_on, c.filed_on) DESC NULLS LAST, c.caption, c.id
+        LIMIT :batch_size
+      )
+      UNION ALL
+      (
+        SELECT c.id, c.public_id, c.caption, c.docket_number, c.official_citation, c.filed_on,
+               COALESCE(c.decided_on, c.filed_on)
+        FROM legal_case c
+        WHERE state.phase = 'cases'
+          AND NOT state.passed_dates
+          AND state.cursor_id IS NOT NULL
+          AND c.publication = 'published'
+          AND COALESCE(c.decided_on, c.filed_on) = state.cursor_date
+          AND (
+            c.caption > state.cursor_caption
+            OR (c.caption = state.cursor_caption AND c.id > state.cursor_id)
+          )
+        ORDER BY c.caption, c.id
+        LIMIT :batch_size
+      )
+      UNION ALL
+      (
+        SELECT c.id, c.public_id, c.caption, c.docket_number, c.official_citation, c.filed_on,
+               COALESCE(c.decided_on, c.filed_on)
+        FROM legal_case c
+        WHERE state.phase = 'cases'
+          AND state.passed_dates
+          AND c.publication = 'published'
+          AND COALESCE(c.decided_on, c.filed_on) IS NULL
+          AND (
+            state.cursor_id IS NULL
+            OR c.caption > state.cursor_caption
+            OR (c.caption = state.cursor_caption AND c.id > state.cursor_id)
+          )
+        ORDER BY c.caption, c.id
+        LIMIT :batch_size
+      )
+    ) picked
+    ORDER BY picked.sort_date DESC NULLS LAST, picked.caption, picked.id
+    LIMIT :batch_size
+  ) page
 ),
 corrected AS (
   UPDATE legal_case AS c
@@ -195,7 +237,7 @@ SQL
 }
 
 entry_batch() {
-  psql_sql -q -tA <<'SQL'
+  psql_sql -q -tA -v batch_size="$1" <<'SQL'
 BEGIN;
 SET LOCAL statement_timeout = '30s';
 SET LOCAL lock_timeout = '3s';
@@ -231,7 +273,7 @@ windowed AS MATERIALIZED (
       OR (ev.last_seen_at = state.cursor_at AND ev.id < state.cursor_id)
     )
   ORDER BY ev.last_seen_at DESC, ev.id DESC
-  LIMIT 500
+  LIMIT :batch_size
 ),
 corrected AS (
   UPDATE docket_entry AS entry
@@ -317,6 +359,8 @@ echo "resuming from search_catchup_cursor"
 psql -c "SELECT phase, passed_dates, batches, scanned, corrected, indexed, cursor_date, cursor_at FROM search_catchup_cursor WHERE singleton = 1;"
 
 completed=0
+batch_size=500
+small_failures=0
 while true; do
   phase=$(psql -q -tA -c "SELECT phase FROM search_catchup_cursor WHERE singleton = 1;")
   phase=$(printf '%s' "$phase" | tr -d '[:space:]')
@@ -326,18 +370,40 @@ while true; do
     break
   fi
   if [ "$phase" = "entries" ]; then
-    line=$(entry_batch | tail -n 1 | tr -d '[:space:]')
+    line=$(entry_batch "$batch_size" | tail -n 1 | tr -d '[:space:]')
   else
-    headers=$(fix_recent_headers | tail -n 1 | tr -d '[:space:]')
-    echo "recent headers corrected=${headers:-skipped}"
-    line=$(case_batch | tail -n 1 | tr -d '[:space:]')
+    # The header fix is its own transaction. Do not repeat it while a timed-out
+    # case batch is being retried at a smaller size.
+    if [ "$batch_size" -eq 500 ]; then
+      headers=$(fix_recent_headers | tail -n 1 | tr -d '[:space:]')
+      echo "recent headers corrected=${headers:-skipped}"
+    fi
+    line=$(case_batch "$batch_size" | tail -n 1 | tr -d '[:space:]')
   fi
-  echo "batch $line"
   case "$line" in
-    *\|*) ;;
-    *) echo "catch-up stopped on: ${line:-empty}" >&2; exit 1 ;;
+    *\|*)
+      echo "batch $line"
+      batch_size=500
+      small_failures=0
+      sleep 0.2
+      ;;
+    *)
+      # A statement timeout prints no row. The transaction rolls back, so
+      # search_catchup_cursor stays where it was.
+      echo "batch failed at size ${batch_size}: ${line:-empty}" >&2
+      if [ "$batch_size" -eq 500 ]; then
+        batch_size=250
+      elif [ "$batch_size" -eq 250 ]; then
+        batch_size=100
+      else
+        small_failures=$((small_failures + 1))
+        if [ "$small_failures" -ge 3 ]; then
+          echo "catch-up stopped after repeated failures at 100" >&2
+          exit 1
+        fi
+      fi
+      ;;
   esac
-  sleep 0.2
 done
 
 if [ "$completed" != 1 ]; then

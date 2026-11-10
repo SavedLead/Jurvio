@@ -60,6 +60,16 @@ describe("bulk publish of complete drafts", () => {
     expect(catchUp).toContain("WHEN r.court_code IN ('cand', 'caed', 'cacd', 'casd', 'ord', 'waed', 'wawd', 'nvd') THEN 'America/Los_Angeles'");
     expect(catchUp).toContain("recent.filed_on = min(entry.filed_on) + 1");
     expect(catchUp).toContain("COALESCE(c.decided_on, c.filed_on) > state.cursor_date");
+    expect(catchUp).toContain("COALESCE(c.decided_on, c.filed_on) < state.cursor_date");
+    expect(catchUp).toContain("LIMIT :batch_size");
+    expect(catchUp).toContain("batch_size=500");
+    expect(catchUp).toContain("batch_size=250");
+    expect(catchUp).toContain("batch_size=100");
+    expect(catchUp).toContain("catch-up stopped after repeated failures at 100");
+    expect(catchUp).toContain("entry.provider_entry_id = windowed.deduplication_key");
+    expect(readFileSync("db/migrations/0205_catchup_date_correction_index.sql", "utf8")).toContain(
+      "docket_entry_case_provider_entry_idx",
+    );
     expect(catchUp).not.toContain("interval '3 days'");
     expect(catchUp).not.toContain("batches\" -lt 2000");
     expect(catchUp).not.toContain("legal_case.updated_at = now()");
