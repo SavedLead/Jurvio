@@ -64,8 +64,9 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
         const liveCourts = (await listPublicCourtsLive(sql, 200)).find((row) => row.publicId === "jc-statfix01");
         const liveJudge = (await listPublicJudges(sql)).find((row) => row.publicId === "jj-statfix01");
 
-        // Before any refresh the readers fall back to the live queries.
-        expect((await getPublicCourt(sql, "jc-statfix01"))?.caseCount).toBe(2);
+        // The publication trigger already counted the published inserts,
+        // including the non-displayable one, before any directory refresh.
+        expect((await getPublicCourt(sql, "jc-statfix01"))?.caseCount).toBe(3);
 
         const events: Array<Record<string, unknown>> = [];
         const result = await refreshPublicDirectoryStats(sql, { pauseMs: 0, courtBatch: 1, judgeBatch: 1, log: (event) => events.push(event) });
