@@ -18,7 +18,8 @@ describe("published case counter", () => {
     expect(migration).toContain("legal_case_is_public(id, publication)");
     expect(migration).toContain("decision.displayable");
     expect(migration).toContain("FOREACH court IN ARRAY courts LOOP");
-    expect(migration).toContain("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+    expect(migration).not.toContain("SET TRANSACTION");
+    expect(migration).toContain("INTO delta_at_count, counted");
     expect(migration).not.toContain("legal_case.updated_at");
     expect(migration).not.toContain("ACCESS EXCLUSIVE");
   });

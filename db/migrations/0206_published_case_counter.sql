@@ -330,16 +330,13 @@ BEGIN
   SELECT coalesce(array_agg(id), '{}') INTO courts FROM court;
   COMMIT;
   FOREACH court IN ARRAY courts LOOP
-    SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
     PERFORM set_config('statement_timeout', '0', true);
-    SELECT coalesce(published_delta, 0) INTO delta_at_count
-    FROM court_public_stats WHERE court_id = court;
-    IF NOT FOUND THEN
-      delta_at_count := 0;
-    END IF;
-    SELECT count(*)::int INTO counted
-    FROM legal_case
-    WHERE court_id = court AND legal_case_is_public(id, publication);
+    -- One statement, so the stored delta and the displayable count share a snapshot.
+    SELECT
+      coalesce((SELECT published_delta FROM court_public_stats WHERE court_id = court), 0),
+      (SELECT count(*)::int FROM legal_case
+        WHERE court_id = court AND legal_case_is_public(id, publication))
+    INTO delta_at_count, counted;
     COMMIT;
 
     -- The running bulk statement can hold this counter row until it commits,
