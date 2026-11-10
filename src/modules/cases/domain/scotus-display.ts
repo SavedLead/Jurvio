@@ -1,3 +1,5 @@
+import { formatCalendarDate } from "@/lib/time/calendar-date";
+
 const hiddenStatusValues = new Set(["", "active", "filing", "none", "unknown", "unavailable", "not_applicable"]);
 
 export function humanizeVerifiedValue(value: string | null | undefined) {
@@ -30,11 +32,10 @@ export function formatVerifiedOutcome(value: string | null | undefined) {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
-export function formatPublicCaseDate(value: string | null | undefined) {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const date = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return null;
-  const month = new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }).format(date);
-  const abbreviatedMonth = ["Mar", "Apr", "May", "Jun", "Jul"].includes(month) ? month : `${month}.`;
-  return `${abbreviatedMonth} ${date.getUTCDate()}, ${date.getUTCFullYear()}`;
+/**
+ * Filed, entry, and decided dates. A YYYY-MM-DD value is that calendar day.
+ * A timestamp is converted in `timeZone` (the court's zone when the caller has it).
+ */
+export function formatPublicCaseDate(value: string | null | undefined, timeZone?: string) {
+  return formatCalendarDate(value, timeZone);
 }

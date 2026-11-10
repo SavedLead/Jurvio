@@ -23,6 +23,9 @@ describe("SCOTUS public display policy", () => {
 
   it("formats verified ISO dates for public display", () => {
     expect(formatPublicCaseDate("2025-11-24")).toBe("Nov. 24, 2025");
+    expect(formatPublicCaseDate("2026-11-10", "America/Los_Angeles")).toBe("Nov. 10, 2026");
+    expect(formatPublicCaseDate("2026-11-10T04:48:00.000Z", "America/Los_Angeles")).toBe("Nov. 9, 2026");
+    expect(formatPublicCaseDate("2026-11-10T00:00:00.000Z", "America/New_York")).toBe("Nov. 9, 2026");
     expect(formatPublicCaseDate(null)).toBeNull();
     expect(formatPublicCaseDate("not-a-date")).toBeNull();
   });

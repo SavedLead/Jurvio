@@ -12,25 +12,27 @@ describe("eastern time helpers", () => {
     expect(EASTERN_TIME_ZONE).toBe("America/New_York");
   });
 
-  it("shows EDT for a summer instant", () => {
+  it("shows a summer instant in Eastern time labeled ET", () => {
     // 2026-08-10 03:28:55 UTC = 2026-08-09 23:28 EDT (UTC-4)
     const out = formatEasternDateTime("2026-08-10T03:28:55Z");
-    expect(out).toContain("EDT");
+    expect(out).toContain("ET");
+    expect(out).not.toMatch(/\bE[DS]T\b/);
     expect(out).toContain("Aug 9, 2026");
     expect(out).toContain("11:28");
   });
 
-  it("shows EST for a winter instant", () => {
+  it("shows a winter instant in Eastern time labeled ET", () => {
     // 2026-01-15 12:00 UTC = 07:00 EST (UTC-5)
     const out = formatEasternDateTime("2026-01-15T12:00:00Z");
-    expect(out).toContain("EST");
+    expect(out).toContain("ET");
+    expect(out).not.toMatch(/\bE[DS]T\b/);
     expect(out).toContain("Jan 15, 2026");
     expect(out).toContain("7:00");
   });
 
-  it("formats time only with the zone abbreviation", () => {
-    expect(formatEasternTime("2026-08-10T03:28:55Z")).toContain("EDT");
-    expect(formatEasternTime("2026-01-15T12:00:00Z")).toContain("EST");
+  it("formats time only in Eastern time labeled ET", () => {
+    expect(formatEasternTime("2026-08-10T03:28:55Z")).toBe("11:28 PM ET");
+    expect(formatEasternTime("2026-01-15T12:00:00Z")).toBe("7:00 AM ET");
   });
 
   it("renders the Eastern calendar day for an instant", () => {

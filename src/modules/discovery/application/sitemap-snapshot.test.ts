@@ -36,6 +36,12 @@ describe("stored sitemaps", () => {
     expect(reader.toLowerCase()).not.toContain("count(*)");
     expect(source.toLowerCase()).not.toContain("row_number");
     expect(source).toContain("public_id >");
+    const caseQuery = source.slice(source.indexOf("async function caseIds"), source.indexOf("async function opinionIds"));
+    expect(caseQuery).toContain("current_row.displayable");
+    expect(caseQuery).not.toContain("indexable");
+    const casePages = source.slice(source.indexOf("async function caseRecords"), source.indexOf("async function opinionRecords"));
+    expect(casePages).toContain("records.push({ path: `/case/${row.public_id}`");
+    expect(casePages).not.toContain("case_indexable");
     const writer = source.slice(source.indexOf("async function writeKind"), source.indexOf("export async function refreshSitemapDocuments"));
     expect(writer).toContain("publishSitemapIndex");
     expect(writer).toContain("upsertPage");

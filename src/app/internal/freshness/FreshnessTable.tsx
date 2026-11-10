@@ -24,13 +24,13 @@ const number = (value: number) => new Intl.NumberFormat("en-US").format(value);
 const compact = (value: number) => new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 
 const eastern = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
 });
 const filingDay = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
 const filingDayYear = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
 
 function exact(value: string | null) {
-  return value ? eastern.format(new Date(value)) : "Never";
+  return value ? `${eastern.format(new Date(value))} ET` : "Never";
 }
 function filingDate(value: string | null, now = Date.now()) {
   if (!value) return "—";

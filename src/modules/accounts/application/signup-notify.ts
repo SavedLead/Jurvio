@@ -1,4 +1,5 @@
 import type { Sql } from "postgres";
+import { formatEasternDateTime } from "@/lib/time/eastern";
 import type { EmailProvider } from "../infrastructure/email";
 import { escapeHtml } from "../infrastructure/email";
 
@@ -33,10 +34,7 @@ export function maskEmail(email: string): string {
 }
 
 export function formatEt(date: Date): string {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York", year: "numeric", month: "short", day: "numeric",
-    hour: "numeric", minute: "2-digit", timeZoneName: "short",
-  }).format(date);
+  return formatEasternDateTime(date);
 }
 
 export interface SignupDetails {
