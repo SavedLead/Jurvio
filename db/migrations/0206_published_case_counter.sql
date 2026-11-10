@@ -14,6 +14,9 @@
 -- published_base is the seeded count. published_delta is everything the
 -- trigger has applied. case_count is base + delta, which is what readers use.
 -- The directory refresh must not write case_count.
+--
+-- This migration does not walk the courts. That count is the separate
+-- resumable seed job, so a deploy is recorded as soon as these triggers exist.
 
 ALTER TABLE court_public_stats
   ADD COLUMN IF NOT EXISTS published_base integer NOT NULL DEFAULT 0,
@@ -330,58 +333,60 @@ BEGIN
 END;
 $$;
 
--- One court at a time, in its own transaction, so a count does not hold a
--- lock across the bulk job's publish statement. The count uses the published
--- browse index (court_id WHERE publication = published) and only takes the
--- counter row lock for the final assignment. A row the bulk job is still
--- holding is skipped and remains the previous total plus the trigger's deltas.
-CREATE OR REPLACE PROCEDURE seed_court_published_counts()
+-- The resumable seed records the last court it committed. A court the partial
+-- in-deploy seed already wrote is reconciled when this job reaches it: the
+-- formula replaces case_count, it does not add to it.
+CREATE TABLE IF NOT EXISTS published_count_seed_cursor (
+  singleton integer PRIMARY KEY CHECK (singleton = 1),
+  court_id uuid,
+  seeded integer NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO published_count_seed_cursor (singleton) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- The earlier migration attempt created a procedure that walks every court
+-- inside the deploy. Drop it so the deploy cannot call it.
+DROP PROCEDURE IF EXISTS seed_court_published_counts();
+
+-- One court. The caller commits. The checkpoint moves in the same transaction
+-- as the counter write, so a timeout leaves both unchanged.
+CREATE OR REPLACE FUNCTION seed_next_published_count_court()
+RETURNS uuid
 LANGUAGE plpgsql AS $$
 DECLARE
-  courts uuid[];
-  court uuid;
+  last_court uuid;
+  next_court uuid;
   counted integer;
   delta_at_count integer;
-  attempt integer;
-  seeded boolean;
 BEGIN
-  SELECT coalesce(array_agg(id), '{}') INTO courts FROM court;
-  COMMIT;
-  FOREACH court IN ARRAY courts LOOP
-    PERFORM set_config('statement_timeout', '0', true);
-    -- One statement, so the stored delta and the displayable count share a snapshot.
-    SELECT
-      coalesce((SELECT published_delta FROM court_public_stats WHERE court_id = court), 0),
-      (SELECT count(*)::int FROM legal_case
-        WHERE court_id = court AND legal_case_is_public(id, publication))
-    INTO delta_at_count, counted;
-    COMMIT;
+  SELECT court_id INTO last_court
+  FROM published_count_seed_cursor
+  WHERE singleton = 1;
 
-    -- The running bulk statement can hold this counter row until it commits,
-    -- up to its 180s statement timeout. Waiting here does not block that
-    -- statement. One slow court is enough: the others in that batch unlock
-    -- when it commits.
-    seeded := false;
-    FOR attempt IN 1..70 LOOP
-      BEGIN
-        PERFORM set_config('lock_timeout', '2s', true);
-        PERFORM apply_published_count_seed(court, counted, delta_at_count);
-        seeded := true;
-        EXIT;
-      EXCEPTION WHEN lock_not_available OR query_canceled THEN
-        PERFORM pg_sleep(1);
-      END;
-    END LOOP;
-    IF NOT seeded THEN
-      RAISE NOTICE 'published counter seed skipped court % because the counter row was busy', court;
-    END IF;
-    COMMIT;
-  END LOOP;
+  SELECT id INTO next_court
+  FROM court
+  WHERE id > coalesce(last_court, '00000000-0000-0000-0000-000000000000'::uuid)
+  ORDER BY id
+  LIMIT 1;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+
+  -- One statement, so the stored delta and the displayable count share a snapshot.
+  SELECT
+    coalesce((SELECT published_delta FROM court_public_stats WHERE court_id = next_court), 0),
+    (SELECT count(*)::int FROM legal_case
+      WHERE court_id = next_court AND legal_case_is_public(id, publication))
+  INTO delta_at_count, counted;
+
+  PERFORM apply_published_count_seed(next_court, counted, delta_at_count);
+
+  UPDATE published_count_seed_cursor
+  SET court_id = next_court,
+      seeded = seeded + 1,
+      updated_at = now()
+  WHERE singleton = 1;
+
+  RETURN next_court;
 END;
 $$;
-
--- @commit
-
--- Own chunk so CALL is not inside the migration's transaction block.
--- The procedure commits once per court.
-CALL seed_court_published_counts();

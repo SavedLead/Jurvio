@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const migration = readFileSync("db/migrations/0206_published_case_counter.sql", "utf8");
+const seedJob = readFileSync("scripts/seed-published-case-counts.sh", "utf8");
 const refresh = readFileSync("src/modules/directory/application/public-directory-stats.ts", "utf8");
 const listing = readFileSync("src/modules/cases/application/list-public-cases.ts", "utf8");
 const coverage = readFileSync("src/modules/trust/application/get-coverage-snapshot.ts", "utf8");
@@ -17,9 +18,9 @@ describe("published case counter", () => {
     expect(migration).toContain("case_count = GREATEST(0, stats.case_count + EXCLUDED.published_delta)");
     expect(migration).toContain("legal_case_is_public(id, publication)");
     expect(migration).toContain("decision.displayable");
-    expect(migration).toContain("FOREACH court IN ARRAY courts LOOP");
-    expect(migration).not.toContain("SET TRANSACTION");
     expect(migration).toContain("INTO delta_at_count, counted");
+    expect(migration).not.toContain("SET TRANSACTION");
+    expect(migration).not.toContain("CALL seed_court_published_counts");
     expect(migration).not.toContain("legal_case.updated_at");
     expect(migration).not.toContain("ACCESS EXCLUSIVE");
   });
@@ -70,9 +71,23 @@ describe("published case counter", () => {
     expect(migration).toContain("CREATE OR REPLACE FUNCTION sync_court_published_count");
     expect(migration).toContain("CREATE OR REPLACE FUNCTION sync_published_count_on_decision");
     expect(migration).toContain("CREATE OR REPLACE FUNCTION apply_published_count_seed");
-    expect(migration).toContain("CREATE OR REPLACE PROCEDURE seed_court_published_counts");
+    expect(migration).toContain("CREATE OR REPLACE FUNCTION seed_next_published_count_court");
+    expect(migration).toContain("DROP PROCEDURE IF EXISTS seed_court_published_counts");
     expect(migration).toContain("(counted - delta_at_count) + published_delta");
     expect(migration).not.toMatch(/case_count = stats\.case_count \+ counted/);
+    expect(migration).not.toContain("statement_timeout', '0'");
+  });
+
+  it("resumes the seed after a timeout without moving the checkpoint", () => {
+    const body = seedJob.slice(seedJob.indexOf("seed_once()"));
+    expect(body.indexOf("BEGIN;")).toBeLessThan(body.indexOf("seed_next_published_count_court"));
+    expect(body.indexOf("seed_next_published_count_court")).toBeLessThan(body.indexOf("COMMIT;"));
+    expect(body).toContain("SET LOCAL statement_timeout = '${seconds}s'");
+    expect(body).toContain("SET LOCAL lock_timeout = '3s'");
+    expect(body).toContain("for seconds in 30 60 120");
+    expect(body).toContain("checkpoint not moved");
+    expect(seedJob).not.toContain("legal_case.updated_at");
+    expect(seedJob).not.toContain("statement_timeout', '0'");
   });
 
   it("does not let the directory refresh recount the published total", () => {
