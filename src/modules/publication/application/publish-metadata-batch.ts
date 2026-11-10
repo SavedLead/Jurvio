@@ -61,7 +61,7 @@ export async function publishMetadataBatch(sql: Sql, options: { limit: number })
     let tierScanned = 0;
     while (stats.published < target && tierScanned < target) {
       try {
-        const chunk = await publishChunk(sql, Math.min(CHUNK, target - tierScanned), tier);
+        const chunk = await publishChunk(sql, Math.min(CHUNK, target - tierScanned), tier, 20_000);
         stats.published += chunk.published;
         stats.scanned += chunk.scanned;
         tierScanned += chunk.scanned;
@@ -77,9 +77,10 @@ export async function publishMetadataBatch(sql: Sql, options: { limit: number })
   return stats;
 }
 
-async function publishChunk(sql: Sql, limit: number, tier: Tier): Promise<ChunkStats> {
+async function publishChunk(sql: Sql, limit: number, tier: Tier, timeoutMs: number): Promise<ChunkStats> {
+  const timeout = timeoutMs <= 8_000 ? "8s" : "30s";
   return sql.begin(async (tx) => {
-    await tx`SET LOCAL statement_timeout = '45s'`;
+    await tx.unsafe(`SET LOCAL statement_timeout = '${timeout}'`);
     await tx`SELECT set_config('jurvio.defer_search_refresh', 'on', true)`;
     const [row] = await tx<{ published: number; scanned: number; sealed: number }[]>`
       WITH picked AS (
@@ -96,7 +97,7 @@ async function publishChunk(sql: Sql, limit: number, tier: Tier): Promise<ChunkS
               AND hold.rule_version = ${RULE}
               AND NOT (${tx.unsafe(metadataHoldReopenSql())})
           )
-        ORDER BY c.created_at
+        ORDER BY c.created_at DESC NULLS LAST
         LIMIT ${limit}
       ),
       updated AS (
@@ -160,12 +161,17 @@ export interface AdaptivePublishStats extends MetadataBatchStats {
   elapsedMs: number;
 }
 
-/** One short commit of the thickest tier that still has rows. */
+/**
+ * One commit. Ordinary case records go first: the opinion and docket lookups
+ * walk millions of drafts that have no document, and a timeout there used to
+ * end the slice before any case was published. A timed-out tier is skipped.
+ */
 export async function publishMetadataSlice(sql: Sql, limit: number): Promise<MetadataBatchStats> {
   const size = Math.min(5_000, Math.max(1, Math.floor(limit)));
-  for (const tier of ["opinion", "docket", "record"] as const) {
+  let timeouts = 0;
+  for (const tier of ["record", "docket", "opinion"] as const) {
     try {
-      const chunk = await publishChunk(sql, size, tier);
+      const chunk = await publishChunk(sql, size, tier, tier === "record" ? 30_000 : 8_000);
       if (chunk.scanned === 0) continue;
       return {
         published: chunk.published,
@@ -174,10 +180,10 @@ export async function publishMetadataSlice(sql: Sql, limit: number): Promise<Met
         heldByReason: chunk.sealed ? { restricted_or_sensitive: chunk.sealed } : {},
       };
     } catch {
-      return { published: 0, scanned: 0, held: 0, heldByReason: { query_timeout: 1 } };
+      timeouts += 1;
     }
   }
-  return { published: 0, scanned: 0, held: 0, heldByReason: {} };
+  return { published: 0, scanned: 0, held: 0, heldByReason: timeouts ? { query_timeout: timeouts } : {} };
 }
 
 /** Keep committing while the site stays fast, until the time budget or the draft pool runs out. */
