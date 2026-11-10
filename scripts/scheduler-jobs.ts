@@ -80,10 +80,9 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/refresh-case-citation-edges.mjs", "--budget-seconds=3300"],
   },
   {
-    // Fills court_public_stats and judge_public_stats so /courts, /courts/[id],
-    // the /cases court facet and /judges read stored counts instead of
-    // aggregating every published case per request. Small committed batches
-    // with a pause between them, one connection, own advisory lock. ADR 0080.
+    // Refreshes latest dates and the newest-case list on court_public_stats,
+    // and judge_public_stats. The published case_count is a running counter
+    // (migration 0206), not this recount. ADR 0080.
     lane: "citations",
     name: "public-directory-stats",
     initialDelayMs: 6 * minute,

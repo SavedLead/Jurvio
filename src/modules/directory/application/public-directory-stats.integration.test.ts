@@ -64,7 +64,7 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
         const liveCourts = (await listPublicCourtsLive(sql, 200)).find((row) => row.publicId === "jc-statfix01");
         const liveJudge = (await listPublicJudges(sql)).find((row) => row.publicId === "jj-statfix01");
 
-        // Before any refresh the readers fall back to the live queries.
+        // The trigger already counted the two displayable published cases.
         expect((await getPublicCourt(sql, "jc-statfix01"))?.caseCount).toBe(2);
 
         const events: Array<Record<string, unknown>> = [];
@@ -84,6 +84,7 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
         // Readers return what the live queries returned.
         const stored = await getPublicCourt(sql, "jc-statfix01");
         expect(stored).toEqual(liveCourt);
+        expect(stored?.caseCount).toBe(2);
         expect(stored?.cases.map((row) => row.publicId)).toEqual(["jv-statfix02", "jv-statfix01"]);
         expect((await listPublicCaseCourts(sql)).find((row) => row.value === "jc-statfix01")).toEqual(liveFacet);
         expect((await listPublicCourts(sql, 200)).find((row) => row.publicId === "jc-statfix01")).toEqual(liveCourts);
@@ -97,6 +98,7 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
           INSERT INTO publication_decision(object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version, decided_at)
           VALUES ('legal_case', ${b}, false, false, false, false, false, 'fixture', 'v1', now() + interval '1 second')`;
         expect((await getPublicCourt(sql, "jc-statfix01"))?.cases.map((row) => row.publicId)).toEqual(["jv-statfix01"]);
+        expect((await tx<{ case_count: number }[]>`SELECT case_count FROM court_public_stats WHERE court_id = ${court!.id}`)[0]?.case_count).toBe(1);
 
         throw new Rollback();
       }).catch((error) => { if (!(error instanceof Rollback)) throw error; });
