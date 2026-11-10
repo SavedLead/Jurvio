@@ -18,7 +18,9 @@ describe("bulk publish of complete drafts", () => {
     expect(script).toContain("nature_of_suit_code");
     expect(script).toContain("<> 'scotus'");
     expect(script).toContain("updated_at = c.updated_at");
-    expect(script).toContain("jurvio.defer_search_refresh");
+    expect(script).toContain("SELECT set_config('jurvio.defer_search_refresh', 'on', true);");
+    expect(script).not.toContain("DO $$");
+    expect(script).toContain("grep -E '^[0-9]+\\|[0-9]+$'");
     expect(script).toContain("public_case_search");
     expect(script).toContain("ON CONFLICT (case_id) DO NOTHING");
     expect(script).toContain("catch_up_search_slice || echo \"search catch-up skipped\"");

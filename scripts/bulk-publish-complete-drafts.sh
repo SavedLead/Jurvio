@@ -152,11 +152,13 @@ completed=0
 echo "resuming from bulk_publish_cursor"
 psql_c -c "SELECT batches, scanned, published, created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1;"
 while true; do
-  line=$(psql -q -tA <<SQL | tail -n 1
+  # Unquoted so RANGE and RULE expand. Do not use $$ here: bash would
+  # replace it with the process id (the 6:22 AM ET run sent DO 1985059).
+  output=$(psql -q -tA <<SQL
 BEGIN;
 SET LOCAL statement_timeout = '120s';
 SET LOCAL lock_timeout = '15s';
-DO $$ BEGIN PERFORM set_config('jurvio.defer_search_refresh', 'on', true); END $$;
+SELECT set_config('jurvio.defer_search_refresh', 'on', true);
 CREATE TEMP TABLE batch_result (scanned integer, published integer, cursor_at timestamptz, cursor_id uuid) ON COMMIT DROP;
 WITH params AS (
   SELECT created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1
@@ -269,6 +271,8 @@ SELECT scanned::text || '|' || published::text FROM batch_result;
 COMMIT;
 SQL
 )
+  # set_config prints "on". Keep only the scanned|published row.
+  line=$(printf '%s\n' "$output" | grep -E '^[0-9]+\|[0-9]+$' | tail -n 1 || true)
   case "$line" in
     [0-9]*\|[0-9]*) ;;
     *)
