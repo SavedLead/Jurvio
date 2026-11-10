@@ -31,8 +31,8 @@ export function docketDisplayBackfillEnabled(env?: Record<string, string | undef
  */
 export function pacedPublishLimit(requested: number, searchMs: number | null, slowDbQueries: number): number {
   const capped = Math.max(0, Math.floor(requested));
-  if (searchMs !== null && (searchMs >= 6000 || slowDbQueries >= 3)) return 0;
-  if (searchMs === null || searchMs >= 3000 || slowDbQueries > 0) return Math.min(capped, Math.max(1, Math.floor(capped / 4)));
+  if (searchMs !== null && (searchMs >= 2000 || slowDbQueries >= 3)) return 0;
+  if (searchMs === null || searchMs >= 1500 || slowDbQueries > 0) return Math.min(capped, Math.max(1, Math.floor(capped / 4)));
   return capped;
 }
 
@@ -43,13 +43,13 @@ export interface PublishPace {
   lockWaits: number;
 }
 
-/** Next short-commit size. Ramp while search and case pages stay under 1.5s. Quarter at 3s. Stop at 6s. */
+/** Next short-commit size. Ramp while search and case pages stay under 1.5s. Stop at 2s. */
 export function nextPublishBatch(previous: number, pace: PublishPace): number {
   const search = pace.searchMs;
   const page = pace.casePageMs;
   const known = [search, page].filter((value): value is number => value !== null);
   const slowest = known.length ? Math.max(...known) : null;
-  if ((search !== null && search >= 6000) || (page !== null && page >= 6000) || pace.slowQueries >= 3 || pace.lockWaits >= 3) {
+  if ((search !== null && search >= 2000) || (page !== null && page >= 2000) || pace.slowQueries >= 3 || pace.lockWaits >= 3) {
     return 0;
   }
   const base = Math.max(400, Math.floor(previous) || 400);

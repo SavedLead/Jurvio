@@ -333,7 +333,7 @@ jobs:
           app_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app)"
           for _ in $(seq 1 60); do
             [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ] && break
-            sleep 3
+            sleep 5
           done
           [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
           local_robots="$(curl -fsS -H 'Host: jurvio.com' http://127.0.0.1:3000/robots.txt)"
