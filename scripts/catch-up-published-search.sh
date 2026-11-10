@@ -453,6 +453,10 @@ psql -c "SELECT phase, passed_dates, batches, scanned, corrected, indexed, curso
 completed=0
 batch_size=500
 small_failures=0
+# A backup can make every batch time out. Wait and retry instead of exiting,
+# for about 3 hours, then stop only if nothing has committed.
+stall_wait=300
+stalled_for=0
 while true; do
   phase=$(psql -q -tA -c "SELECT phase FROM search_catchup_cursor WHERE singleton = 1;")
   phase=$(printf '%s' "$phase" | tr -d '[:space:]')
@@ -477,6 +481,8 @@ while true; do
       echo "batch $line"
       batch_size=500
       small_failures=0
+      stall_wait=300
+      stalled_for=0
       sleep 0.2
       ;;
     *)
@@ -490,8 +496,18 @@ while true; do
       else
         small_failures=$((small_failures + 1))
         if [ "$small_failures" -ge 3 ]; then
-          echo "catch-up stopped after repeated failures at 100" >&2
-          exit 1
+          if [ "$stalled_for" -ge 10800 ]; then
+            echo "catch-up stopped after ${stalled_for}s without a committed batch" >&2
+            exit 1
+          fi
+          echo "catch-up waiting ${stall_wait}s after repeated failures at 100" >&2
+          sleep "$stall_wait"
+          stalled_for=$((stalled_for + stall_wait))
+          if [ "$stall_wait" -lt 1800 ]; then
+            stall_wait=$((stall_wait * 2))
+          fi
+          small_failures=0
+          batch_size=500
         fi
       fi
       ;;
