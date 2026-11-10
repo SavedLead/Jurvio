@@ -21,6 +21,10 @@ describe("bulk publish of complete drafts", () => {
     expect(script).toContain("SELECT set_config('jurvio.defer_search_refresh', 'on', true);");
     expect(script).not.toContain("DO $$");
     expect(script).toContain("grep -E '^[0-9]+\\|[0-9]+$'");
+    expect(script).toContain("SET LOCAL statement_timeout = '180s';");
+    expect(script).toContain(") || true");
+    expect(script).toContain("reducing range to $RANGE and retrying the same checkpoint");
+    expect(script).toContain("retrying range $RANGE after a timeout");
     expect(script).toContain("public_case_search");
     expect(script).toContain("ON CONFLICT (case_id) DO NOTHING");
     expect(script).toContain("catch_up_search_slice || echo \"search catch-up skipped\"");

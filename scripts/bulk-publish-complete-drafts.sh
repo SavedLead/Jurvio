@@ -148,6 +148,7 @@ SQL
 
 started=$(date +%s)
 MIN_RANGE=5000
+floor_failures=0
 completed=0
 echo "resuming from bulk_publish_cursor"
 psql_c -c "SELECT batches, scanned, published, created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1;"
@@ -156,7 +157,7 @@ while true; do
   # replace it with the process id (the 6:22 AM ET run sent DO 1985059).
   output=$(psql -q -tA <<SQL
 BEGIN;
-SET LOCAL statement_timeout = '120s';
+SET LOCAL statement_timeout = '180s';
 SET LOCAL lock_timeout = '15s';
 SELECT set_config('jurvio.defer_search_refresh', 'on', true);
 CREATE TEMP TABLE batch_result (scanned integer, published integer, cursor_at timestamptz, cursor_id uuid) ON COMMIT DROP;
@@ -270,19 +271,29 @@ WHERE singleton = 1
 SELECT scanned::text || '|' || published::text FROM batch_result;
 COMMIT;
 SQL
-)
-  # set_config prints "on". Keep only the scanned|published row.
+) || true
+  # A statement timeout makes psql exit 3. Without "|| true", set -e stops
+  # the run (7:14 AM ET, exit 3) before the range can shrink. The transaction
+  # rolls back, so the checkpoint stays put. set_config prints "on"; keep
+  # only the scanned|published row.
   line=$(printf '%s\n' "$output" | grep -E '^[0-9]+\|[0-9]+$' | tail -n 1 || true)
   case "$line" in
     [0-9]*\|[0-9]*) ;;
     *)
-      echo "batch failed: ${line:-empty}" >&2
-      if [ "$RANGE" -le "$MIN_RANGE" ]; then
+      echo "batch failed at range ${RANGE}: ${line:-empty}" >&2
+      if [ "$RANGE" -gt "$MIN_RANGE" ]; then
+        RANGE=$((RANGE / 2))
+        if [ "$RANGE" -lt "$MIN_RANGE" ]; then RANGE=$MIN_RANGE; fi
+        floor_failures=0
+        echo "reducing range to $RANGE and retrying the same checkpoint" >&2
+        continue
+      fi
+      floor_failures=$((floor_failures + 1))
+      if [ "$floor_failures" -ge 3 ]; then
         echo "bulk publish ended without completing" >&2
         exit 1
       fi
-      RANGE=$((RANGE / 2))
-      echo "reducing range to $RANGE and retrying the same checkpoint" >&2
+      echo "retrying range $RANGE after a timeout ($floor_failures of 3)" >&2
       continue
       ;;
   esac
@@ -291,6 +302,7 @@ SQL
   now=$(date +%s)
   elapsed=$((now - started))
   if [ "$elapsed" -lt 1 ]; then elapsed=1; fi
+  floor_failures=0
   echo "batch scanned=$scanned published=$published range=$RANGE elapsed_s=$elapsed"
   catch_up_search_slice || echo "search catch-up skipped"
   if [ "$scanned" = "0" ]; then
