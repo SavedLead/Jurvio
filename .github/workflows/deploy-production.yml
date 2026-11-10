@@ -444,7 +444,14 @@ jobs:
             echo "::error::Health check failed. No automatic rollback was performed. ${rollback:-Previous image was not recorded.}"
             exit 1
           }
-          public_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 30 https://jurvio.com/login)"
+          # The public container can return 500/502/525 for a few seconds while it
+          # restarts. Retry those. A real login page is still a failure.
+          public_status=""
+          for _ in 1 2 3 4 5 6 7 8; do
+            public_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 30 https://jurvio.com/login)"
+            if [ "$public_status" = "404" ]; then break; fi
+            case "$public_status" in 500|502|503|525) sleep 5 ;; *) break ;; esac
+          done
           test "$public_status" = "404" || {
             echo "::error::jurvio.com/login must remain hidden; received HTTP $public_status"
             exit 1
