@@ -75,7 +75,15 @@ describe("bulk publish of complete drafts", () => {
     expect(catchUp).toContain("batch_size=500");
     expect(catchUp).toContain("batch_size=250");
     expect(catchUp).toContain("batch_size=100");
-    expect(catchUp).toContain("catch-up stopped after repeated failures at 100");
+    expect(catchUp).toContain("catch-up waiting ${stall_wait}s after repeated failures at 100");
+    expect(catchUp).toContain("stalled_for=$((stalled_for + stall_wait))");
+    expect(catchUp).toContain("stall_wait=$((stall_wait * 2))");
+    expect(catchUp).toContain('if [ "$stalled_for" -ge 10800 ]; then');
+    expect(catchUp).toContain("catch-up stopped after ${stalled_for}s without a committed batch");
+    const stall = catchUp.slice(catchUp.indexOf('if [ "$small_failures" -ge 3 ]; then'));
+    expect(stall.indexOf("catch-up stopped after")).toBeLessThan(stall.indexOf("catch-up waiting"));
+    expect(stall.indexOf("catch-up waiting")).toBeLessThan(stall.indexOf('sleep "$stall_wait"'));
+    expect(catchUp).toContain("stalled_for=0");
     expect(catchUp).toContain("entry.provider_entry_id = windowed.deduplication_key");
     expect(readFileSync("db/migrations/0205_catchup_date_correction_index.sql", "utf8")).toContain(
       "docket_entry_case_provider_entry_idx",
