@@ -164,20 +164,42 @@ CREATE TEMP TABLE batch_result (scanned integer, published integer, cursor_at ti
 WITH params AS (
   SELECT created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1
 ),
-windowed AS (
+windowed AS MATERIALIZED (
+  -- legal_case_draft_created_idx is (created_at, id) WHERE publication = 'draft'.
+  -- A created_at < cursor range walks that index backward and stops at LIMIT.
+  -- The old OR keyset could not, so the first batch after the Oct 30 cursor
+  -- ran until the statement limit (120s at 7:16 AM ET).
   SELECT c.id, c.created_at, c.caption, c.docket_number, c.filed_on,
     c.cause_of_action, c.nature_of_suit_code, court.provider_court_id
-  FROM legal_case c
+  FROM params
+  CROSS JOIN LATERAL (
+    SELECT picked.id
+    FROM (
+      (
+        SELECT c.id, c.created_at
+        FROM legal_case c
+        WHERE c.publication = 'draft'
+          AND (params.created_at IS NULL OR c.created_at < params.created_at)
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT ${RANGE}
+      )
+      UNION ALL
+      (
+        SELECT c.id, c.created_at
+        FROM legal_case c
+        WHERE c.publication = 'draft'
+          AND params.case_id IS NOT NULL
+          AND c.created_at = params.created_at
+          AND c.id < params.case_id
+        ORDER BY c.id DESC
+        LIMIT ${RANGE}
+      )
+    ) picked
+    ORDER BY picked.created_at DESC, picked.id DESC
+    LIMIT ${RANGE}
+  ) ids
+  JOIN legal_case c ON c.id = ids.id
   JOIN court ON court.id = c.court_id
-  CROSS JOIN params
-  WHERE c.publication = 'draft'
-    AND (
-      params.created_at IS NULL
-      OR c.created_at < params.created_at
-      OR (c.created_at = params.created_at AND c.id < params.case_id)
-    )
-  ORDER BY c.created_at DESC, c.id DESC
-  LIMIT ${RANGE}
 ),
 picked AS (
   SELECT windowed.id,

@@ -46,6 +46,8 @@ describe("bulk publish of complete drafts", () => {
     expect(script).toContain("resuming from bulk_publish_cursor");
     expect(script).toContain("bulk publish ended without completing");
     expect(script).toContain("ORDER BY c.created_at DESC, c.id DESC");
+    expect(script).toContain("legal_case_draft_created_idx");
+    expect(script).toContain("c.created_at < params.created_at");
     expect(script).toContain("c.publication = 'draft'");
     expect(script).toContain("</dev/null");
   });
