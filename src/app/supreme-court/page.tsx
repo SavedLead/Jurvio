@@ -3,7 +3,7 @@ import Link from "next/link";
 import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
-import { listPublicScotusOpinions } from "@/modules/scotus/application/list-public-scotus-opinions";
+import { listPublicScotusOpinions, type PublicScotusDiscovery } from "@/modules/scotus/application/list-public-scotus-opinions";
 import { isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
 import { fetchOfficialSlipOpinionIndex } from "@/modules/ingestion/providers/scotus/official-opinions";
 import { currentJustices, officialScotusLinks } from "@/modules/scotus/domain/court-reference";
@@ -107,8 +107,24 @@ function Term({ slug, children }: { slug: string; children: React.ReactNode }) {
   return <Link className={styles.legalTerm} href={`/explainers/${slug}` as Route}>{children}</Link>;
 }
 
+const emptyDiscovery: PublicScotusDiscovery = {
+  courtName: "Supreme Court of the United States",
+  courtPublicId: null,
+  opinionCount: 0,
+  caseCount: 0,
+  latestFiledOn: null,
+  opinions: [],
+};
+
 export default async function SupremeCourtPage() {
-  const [discovery, officialSlips] = await Promise.all([getCachedScotusDiscovery(), getCachedOfficialSlips()]);
+  let discovery = emptyDiscovery;
+  let officialSlips: SlipOpinionCard[] = [];
+  try {
+    [discovery, officialSlips] = await Promise.all([getCachedScotusDiscovery(), getCachedOfficialSlips()]);
+  } catch {
+    discovery = emptyDiscovery;
+    officialSlips = [];
+  }
   const recentOpinions = mergeRecentOpinions(discovery.opinions, officialSlips);
   const term = currentOctoberTerm(new Date());
   const slipOpinionsUrl = `https://www.supremecourt.gov/opinions/slipopinion/${term.yy}`;
