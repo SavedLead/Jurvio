@@ -310,13 +310,31 @@ CREATE TRIGGER court_published_count_decision_delete
 
 -- @commit
 
+-- Replace case_count from a fresh displayable count. Do not add that count to
+-- the row that is already there: the live trigger may already have added its
+-- publishes to both case_count and published_delta. Subtract the delta from
+-- the snapshot and add back the delta at write time, so those publishes stay
+-- counted once. A second seed of the same court produces the same total.
+CREATE OR REPLACE FUNCTION apply_published_count_seed(court uuid, counted integer, delta_at_count integer)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE court_public_stats
+  SET published_base = counted - delta_at_count,
+      case_count = GREATEST(0, (counted - delta_at_count) + published_delta)
+  WHERE court_id = court;
+  IF NOT FOUND AND counted <> 0 THEN
+    INSERT INTO court_public_stats (court_id, case_count, published_base, published_delta, recent_case_ids)
+    VALUES (court, counted, counted, 0, '{}');
+  END IF;
+END;
+$$;
+
 -- One court at a time, in its own transaction, so a count does not hold a
 -- lock across the bulk job's publish statement. The count uses the published
 -- browse index (court_id WHERE publication = published) and only takes the
--- counter row lock for the final assignment. Publishes that commit during the
--- count stay in published_delta and are added back, so they are not lost and
--- not counted twice. A row the bulk job is still holding is skipped and
--- remains the previous total plus the trigger's deltas.
+-- counter row lock for the final assignment. A row the bulk job is still
+-- holding is skipped and remains the previous total plus the trigger's deltas.
 CREATE OR REPLACE PROCEDURE seed_court_published_counts()
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -347,14 +365,7 @@ BEGIN
     FOR attempt IN 1..70 LOOP
       BEGIN
         PERFORM set_config('lock_timeout', '2s', true);
-        UPDATE court_public_stats
-        SET published_base = counted - delta_at_count,
-            case_count = GREATEST(0, (counted - delta_at_count) + published_delta)
-        WHERE court_id = court;
-        IF NOT FOUND AND counted <> 0 THEN
-          INSERT INTO court_public_stats (court_id, case_count, published_base, published_delta, recent_case_ids)
-          VALUES (court, counted, counted, 0, '{}');
-        END IF;
+        PERFORM apply_published_count_seed(court, counted, delta_at_count);
         seeded := true;
         EXIT;
       EXCEPTION WHEN lock_not_available OR query_canceled THEN
