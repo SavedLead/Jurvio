@@ -21,7 +21,8 @@ type Sql = ReturnType<typeof postgres>;
 
 export interface CorpusCoverage {
   publishedCases: number;
-  publishedOpinions: number;
+  /** Null when no precomputed opinion total is available. Never counted live. */
+  publishedOpinions: number | null;
   courtsWithRecords: number;
   earliestFiledOn: string | null;
   latestFiledOn: string | null;
@@ -44,6 +45,8 @@ export interface CourtFamilyCoverage {
 export interface CoverageLimitations {
   /** Records ingested but withheld from publication pending human review. */
   heldForReview: number;
+  /** True when heldForReview is a planner estimate, not a counted total. */
+  heldApproximate: boolean;
   /** Documents whose text could not be extracted, by reason. */
   blockedDocuments: Array<{ reason: string; count: number }>;
   /** District courts tracked but not yet contributing any published record. */
@@ -79,6 +82,26 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
 /** The single published-case total is the sum of the family rows, not a second scan. */
 export function publishedCasesFromFamilies(families: readonly { publishedCases: number }[]): number {
   return families.reduce((total, family) => total + family.publishedCases, 0);
+}
+
+/** A snapshot can replace the page only when it actually has family counts. */
+export function coverageSnapshotUsable(snapshot: CoverageSnapshot): boolean {
+  return publishedCasesFromFamilies(snapshot.families ?? []) > 0;
+}
+
+/**
+ * A failed refresh must not wipe the last family table. Sections the new
+ * snapshot did load replace that section; a null section keeps the previous one.
+ */
+export function retainCoverageSnapshot(previous: CoverageSnapshot | null, next: CoverageSnapshot): CoverageSnapshot {
+  if (!coverageSnapshotUsable(next)) return previous ?? next;
+  if (!previous) return next;
+  return {
+    checkedAt: next.checkedAt,
+    families: next.families,
+    corpus: next.corpus ?? previous.corpus,
+    limitations: next.limitations ?? previous.limitations,
+  };
 }
 
 /** Sums per-court rows into one family total. Pure, so the roll-up is testable. */
@@ -148,93 +171,98 @@ export function classifyCourts(
   return families.filter((family) => family.courtsTracked !== null || family.publishedCases > 0);
 }
 
+/** Per-court published counts from court_public_stats. Does not read case rows. */
+async function readStatCourts(sql: Sql): Promise<CourtRow[]> {
+  const rows = await sql<{ code: string; publishedCases: string; latestFiledOn: string | null }[]>`
+    SELECT lower(court.provider_court_id) AS code,
+           sum(stats.case_count)::bigint AS "publishedCases",
+           max(stats.latest_case_date)::text AS "latestFiledOn"
+    FROM court_public_stats stats
+    JOIN court ON court.id = stats.court_id
+    WHERE stats.case_count > 0
+      AND court.provider_court_id IS NOT NULL
+    GROUP BY 1
+  `;
+  return rows.map((row) => ({
+    code: row.code,
+    publishedCases: Number(row.publishedCases),
+    earliestFiledOn: null,
+    latestFiledOn: row.latestFiledOn,
+  }));
+}
+
 export async function getCoverageSnapshot(sql: Sql): Promise<CoverageSnapshot> {
   const checkedAt = new Date().toISOString();
 
-  const families = await safe(async () => {
-    const courts = await sql<CourtRow[]>`
-      SELECT lower(court.provider_court_id) AS code,
-             count(*)::int AS "publishedCases",
-             min(legal_case.filed_on)::text AS "earliestFiledOn",
-             max(legal_case.filed_on)::text AS "latestFiledOn"
-      FROM court
-      JOIN legal_case ON legal_case.court_id = court.id
-      WHERE legal_case.publication='published' AND court.provider_court_id IS NOT NULL
-      GROUP BY 1
-    `;
+  const loaded = await safe(async () => {
+    const courts = await readStatCourts(sql);
     const circuits = await sql<{ code: string }[]>`
       SELECT lower(court_code) AS code FROM appellate_source_registry
     `;
-    const districts = await sql<{ code: string }[]>`
-      SELECT lower(jurvio_court_code) AS code FROM direct_court_registry WHERE court_type='district'
+    const districts = await sql<{ code: string; live: boolean }[]>`
+      SELECT lower(jurvio_court_code) AS code, rss_available AS live
+      FROM direct_court_registry
+      WHERE court_type = 'district'
     `;
-    return classifyCourts(
+    const families = classifyCourts(
       courts,
       circuits.map((row) => row.code),
       districts.map((row) => row.code),
     );
+    const districtCodes = new Set(districts.map((row) => row.code));
+    const withRecords = new Set(
+      courts.filter((row) => districtCodes.has(row.code) && row.publishedCases > 0).map((row) => row.code),
+    ).size;
+    return {
+      families,
+      districtsWithoutRecords: Math.max(0, districts.length - withRecords),
+      districtsLiveMonitored: districts.filter((row) => row.live).length,
+    };
   });
-
+  const families = loaded?.families ?? null;
   const publishedCases = families ? publishedCasesFromFamilies(families) : null;
   const familyEarliest = families?.map((family) => family.earliestFiledOn).filter((value): value is string => Boolean(value)).sort().at(0) ?? null;
   const familyLatest = families?.map((family) => family.latestFiledOn).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
-  const corpusDetails = await safe(async () => {
-    return await sql.begin(async (tx) => {
-      await tx.unsafe(`SET LOCAL statement_timeout = '4s'`);
-      const [row] = await tx<
-        { publishedOpinions: number; lastSourceRetrievedAt: string | null }[]
-      >`
-        SELECT
-          (SELECT count(*)::int FROM document
-             JOIN judicial_opinion ON judicial_opinion.document_id = document.id
-             JOIN legal_case ON legal_case.id = document.case_id
-            WHERE document.publication='published' AND legal_case.publication='published'
-          ) AS "publishedOpinions",
-          (SELECT max(retrieved_at)::text FROM raw_artifact) AS "lastSourceRetrievedAt"
-      `;
-      return row ?? null;
-    });
-  });
   const corpus = publishedCases === null ? null : {
     publishedCases,
-    publishedOpinions: corpusDetails?.publishedOpinions ?? 0,
+    publishedOpinions: null,
     courtsWithRecords: families?.reduce((total, family) => total + family.courtsWithRecords, 0) ?? 0,
     earliestFiledOn: familyEarliest,
     latestFiledOn: familyLatest,
-    lastSourceRetrievedAt: corpusDetails?.lastSourceRetrievedAt ?? null,
+    lastSourceRetrievedAt: null,
   };
 
-  const limitations = await safe(async () => {
-    const [held] = await sql<{ count: number }[]>`
-      SELECT count(*)::int FROM legal_case WHERE publication='draft' AND verification='needs_review'
+  const held = await safe(async () => {
+    const [estimate] = await sql<{ total: string }[]>`
+      SELECT greatest(coalesce(reltuples, 0), 0)::bigint AS total
+      FROM pg_class
+      WHERE relname = 'legal_case_draft_created_idx'
     `;
-    const blocked = await sql<{ reason: string | null; count: number }[]>`
-      SELECT blocker_code AS reason, count(*)::int
-      FROM appellate_ingestion_item WHERE state='blocked'
-      GROUP BY 1 ORDER BY count(*) DESC
-    `;
-    const [districts] = await sql<{ tracked: number; live: number; withRecords: number }[]>`
-      SELECT
-        (SELECT count(*)::int FROM direct_court_registry WHERE court_type='district') AS tracked,
-        (SELECT count(*)::int FROM direct_court_registry WHERE court_type='district' AND rss_available) AS live,
-        (SELECT count(*)::int FROM direct_court_registry registry
-          WHERE registry.court_type='district'
-            AND EXISTS (
-              SELECT 1 FROM court
-              JOIN legal_case ON legal_case.court_id = court.id
-              WHERE lower(court.provider_court_id) = lower(registry.jurvio_court_code)
-                AND legal_case.publication='published'
-            )) AS "withRecords"
-    `;
-    return {
-      heldForReview: held?.count ?? 0,
-      blockedDocuments: blocked
-        .filter((row) => row.count > 0)
-        .map((row) => ({ reason: row.reason ?? "unspecified", count: row.count })),
-      districtsWithoutRecords: Math.max(0, (districts?.tracked ?? 0) - (districts?.withRecords ?? 0)),
-      districtsLiveMonitored: districts?.live ?? 0,
-    };
+    const total = Number(estimate?.total ?? 0);
+    return Number.isFinite(total) ? total : 0;
   });
+  const blocked = await safe(async () => {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = '3s'`);
+      const rows = await tx<{ reason: string | null; count: number }[]>`
+        SELECT blocker_code AS reason, count(*)::int AS count
+        FROM appellate_ingestion_item
+        WHERE state = 'blocked'
+        GROUP BY 1
+        ORDER BY count(*) DESC
+      `;
+      return rows
+        .filter((row) => row.count > 0)
+        .map((row) => ({ reason: row.reason ?? "unspecified", count: row.count }));
+    });
+  });
+  const limitations = loaded ? {
+    heldForReview: held ?? 0,
+    heldApproximate: true,
+    blockedDocuments: blocked ?? [],
+    districtsWithoutRecords: loaded.districtsWithoutRecords,
+    districtsLiveMonitored: loaded.districtsLiveMonitored,
+  } : null;
 
   return { checkedAt, corpus, families, limitations };
 }

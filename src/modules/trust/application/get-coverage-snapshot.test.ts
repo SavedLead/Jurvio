@@ -4,8 +4,11 @@ import {
   describeBlocker,
   formatCoverageRange,
   publishedCasesFromFamilies,
+  retainCoverageSnapshot,
   summarizeFamily,
+  type CoverageSnapshot,
 } from "./get-coverage-snapshot";
+import { readFileSync } from "node:fs";
 
 const court = (code: string, publishedCases: number, earliest?: string, latest?: string) => ({
   code,
@@ -68,6 +71,52 @@ describe("court family roll-up", () => {
     const family = summarizeFamily("supreme", "SCOTUS", [court("scotus", 5)], 1);
     expect(family.earliestFiledOn).toBeNull();
     expect(formatCoverageRange(family.earliestFiledOn, family.latestFiledOn)).toBe("Unknown");
+  });
+});
+
+describe("coverage refresh", () => {
+  const snapshot = (publishedCases: number | null, at: string): CoverageSnapshot => ({
+    checkedAt: at,
+    corpus: publishedCases === null ? null : {
+      publishedCases,
+      publishedOpinions: null,
+      courtsWithRecords: 1,
+      earliestFiledOn: null,
+      latestFiledOn: "2026-11-09",
+      lastSourceRetrievedAt: null,
+    },
+    families: publishedCases === null ? null : [{
+      key: "district",
+      name: "United States District Courts",
+      courtsWithRecords: 1,
+      courtsTracked: 94,
+      publishedCases,
+      earliestFiledOn: null,
+      latestFiledOn: "2026-11-09",
+    }],
+    limitations: null,
+  });
+
+  it("keeps the last family table when the next refresh has no counts", () => {
+    const previous = snapshot(4_059_003, "2026-11-10T05:00:00.000Z");
+    const failed = snapshot(null, "2026-11-10T06:41:00.000Z");
+    expect(retainCoverageSnapshot(previous, failed)).toBe(previous);
+  });
+
+  it("replaces the snapshot when the new family rows have a total", () => {
+    const previous = snapshot(100, "2026-11-10T05:00:00.000Z");
+    const next = snapshot(200, "2026-11-10T06:00:00.000Z");
+    expect(retainCoverageSnapshot(previous, next).corpus?.publishedCases).toBe(200);
+    expect(retainCoverageSnapshot(null, next)).toBe(next);
+  });
+
+  it("does not aggregate legal_case while building the public snapshot", () => {
+    const source = readFileSync("src/modules/trust/application/get-coverage-snapshot.ts", "utf8");
+    const loader = source.slice(source.indexOf("async function readStatCourts"));
+    expect(loader).toContain("court_public_stats");
+    expect(loader).toContain("publishedCasesFromFamilies");
+    expect(loader).not.toMatch(/from\s+legal_case/i);
+    expect(loader).not.toMatch(/join\s+legal_case/i);
   });
 });
 

@@ -20,9 +20,10 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
   return (
     <div className={styles.report}>
       <p className={styles.asOf}>
-        Measured directly from the published corpus as of{" "}
-        <strong>{formatEasternDateTime(snapshot.checkedAt)}</strong>. Draft, held, and suppressed
-        records are excluded from every figure on this page.
+        Measured from precomputed per-court totals as of{" "}
+        <strong>{formatEasternDateTime(snapshot.checkedAt)}</strong>. The published-case total is
+        the sum of the family rows. These figures can lag new publication. Draft, held, and
+        suppressed records are excluded.
       </p>
 
       {corpus ? (
@@ -33,7 +34,7 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
           </div>
           <div>
             <dt>Published opinions</dt>
-            <dd>{count(corpus.publishedOpinions)}</dd>
+            <dd>{corpus.publishedOpinions === null ? "Not available" : count(corpus.publishedOpinions)}</dd>
           </div>
           <div>
             <dt>Courts with records</dt>
@@ -89,7 +90,11 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
                     </td>
                     <td className={styles.numeric}>{count(family.publishedCases)}</td>
                     <td className={styles.numeric}>
-                      {formatCoverageRange(family.earliestFiledOn, family.latestFiledOn)}
+                      {family.earliestFiledOn
+                        ? formatCoverageRange(family.earliestFiledOn, family.latestFiledOn)
+                        : family.latestFiledOn
+                          ? `through ${family.latestFiledOn.slice(0, 4)}`
+                          : "Unknown"}
                     </td>
                   </tr>
                 );
@@ -113,7 +118,7 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
           </li>
           {limitations.heldForReview > 0 ? (
             <li>
-              <strong>{count(limitations.heldForReview)} collected records are waiting for a quality check</strong>{" "}
+              <strong>{limitations.heldApproximate ? "About " : ""}{count(limitations.heldForReview)} collected records are waiting for a quality check</strong>{" "}
               and are deliberately not published. Records stay unpublished until they pass Jurvio’s
               publication and privacy checks.
             </li>
