@@ -18,18 +18,49 @@ export interface CaseListingFilters {
   toYear: number | null;
   sort: CaseListingSort;
   density: CaseListingDensity;
+  /** Opaque newest-first cursor. Absent on the first page. */
+  before: string | null;
 }
 
 export type CaseListingParams = Partial<Record<
-  "page" | "q" | "court" | "party" | "firm" | "decided" | "opinion" | "verified" | "from" | "to" | "sort" | "view",
+  "page" | "q" | "court" | "party" | "firm" | "decided" | "opinion" | "verified" | "from" | "to" | "sort" | "view" | "before",
   string | string[]
 >>;
+
+export interface CaseListCursor {
+  on: string | null;
+  caption: string;
+  id: string;
+}
+
+export function encodeCaseCursor(cursor: CaseListCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+export function decodeCaseCursor(value: string | null | undefined): CaseListCursor | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<CaseListCursor>;
+    if (typeof parsed.caption !== "string" || typeof parsed.id !== "string") return null;
+    if (!/^[0-9a-f-]{36}$/i.test(parsed.id)) return null;
+    if (parsed.on !== null && (typeof parsed.on !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.on))) return null;
+    return { on: parsed.on ?? null, caption: parsed.caption, id: parsed.id };
+  } catch {
+    return null;
+  }
+}
 
 const MIN_YEAR = 1789;
 const MAX_TEXT = 200;
 
 function first(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function cursorParam(value: string | string[] | undefined) {
+  const raw = first(value)?.trim();
+  if (!raw || raw.length > 2000 || !decodeCaseCursor(raw)) return null;
+  return raw;
 }
 
 function text(value: string | string[] | undefined) {
@@ -74,6 +105,7 @@ export function parseCaseListingParams(raw: CaseListingParams, now = new Date())
     toYear,
     sort,
     density: first(raw.view) === "compact" ? "compact" : "comfortable",
+    before: cursorParam(raw.before),
   };
 }
 
@@ -96,6 +128,7 @@ export function hasActiveFilters(filters: CaseListingFilters) {
 
 export function buildCaseListingHref(filters: CaseListingFilters, overrides: Partial<CaseListingFilters> = {}) {
   const next = { ...filters, ...overrides };
+  if (!Object.prototype.hasOwnProperty.call(overrides, "before")) next.before = null;
   const params = new URLSearchParams();
   if (next.query) params.set("q", next.query);
   if (next.court) params.set("court", next.court);
@@ -108,6 +141,7 @@ export function buildCaseListingHref(filters: CaseListingFilters, overrides: Par
   if (next.toYear) params.set("to", String(next.toYear));
   if (next.sort !== defaultSort(next) && !(next.sort === "best" && !next.query)) params.set("sort", next.sort);
   if (next.density === "compact") params.set("view", "compact");
+  if (next.before) params.set("before", next.before);
   if (next.page > 1) params.set("page", String(next.page));
   const search = params.toString();
   return search ? `/cases?${search}` : "/cases";
