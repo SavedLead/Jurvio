@@ -12,8 +12,9 @@ BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-3600}
 PULL_TIMEOUT_SECONDS=${PULL_TIMEOUT_SECONDS:-900}
 # 0124 builds a concurrent index and backfills search visibility on the live
 # opinion corpus. 300s can kill that mid-build and leave an INVALID index.
-# 1800s is the migration budget (the backup has its own, longer one).
-MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-1800}
+# 3600s covers the one-time per-court published-count seed. The backup and
+# its off-site upload have their own budgets.
+MIGRATION_TIMEOUT_SECONDS=${MIGRATION_TIMEOUT_SECONDS:-3600}
 START_TIMEOUT_SECONDS=${START_TIMEOUT_SECONDS:-180}
 
 diagnose() {

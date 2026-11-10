@@ -18,7 +18,8 @@ describe("published case counter", () => {
     expect(migration).toContain("legal_case_is_public(id, publication)");
     expect(migration).toContain("decision.displayable");
     expect(migration).toContain("FOREACH court IN ARRAY courts LOOP");
-    expect(migration).toContain("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+    expect(migration).not.toContain("SET TRANSACTION");
+    expect(migration).toContain("INTO delta_at_count, counted");
     expect(migration).not.toContain("legal_case.updated_at");
     expect(migration).not.toContain("ACCESS EXCLUSIVE");
   });
@@ -48,10 +49,38 @@ describe("published case counter", () => {
     expect(apply.indexOf("d.delta <> 0")).toBeLessThan(apply.indexOf("INSERT INTO court_public_stats"));
   });
 
+  it("can be applied again without a second trigger, and the seed keeps live deltas once", () => {
+    const creates = [...migration.matchAll(/CREATE TRIGGER ([a-z0-9_]+)/g)].map((match) => match[1]);
+    expect(creates).toEqual([
+      "court_published_count_insert",
+      "court_published_count_delete",
+      "court_published_count_update",
+      "court_published_count_decision_insert",
+      "court_published_count_decision_update",
+      "court_published_count_decision_delete",
+    ]);
+    for (const name of creates) {
+      const dropAt = migration.indexOf(`DROP TRIGGER IF EXISTS ${name} ON`);
+      const createAt = migration.indexOf(`CREATE TRIGGER ${name}`);
+      expect(dropAt).toBeGreaterThanOrEqual(0);
+      expect(dropAt).toBeLessThan(createAt);
+    }
+    expect(migration).toContain("CREATE OR REPLACE FUNCTION legal_case_is_public");
+    expect(migration).toContain("CREATE OR REPLACE FUNCTION apply_court_published_deltas");
+    expect(migration).toContain("CREATE OR REPLACE FUNCTION sync_court_published_count");
+    expect(migration).toContain("CREATE OR REPLACE FUNCTION sync_published_count_on_decision");
+    expect(migration).toContain("CREATE OR REPLACE FUNCTION apply_published_count_seed");
+    expect(migration).toContain("CREATE OR REPLACE PROCEDURE seed_court_published_counts");
+    expect(migration).toContain("(counted - delta_at_count) + published_delta");
+    expect(migration).not.toMatch(/case_count = stats\.case_count \+ counted/);
+  });
+
   it("does not let the directory refresh recount the published total", () => {
     const courtBatch = refresh.slice(refresh.indexOf("async function upsertCourtBatch"), refresh.indexOf("async function nextJudgeIds"));
+    const conflict = courtBatch.slice(courtBatch.indexOf("ON CONFLICT"));
     expect(courtBatch).not.toContain("case_count = EXCLUDED.case_count");
     expect(courtBatch).not.toContain("count(*)::int AS case_count");
+    expect(conflict).not.toContain("case_count");
     expect(listing).toContain("running");
     expect(listing).toContain("court_public_stats.case_count");
     expect(coverage).toContain("court_public_stats");
