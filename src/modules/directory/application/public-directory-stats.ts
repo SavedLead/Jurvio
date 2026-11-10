@@ -7,11 +7,11 @@ type Sql = ReturnType<typeof postgres>;
  * Precomputed directory counts for /courts, /courts/[id], the /cases court
  * facet and /judges (migration 0135, ADR 0080).
  *
- * Every pass walks courts and then judges in id order, a small batch per
- * committed statement, with a pause between batches so it never holds a
- * connection or the disk for long while the public site is serving. A batch
- * that hits its statement timeout is retried smaller; a single row that still
- * times out is skipped and keeps its previous value (or the live fallback).
+ * The published case_count is maintained by the publication trigger, not by
+ * this job. This pass only refreshes the latest date and the newest-case
+ * list, then judges. A batch that hits its statement timeout is retried
+ * smaller; a single row that still times out is skipped and keeps its
+ * previous value.
  */
 export const COURT_BATCH = 20;
 export const JUDGE_BATCH = 250;
@@ -113,10 +113,10 @@ async function upsertCourtBatch(sql: Sql, ids: string[]): Promise<number> {
     const [row] = await tx<{ n: number }[]>`
       WITH upserted AS (
         INSERT INTO court_public_stats (court_id, case_count, latest_case_date, recent_case_ids, refreshed_at)
-        SELECT court.id, totals.case_count, totals.latest_case_date, recent.ids, now()
+        SELECT court.id, 0, totals.latest_case_date, recent.ids, now()
         FROM court
         CROSS JOIN LATERAL (
-          SELECT count(*)::int AS case_count, max(c.filed_on) AS latest_case_date
+          SELECT max(c.filed_on) AS latest_case_date
           FROM legal_case c
           WHERE c.court_id = court.id
             AND c.publication = 'published'
@@ -136,7 +136,6 @@ async function upsertCourtBatch(sql: Sql, ids: string[]): Promise<number> {
         ) recent
         WHERE court.id = ANY(${ids}::uuid[])
         ON CONFLICT (court_id) DO UPDATE SET
-          case_count = EXCLUDED.case_count,
           latest_case_date = EXCLUDED.latest_case_date,
           recent_case_ids = EXCLUDED.recent_case_ids,
           refreshed_at = EXCLUDED.refreshed_at

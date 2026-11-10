@@ -93,9 +93,10 @@ export function listingHasNarrowingFilter(options: Pick<
 }
 
 /**
- * Published-case headline for the unfiltered listing. Sums the precomputed
- * per-court counts (court_public_stats). When that table is empty or not
- * migrated yet, uses the planner estimate on the published-recency index.
+ * Published-case headline for the unfiltered listing. Sums the running
+ * per-court counters (court_public_stats.case_count). A publish or unpublish
+ * changes the counter in that same transaction. When the table is empty or
+ * not migrated yet, uses the planner estimate on the published-recency index.
  * Neither path counts legal_case.
  */
 export async function readCachedPublishedTotal(sql: Sql): Promise<number> {

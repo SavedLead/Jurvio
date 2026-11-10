@@ -171,7 +171,10 @@ export function classifyCourts(
   return families.filter((family) => family.courtsTracked !== null || family.publishedCases > 0);
 }
 
-/** Per-court published counts from court_public_stats. Does not read case rows. */
+/**
+ * Per-court published counters. Family totals (Supreme Court, appeals,
+ * district, other) are sums of these rows, not a fresh count of cases.
+ */
 async function readStatCourts(sql: Sql): Promise<CourtRow[]> {
   const rows = await sql<{ code: string; publishedCases: string; latestFiledOn: string | null }[]>`
     SELECT lower(court.provider_court_id) AS code,
