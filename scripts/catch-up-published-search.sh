@@ -20,11 +20,18 @@ if [ -z "$pg" ]; then
   exit 1
 fi
 
+# -c queries must not read stdin. This file is fed to `bash -s`, and
+# `docker exec -i` drains that stream to EOF, which used to skip the loop.
 psql() {
+  docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off "$@" </dev/null
+}
+
+# Heredoc SQL is this command's stdin, so -i stops at the heredoc, not at the script.
+psql_sql() {
   docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off "$@"
 }
 
-psql <<'SQL'
+psql_sql <<'SQL'
 CREATE TABLE IF NOT EXISTS search_catchup_cursor (
   singleton integer PRIMARY KEY CHECK (singleton = 1),
   phase text NOT NULL DEFAULT 'cases',
@@ -43,7 +50,7 @@ INSERT INTO search_catchup_cursor (singleton) VALUES (1) ON CONFLICT DO NOTHING;
 SQL
 
 case_batch() {
-  psql -q -tA <<'SQL'
+  psql_sql -q -tA <<'SQL'
 BEGIN;
 SET LOCAL statement_timeout = '30s';
 SET LOCAL lock_timeout = '3s';
@@ -157,7 +164,7 @@ SQL
 }
 
 entry_batch() {
-  psql -q -tA <<'SQL'
+  psql_sql -q -tA <<'SQL'
 BEGIN;
 SET LOCAL statement_timeout = '30s';
 SET LOCAL lock_timeout = '3s';
@@ -227,11 +234,13 @@ SQL
 echo "resuming from search_catchup_cursor"
 psql -c "SELECT phase, passed_dates, batches, scanned, corrected, indexed, cursor_date, cursor_at FROM search_catchup_cursor WHERE singleton = 1;"
 
+completed=0
 while true; do
   phase=$(psql -q -tA -c "SELECT phase FROM search_catchup_cursor WHERE singleton = 1;")
   phase=$(printf '%s' "$phase" | tr -d '[:space:]')
   if [ "$phase" = "done" ]; then
     echo "catch-up complete"
+    completed=1
     break
   fi
   if [ "$phase" = "entries" ]; then
@@ -246,5 +255,10 @@ while true; do
   esac
   sleep 0.2
 done
+
+if [ "$completed" != 1 ]; then
+  echo "catch-up ended without completing" >&2
+  exit 1
+fi
 
 psql -c "SELECT phase, batches, scanned, corrected, indexed FROM search_catchup_cursor WHERE singleton = 1;"
