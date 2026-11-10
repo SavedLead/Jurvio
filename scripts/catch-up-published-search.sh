@@ -88,12 +88,29 @@ corrected AS (
   FROM (
     SELECT DISTINCT ON (windowed.id)
       windowed.id,
-      (ev.official_filed_at AT TIME ZONE r.time_zone)::date AS local_day
+      (ev.official_filed_at AT TIME ZONE court_zone.zone)::date AS local_day
     FROM windowed
     JOIN direct_court_event ev ON ev.case_id = windowed.id
     JOIN direct_court_registry r ON r.court_code = ev.court_code
+    JOIN LATERAL (
+      SELECT CASE
+        WHEN r.time_zone <> 'UTC' THEN r.time_zone
+        WHEN r.court_code IN ('akd') THEN 'America/Anchorage'
+        WHEN r.court_code IN ('hid') THEN 'Pacific/Honolulu'
+        WHEN r.court_code IN ('gud', 'nmid') THEN 'Pacific/Guam'
+        WHEN r.court_code = 'azd' THEN 'America/Phoenix'
+        WHEN r.court_code = 'idd' THEN 'America/Boise'
+        WHEN r.court_code IN ('insd', 'innd') THEN 'America/Indiana/Indianapolis'
+        WHEN r.court_code = 'flnd' THEN 'America/Chicago'
+        WHEN r.court_code IN ('cand', 'caed', 'cacd', 'casd', 'ord', 'waed', 'wawd', 'nvd') THEN 'America/Los_Angeles'
+        WHEN r.circuit IN ('09') THEN 'America/Los_Angeles'
+        WHEN r.circuit IN ('10') THEN 'America/Denver'
+        WHEN r.circuit IN ('05', '07', '08') THEN 'America/Chicago'
+        ELSE 'America/New_York'
+      END AS zone
+    ) court_zone ON true
     WHERE windowed.filed_on = (ev.official_filed_at AT TIME ZONE 'UTC')::date
-      AND windowed.filed_on IS DISTINCT FROM (ev.official_filed_at AT TIME ZONE r.time_zone)::date
+      AND windowed.filed_on IS DISTINCT FROM (ev.official_filed_at AT TIME ZONE court_zone.zone)::date
     ORDER BY windowed.id, (ev.event_type = 'case_filed') DESC, ev.official_filed_at
   ) src
   WHERE c.id = src.id
@@ -126,11 +143,25 @@ indexed AS (
   ON CONFLICT (case_id) DO NOTHING
   RETURNING 1
 ),
+indexed_newer AS (
+  INSERT INTO public_case_search (case_id, public_id, search_text, refreshed_at)
+  SELECT c.id, c.public_id, coalesce(c.caption, ''), now()
+  FROM legal_case c
+  CROSS JOIN state
+  WHERE state.cursor_date IS NOT NULL
+    AND c.publication = 'published'
+    AND COALESCE(c.decided_on, c.filed_on) > state.cursor_date
+    AND NOT EXISTS (SELECT 1 FROM public_case_search search WHERE search.case_id = c.id)
+  ORDER BY COALESCE(c.decided_on, c.filed_on) DESC NULLS LAST, c.caption, c.id
+  LIMIT 100
+  ON CONFLICT (case_id) DO NOTHING
+  RETURNING 1
+),
 edge AS (
   SELECT
     (SELECT count(*)::int FROM windowed) AS scanned,
     (SELECT count(*)::int FROM corrected) AS corrected,
-    (SELECT count(*)::int FROM indexed) AS indexed,
+    (SELECT count(*)::int FROM indexed) + (SELECT count(*)::int FROM indexed_newer) AS indexed,
     (SELECT sort_date FROM windowed ORDER BY sort_date ASC NULLS FIRST, caption DESC, id DESC LIMIT 1) AS sort_date,
     (SELECT caption FROM windowed ORDER BY sort_date ASC NULLS FIRST, caption DESC, id DESC LIMIT 1) AS caption,
     (SELECT id FROM windowed ORDER BY sort_date ASC NULLS FIRST, caption DESC, id DESC LIMIT 1) AS id
@@ -172,7 +203,22 @@ WITH state AS (
   SELECT * FROM search_catchup_cursor WHERE singleton = 1
 ),
 windowed AS MATERIALIZED (
-  SELECT ev.id, ev.last_seen_at, ev.case_id, ev.deduplication_key, ev.official_filed_at, r.time_zone
+  SELECT ev.id, ev.last_seen_at, ev.case_id, ev.deduplication_key, ev.official_filed_at,
+    CASE
+      WHEN r.time_zone <> 'UTC' THEN r.time_zone
+      WHEN r.court_code IN ('akd') THEN 'America/Anchorage'
+      WHEN r.court_code IN ('hid') THEN 'Pacific/Honolulu'
+      WHEN r.court_code IN ('gud', 'nmid') THEN 'Pacific/Guam'
+      WHEN r.court_code = 'azd' THEN 'America/Phoenix'
+      WHEN r.court_code = 'idd' THEN 'America/Boise'
+      WHEN r.court_code IN ('insd', 'innd') THEN 'America/Indiana/Indianapolis'
+      WHEN r.court_code = 'flnd' THEN 'America/Chicago'
+      WHEN r.court_code IN ('cand', 'caed', 'cacd', 'casd', 'ord', 'waed', 'wawd', 'nvd') THEN 'America/Los_Angeles'
+      WHEN r.circuit IN ('09') THEN 'America/Los_Angeles'
+      WHEN r.circuit IN ('10') THEN 'America/Denver'
+      WHEN r.circuit IN ('05', '07', '08') THEN 'America/Chicago'
+      ELSE 'America/New_York'
+    END AS time_zone
   FROM direct_court_event ev
   JOIN direct_court_registry r ON r.court_code = ev.court_code
   CROSS JOIN state
@@ -231,6 +277,42 @@ COMMIT;
 SQL
 }
 
+# Cases whose filed date is exactly one day after their earliest docket entry.
+# The court registry stored many districts as UTC, so the event-zone comparison
+# never moved those rows. This pass does not follow the sweep cursor, so a
+# resume still corrects them. updated_at is left unchanged.
+fix_recent_headers() {
+  psql_sql -q -tA <<'SQL' || echo "header fix skipped"
+BEGIN;
+SET LOCAL statement_timeout = '20s';
+SET LOCAL lock_timeout = '3s';
+WITH recent AS (
+  SELECT c.id, c.filed_on
+  FROM legal_case c
+  WHERE c.publication = 'published'
+    AND COALESCE(c.decided_on, c.filed_on) >= CURRENT_DATE - 21
+  ORDER BY COALESCE(c.decided_on, c.filed_on) DESC NULLS LAST, c.caption, c.id
+  LIMIT 2000
+),
+shifted AS (
+  SELECT recent.id, min(entry.filed_on) AS day
+  FROM recent
+  JOIN docket_entry entry ON entry.case_id = recent.id AND entry.filed_on IS NOT NULL
+  GROUP BY recent.id, recent.filed_on
+  HAVING recent.filed_on = min(entry.filed_on) + 1
+),
+updated AS (
+  UPDATE legal_case AS c
+  SET filed_on = shifted.day, updated_at = c.updated_at
+  FROM shifted
+  WHERE c.id = shifted.id
+  RETURNING c.id
+)
+SELECT count(*) FROM updated;
+COMMIT;
+SQL
+}
+
 echo "resuming from search_catchup_cursor"
 psql -c "SELECT phase, passed_dates, batches, scanned, corrected, indexed, cursor_date, cursor_at FROM search_catchup_cursor WHERE singleton = 1;"
 
@@ -246,6 +328,8 @@ while true; do
   if [ "$phase" = "entries" ]; then
     line=$(entry_batch | tail -n 1 | tr -d '[:space:]')
   else
+    headers=$(fix_recent_headers | tail -n 1 | tr -d '[:space:]')
+    echo "recent headers corrected=${headers:-skipped}"
     line=$(case_batch | tail -n 1 | tr -d '[:space:]')
   fi
   echo "batch $line"

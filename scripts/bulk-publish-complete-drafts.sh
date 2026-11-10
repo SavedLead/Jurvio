@@ -32,6 +32,11 @@ psql() {
   docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off "$@"
 }
 
+# -c must not read stdin. This file is fed to bash -s.
+psql_c() {
+  docker exec "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off "$@" </dev/null
+}
+
 # One committed slice of the text index. Runs outside the deferred publish
 # transaction. ON CONFLICT DO NOTHING, and legal_case is not updated.
 catch_up_search_slice() {
@@ -142,12 +147,16 @@ INSERT INTO bulk_publish_cursor (singleton) VALUES (1) ON CONFLICT DO NOTHING;
 SQL
 
 started=$(date +%s)
+MIN_RANGE=5000
+completed=0
+echo "resuming from bulk_publish_cursor"
+psql_c -c "SELECT batches, scanned, published, created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1;"
 while true; do
   line=$(psql -q -tA <<SQL | tail -n 1
 BEGIN;
 SET LOCAL statement_timeout = '120s';
 SET LOCAL lock_timeout = '15s';
-SELECT set_config('jurvio.defer_search_refresh', 'on', true);
+DO $$ BEGIN PERFORM set_config('jurvio.defer_search_refresh', 'on', true); END $$;
 CREATE TEMP TABLE batch_result (scanned integer, published integer, cursor_at timestamptz, cursor_id uuid) ON COMMIT DROP;
 WITH params AS (
   SELECT created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1
@@ -260,17 +269,37 @@ SELECT scanned::text || '|' || published::text FROM batch_result;
 COMMIT;
 SQL
 )
+  case "$line" in
+    [0-9]*\|[0-9]*) ;;
+    *)
+      echo "batch failed: ${line:-empty}" >&2
+      if [ "$RANGE" -le "$MIN_RANGE" ]; then
+        echo "bulk publish ended without completing" >&2
+        exit 1
+      fi
+      RANGE=$((RANGE / 2))
+      echo "reducing range to $RANGE and retrying the same checkpoint" >&2
+      continue
+      ;;
+  esac
   scanned=${line%%|*}
   published=${line##*|}
   now=$(date +%s)
   elapsed=$((now - started))
   if [ "$elapsed" -lt 1 ]; then elapsed=1; fi
-  echo "batch scanned=$scanned published=$published elapsed_s=$elapsed"
+  echo "batch scanned=$scanned published=$published range=$RANGE elapsed_s=$elapsed"
   catch_up_search_slice || echo "search catch-up skipped"
   if [ "$scanned" = "0" ]; then
     echo "pass complete; cursor reset so a later run picks up new drafts"
+    completed=1
     break
   fi
+  RANGE=75000
 done
 
-psql -c "SELECT batches, scanned, published, created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1;"
+if [ "$completed" != 1 ]; then
+  echo "bulk publish ended without completing" >&2
+  exit 1
+fi
+
+psql_c -c "SELECT batches, scanned, published, created_at, case_id FROM bulk_publish_cursor WHERE singleton = 1;"
