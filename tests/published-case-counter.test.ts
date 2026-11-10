@@ -8,7 +8,10 @@ const coverage = readFileSync("src/modules/trust/application/get-coverage-snapsh
 
 describe("published case counter", () => {
   it("moves the count in the publication statement and seeds one court at a time", () => {
-    expect(migration).toContain("AFTER UPDATE OF publication, court_id ON legal_case");
+    const updateTrigger = migration.slice(migration.indexOf("CREATE TRIGGER court_published_count_update"));
+    expect(updateTrigger.startsWith("CREATE TRIGGER court_published_count_update")).toBe(true);
+    expect(updateTrigger).toContain("AFTER UPDATE ON legal_case");
+    expect(updateTrigger.slice(0, updateTrigger.indexOf("EXECUTE FUNCTION"))).not.toContain("OF ");
     expect(migration).toContain("FOR EACH STATEMENT");
     expect(migration).toContain("published_delta = stats.published_delta + EXCLUDED.published_delta");
     expect(migration).toContain("case_count = GREATEST(0, stats.case_count - removed.n)");

@@ -90,9 +90,13 @@ CREATE TRIGGER court_published_count_delete
   FOR EACH STATEMENT
   EXECUTE FUNCTION sync_court_published_count();
 
+-- PostgreSQL rejects transition tables on a trigger that names columns
+-- (UPDATE OF publication). This trigger therefore runs for every update.
+-- A row whose publication and court_id did not change contributes -1 and +1
+-- to the same court, and the grouped net is zero.
 DROP TRIGGER IF EXISTS court_published_count_update ON legal_case;
 CREATE TRIGGER court_published_count_update
-  AFTER UPDATE OF publication, court_id ON legal_case
+  AFTER UPDATE ON legal_case
   REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
   FOR EACH STATEMENT
   EXECUTE FUNCTION sync_court_published_count();
@@ -131,8 +135,12 @@ BEGIN
     WHERE court_id = court AND publication = 'published';
     COMMIT;
 
+    -- The running bulk statement can hold this counter row until it commits,
+    -- up to its 180s statement timeout. Waiting here does not block that
+    -- statement. One slow court is enough: the others in that batch unlock
+    -- when it commits.
     seeded := false;
-    FOR attempt IN 1..5 LOOP
+    FOR attempt IN 1..70 LOOP
       BEGIN
         PERFORM set_config('lock_timeout', '2s', true);
         UPDATE court_public_stats
@@ -157,4 +165,8 @@ BEGIN
 END;
 $$;
 
+-- @commit
+
+-- Own chunk so CALL is not inside the migration's transaction block.
+-- The procedure commits once per court.
 CALL seed_court_published_counts();
