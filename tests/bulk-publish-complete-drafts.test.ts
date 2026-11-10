@@ -40,10 +40,20 @@ describe("bulk publish of complete drafts", () => {
   it("catches the text index up outside the publish transaction and leaves alerts alone", () => {
     expect(catchUp).toContain("public_case_search");
     expect(catchUp).toContain("ON CONFLICT (case_id) DO NOTHING");
+    expect(catchUp).toContain("search_catchup_cursor");
+    expect(catchUp).toContain("passed_dates");
+    expect(catchUp).toContain("DESC NULLS LAST, c.caption, c.id");
+    expect(catchUp).toContain("ORDER BY ev.last_seen_at DESC, ev.id DESC");
+    expect(catchUp).toContain("NOT EXISTS (SELECT 1 FROM public_case_search search WHERE search.case_id = batch.id)");
+    expect(catchUp).toContain("lock_timeout = '3s'");
     expect(catchUp).toContain("updated_at = c.updated_at");
-    expect(catchUp).toContain("updated_at = e.updated_at");
+    expect(catchUp).toContain("updated_at = entry.updated_at");
     expect(catchUp).toContain("AT TIME ZONE r.time_zone");
+    expect(catchUp).not.toContain("interval '3 days'");
+    expect(catchUp).not.toContain("batches\" -lt 2000");
     expect(catchUp).not.toContain("legal_case.updated_at = now()");
+    expect(catchUpWorkflow).toContain("timeout-minutes: 2880");
+    expect(catchUpWorkflow).not.toContain("timeout-minutes: 120");
     expect(catchUpWorkflow).toContain("workflow_dispatch:");
     expect(catchUpWorkflow).toContain("CATCH_UP_PUBLISHED_SEARCH");
     expect(catchUpWorkflow).toContain("10.116.0.2");

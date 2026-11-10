@@ -1,8 +1,13 @@
 #!/bin/sh
-# Fill public_case_search for published cases the bulk publish transaction
-# skipped, and correct court filing days that were stored as the UTC day.
-# Runs on the ingestion host (docker, no sudo). Safe beside the bulk job:
-# short transactions, a pause between them, and no write to legal_case.updated_at.
+# Resume the published-case search index and court-local filing dates.
+# Runs on the ingestion host (docker, no sudo). Safe beside the bulk publish:
+# 500-row transactions, a 3s lock timeout, and legal_case.updated_at is not
+# changed, so follower alerts do not fire.
+#
+# Progress is stored in search_catchup_cursor. A later run continues at that
+# key. Already indexed cases and already corrected dates are skipped.
+# Cases are walked newest filing/decision first (legal_case_published_recency_idx).
+# Docket dates are walked newest-seen first (direct_court_event_last_seen_idx).
 # Does not submit a sitemap to Google.
 set -eu
 
@@ -19,81 +24,79 @@ psql() {
   docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off "$@"
 }
 
-correct_dates() {
-  psql -q -tA <<'SQL' || echo "date correction skipped"
-BEGIN;
-SET LOCAL statement_timeout = '45s';
-SET LOCAL lock_timeout = '3s';
-WITH batch AS (
-  SELECT DISTINCT ON (c.id)
-    c.id,
-    (ev.official_filed_at AT TIME ZONE r.time_zone)::date AS local_day
-  FROM direct_court_event ev
-  JOIN direct_court_registry r ON r.court_code = ev.court_code
-  JOIN legal_case c ON c.id = ev.case_id
-  WHERE ev.event_type = 'case_filed'
-    AND ev.last_seen_at >= now() - interval '3 days'
-    AND c.filed_on = (ev.official_filed_at AT TIME ZONE 'UTC')::date
-    AND c.filed_on IS DISTINCT FROM (ev.official_filed_at AT TIME ZONE r.time_zone)::date
-  ORDER BY c.id, ev.official_filed_at
-  LIMIT 500
-), updated AS (
-  UPDATE legal_case AS c
-  SET filed_on = batch.local_day, updated_at = c.updated_at
-  FROM batch
-  WHERE c.id = batch.id
-  RETURNING 1
-)
-SELECT count(*) FROM updated;
-COMMIT;
+psql <<'SQL'
+CREATE TABLE IF NOT EXISTS search_catchup_cursor (
+  singleton integer PRIMARY KEY CHECK (singleton = 1),
+  phase text NOT NULL DEFAULT 'cases',
+  passed_dates boolean NOT NULL DEFAULT false,
+  cursor_at timestamptz,
+  cursor_date date,
+  cursor_caption text,
+  cursor_id uuid,
+  batches integer NOT NULL DEFAULT 0,
+  scanned bigint NOT NULL DEFAULT 0,
+  corrected bigint NOT NULL DEFAULT 0,
+  indexed bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO search_catchup_cursor (singleton) VALUES (1) ON CONFLICT DO NOTHING;
 SQL
-}
 
-correct_entry_dates() {
-  psql -q -tA <<'SQL' || echo "entry date correction skipped"
-BEGIN;
-SET LOCAL statement_timeout = '45s';
-SET LOCAL lock_timeout = '3s';
-WITH batch AS (
-  SELECT e.id,
-    (ev.official_filed_at AT TIME ZONE r.time_zone)::date AS local_day
-  FROM direct_court_event ev
-  JOIN direct_court_registry r ON r.court_code = ev.court_code
-  JOIN docket_entry e
-    ON e.case_id = ev.case_id
-   AND e.provider_entry_id = ev.deduplication_key
-  WHERE ev.last_seen_at >= now() - interval '3 days'
-    AND e.filed_on = (ev.official_filed_at AT TIME ZONE 'UTC')::date
-    AND e.filed_on IS DISTINCT FROM (ev.official_filed_at AT TIME ZONE r.time_zone)::date
-  LIMIT 500
-), updated AS (
-  UPDATE docket_entry AS e
-  SET filed_on = batch.local_day, updated_at = e.updated_at
-  FROM batch
-  WHERE e.id = batch.id
-  RETURNING 1
-)
-SELECT count(*) FROM updated;
-COMMIT;
-SQL
-}
-
-search_slice() {
+case_batch() {
   psql -q -tA <<'SQL'
 BEGIN;
 SET LOCAL statement_timeout = '30s';
 SET LOCAL lock_timeout = '3s';
-WITH batch AS (
-  SELECT c.id, c.public_id, c.caption, c.docket_number, c.official_citation
+WITH state AS (
+  SELECT * FROM search_catchup_cursor WHERE singleton = 1
+),
+windowed AS MATERIALIZED (
+  SELECT c.id, c.public_id, c.caption, c.docket_number, c.official_citation, c.filed_on,
+         COALESCE(c.decided_on, c.filed_on) AS sort_date
   FROM legal_case c
-  WHERE c.publication = 'published'
-    AND NOT EXISTS (SELECT 1 FROM public_case_search search WHERE search.case_id = c.id)
-  ORDER BY c.public_id
+  CROSS JOIN state
+  WHERE state.phase = 'cases'
+    AND c.publication = 'published'
+    AND (
+      (NOT state.passed_dates AND COALESCE(c.decided_on, c.filed_on) IS NOT NULL AND (
+        state.cursor_id IS NULL
+        OR COALESCE(c.decided_on, c.filed_on) < state.cursor_date
+        OR (
+          COALESCE(c.decided_on, c.filed_on) = state.cursor_date
+          AND (c.caption > state.cursor_caption OR (c.caption = state.cursor_caption AND c.id > state.cursor_id))
+        )
+      ))
+      OR (state.passed_dates AND COALESCE(c.decided_on, c.filed_on) IS NULL AND (
+        state.cursor_id IS NULL
+        OR c.caption > state.cursor_caption
+        OR (c.caption = state.cursor_caption AND c.id > state.cursor_id)
+      ))
+    )
+  ORDER BY COALESCE(c.decided_on, c.filed_on) DESC NULLS LAST, c.caption, c.id
   LIMIT 500
-), written AS (
+),
+corrected AS (
+  UPDATE legal_case AS c
+  SET filed_on = src.local_day, updated_at = c.updated_at
+  FROM (
+    SELECT DISTINCT ON (windowed.id)
+      windowed.id,
+      (ev.official_filed_at AT TIME ZONE r.time_zone)::date AS local_day
+    FROM windowed
+    JOIN direct_court_event ev ON ev.case_id = windowed.id
+    JOIN direct_court_registry r ON r.court_code = ev.court_code
+    WHERE windowed.filed_on = (ev.official_filed_at AT TIME ZONE 'UTC')::date
+      AND windowed.filed_on IS DISTINCT FROM (ev.official_filed_at AT TIME ZONE r.time_zone)::date
+    ORDER BY windowed.id, (ev.event_type = 'case_filed') DESC, ev.official_filed_at
+  ) src
+  WHERE c.id = src.id
+    AND src.local_day IS NOT NULL
+  RETURNING c.id
+),
+indexed AS (
   INSERT INTO public_case_search (case_id, public_id, search_text, refreshed_at)
   SELECT batch.id, batch.public_id,
-    concat_ws(E'\n',
+    coalesce(concat_ws(E'\n',
       batch.caption,
       batch.docket_number,
       batch.official_citation,
@@ -109,53 +112,139 @@ WITH batch AS (
           JOIN entity ON entity.id = appearance.entity_id
           WHERE appearance.case_id = batch.id
         ) names)
-    ),
+    ), ''),
     now()
-  FROM batch
+  FROM windowed batch
+  WHERE NOT EXISTS (SELECT 1 FROM public_case_search search WHERE search.case_id = batch.id)
   ON CONFLICT (case_id) DO NOTHING
   RETURNING 1
+),
+edge AS (
+  SELECT
+    (SELECT count(*)::int FROM windowed) AS scanned,
+    (SELECT count(*)::int FROM corrected) AS corrected,
+    (SELECT count(*)::int FROM indexed) AS indexed,
+    (SELECT sort_date FROM windowed ORDER BY sort_date ASC NULLS FIRST, caption DESC, id DESC LIMIT 1) AS sort_date,
+    (SELECT caption FROM windowed ORDER BY sort_date ASC NULLS FIRST, caption DESC, id DESC LIMIT 1) AS caption,
+    (SELECT id FROM windowed ORDER BY sort_date ASC NULLS FIRST, caption DESC, id DESC LIMIT 1) AS id
+),
+advanced AS (
+  UPDATE search_catchup_cursor AS cursor
+  SET batches = cursor.batches + 1,
+      scanned = cursor.scanned + edge.scanned,
+      corrected = cursor.corrected + edge.corrected,
+      indexed = cursor.indexed + edge.indexed,
+      cursor_date = CASE WHEN edge.scanned = 0 THEN NULL ELSE edge.sort_date END,
+      cursor_caption = CASE WHEN edge.scanned = 0 THEN NULL ELSE edge.caption END,
+      cursor_id = CASE WHEN edge.scanned = 0 THEN NULL ELSE edge.id END,
+      passed_dates = cursor.passed_dates OR edge.scanned = 0,
+      phase = CASE
+        WHEN edge.scanned = 0 AND cursor.passed_dates THEN 'entries'
+        ELSE cursor.phase
+      END,
+      updated_at = now()
+  FROM edge
+  WHERE cursor.singleton = 1
+    AND cursor.phase = 'cases'
+  RETURNING cursor.phase, edge.scanned, edge.corrected, edge.indexed,
+    cursor.corrected AS corrected_total, cursor.indexed AS indexed_total
 )
-SELECT count(*) FROM written;
+SELECT phase || '|' || scanned::text || '|' || corrected::text || '|' || indexed::text
+  || '|' || corrected_total::text || '|' || indexed_total::text
+FROM advanced;
 COMMIT;
 SQL
 }
 
-echo "correcting court-local filing dates"
-round=0
-while [ "$round" -lt 40 ]; do
-  fixed=$(correct_dates | tail -n 1 | tr -d '[:space:]')
-  entries=$(correct_entry_dates | tail -n 1 | tr -d '[:space:]')
-  echo "dates cases=${fixed:-skipped} entries=${entries:-skipped}"
-  round=$((round + 1))
-  case "$fixed" in
-    ''|*[!0-9]*) echo "date correction stopped"; break ;;
-  esac
-  case "$entries" in
-    ''|*[!0-9]*) echo "entry date correction stopped"; break ;;
-  esac
-  if [ "$fixed" = "0" ] && [ "$entries" = "0" ]; then
+entry_batch() {
+  psql -q -tA <<'SQL'
+BEGIN;
+SET LOCAL statement_timeout = '30s';
+SET LOCAL lock_timeout = '3s';
+WITH state AS (
+  SELECT * FROM search_catchup_cursor WHERE singleton = 1
+),
+windowed AS MATERIALIZED (
+  SELECT ev.id, ev.last_seen_at, ev.case_id, ev.deduplication_key, ev.official_filed_at, r.time_zone
+  FROM direct_court_event ev
+  JOIN direct_court_registry r ON r.court_code = ev.court_code
+  CROSS JOIN state
+  WHERE state.phase = 'entries'
+    AND ev.case_id IS NOT NULL
+    AND ev.last_seen_at IS NOT NULL
+    AND (
+      state.cursor_at IS NULL
+      OR ev.last_seen_at < state.cursor_at
+      OR (ev.last_seen_at = state.cursor_at AND ev.id < state.cursor_id)
+    )
+  ORDER BY ev.last_seen_at DESC, ev.id DESC
+  LIMIT 500
+),
+corrected AS (
+  UPDATE docket_entry AS entry
+  SET filed_on = src.local_day, updated_at = entry.updated_at
+  FROM (
+    SELECT windowed.id AS event_id, entry.id,
+      (windowed.official_filed_at AT TIME ZONE windowed.time_zone)::date AS local_day
+    FROM windowed
+    JOIN docket_entry entry
+      ON entry.case_id = windowed.case_id
+     AND entry.provider_entry_id = windowed.deduplication_key
+    WHERE entry.filed_on = (windowed.official_filed_at AT TIME ZONE 'UTC')::date
+      AND entry.filed_on IS DISTINCT FROM (windowed.official_filed_at AT TIME ZONE windowed.time_zone)::date
+  ) src
+  WHERE entry.id = src.id
+    AND src.local_day IS NOT NULL
+  RETURNING entry.id
+),
+edge AS (
+  SELECT
+    (SELECT count(*)::int FROM windowed) AS scanned,
+    (SELECT count(*)::int FROM corrected) AS corrected,
+    (SELECT last_seen_at FROM windowed ORDER BY last_seen_at ASC, id ASC LIMIT 1) AS cursor_at,
+    (SELECT id FROM windowed ORDER BY last_seen_at ASC, id ASC LIMIT 1) AS cursor_id
+),
+advanced AS (
+  UPDATE search_catchup_cursor AS cursor
+  SET batches = cursor.batches + 1,
+      scanned = cursor.scanned + edge.scanned,
+      corrected = cursor.corrected + edge.corrected,
+      cursor_at = CASE WHEN edge.scanned = 0 THEN NULL ELSE edge.cursor_at END,
+      cursor_id = CASE WHEN edge.scanned = 0 THEN NULL ELSE edge.cursor_id END,
+      phase = CASE WHEN edge.scanned = 0 THEN 'done' ELSE cursor.phase END,
+      updated_at = now()
+  FROM edge
+  WHERE cursor.singleton = 1
+    AND cursor.phase = 'entries'
+  RETURNING cursor.phase, edge.scanned, edge.corrected, cursor.corrected AS corrected_total
+)
+SELECT phase || '|' || scanned::text || '|' || corrected::text || '|0|0|' || corrected_total::text
+FROM advanced;
+COMMIT;
+SQL
+}
+
+echo "resuming from search_catchup_cursor"
+psql -c "SELECT phase, passed_dates, batches, scanned, corrected, indexed, cursor_date, cursor_at FROM search_catchup_cursor WHERE singleton = 1;"
+
+while true; do
+  phase=$(psql -q -tA -c "SELECT phase FROM search_catchup_cursor WHERE singleton = 1;")
+  phase=$(printf '%s' "$phase" | tr -d '[:space:]')
+  if [ "$phase" = "done" ]; then
+    echo "catch-up complete"
     break
   fi
+  if [ "$phase" = "entries" ]; then
+    line=$(entry_batch | tail -n 1 | tr -d '[:space:]')
+  else
+    line=$(case_batch | tail -n 1 | tr -d '[:space:]')
+  fi
+  echo "batch $line"
+  case "$line" in
+    *\|*) ;;
+    *) echo "catch-up stopped on: ${line:-empty}" >&2; exit 1 ;;
+  esac
   sleep 0.2
 done
 
-echo "filling public_case_search"
-added_total=0
-batches=0
-while [ "$batches" -lt 2000 ]; do
-  added=$(search_slice | tail -n 1 | tr -d '[:space:]')
-  case "$added" in
-    ''|*[!0-9]*)
-      echo "search catch-up stopped on: ${added:-empty}"
-      break
-      ;;
-  esac
-  added_total=$((added_total + added))
-  batches=$((batches + 1))
-  echo "search batch=$batches added=$added total=$added_total"
-  if [ "$added" = "0" ]; then
-    break
-  fi
-  sleep 0.2
-done
-echo "search catch-up done batches=$batches added=$added_total"
+psql -c "SELECT phase, batches, scanned, corrected, indexed FROM search_catchup_cursor WHERE singleton = 1;"
