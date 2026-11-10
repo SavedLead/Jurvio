@@ -21,6 +21,23 @@ describe("published case counter", () => {
     expect(migration).not.toContain("ACCESS EXCLUSIVE");
   });
 
+  it("writes a counter row only for a court whose publication or court changed", () => {
+    const fn = migration.slice(
+      migration.indexOf("CREATE OR REPLACE FUNCTION sync_court_published_count"),
+      migration.indexOf("CREATE TRIGGER court_published_count_insert"),
+    );
+    const updateBranch = fn.slice(fn.indexOf("ELSE"), fn.lastIndexOf("END IF"));
+    const filter = "n.publication IS DISTINCT FROM o.publication\n         OR n.court_id IS DISTINCT FROM o.court_id";
+    expect(updateBranch).toContain("RETURN NULL");
+    expect(updateBranch.indexOf(filter)).toBeLessThan(updateBranch.indexOf("INSERT INTO court_public_stats"));
+    expect(updateBranch.indexOf("GROUP BY court_id")).toBeLessThan(updateBranch.indexOf("ON CONFLICT"));
+    expect(updateBranch).toContain("HAVING sum(change) > 0");
+    expect(updateBranch).toContain("HAVING sum(change) < 0");
+    const decrement = updateBranch.slice(updateBranch.lastIndexOf("UPDATE court_public_stats"));
+    expect(decrement.indexOf("GROUP BY court_id")).toBeGreaterThan(-1);
+    expect(decrement.indexOf("GROUP BY court_id")).toBeLessThan(decrement.indexOf("WHERE stats.court_id"));
+  });
+
   it("does not let the directory refresh recount the published total", () => {
     const courtBatch = refresh.slice(refresh.indexOf("async function upsertCourtBatch"), refresh.indexOf("async function nextJudgeIds"));
     expect(courtBatch).not.toContain("case_count = EXCLUDED.case_count");

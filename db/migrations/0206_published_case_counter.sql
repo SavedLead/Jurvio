@@ -41,15 +41,36 @@ BEGIN
     ) AS removed
     WHERE stats.court_id = removed.court_id;
   ELSE
+    -- Date, search, and other updates leave publication and court_id alone.
+    -- Return before any counter write so those statements take no row lock
+    -- on the court rows a bulk publish is holding.
+    IF NOT EXISTS (
+      SELECT 1
+      FROM new_rows n
+      JOIN old_rows o ON o.id = n.id
+      WHERE n.publication IS DISTINCT FROM o.publication
+         OR n.court_id IS DISTINCT FROM o.court_id
+    ) THEN
+      RETURN NULL;
+    END IF;
+
     INSERT INTO court_public_stats AS stats (court_id, case_count, published_base, published_delta, recent_case_ids)
     SELECT court_id, delta, 0, delta, '{}'::uuid[]
     FROM (
       SELECT court_id, sum(change)::int AS delta
       FROM (
-        SELECT court_id, -1 AS change FROM old_rows WHERE publication = 'published'
+        SELECT o.court_id, -1 AS change
+        FROM old_rows o
+        JOIN new_rows n ON n.id = o.id
+        WHERE o.publication = 'published'
+          AND (n.publication IS DISTINCT FROM o.publication OR n.court_id IS DISTINCT FROM o.court_id)
         UNION ALL
-        SELECT court_id, 1 FROM new_rows WHERE publication = 'published'
-      ) AS moved
+        SELECT n.court_id, 1
+        FROM new_rows n
+        JOIN old_rows o ON o.id = n.id
+        WHERE n.publication = 'published'
+          AND (n.publication IS DISTINCT FROM o.publication OR n.court_id IS DISTINCT FROM o.court_id)
+      ) AS changed
       GROUP BY court_id
       HAVING sum(change) > 0
     ) AS gained
@@ -63,10 +84,18 @@ BEGIN
     FROM (
       SELECT court_id, sum(change)::int AS delta
       FROM (
-        SELECT court_id, -1 AS change FROM old_rows WHERE publication = 'published'
+        SELECT o.court_id, -1 AS change
+        FROM old_rows o
+        JOIN new_rows n ON n.id = o.id
+        WHERE o.publication = 'published'
+          AND (n.publication IS DISTINCT FROM o.publication OR n.court_id IS DISTINCT FROM o.court_id)
         UNION ALL
-        SELECT court_id, 1 FROM new_rows WHERE publication = 'published'
-      ) AS moved
+        SELECT n.court_id, 1
+        FROM new_rows n
+        JOIN old_rows o ON o.id = n.id
+        WHERE n.publication = 'published'
+          AND (n.publication IS DISTINCT FROM o.publication OR n.court_id IS DISTINCT FROM o.court_id)
+      ) AS changed
       GROUP BY court_id
       HAVING sum(change) < 0
     ) AS lost
@@ -90,10 +119,10 @@ CREATE TRIGGER court_published_count_delete
   FOR EACH STATEMENT
   EXECUTE FUNCTION sync_court_published_count();
 
--- PostgreSQL rejects transition tables on a trigger that names columns
--- (UPDATE OF publication). This trigger therefore runs for every update.
--- A row whose publication and court_id did not change contributes -1 and +1
--- to the same court, and the grouped net is zero.
+-- PostgreSQL rejects transition tables on a trigger that names columns, so
+-- this trigger runs for every update. The function returns before touching
+-- court_public_stats unless publication or court_id changed, and then writes
+-- one aggregated row per court whose net is not zero.
 DROP TRIGGER IF EXISTS court_published_count_update ON legal_case;
 CREATE TRIGGER court_published_count_update
   AFTER UPDATE ON legal_case
