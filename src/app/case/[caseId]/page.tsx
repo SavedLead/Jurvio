@@ -26,6 +26,7 @@ import { casePageIndexable } from "@/modules/cases/application/get-public-case";
 import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseRecordFacts } from "@/modules/cases/ui/case-record-facts";
+import { ALLEGATION_NOTE, DOCKET_FEED_NOTE } from "@/modules/cases/domain/docket-classification";
 import { caseSections } from "@/modules/cases/ui/case-nav";
 import { CaseGlossary, CaseSection, CaseSourceList, CaseSources, CaseSummaryCard, SourceRef } from "@/modules/cases/ui/case-declutter";
 import { CaseSectionOpener } from "@/modules/cases/ui/case-section-opener";
@@ -633,6 +634,8 @@ export default async function CasePage({ params }: CasePageProps) {
 
         {show.docket ? <CaseSection id="docket" title="Docket & timeline"
           hint={`${docketCount.toLocaleString("en-US")} ${docketCount === 1 ? "entry" : "entries"}${latestEvent ? `, latest ${formatPublicCaseDate(latestEvent.date) ?? latestEvent.date}` : ""}`}>
+          <p>{DOCKET_FEED_NOTE}</p>
+          <p>{ALLEGATION_NOTE}</p>
           <ol className="caseMilestones" id="case-timeline">
             {timelineEvents.map((event) => (
               <li key={event.date + event.label}>

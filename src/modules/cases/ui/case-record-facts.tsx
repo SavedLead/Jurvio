@@ -1,8 +1,9 @@
 import type { Route } from "next";
 import Link from "next/link";
 import type { PublicCase } from "@/modules/cases/application/get-public-case";
-import { listPublicParties, type PublicParty } from "@/modules/cases/application/list-public-case-sections";
+import { listPublicParties, listStoredFactLines, type PublicParty } from "@/modules/cases/application/list-public-case-sections";
 import { db } from "@/db/client";
+import { jurisdictionBasisFromText, juryDemandFromText } from "@/modules/cases/domain/docket-classification";
 import { docketCaseType, formatCauseOfAction, parseNatureOfSuit } from "@/modules/cases/domain/record-answers";
 import { publicPartyRole } from "@/modules/cases/domain/public-labels";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
@@ -22,7 +23,8 @@ const PARTY_PREVIEW = 24;
 
 /**
  * Structured fields already stored on the case. A field with no stored value
- * is omitted. Jury demand is not stored, so it is not shown.
+ * is omitted. Jury demand and jurisdiction basis are shown only when a stored
+ * line or the stored cause states them.
  */
 export async function CaseRecordFacts({
   caseId,
@@ -33,9 +35,14 @@ export async function CaseRecordFacts({
   legalCase: PublicCase;
   parties?: PublicParty[];
 }) {
-  const loadedParties = parties ?? await listPublicParties(db(), caseId).catch(() => []);
+  const [loadedParties, factLines] = await Promise.all([
+    parties ? Promise.resolve(parties) : listPublicParties(db(), caseId).catch(() => []),
+    listStoredFactLines(db(), caseId).catch(() => []),
+  ]);
   const nature = parseNatureOfSuit(legalCase.natureOfSuit);
   const cause = formatCauseOfAction(legalCase.causeOfAction);
+  const jurisdictionBasis = jurisdictionBasisFromText(legalCase.causeOfAction, factLines);
+  const juryDemand = juryDemandFromText(factLines);
   const typeCode = docketCaseType(legalCase.docketNumber);
   const caseType = typeCode ? CASE_TYPES[typeCode] ?? null : null;
   const closed = formatPublicCaseDate(legalCase.terminatedOn);
@@ -43,6 +50,8 @@ export async function CaseRecordFacts({
   if (legalCase.judgeName) facts.push(["Assigned judge", legalCase.judgeName]);
   if (caseType) facts.push(["Case type", caseType]);
   if (cause) facts.push(["Cause", cause]);
+  if (jurisdictionBasis) facts.push(["Jurisdiction basis", jurisdictionBasis]);
+  if (juryDemand) facts.push(["Jury demand", juryDemand]);
   if (nature) facts.push(["Nature of suit", nature.code ? `${nature.code} ${nature.label}` : nature.label]);
   if (legalCase.courtJurisdiction) facts.push(["Jurisdiction", legalCase.courtJurisdiction]);
   if (closed) facts.push(["Closed", closed]);
