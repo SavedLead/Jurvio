@@ -64,9 +64,8 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
         const liveCourts = (await listPublicCourtsLive(sql, 200)).find((row) => row.publicId === "jc-statfix01");
         const liveJudge = (await listPublicJudges(sql)).find((row) => row.publicId === "jj-statfix01");
 
-        // The publication trigger already counted the published inserts,
-        // including the non-displayable one, before any directory refresh.
-        expect((await getPublicCourt(sql, "jc-statfix01"))?.caseCount).toBe(3);
+        // The trigger already counted the two displayable published cases.
+        expect((await getPublicCourt(sql, "jc-statfix01"))?.caseCount).toBe(2);
 
         const events: Array<Record<string, unknown>> = [];
         const result = await refreshPublicDirectoryStats(sql, { pauseMs: 0, courtBatch: 1, judgeBatch: 1, log: (event) => events.push(event) });
@@ -75,9 +74,7 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
 
         const [courtStats] = await tx<{ case_count: number; latest_case_date: string; recent_case_ids: string[] }[]>`
           SELECT case_count, latest_case_date::text, recent_case_ids::text[] FROM court_public_stats WHERE court_id = ${court!.id}`;
-        // The publication trigger counts every published row, including the
-        // non-displayable one. The refresh must not recount over it.
-        expect(courtStats).toEqual({ case_count: 3, latest_case_date: "2025-03-04", recent_case_ids: [b, a] });
+        expect(courtStats).toEqual({ case_count: 2, latest_case_date: "2025-03-04", recent_case_ids: [b, a] });
         const [judgeStats] = await tx<{ case_count: number; outcome_sample: number }[]>`
           SELECT case_count, outcome_sample FROM judge_public_stats WHERE judge_id = ${judge!.id}`;
         expect(judgeStats).toEqual({ case_count: 2, outcome_sample: 1 });
@@ -86,13 +83,11 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
 
         // Readers return what the live queries returned.
         const stored = await getPublicCourt(sql, "jc-statfix01");
-        expect(stored?.caseCount).toBe(3);
-        expect(liveCourt?.caseCount).toBe(2);
+        expect(stored).toEqual(liveCourt);
+        expect(stored?.caseCount).toBe(2);
         expect(stored?.cases.map((row) => row.publicId)).toEqual(["jv-statfix02", "jv-statfix01"]);
-        expect((await listPublicCaseCourts(sql)).find((row) => row.value === "jc-statfix01")?.count).toBe(3);
-        expect(liveFacet?.count).toBe(2);
-        expect((await listPublicCourts(sql, 200)).find((row) => row.publicId === "jc-statfix01")?.caseCount).toBe(3);
-        expect(liveCourts?.caseCount).toBe(2);
+        expect((await listPublicCaseCourts(sql)).find((row) => row.value === "jc-statfix01")).toEqual(liveFacet);
+        expect((await listPublicCourts(sql, 200)).find((row) => row.publicId === "jc-statfix01")).toEqual(liveCourts);
         const judgePage = await listPublicJudgePage(sql, { page: 1, pageSize: 50 });
         expect(judgePage.judges.find((row) => row.publicId === "jj-statfix01")).toEqual(liveJudge);
         expect(judgePage.judges.some((row) => row.publicId === "jj-statfix02")).toBe(false);
@@ -103,8 +98,7 @@ describe.skipIf(!databaseUrl)("precomputed public directory stats", () => {
           INSERT INTO publication_decision(object_type, object_id, displayable, indexable, machine_accessible, downloadable, summary_eligible, reason_code, rule_version, decided_at)
           VALUES ('legal_case', ${b}, false, false, false, false, false, 'fixture', 'v1', now() + interval '1 second')`;
         expect((await getPublicCourt(sql, "jc-statfix01"))?.cases.map((row) => row.publicId)).toEqual(["jv-statfix01"]);
-        await tx`UPDATE legal_case SET publication = 'draft' WHERE id = ${hidden}`;
-        expect((await tx<{ case_count: number }[]>`SELECT case_count FROM court_public_stats WHERE court_id = ${court!.id}`)[0]?.case_count).toBe(2);
+        expect((await tx<{ case_count: number }[]>`SELECT case_count FROM court_public_stats WHERE court_id = ${court!.id}`)[0]?.case_count).toBe(1);
 
         throw new Rollback();
       }).catch((error) => { if (!(error instanceof Rollback)) throw error; });

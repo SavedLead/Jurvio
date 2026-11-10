@@ -7,11 +7,11 @@ type Sql = ReturnType<typeof postgres>;
  * Precomputed directory counts for /courts, /courts/[id], the /cases court
  * facet and /judges (migration 0135, ADR 0080).
  *
- * The published case_count is maintained by the publication trigger, not by
- * this job. This pass only refreshes the latest date and the newest-case
- * list, then judges. A batch that hits its statement timeout is retried
- * smaller; a single row that still times out is skipped and keeps its
- * previous value.
+ * case_count counts cases the public displayable rule shows. Triggers on
+ * publication and publication_decision maintain it. This pass only refreshes
+ * the latest date and the newest-case list, then judges. A batch that hits
+ * its statement timeout is retried smaller; a single row that still times
+ * out is skipped and keeps its previous value.
  */
 export const COURT_BATCH = 20;
 export const JUDGE_BATCH = 250;

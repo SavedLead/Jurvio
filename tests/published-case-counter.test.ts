@@ -14,7 +14,9 @@ describe("published case counter", () => {
     expect(updateTrigger.slice(0, updateTrigger.indexOf("EXECUTE FUNCTION"))).not.toContain("OF ");
     expect(migration).toContain("FOR EACH STATEMENT");
     expect(migration).toContain("published_delta = stats.published_delta + EXCLUDED.published_delta");
-    expect(migration).toContain("case_count = GREATEST(0, stats.case_count - removed.n)");
+    expect(migration).toContain("case_count = GREATEST(0, stats.case_count + EXCLUDED.published_delta)");
+    expect(migration).toContain("legal_case_is_public(id, publication)");
+    expect(migration).toContain("decision.displayable");
     expect(migration).toContain("FOREACH court IN ARRAY courts LOOP");
     expect(migration).toContain("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
     expect(migration).not.toContain("legal_case.updated_at");
@@ -29,13 +31,21 @@ describe("published case counter", () => {
     const updateBranch = fn.slice(fn.indexOf("ELSE"), fn.lastIndexOf("END IF"));
     const filter = "n.publication IS DISTINCT FROM o.publication\n         OR n.court_id IS DISTINCT FROM o.court_id";
     expect(updateBranch).toContain("RETURN NULL");
-    expect(updateBranch.indexOf(filter)).toBeLessThan(updateBranch.indexOf("INSERT INTO court_public_stats"));
-    expect(updateBranch.indexOf("GROUP BY court_id")).toBeLessThan(updateBranch.indexOf("ON CONFLICT"));
-    expect(updateBranch).toContain("HAVING sum(change) > 0");
-    expect(updateBranch).toContain("HAVING sum(change) < 0");
-    const decrement = updateBranch.slice(updateBranch.lastIndexOf("UPDATE court_public_stats"));
-    expect(decrement.indexOf("GROUP BY court_id")).toBeGreaterThan(-1);
-    expect(decrement.indexOf("GROUP BY court_id")).toBeLessThan(decrement.indexOf("WHERE stats.court_id"));
+    expect(updateBranch.indexOf(filter)).toBeLessThan(updateBranch.indexOf("apply_court_published_deltas"));
+    expect(updateBranch).toContain("HAVING sum(change) <> 0");
+    expect(updateBranch).toContain("legal_case_is_public");
+    const decision = migration.slice(
+      migration.indexOf("CREATE OR REPLACE FUNCTION sync_published_count_on_decision"),
+      migration.indexOf("DROP TRIGGER IF EXISTS court_published_count_insert"),
+    );
+    expect(decision.indexOf("GROUP BY c.court_id")).toBeLessThan(decision.indexOf("apply_court_published_deltas"));
+    expect(decision).toContain("d.displayable");
+    expect(decision).toContain("HAVING sum(");
+    const apply = migration.slice(
+      migration.indexOf("CREATE OR REPLACE FUNCTION apply_court_published_deltas"),
+      migration.indexOf("CREATE OR REPLACE FUNCTION sync_court_published_count"),
+    );
+    expect(apply.indexOf("d.delta <> 0")).toBeLessThan(apply.indexOf("INSERT INTO court_public_stats"));
   });
 
   it("does not let the directory refresh recount the published total", () => {
