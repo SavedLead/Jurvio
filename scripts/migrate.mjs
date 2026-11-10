@@ -6,7 +6,7 @@ import {
   concurrentIndexNames,
   formatBlockingSessions,
   sessionsBlockingIndexBuild,
-} from "./concurrent-index.mjs";
+} from "./concurrent-index.js";
 import { splitMigrationChunks } from "./migration-chunks.js";
 
 const databaseUrl = process.env.DATABASE_URL;

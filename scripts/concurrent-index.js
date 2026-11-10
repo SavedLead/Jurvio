@@ -24,6 +24,20 @@ export function assertIndexName(name) {
  * `pg_dump` holds AccessShare for the whole dump. Another CREATE INDEX on the
  * same name still holds ShareUpdateExclusive. Idle sessions are ignored.
  */
+/**
+ * @typedef {object} IndexSession
+ * @property {number} pid
+ * @property {string} [application_name]
+ * @property {string} [state]
+ * @property {string} [query_age]
+ * @property {string} [query]
+ */
+
+/**
+ * @param {IndexSession[]} activity
+ * @param {string} indexName
+ * @returns {IndexSession[]}
+ */
 export function sessionsBlockingIndexBuild(activity, indexName) {
   const name = assertIndexName(indexName).toLowerCase();
   return activity.filter((row) => {
@@ -34,6 +48,10 @@ export function sessionsBlockingIndexBuild(activity, indexName) {
   });
 }
 
+/**
+ * @param {string} indexName
+ * @param {IndexSession[]} sessions
+ */
 export function formatBlockingSessions(indexName, sessions) {
   const lines = sessions.map((row) =>
     `pid=${row.pid} application_name=${row.application_name ?? ""} state=${row.state ?? ""} query_age=${row.query_age ?? ""} query=${row.query ?? ""}`,
