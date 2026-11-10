@@ -75,8 +75,47 @@ export interface ListPublicCasesOptions {
   fromYear?: number | null;
   toYear?: number | null;
   sort?: CaseListingSort;
+  /** Newest-first cursor (decided-or-filed date, caption, id). Skips OFFSET. */
+  before?: { on: string | null; caption: string; id: string } | null;
   /** Paid subscribers only: include subscriber-only (search-excluded, sealed-style) cases. */
   includeSubscriberOnly?: boolean;
+}
+
+/** True when the total is a slice of the corpus, not every published case. */
+export function listingHasNarrowingFilter(options: Pick<
+  ListPublicCasesOptions,
+  "court" | "query" | "party" | "firm" | "decided" | "opinion" | "verified" | "fromYear" | "toYear"
+>): boolean {
+  return Boolean(
+    options.court || options.query || options.party || options.firm || options.decided || options.opinion
+      || options.verified || options.fromYear || options.toYear,
+  );
+}
+
+/**
+ * Published-case headline for the unfiltered listing. Sums the precomputed
+ * per-court counts (court_public_stats). When that table is empty or not
+ * migrated yet, uses the planner estimate on the published-recency index.
+ * Neither path counts legal_case.
+ */
+export async function readCachedPublishedTotal(sql: Sql): Promise<number> {
+  try {
+    const [row] = await sql<{ total: string }[]>`
+      SELECT coalesce(sum(case_count), 0)::bigint AS total
+      FROM court_public_stats
+    `;
+    const total = Number(row?.total ?? 0);
+    if (Number.isFinite(total) && total > 0) return total;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code !== "42P01") throw error;
+  }
+  const [estimate] = await sql<{ total: string }[]>`
+    SELECT greatest(coalesce(reltuples, 0), 0)::bigint AS total
+    FROM pg_class
+    WHERE relname = 'legal_case_published_recency_idx'
+  `;
+  const estimated = Number(estimate?.total ?? 0);
+  return Number.isFinite(estimated) ? estimated : 0;
 }
 
 /** Escapes LIKE wildcards so user text is matched literally. */
@@ -110,14 +149,15 @@ export function courtFacetKey(name: string) {
 
 /**
  * Court facet for /cases from court_public_stats (refreshed off the request
- * path by `public-directory-stats`). Falls back to the live GROUP BY over every
- * published case when the table is missing or not refreshed yet. Duplicate court
- * rows (see courtFacetKeySql) are merged: the value is the busiest row's public id
- * and the label the most formal (longest) name.
+ * path by `public-directory-stats`). Duplicate court rows (see courtFacetKeySql)
+ * are merged: the value is the busiest row's public id and the label the most
+ * formal (longest) name. A missing stats table returns no facets. The live
+ * GROUP BY over every published case stays available to tests and the refresher,
+ * and is not used to render /cases.
  */
 export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
   try {
-    const rows = await sql<CourtFacet[]>`
+    return await sql<CourtFacet[]>`
       SELECT (array_agg(court.public_id ORDER BY stats.case_count DESC, court.public_id))[1] AS value,
         (array_agg(court.name ORDER BY length(court.name) DESC, stats.case_count DESC))[1] AS label,
         sum(stats.case_count)::int AS count
@@ -127,11 +167,10 @@ export async function listPublicCaseCourts(sql: Sql): Promise<CourtFacet[]> {
       GROUP BY ${sql.unsafe(courtFacetKeySql())}
       ORDER BY count DESC, label
     `;
-    if (rows.length) return rows;
   } catch (error) {
     if ((error as { code?: string } | null)?.code !== "42P01") throw error;
+    return [];
   }
-  return listPublicCaseCourtsLive(sql);
 }
 
 export async function listPublicCaseCourtsLive(sql: Sql): Promise<CourtFacet[]> {
@@ -163,13 +202,17 @@ export async function listPublicCaseCourtsLive(sql: Sql): Promise<CourtFacet[]> 
 export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions) {
   const page = Math.max(1, options.page);
   const pageSize = Math.min(100, Math.max(1, options.pageSize));
-  const offset = (page - 1) * pageSize;
   const courtFilter = clean(options.court);
   const query = clean(options.query);
   const party = clean(options.party);
   const firm = clean(options.firm);
   const queryPattern = query ? containsPattern(query) : null;
   const sort: CaseListingSort = options.sort === "best" && !query ? "recent" : options.sort ?? (query ? "best" : "recent");
+  const narrowing = listingHasNarrowingFilter(options);
+  // Unfiltered newest-first pages stay on legal_case_published_recency_idx.
+  // Page 1 is LIMIT only. Later pages pass a keyset cursor and do not OFFSET.
+  const recentKeyset = !narrowing && sort === "recent";
+  const offset = recentKeyset ? 0 : (page - 1) * pageSize;
 
   const displayableEntity = sql`
     COALESCE((
@@ -270,6 +313,21 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
   if (options.opinion) conditions.push(publicDocumentExists);
   if (options.fromYear) conditions.push(sql`COALESCE(legal_case.decided_on, legal_case.filed_on) >= make_date(${options.fromYear}::int, 1, 1)`);
   if (options.toYear) conditions.push(sql`COALESCE(legal_case.decided_on, legal_case.filed_on) < make_date(${options.toYear}::int + 1, 1, 1)`);
+  const before = recentKeyset ? options.before ?? null : null;
+  if (before) {
+    const on = before.on;
+    conditions.push(sql`(
+      (${on}::date IS NOT NULL AND COALESCE(legal_case.decided_on, legal_case.filed_on) < ${on}::date)
+      OR (
+        COALESCE(legal_case.decided_on, legal_case.filed_on) IS NOT DISTINCT FROM ${on}::date
+        AND (
+          legal_case.caption > ${before.caption}
+          OR (legal_case.caption = ${before.caption} AND legal_case.id > ${before.id}::uuid)
+        )
+      )
+      OR (${on}::date IS NOT NULL AND COALESCE(legal_case.decided_on, legal_case.filed_on) IS NULL)
+    )`);
+  }
 
   const where = conditions.reduce((combined, condition) => sql`${combined} AND ${condition}`);
 
@@ -290,12 +348,14 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
         : sql`COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST, legal_case.caption, legal_case.id`;
 
   const [totals, rows] = await Promise.all([
-    sql<Array<{ total: number }>>`
-      SELECT count(*)::int AS total
-      FROM legal_case
-      JOIN court ON court.id = legal_case.court_id
-      WHERE ${where}
-    `,
+    narrowing
+      ? sql<Array<{ total: number }>>`
+          SELECT count(*)::int AS total
+          FROM legal_case
+          JOIN court ON court.id = legal_case.court_id
+          WHERE ${where}
+        `
+      : readCachedPublishedTotal(sql).then((total) => [{ total }]),
     sql<PublicCaseRow[]>`
       SELECT legal_case.id::text AS id,
         legal_case.public_id AS "publicId",
@@ -330,10 +390,18 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
     };
   });
 
+  const last = rows.at(-1);
+  const nextBefore = recentKeyset && rows.length === pageSize && last
+    ? { on: last.decidedOn ?? last.filedOn, caption: last.caption, id: last.id }
+    : null;
+
   return {
     cases,
     total: totals[0]?.total ?? 0,
-    page,
+    /** Unfiltered totals are the stats sum or a planner estimate, not a live count. */
+    totalApproximate: !narrowing,
+    nextBefore,
+    page: recentKeyset ? 1 : page,
     pageSize,
     court: courtFilter,
     query,

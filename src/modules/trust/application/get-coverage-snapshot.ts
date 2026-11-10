@@ -76,6 +76,11 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
+/** The single published-case total is the sum of the family rows, not a second scan. */
+export function publishedCasesFromFamilies(families: readonly { publishedCases: number }[]): number {
+  return families.reduce((total, family) => total + family.publishedCases, 0);
+}
+
 /** Sums per-court rows into one family total. Pure, so the roll-up is testable. */
 export function summarizeFamily(
   key: CourtFamilyCoverage["key"],
@@ -146,32 +151,6 @@ export function classifyCourts(
 export async function getCoverageSnapshot(sql: Sql): Promise<CoverageSnapshot> {
   const checkedAt = new Date().toISOString();
 
-  const corpus = await safe(async () => {
-    const [row] = await sql<
-      {
-        publishedCases: number;
-        publishedOpinions: number;
-        courtsWithRecords: number;
-        earliestFiledOn: string | null;
-        latestFiledOn: string | null;
-        lastSourceRetrievedAt: string | null;
-      }[]
-    >`
-      SELECT
-        (SELECT count(*)::int FROM legal_case WHERE publication='published') AS "publishedCases",
-        (SELECT count(*)::int FROM document
-           JOIN judicial_opinion ON judicial_opinion.document_id = document.id
-           JOIN legal_case ON legal_case.id = document.case_id
-          WHERE document.publication='published' AND legal_case.publication='published'
-        ) AS "publishedOpinions",
-        (SELECT count(DISTINCT court_id)::int FROM legal_case WHERE publication='published') AS "courtsWithRecords",
-        (SELECT min(filed_on)::text FROM legal_case WHERE publication='published') AS "earliestFiledOn",
-        (SELECT max(filed_on)::text FROM legal_case WHERE publication='published') AS "latestFiledOn",
-        (SELECT max(retrieved_at)::text FROM raw_artifact) AS "lastSourceRetrievedAt"
-    `;
-    return row ?? null;
-  });
-
   const families = await safe(async () => {
     const courts = await sql<CourtRow[]>`
       SELECT lower(court.provider_court_id) AS code,
@@ -195,6 +174,35 @@ export async function getCoverageSnapshot(sql: Sql): Promise<CoverageSnapshot> {
       districts.map((row) => row.code),
     );
   });
+
+  const publishedCases = families ? publishedCasesFromFamilies(families) : null;
+  const familyEarliest = families?.map((family) => family.earliestFiledOn).filter((value): value is string => Boolean(value)).sort().at(0) ?? null;
+  const familyLatest = families?.map((family) => family.latestFiledOn).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+  const corpusDetails = await safe(async () => {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = '4s'`);
+      const [row] = await tx<
+        { publishedOpinions: number; lastSourceRetrievedAt: string | null }[]
+      >`
+        SELECT
+          (SELECT count(*)::int FROM document
+             JOIN judicial_opinion ON judicial_opinion.document_id = document.id
+             JOIN legal_case ON legal_case.id = document.case_id
+            WHERE document.publication='published' AND legal_case.publication='published'
+          ) AS "publishedOpinions",
+          (SELECT max(retrieved_at)::text FROM raw_artifact) AS "lastSourceRetrievedAt"
+      `;
+      return row ?? null;
+    });
+  });
+  const corpus = publishedCases === null ? null : {
+    publishedCases,
+    publishedOpinions: corpusDetails?.publishedOpinions ?? 0,
+    courtsWithRecords: families?.reduce((total, family) => total + family.courtsWithRecords, 0) ?? 0,
+    earliestFiledOn: familyEarliest,
+    latestFiledOn: familyLatest,
+    lastSourceRetrievedAt: corpusDetails?.lastSourceRetrievedAt ?? null,
+  };
 
   const limitations = await safe(async () => {
     const [held] = await sql<{ count: number }[]>`

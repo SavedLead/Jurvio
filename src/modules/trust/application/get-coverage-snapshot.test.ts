@@ -3,6 +3,7 @@ import {
   classifyCourts,
   describeBlocker,
   formatCoverageRange,
+  publishedCasesFromFamilies,
   summarizeFamily,
 } from "./get-coverage-snapshot";
 
@@ -14,6 +15,15 @@ const court = (code: string, publishedCases: number, earliest?: string, latest?:
 });
 
 describe("court family roll-up", () => {
+  it("uses the sum of the family rows as the single published-case total", () => {
+    const families = classifyCourts(
+      [court("scotus", 40_082), court("ca9", 27_439), court("txwd", 24_035), court("cit", 572)],
+      ["ca9"],
+      ["txwd"],
+    );
+    expect(publishedCasesFromFamilies(families)).toBe(40_082 + 27_439 + 24_035 + 572);
+  });
+
   it("reports the tracked roster as the denominator, not just what has records", () => {
     const families = classifyCourts(
       [court("scotus", 21_418, "1790-02-01", "2026-09-01"), court("txwd", 71_662, "1998-04-02", "2026-09-06")],

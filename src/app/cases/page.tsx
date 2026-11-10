@@ -12,6 +12,8 @@ import {
 import {
   activeFilterChips,
   buildCaseListingHref,
+  decodeCaseCursor,
+  encodeCaseCursor,
   exactMatchKind,
   hasActiveFilters,
   hasUserText,
@@ -36,7 +38,7 @@ const PAGE_SIZE = 50;
 
 const listCachedPublicCases = unstable_cache(
   async (options: ListPublicCasesOptions) => listPublicCases(db(), options),
-  ["public-case-directory-v4"],
+  ["public-case-directory-v5"],
   { revalidate: 300, tags: ["public-cases"] },
 );
 const listCachedPublicCaseCourts = unstable_cache(
@@ -85,6 +87,7 @@ function toQueryOptions(filters: CaseListingFilters): ListPublicCasesOptions {
     fromYear: filters.fromYear,
     toYear: filters.toYear,
     sort: filters.sort,
+    before: filters.before ? decodeCaseCursor(filters.before) : null,
   };
 }
 
@@ -110,7 +113,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
       : listCachedPublicCases(toQueryOptions(filters)),
     listCachedPublicCaseCourts(),
   ]);
-  const pages = Math.max(1, Math.ceil(result.total / result.pageSize));
+  const pages = result.totalApproximate ? 1 : Math.max(1, Math.ceil(result.total / result.pageSize));
   const activeCourt = filters.court ? courts.find((court) => court.value === filters.court) ?? null : null;
   const chips = activeFilterChips(filters, activeCourt?.label ?? null);
   const filtered = chips.length > 0;
@@ -119,8 +122,8 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
     ? { legalCase: result.cases[0], kind: exactMatchKind(filters.query, result.cases[0]) }
     : null;
   const sortOptions: CaseListingSort[] = filters.query ? ["best", "recent", "oldest", "az"] : ["recent", "oldest", "az"];
-  const firstShown = result.total === 0 ? 0 : (result.page - 1) * result.pageSize + 1;
-  const lastShown = Math.min(result.total, result.page * result.pageSize);
+  const firstShown = result.cases.length === 0 ? 0 : result.totalApproximate ? 1 : (result.page - 1) * result.pageSize + 1;
+  const lastShown = result.totalApproximate ? result.cases.length : Math.min(result.total, result.page * result.pageSize);
   const recordFilterCount = [filters.party, filters.firm, filters.court, filters.decided, filters.opinion, filters.verified, filters.fromYear || filters.toYear]
     .filter(Boolean).length;
 
@@ -237,7 +240,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
           <div className={styles.resultHead}>
             <div>
               <h2 aria-live="polite">
-                {result.total.toLocaleString()} {filtered ? "matching" : "published"} {result.total === 1 ? "case" : "cases"}
+                {result.totalApproximate ? "About " : ""}{result.total.toLocaleString()} {filtered ? "matching" : "published"} {result.total === 1 ? "case" : "cases"}
               </h2>
               <p>{SORT_DESCRIPTIONS[result.sort]}</p>
             </div>
@@ -346,24 +349,41 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
             </ol>
           )}
 
-          {result.total > 0 ? (
+          {result.cases.length > 0 ? (
             <nav className={styles.pagination} aria-label="Case directory pages">
-              <span>Showing {firstShown.toLocaleString()}–{lastShown.toLocaleString()} of {result.total.toLocaleString()}</span>
+              <span>
+                {result.totalApproximate
+                  ? `Showing ${result.cases.length.toLocaleString()} cases`
+                  : `Showing ${firstShown.toLocaleString()}–${lastShown.toLocaleString()} of ${result.total.toLocaleString()}`}
+              </span>
               <div>
-                {result.page > 1
-                  ? <Link href={buildCaseListingHref(filters, { page: result.page - 1 }) as Route}>Previous</Link>
-                  : <span aria-disabled="true">Previous</span>}
-                {pageWindow(result.page, pages).map((pageNumber, index, all) => (
-                  <span key={pageNumber} className={styles.pageGroup}>
-                    {index > 0 && pageNumber - (all[index - 1] ?? 0) > 1 ? <span className={styles.gap}>…</span> : null}
-                    {pageNumber === result.page
-                      ? <span aria-current="page" className={styles.currentPage}>{pageNumber}</span>
-                      : <Link href={buildCaseListingHref(filters, { page: pageNumber }) as Route}>{pageNumber}</Link>}
-                  </span>
-                ))}
-                {result.page < pages
-                  ? <Link href={buildCaseListingHref(filters, { page: result.page + 1 }) as Route}>Next</Link>
-                  : <span aria-disabled="true">Next</span>}
+                {result.totalApproximate ? (
+                  <>
+                    {filters.before
+                      ? <Link href={buildCaseListingHref(filters, { before: null, page: 1 }) as Route}>Previous</Link>
+                      : <span aria-disabled="true">Previous</span>}
+                    {result.nextBefore
+                      ? <Link href={buildCaseListingHref(filters, { before: encodeCaseCursor(result.nextBefore), page: 1 }) as Route}>Next</Link>
+                      : <span aria-disabled="true">Next</span>}
+                  </>
+                ) : (
+                  <>
+                    {result.page > 1
+                      ? <Link href={buildCaseListingHref(filters, { page: result.page - 1 }) as Route}>Previous</Link>
+                      : <span aria-disabled="true">Previous</span>}
+                    {pageWindow(result.page, pages).map((pageNumber, index, all) => (
+                      <span key={pageNumber} className={styles.pageGroup}>
+                        {index > 0 && pageNumber - (all[index - 1] ?? 0) > 1 ? <span className={styles.gap}>…</span> : null}
+                        {pageNumber === result.page
+                          ? <span aria-current="page" className={styles.currentPage}>{pageNumber}</span>
+                          : <Link href={buildCaseListingHref(filters, { page: pageNumber }) as Route}>{pageNumber}</Link>}
+                      </span>
+                    ))}
+                    {result.page < pages
+                      ? <Link href={buildCaseListingHref(filters, { page: result.page + 1 }) as Route}>Next</Link>
+                      : <span aria-disabled="true">Next</span>}
+                  </>
+                )}
               </div>
             </nav>
           ) : null}
