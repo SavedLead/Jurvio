@@ -9,8 +9,8 @@ export async function measurePublicSearchMs(
 ): Promise<number | null> {
   const started = Date.now();
   try {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(8000), redirect: "follow" });
-    if (!response.ok) return null;
+    const response = await fetchImpl(url, { signal: AbortSignal.timeout(25_000), redirect: "follow" });
+    if (response.status >= 500) return null;
     await response.arrayBuffer();
     return Date.now() - started;
   } catch {

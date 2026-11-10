@@ -25,15 +25,15 @@ export function docketDisplayBackfillEnabled(env?: Record<string, string | undef
   return source.JURVIO_PAUSE_DOCKET_DISPLAY_BACKFILL !== "1";
 }
 
+/** Largest case commit while the site is answering. Latency does not lower this. */
+export const PUBLISH_BATCH_CAP = 5_000;
+
 /**
- * Shrink a publish batch when public search is slow or the database already
- * has slow web queries. A failed probe uses a small batch rather than stopping.
+ * Publish the full requested batch. A slow page is not a reason to stop.
+ * The adaptive loop is what stops, and only after repeated failed probes.
  */
-export function pacedPublishLimit(requested: number, searchMs: number | null, slowDbQueries: number): number {
-  const capped = Math.max(0, Math.floor(requested));
-  if (searchMs !== null && (searchMs >= 2000 || slowDbQueries >= 3)) return 0;
-  if (searchMs === null || searchMs >= 1500 || slowDbQueries > 0) return Math.min(capped, Math.max(1, Math.floor(capped / 4)));
-  return capped;
+export function pacedPublishLimit(requested: number, _searchMs: number | null, _slowDbQueries: number): number {
+  return Math.max(0, Math.floor(requested));
 }
 
 export interface PublishPace {
@@ -43,21 +43,13 @@ export interface PublishPace {
   lockWaits: number;
 }
 
-/** Next short-commit size. Ramp while search and case pages stay under 1.5s. Stop at 2s. */
-export function nextPublishBatch(previous: number, pace: PublishPace): number {
-  const search = pace.searchMs;
-  const page = pace.casePageMs;
-  const known = [search, page].filter((value): value is number => value !== null);
-  const slowest = known.length ? Math.max(...known) : null;
-  if ((search !== null && search >= 2000) || (page !== null && page >= 2000) || pace.slowQueries >= 3 || pace.lockWaits >= 3) {
-    return 0;
-  }
-  const base = Math.max(400, Math.floor(previous) || 400);
-  if (slowest === null || slowest >= 3000 || pace.slowQueries > 0 || pace.lockWaits > 0) {
-    return Math.max(200, Math.floor(base / 4));
-  }
-  if (slowest < 1500) return Math.min(10_000, Math.floor(base * 1.5));
-  return Math.min(10_000, base);
+/**
+ * Full batches until probes have failed twice in a row (timeout or HTTP 5xx).
+ * A slow 200 is still the site answering, so it does not shrink the batch.
+ */
+export function nextPublishBatch(_previous: number, _pace: PublishPace, consecutiveFailures = 0): number {
+  if (consecutiveFailures >= 2) return 0;
+  return PUBLISH_BATCH_CAP;
 }
 
 export function continuousPublishBucket(input: {

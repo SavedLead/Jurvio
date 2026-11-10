@@ -8,26 +8,23 @@ describe("continuous publish flag", () => {
     expect(continuousPublishEnabled({ JURVIO_PAUSE_CONTINUOUS_PUBLISH: "1" })).toBe(false);
   });
 
-  it("shrinks the batch when search slows and stops when search is badly degraded", () => {
+  it("keeps the full batch when pages are slow or a single probe fails", () => {
     expect(pacedPublishLimit(2000, 400, 0)).toBe(2000);
-    expect(pacedPublishLimit(2000, 2200, 0)).toBe(0);
-    expect(pacedPublishLimit(2000, 7000, 0)).toBe(0);
-    expect(pacedPublishLimit(2000, null, 0)).toBe(500);
+    expect(pacedPublishLimit(2000, 12_000, 5)).toBe(2000);
+    expect(pacedPublishLimit(2000, null, 0)).toBe(2000);
   });
 });
 
 describe("adaptive publish batch", () => {
   const calm = { searchMs: 400, casePageMs: 500, slowQueries: 0, lockWaits: 0 };
-  it("ramps while search and case pages stay under 1.5 seconds", () => {
-    expect(nextPublishBatch(1000, calm)).toBe(1500);
-    expect(nextPublishBatch(8000, calm)).toBe(10000);
+  it("stays at the cap while the site answers, however slowly", () => {
+    expect(nextPublishBatch(1000, calm)).toBe(5000);
+    expect(nextPublishBatch(1000, { ...calm, searchMs: 12_000, casePageMs: 9000 })).toBe(5000);
+    expect(nextPublishBatch(1000, { ...calm, searchMs: null, casePageMs: 400 }, 1)).toBe(5000);
   });
-  it("stops when search or a case page is at 2 seconds", () => {
-    expect(nextPublishBatch(2000, { ...calm, searchMs: 2000 })).toBe(0);
-    expect(nextPublishBatch(2000, { ...calm, searchMs: 3500 })).toBe(0);
-    expect(nextPublishBatch(2000, { ...calm, casePageMs: 6200 })).toBe(0);
-    expect(nextPublishBatch(2000, { ...calm, slowQueries: 3 })).toBe(0);
-    expect(nextPublishBatch(2000, { ...calm, lockWaits: 3 })).toBe(0);
+  it("stops only after probes have failed twice", () => {
+    expect(nextPublishBatch(5000, { ...calm, searchMs: null, casePageMs: null }, 2)).toBe(0);
+    expect(nextPublishBatch(5000, calm, 2)).toBe(0);
   });
 });
 

@@ -79,7 +79,7 @@ export async function publishMetadataBatch(sql: Sql, options: { limit: number })
 
 async function publishChunk(sql: Sql, limit: number, tier: Tier): Promise<ChunkStats> {
   return sql.begin(async (tx) => {
-    await tx`SET LOCAL statement_timeout = '20s'`;
+    await tx`SET LOCAL statement_timeout = '45s'`;
     await tx`SELECT set_config('jurvio.defer_search_refresh', 'on', true)`;
     const [row] = await tx<{ published: number; scanned: number; sealed: number }[]>`
       WITH picked AS (
@@ -162,7 +162,7 @@ export interface AdaptivePublishStats extends MetadataBatchStats {
 
 /** One short commit of the thickest tier that still has rows. */
 export async function publishMetadataSlice(sql: Sql, limit: number): Promise<MetadataBatchStats> {
-  const size = Math.min(2000, Math.max(1, Math.floor(limit)));
+  const size = Math.min(5_000, Math.max(1, Math.floor(limit)));
   for (const tier of ["opinion", "docket", "record"] as const) {
     try {
       const chunk = await publishChunk(sql, size, tier);
@@ -188,13 +188,14 @@ export async function runAdaptiveMetadataPublish(
   const { nextPublishBatch } = await import("../domain/continuous-publish");
   const { lockWaitCount, measurePublicSearchMs, medianMs, slowPublicQueryCount } = await import("./search-pace");
   const deadline = Date.now() + Math.max(15_000, options.budgetMs);
-  let batch = Math.min(10_000, Math.max(400, options.startBatch ?? 500));
+  let batch = 5_000;
   const stats: AdaptivePublishStats = {
     published: 0, scanned: 0, held: 0, heldByReason: {}, batchSize: batch,
     searchMs: null, casePageMs: null, slowQueries: 0, lockWaits: 0, elapsedMs: 0,
   };
   const started = Date.now();
   const searches: Array<number | null> = [];
+  let failures = 0;
   while (Date.now() < deadline) {
     const searchMs = await measurePublicSearchMs();
     const casePageMs = await measurePublicSearchMs("https://jurvio.com/case/jv-c7mxm55hg0");
@@ -206,7 +207,9 @@ export async function runAdaptiveMetadataPublish(
     stats.casePageMs = casePageMs;
     stats.slowQueries = slowQueries;
     stats.lockWaits = lockWaits;
-    batch = nextPublishBatch(batch, pace);
+    const probeFailed = searchMs === null || casePageMs === null;
+    failures = probeFailed ? failures + 1 : 0;
+    batch = nextPublishBatch(batch, pace, failures);
     stats.batchSize = batch;
     if (batch === 0) break;
     const slice = await publishMetadataSlice(sql, batch);

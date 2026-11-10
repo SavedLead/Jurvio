@@ -454,10 +454,9 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     lane: "core",
     name: "federal-publication",
     initialDelayMs: 1 * minute,
-    intervalMs: 6 * minute,
-    budgetMs: 5 * minute,
-    // Short commits, then the next pass. The batch grows while search stays
-    // under 1.5s and stops when search or a case page reaches 6s.
+    intervalMs: 8 * minute,
+    budgetMs: 7 * minute,
+    // Full batches. The loop stops only after two probes time out or get HTTP 5xx.
     command: [
       "jobs/run-federal-ingestion-loop.mjs",
       "--loop=publication-quarantine",
