@@ -430,7 +430,11 @@ jobs:
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
           set -euo pipefail
-          login_body="$(curl --fail --silent --show-error --retry 8 --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
+          # 525 is Cloudflare's "SSL handshake failed" while the origin is restarting.
+          # curl does not retry that code unless --retry-all-errors is set, so one
+          # handshake miss failed this step in under a second and skipped the
+          # public-web release. The page text is still required after the body arrives.
+          login_body="$(curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
           # Case-insensitive match: the page renders "Private command center" in the
           # HTML and only APPEARS uppercase via CSS (text-transform). A case-sensitive
           # grep for the uppercase string never matched the served markup, which

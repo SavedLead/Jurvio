@@ -176,6 +176,8 @@ fi
 
 run_with_timeout "Application and worker startup" "$START_TIMEOUT_SECONDS" docker compose -f "$COMPOSE" up -d app worker-core worker-coa worker-citations worker-supervisor worker-federal-import
 
+# Local readiness is not the Cloudflare check. z.jurvio.com can return 525 for
+# a moment after this restart; the deploy workflow retries that code.
 READY=0
 for attempt in $(seq 1 30); do
   if curl -fsS http://127.0.0.1:3000/api/ready >/dev/null 2>&1; then
