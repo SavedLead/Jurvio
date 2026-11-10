@@ -11,7 +11,10 @@
  * a publication update). Calendar dates that carry no time and no zone — a court
  * decision's `filed_on`, a SCOTUS decision date stored as `YYYY-MM-DD` — must NOT
  * be run through here: converting a midnight-UTC calendar date into Eastern would
- * shift it back a day. Format those as plain calendar dates instead.
+ * shift it back a day. Format those with formatCalendarDate instead.
+ *
+ * Clock times are labeled ET. The zone is still America/New_York, so the hour
+ * follows daylight-saving rules, and the label does not switch between EST and EDT.
  */
 
 export const EASTERN_TIME_ZONE = "America/New_York";
@@ -25,7 +28,7 @@ function toDate(value: DateInput): Date | null {
 }
 
 /**
- * Full instant: date + time + zone abbreviation, e.g. "Aug 10, 2026, 7:28 PM EDT".
+ * Full instant: date + time labeled ET, e.g. "Aug 10, 2026, 7:28 PM ET".
  * Use for operational dashboards, reports, and any timestamp where the precise
  * moment matters. `fallback` is returned for null/invalid input.
  */
@@ -34,29 +37,29 @@ export function formatEasternDateTime(value: DateInput, fallback = "Not availabl
   if (!date) return fallback;
   // Explicit component options (not dateStyle/timeStyle, which cannot be
   // combined with timeZoneName) so the EST/EDT abbreviation is included.
-  return new Intl.DateTimeFormat("en-US", {
+  const when = new Intl.DateTimeFormat("en-US", {
     year: "numeric",
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     timeZone: EASTERN_TIME_ZONE,
-    timeZoneName: "short",
   }).format(date);
+  return `${when} ET`;
 }
 
 /**
- * Time only + zone abbreviation, e.g. "7:28 PM EDT".
+ * Time only, labeled ET, e.g. "7:28 PM ET".
  */
 export function formatEasternTime(value: DateInput, fallback = "Not available"): string {
   const date = toDate(value);
   if (!date) return fallback;
-  return new Intl.DateTimeFormat("en-US", {
+  const clock = new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     minute: "2-digit",
     timeZone: EASTERN_TIME_ZONE,
-    timeZoneName: "short",
   }).format(date);
+  return `${clock} ET`;
 }
 
 /**

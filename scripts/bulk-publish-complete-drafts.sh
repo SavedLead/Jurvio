@@ -8,8 +8,10 @@
 # date, plus at least one of cause, nature of suit, a judge assignment, a
 # party, or a docket entry. Sealed captions and suppressing holds are not
 # published. SCOTUS is left to its own pipeline. updated_at is not changed,
-# so follower alerts do not see a new filing. Search refresh is deferred;
-# the ordinary jobs catch up.
+# so follower alerts do not see a new filing. Search refresh stays off inside
+# the publish transaction. After each commit, one slice of public_case_search
+# is filled. scripts/catch-up-published-search.sh finishes the rest and can
+# run while this job is already going. Neither path touches legal_case.updated_at.
 set -eu
 
 MODE=${1:-count}
@@ -28,6 +30,50 @@ fi
 
 psql() {
   docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -P pager=off "$@"
+}
+
+# One committed slice of the text index. Runs outside the deferred publish
+# transaction. ON CONFLICT DO NOTHING, and legal_case is not updated.
+catch_up_search_slice() {
+  psql -q -tA <<'SQL'
+BEGIN;
+SET LOCAL statement_timeout = '30s';
+SET LOCAL lock_timeout = '3s';
+WITH batch AS (
+  SELECT c.id, c.public_id, c.caption, c.docket_number, c.official_citation
+  FROM legal_case c
+  WHERE c.publication = 'published'
+    AND NOT EXISTS (SELECT 1 FROM public_case_search search WHERE search.case_id = c.id)
+  ORDER BY c.public_id
+  LIMIT 500
+), written AS (
+  INSERT INTO public_case_search (case_id, public_id, search_text, refreshed_at)
+  SELECT batch.id, batch.public_id,
+    concat_ws(E'\n',
+      batch.caption,
+      batch.docket_number,
+      batch.official_citation,
+      (SELECT enrichment.exact_holding FROM scotus_case_enrichment enrichment
+        WHERE enrichment.case_id = batch.id AND enrichment.verification = 'verified'),
+      (SELECT string_agg(DISTINCT names.name, E'\n')
+        FROM (
+          SELECT appearance.party_name_as_filed AS name
+          FROM party_appearance appearance WHERE appearance.case_id = batch.id
+          UNION
+          SELECT entity.display_name
+          FROM party_appearance appearance
+          JOIN entity ON entity.id = appearance.entity_id
+          WHERE appearance.case_id = batch.id
+        ) names)
+    ),
+    now()
+  FROM batch
+  ON CONFLICT (case_id) DO NOTHING
+  RETURNING 1
+)
+SELECT count(*) FROM written;
+COMMIT;
+SQL
 }
 
 COUNT_SQL=$(cat <<SQL
@@ -220,6 +266,7 @@ SQL
   elapsed=$((now - started))
   if [ "$elapsed" -lt 1 ]; then elapsed=1; fi
   echo "batch scanned=$scanned published=$published elapsed_s=$elapsed"
+  catch_up_search_slice || echo "search catch-up skipped"
   if [ "$scanned" = "0" ]; then
     echo "pass complete; cursor reset so a later run picks up new drafts"
     break

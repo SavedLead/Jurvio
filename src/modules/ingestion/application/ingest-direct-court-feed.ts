@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
+import { calendarDateInZone, utcCalendarDate } from "@/lib/time/calendar-date";
 import type { ArtifactStore } from "./artifact-store";
 import { shouldCreateCase } from "../domain/direct-court";
 import { publishDraftFeedCase, recordFeedPublication } from "../live-feeds/persist";
@@ -162,18 +163,28 @@ async function ingestOneDirectCourtFeed(
             RETURNING id
           `;
           if (!courtRecord) throw new Error("Official court was not persisted");
+          const filedOn = event.eventType === "case_filed" ? calendarDateInZone(event.filedAt, court.timeZone) : null;
+          const filedOnUtc = event.eventType === "case_filed" ? utcCalendarDate(event.filedAt) : null;
           const [insertedCase] = await tx<{ id: string; public_id: string; publication: string; inserted: boolean }[]>`
             INSERT INTO legal_case (
               public_id, court_id, docket_number, caption, filed_on,
               verification, publication, source_artifact_id, source_updated_at, updated_at
             ) VALUES (
               ${createPublicId("case")}, ${courtRecord.id}, ${event.docketNumber},
-              ${event.caption}, ${event.eventType === "case_filed" ? event.filedAt.slice(0, 10) : null},
+              ${event.caption}, ${filedOn},
               'verified', 'published', ${artifact.id}, ${event.filedAt}, now() - interval '31 days'
             )
             ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
             DO UPDATE SET source_artifact_id = EXCLUDED.source_artifact_id,
-              source_updated_at = EXCLUDED.source_updated_at, updated_at = legal_case.updated_at
+              source_updated_at = EXCLUDED.source_updated_at,
+              filed_on = CASE
+                WHEN ${filedOn}::date IS NOT NULL
+                  AND legal_case.filed_on IS NOT DISTINCT FROM ${filedOnUtc}::date
+                  AND legal_case.filed_on IS DISTINCT FROM ${filedOn}::date
+                THEN ${filedOn}::date
+                ELSE legal_case.filed_on
+              END,
+              updated_at = legal_case.updated_at
             RETURNING id, public_id, publication::text, (xmax = 0) AS inserted
           `;
           legalCase = insertedCase ?? null;
@@ -219,6 +230,8 @@ async function ingestOneDirectCourtFeed(
           return;
         }
 
+        const entryDate = calendarDateInZone(event.filedAt, court.timeZone) ?? utcCalendarDate(event.filedAt);
+        const entryDateUtc = utcCalendarDate(event.filedAt);
         await tx`
           INSERT INTO docket_entry (
             public_id, case_id, provider_id, provider_entry_id,
@@ -226,12 +239,18 @@ async function ingestOneDirectCourtFeed(
           ) VALUES (
             ${createPublicId("docketEntry")}, ${legalCase.id}, ${provider.id},
             ${event.deduplicationKey}, ${event.documentNumber},
-            ${event.filedAt.slice(0, 10)}, ${event.exactText}, ${artifact.id},
+            ${entryDate}, ${event.exactText}, ${artifact.id},
             now() - interval '15 days', now() - interval '15 days'
           )
           ON CONFLICT (provider_id, provider_entry_id)
           DO UPDATE SET description = EXCLUDED.description,
             source_artifact_id = EXCLUDED.source_artifact_id,
+            filed_on = CASE
+              WHEN docket_entry.filed_on IS NOT DISTINCT FROM ${entryDateUtc}::date
+                AND docket_entry.filed_on IS DISTINCT FROM EXCLUDED.filed_on
+              THEN EXCLUDED.filed_on
+              ELSE docket_entry.filed_on
+            END,
             updated_at = docket_entry.updated_at
         `;
         await tx`

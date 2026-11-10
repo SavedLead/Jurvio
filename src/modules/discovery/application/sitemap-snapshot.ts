@@ -3,7 +3,7 @@ import { siteOrigin } from "@/lib/config/site-url";
 import { xmlEscape } from "@/modules/discovery/http/xml";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
-import { casePageIndexableSql, readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
+import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
 import {
   SITEMAP_CASE_PAGE_SIZE,
   SITEMAP_PAGE_SIZE,
@@ -84,8 +84,9 @@ async function caseIds(sql: Sql, after: string | null): Promise<string[]> {
     SELECT c.public_id
     FROM legal_case c
     JOIN publication_current current_row
-      ON current_row.object_type = 'legal_case' AND current_row.object_id = c.id
-    JOIN publication_decision decision ON decision.id = current_row.decision_id AND decision.indexable
+      ON current_row.object_type = 'legal_case'
+      AND current_row.object_id = c.id
+      AND current_row.displayable
     WHERE c.publication = 'published'
       AND NOT ${sql.unsafe(searchExcludedCaseSql("c"))}
       AND (${after}::text IS NULL OR c.public_id > ${after})
@@ -196,13 +197,11 @@ async function publishSitemapIndex(sql: Sql): Promise<void> {
 }
 
 async function caseRecords(sql: Sql, ids: string[]): Promise<SitemapRecord[]> {
-  // Each URL is listed only when its page renders "index" (same rules as the
-  // pages' robots metadata): the case page and /documents need readable
-  // opinion text (or, for the case page, a Tier 1/2 release); docket,
-  // timeline and parties pages index whenever the case is not search-excluded.
-  const rows = await sql<{ public_id: string; updated_at: string; case_indexable: boolean; has_docket: boolean; has_documents: boolean; has_parties: boolean }[]>`
+  // The case URL is listed for every displayable published case the caller
+  // already selected. Docket, timeline, documents, and parties pages keep
+  // their own rules. This rebuild writes stored XML only; it does not notify Google.
+  const rows = await sql<{ public_id: string; updated_at: string; has_docket: boolean; has_documents: boolean; has_parties: boolean }[]>`
     SELECT c.public_id, c.updated_at::text AS updated_at,
-      ${sql.unsafe(casePageIndexableSql("c"))} AS case_indexable,
       EXISTS (SELECT 1 FROM docket_entry entry WHERE entry.case_id = c.id) AS has_docket,
       ${sql.unsafe(readableOpinionExistsSql("c"))} AS has_documents,
       EXISTS (SELECT 1 FROM party_appearance appearance WHERE appearance.case_id = c.id) AS has_parties
@@ -212,7 +211,7 @@ async function caseRecords(sql: Sql, ids: string[]): Promise<SitemapRecord[]> {
   `;
   const records: SitemapRecord[] = [];
   for (const row of rows) {
-    if (row.case_indexable) records.push({ path: `/case/${row.public_id}`, updatedAt: row.updated_at });
+    records.push({ path: `/case/${row.public_id}`, updatedAt: row.updated_at });
     if (row.has_docket) {
       records.push({ path: `/case/${row.public_id}/docket`, updatedAt: row.updated_at });
       records.push({ path: `/case/${row.public_id}/timeline`, updatedAt: row.updated_at });

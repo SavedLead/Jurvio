@@ -23,7 +23,7 @@ describe("signup notification", () => {
     const m = signupNotificationEmail(details);
     expect(m.subject).toBe("New Jurvio sign-up: jane.doe@gmail.com (free)");
     expect(m.text).toContain("Account: jane.doe@gmail.com");
-    expect(m.text).toContain("Nov 4, 2026, 10:22 PM EST");
+    expect(m.text).toContain("Nov 4, 2026, 10:22 PM ET");
     expect(m.text).toContain("Referrer: google.com");
     expect(m.text).toContain("Landing page: /case/jv-abc");
     expect(m.text).toContain("UTM (source / medium / campaign): news / - / launch");
