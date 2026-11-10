@@ -167,7 +167,9 @@ describe.skipIf(!databaseUrl)("published case counter migration", () => {
 
         expect(await next()).toBe(first);
         expect(await countOf(first)).toEqual({ case_count: 2, published_delta: 2 });
-        expect(await countOf(second)).toEqual({ case_count: 4, published_delta: 0 });
+        // The fixture case was already published, so the trigger has added 1
+        // to the stale recount. Seeding the first court must leave that alone.
+        expect(await countOf(second)).toEqual({ case_count: 5, published_delta: 1 });
 
         expect(await next()).toBe(second);
         expect(await countOf(second)).toEqual({ case_count: 1, published_delta: 1 });
