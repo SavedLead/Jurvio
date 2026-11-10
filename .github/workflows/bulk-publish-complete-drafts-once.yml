@@ -1,0 +1,71 @@
+name: Bulk publish complete drafts (once)
+
+# Publishes complete, non-thin federal drafts in committed ranges of 75,000
+# draft rows. Runs on the ingestion host through the builder. It does not run
+# on the public web server.
+#
+# Count only (no updates):
+#   confirm=BULK_PUBLISH_COUNT  mode=count
+# Publish, resumable from the saved cursor:
+#   confirm=BULK_PUBLISH_RUN    mode=publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BULK_PUBLISH_COUNT or BULK_PUBLISH_RUN"
+        required: true
+        type: string
+      mode:
+        description: "count or publish"
+        required: true
+        type: choice
+        options:
+          - count
+          - publish
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bulk-publish-complete-drafts
+  cancel-in-progress: false
+
+jobs:
+  bulk:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 360
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - name: Require confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$CONFIRM" != "BULK_PUBLISH_COUNT" ] && [ "$CONFIRM" != "BULK_PUBLISH_RUN" ]; then
+            echo "::error::Refusing to run. confirm must be BULK_PUBLISH_COUNT or BULK_PUBLISH_RUN."
+            exit 1
+          fi
+          if [ "$CONFIRM" = "BULK_PUBLISH_COUNT" ] && [ "$MODE" != "count" ]; then
+            echo "::error::BULK_PUBLISH_COUNT requires mode=count."
+            exit 1
+          fi
+          if [ "$CONFIRM" = "BULK_PUBLISH_RUN" ] && [ "$MODE" != "publish" ]; then
+            echo "::error::BULK_PUBLISH_RUN requires mode=publish."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run on the ingestion host
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s -- '$MODE'" < scripts/bulk-publish-complete-drafts.sh
