@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyCourts,
   describeBlocker,
+  coverageThroughLabel,
   formatCoverageRange,
   publishedCasesFromFamilies,
   retainCoverageSnapshot,
@@ -71,6 +72,12 @@ describe("court family roll-up", () => {
     const family = summarizeFamily("supreme", "SCOTUS", [court("scotus", 5)], 1);
     expect(family.earliestFiledOn).toBeNull();
     expect(formatCoverageRange(family.earliestFiledOn, family.latestFiledOn)).toBe("Unknown");
+  });
+
+  it("does not let a future filing year extend the public range", () => {
+    const today = new Date("2026-11-10T12:00:00Z");
+    expect(formatCoverageRange("1970-01-05", "2027-09-29", today)).toBe("1970–2026");
+    expect(coverageThroughLabel(null, "2027-09-29", today)).toBe("through 2026");
   });
 });
 

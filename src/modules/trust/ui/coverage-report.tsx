@@ -1,7 +1,7 @@
 import { formatEasternDateTime } from "@/lib/time/eastern";
 import {
   describeBlocker,
-  formatCoverageRange,
+  coverageThroughLabel,
   type CoverageSnapshot,
 } from "@/modules/trust/application/get-coverage-snapshot";
 import styles from "./coverage-report.module.css";
@@ -42,7 +42,7 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
           </div>
           <div>
             <dt>Filing years covered</dt>
-            <dd>{formatCoverageRange(corpus.earliestFiledOn, corpus.latestFiledOn)}</dd>
+            <dd>{coverageThroughLabel(corpus.earliestFiledOn, corpus.latestFiledOn)}</dd>
           </div>
           <div>
             <dt>Most recent source retrieval</dt>
@@ -90,11 +90,7 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
                     </td>
                     <td className={styles.numeric}>{count(family.publishedCases)}</td>
                     <td className={styles.numeric}>
-                      {family.earliestFiledOn
-                        ? formatCoverageRange(family.earliestFiledOn, family.latestFiledOn)
-                        : family.latestFiledOn
-                          ? `through ${family.latestFiledOn.slice(0, 4)}`
-                          : "Unknown"}
+                      {coverageThroughLabel(family.earliestFiledOn, family.latestFiledOn)}
                     </td>
                   </tr>
                 );

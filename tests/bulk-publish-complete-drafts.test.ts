@@ -65,6 +65,9 @@ describe("bulk publish of complete drafts", () => {
     expect(catchUp).toContain("updated_at = entry.updated_at");
     expect(catchUp).toContain("WHEN r.court_code IN ('cand', 'caed', 'cacd', 'casd', 'ord', 'waed', 'wawd', 'nvd') THEN 'America/Los_Angeles'");
     expect(catchUp).toContain("recent.filed_on = min(entry.filed_on) + 1");
+    expect(catchUp).toContain("future sort dates before");
+    expect(catchUp).toContain("WHEN c.filed_on > (SELECT day FROM today) THEN chosen.entry_day");
+    expect(catchUp).toContain("updated_at = c.updated_at");
     expect(catchUp).toContain("COALESCE(c.decided_on, c.filed_on) > state.cursor_date");
     expect(catchUp).toContain("COALESCE(c.decided_on, c.filed_on) < state.cursor_date");
     expect(catchUp).toContain("LIMIT :batch_size");

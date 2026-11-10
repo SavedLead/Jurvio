@@ -161,10 +161,10 @@ export function docketNumberYear(docketNumber: string, now = new Date()): string
   return String(twoDigit <= nextYear ? 2000 + twoDigit : 1900 + twoDigit);
 }
 
-function year(input: CaseTitleInput) {
+function year(input: CaseTitleInput, now = new Date()) {
   const date = input.decidedOn ?? input.filedOn;
-  if (date && /^\d{4}/.test(date)) return date.slice(0, 4);
-  return docketNumberYear(input.docketNumber);
+  if (date && /^\d{4}/.test(date) && Number(date.slice(0, 4)) <= now.getUTCFullYear()) return date.slice(0, 4);
+  return docketNumberYear(input.docketNumber, now);
 }
 
 // Bluebook T6 abbreviations, applied only when a title is too long.
@@ -224,16 +224,16 @@ function shortenName(name: string, budget: number): string {
 }
 
 /** ", No. docket (Court Year)" — the part of the title after the case name. */
-export function caseCitationSuffix(input: Omit<CaseTitleInput, "caption">): string {
+export function caseCitationSuffix(input: Omit<CaseTitleInput, "caption">, now = new Date()): string {
   const court = courtAbbreviation(input.courtName, input.providerCourtId);
-  const parenthetical = [court, year({ ...input, caption: "" })].filter(Boolean).join(" ");
+  const parenthetical = [court, year({ ...input, caption: "" }, now)].filter(Boolean).join(" ");
   return `, No. ${input.docketNumber.trim()}${parenthetical ? ` (${parenthetical})` : ""}`;
 }
 
 /** "Case name, No. docket (Court Year)", shortening the case name before ever dropping the court. */
-export function buildCaseTitle(input: CaseTitleInput, target = CASE_TITLE_TARGET_LENGTH): string {
+export function buildCaseTitle(input: CaseTitleInput, target = CASE_TITLE_TARGET_LENGTH, now = new Date()): string {
   const name = input.caption.replace(/\s+/g, " ").trim();
-  const tail = caseCitationSuffix(input);
+  const tail = caseCitationSuffix(input, now);
   const full = `${name}${tail}`;
   if (full.length <= target) return full;
   return `${shortenName(name, Math.max(40, target - tail.length))}${tail}`;

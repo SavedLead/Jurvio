@@ -87,6 +87,21 @@ export function formatCalendarDate(value: string | null | undefined, timeZone = 
   }
 }
 
+/** Today's calendar day in Eastern time, as YYYY-MM-DD. */
+export function easternCalendarToday(now = new Date()): string {
+  const parts = partsInZone(now, COURT_DATE_FALLBACK_ZONE);
+  if (!parts) return "1970-01-01";
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+/** A YYYY-MM-DD on or before today. A later day is not a filed or latest date. */
+export function dateOnOrBeforeToday(value: string | null | undefined, today = easternCalendarToday()): string | null {
+  if (!value) return null;
+  const day = value.trim().slice(0, 10);
+  if (!DATE_ONLY.test(day)) return null;
+  return day > today ? null : day;
+}
+
 /** Clock time in Eastern time, labeled ET so server and browser render the same text. */
 export function formatEasternClock(value: string | Date | null | undefined, fallback = ""): string {
   if (value == null || value === "") return fallback;

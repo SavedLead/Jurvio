@@ -25,6 +25,7 @@ import {
   type CaseListingParams,
   type CaseListingSort,
 } from "@/modules/cases/domain/case-listing";
+import { easternCalendarToday } from "@/lib/time/calendar-date";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 import { BrandedCaseCaption, HighlightedText } from "@/modules/cases/ui/branded-case-caption";
 import { CopyCitationButton } from "@/modules/cases/ui/copy-citation-button";
@@ -297,7 +298,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
             <ol className={`${styles.list} ${compact ? styles.compact : ""}`}>
               {result.cases.map((legalCase) => {
                 const status = statusFor(legalCase);
-                const latest = pickLatestCaseEvent(legalCase);
+                const latest = pickLatestCaseEvent({ ...legalCase, today: easternCalendarToday() });
                 const latestDate = latest ? formatPublicCaseDate(latest.date) ?? latest.date : null;
                 const authorJudge = legalCase.perCuriam ? null : matchOpinionAuthorJudge(legalCase.opinionAuthor, legalCase.authorJudges ?? []);
                 return (

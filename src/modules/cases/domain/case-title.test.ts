@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCaseTitle, cleanCaptionText, courtAbbreviation, displayCaption, docketNumberYear } from "./case-title";
+import { buildCaseTitle, caseCitationSuffix, cleanCaptionText, courtAbbreviation, displayCaption, docketNumberYear } from "./case-title";
 
 describe("court abbreviations", () => {
   it.each([
@@ -111,6 +111,16 @@ describe("audit caption cleanup", () => {
     expect(docketNumberYear("2:26-cv-12729", new Date("2026-11-01T00:00:00Z"))).toBe("2026");
     expect(docketNumberYear("1:98-cr-00001", new Date("2026-11-01T00:00:00Z"))).toBe("1998");
     expect(docketNumberYear("24-2205")).toBeNull();
+  });
+
+  it("does not put a future filed year in the title when the docket year is known", () => {
+    const now = new Date("2026-11-10T12:00:00Z");
+    expect(caseCitationSuffix({
+      docketNumber: "1:83-cv-00594",
+      courtName: "District of New Hampshire",
+      filedOn: "2027-09-29",
+      decidedOn: null,
+    }, now)).toBe(", No. 1:83-cv-00594 (D.N.H. 1983)");
   });
 
   it("shortens agency captions by party, never with an ellipsis, and always keeps the year", () => {

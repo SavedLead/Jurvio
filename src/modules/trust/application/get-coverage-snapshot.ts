@@ -278,9 +278,36 @@ export function describeBlocker(reason: string): string {
   return known[reason] ?? reason.replaceAll("_", " ");
 }
 
-/** Formats a coverage date range, preserving "unknown" rather than guessing. */
-export function formatCoverageRange(earliest: string | null, latest: string | null): string {
-  if (!earliest || !latest) return "Unknown";
-  const year = (value: string) => value.slice(0, 4);
-  return year(earliest) === year(latest) ? year(earliest) : `${year(earliest)}–${year(latest)}`;
+/** A coverage year visitors can see. A year after the current Eastern year is omitted. */
+export function coverageYear(value: string | null | undefined, today = new Date()): string | null {
+  if (!value || !/^\d{4}/.test(value)) return null;
+  const year = value.slice(0, 4);
+  const current = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric" }).format(today);
+  return Number(year) > Number(current) ? null : year;
+}
+
+function currentEasternYear(today: Date): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric" }).format(today);
+}
+
+/**
+ * Formats a coverage date range. A latest year after this year is shown as
+ * the current year, so one bad filed date cannot make the range say 2027.
+ */
+export function formatCoverageRange(earliest: string | null, latest: string | null, today = new Date()): string {
+  const start = coverageYear(earliest, today);
+  const end = coverageYear(latest, today) ?? (start ? currentEasternYear(today) : null);
+  if (!start || !end) return "Unknown";
+  return start === end ? start : `${start}–${end}`;
+}
+
+/** "through 2026", never a year after this one. */
+export function coverageThroughLabel(earliest: string | null, latest: string | null, today = new Date()): string {
+  if (coverageYear(earliest, today)) return formatCoverageRange(earliest, latest, today);
+  const end = coverageYear(latest, today);
+  if (end) return `through ${end}`;
+  if (latest && /^\d{4}/.test(latest) && Number(latest.slice(0, 4)) > Number(currentEasternYear(today))) {
+    return `through ${currentEasternYear(today)}`;
+  }
+  return "Unknown";
 }
