@@ -4,11 +4,10 @@
 #   count    read-only totals, no updates
 #   publish  resume from bulk_publish_cursor and walk every remaining draft
 #
-# A draft is publishable when it has a caption, a docket number, and a court.
-# A filed date, cause, nature of suit, judge, party, and docket entry are
-# shown when stored and are not required. Sealed captions and suppressing
-# holds are not published. SCOTUS is left to its own pipeline. updated_at is
-# not changed,
+# A draft is complete when it has a caption, docket number, court, and filed
+# date, plus at least one of cause, nature of suit, a judge assignment, a
+# party, or a docket entry. Sealed captions and suppressing holds are not
+# published. SCOTUS is left to its own pipeline. updated_at is not changed,
 # so follower alerts do not see a new filing. Search refresh stays off inside
 # the publish transaction. scripts/catch-up-published-search.sh fills
 # public_case_search and can run while this job is already going. Neither
@@ -58,6 +57,14 @@ FROM (
       length(btrim(c.caption)) > 0
       AND length(btrim(c.docket_number)) > 0
       AND c.court_id IS NOT NULL
+      AND c.filed_on IS NOT NULL
+      AND (
+        nullif(btrim(coalesce(c.cause_of_action, '')), '') IS NOT NULL
+        OR nullif(btrim(coalesce(c.nature_of_suit_code, '')), '') IS NOT NULL
+        OR EXISTS (SELECT 1 FROM judge_case_assignment j WHERE j.case_id = c.id)
+        OR EXISTS (SELECT 1 FROM party_appearance p WHERE p.case_id = c.id)
+        OR EXISTS (SELECT 1 FROM docket_entry e WHERE e.case_id = c.id)
+      )
     ) AS complete,
     (concat_ws(' ', c.caption, c.docket_number) ~* '\\m(sealed|restricted|under seal|minor|juvenile|grand jury|qui tam)\\M') AS sealed,
     EXISTS (
@@ -121,7 +128,8 @@ windowed AS MATERIALIZED (
   -- A created_at < cursor range walks that index backward and stops at LIMIT.
   -- The old OR keyset could not, so the first batch after the Oct 30 cursor
   -- ran until the statement limit (120s at 7:16 AM ET).
-  SELECT c.id, c.created_at, c.caption, c.docket_number, court.provider_court_id
+  SELECT c.id, c.created_at, c.caption, c.docket_number, c.filed_on,
+    c.cause_of_action, c.nature_of_suit_code, court.provider_court_id
   FROM params
   CROSS JOIN LATERAL (
     SELECT picked.id
@@ -159,6 +167,14 @@ picked AS (
   WHERE lower(coalesce(windowed.provider_court_id, '')) <> 'scotus'
     AND length(btrim(windowed.caption)) > 0
     AND length(btrim(windowed.docket_number)) > 0
+    AND windowed.filed_on IS NOT NULL
+    AND (
+      nullif(btrim(coalesce(windowed.cause_of_action, '')), '') IS NOT NULL
+      OR nullif(btrim(coalesce(windowed.nature_of_suit_code, '')), '') IS NOT NULL
+      OR EXISTS (SELECT 1 FROM judge_case_assignment j WHERE j.case_id = windowed.id)
+      OR EXISTS (SELECT 1 FROM party_appearance p WHERE p.case_id = windowed.id)
+      OR EXISTS (SELECT 1 FROM docket_entry e WHERE e.case_id = windowed.id)
+    )
     AND NOT EXISTS (
       SELECT 1 FROM federal_publication_hold hold
       WHERE hold.case_id = windowed.id
