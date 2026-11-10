@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
-import { getCoverageSnapshot } from "@/modules/trust/application/get-coverage-snapshot";
+import { getCoverageSnapshot, retainCoverageSnapshot, type CoverageSnapshot } from "@/modules/trust/application/get-coverage-snapshot";
 import { CoverageReport } from "@/modules/trust/ui/coverage-report";
 import { TrustPage } from "@/modules/trust/ui/trust-page";
 
@@ -15,12 +15,16 @@ export const metadata: Metadata = {
   alternates: { canonical: "/coverage" },
 };
 
-// Coverage aggregates over the whole published corpus and moves only as fast as
-// ingestion publishes. A five-minute snapshot keeps the page honest without
-// re-running the aggregation for every reader and crawler.
+// Family rows are read from court_public_stats, not counted from legal_case.
+// A failed refresh keeps the last usable snapshot instead of caching "unavailable".
+let lastGoodCoverage: CoverageSnapshot | null = null;
 const loadCoverageSnapshot = unstable_cache(
-  async () => getCoverageSnapshot(db()),
-  ["public-coverage-snapshot"],
+  async () => {
+    const next = retainCoverageSnapshot(lastGoodCoverage, await getCoverageSnapshot(db()));
+    if (next.families) lastGoodCoverage = next;
+    return next;
+  },
+  ["public-coverage-snapshot-v2"],
   { revalidate: 300, tags: ["public-coverage"] },
 );
 
