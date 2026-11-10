@@ -8,8 +8,11 @@
 -- direct_court_event_case_time_idx (case_id, official_filed_at). This migration
 -- does not add a second copy of those.
 --
--- Built CONCURRENTLY in its own committed chunk so the live docket table is
--- not write-locked.
+-- Built CONCURRENTLY in its own committed chunk. That takes
+-- ShareUpdateExclusive on docket_entry (writes wait, reads do not) and cannot
+-- run inside a transaction. A cancelled build leaves the index INVALID;
+-- scripts/migrate.mjs drops that invalid index concurrently and will not start
+-- a new build while pg_dump or the previous build is still a backend.
 
 -- @commit
 
