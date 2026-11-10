@@ -86,6 +86,23 @@ describe("latest case event", () => {
     expect(pickLatestCaseEvent({ filedOn: null, decidedOn: null, latestEntryOn: null, latestEntryDescription: null })).toBeNull();
   });
 
+  it("does not treat a date after today as the latest event", () => {
+    expect(pickLatestCaseEvent({
+      filedOn: "2027-09-29",
+      decidedOn: null,
+      latestEntryOn: null,
+      latestEntryDescription: null,
+      today: "2026-11-10",
+    })).toBeNull();
+    expect(pickLatestCaseEvent({
+      filedOn: "2027-09-29",
+      decidedOn: "1986-03-21",
+      latestEntryOn: null,
+      latestEntryDescription: null,
+      today: "2026-11-10",
+    })?.date).toBe("1986-03-21");
+  });
+
   it("truncates long docket descriptions at a word boundary", () => {
     const label = truncateLabel("ORDER granting in part and denying in part motion to dismiss for failure to state a claim", 40);
     expect(label.endsWith("…")).toBe(true);

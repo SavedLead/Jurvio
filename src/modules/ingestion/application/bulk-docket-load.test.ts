@@ -10,6 +10,7 @@ import {
   shouldPauseForLoad,
   stageCsv,
   stageDocket,
+  trustedFiledOn,
 } from "./bulk-docket-load";
 import type { CourtListenerBulkDocket } from "../providers/courtlistener/bulk-dockets";
 
@@ -53,6 +54,16 @@ describe("bulk docket load guards", () => {
     expect(csvField('say "hi", now')).toBe('"say ""hi"", now"');
     expect(stageCsv(staged ? [staged] : [])).toContain("nysd");
     expect(rowsPerHour(100_000, 3_600_000)).toBe(100_000);
+  });
+
+  it("does not store a future filed date that disagrees with the docket year", () => {
+    expect(trustedFiledOn("2027-09-29", "1:83-cv-00594", "2026-11-10")).toBeNull();
+    expect(trustedFiledOn("2026-11-09", "1:26-cv-09271", "2026-11-10")).toBe("2026-11-09");
+    expect(stageDocket({
+      ...sample,
+      docket_number: "1:83-cv-00594",
+      date_filed: "2027-09-29",
+    })?.filedOn).toBeNull();
   });
 
   it("ignores a checkpoint from a different snapshot", () => {

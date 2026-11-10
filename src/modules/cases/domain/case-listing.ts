@@ -186,13 +186,16 @@ export function pickLatestCaseEvent(input: {
   decidedOn: string | null;
   latestEntryOn: string | null;
   latestEntryDescription: string | null;
+  /** YYYY-MM-DD. A later day is not a filed or latest date. */
+  today?: string | null;
 }): LatestCaseEvent | null {
+  const allowed = (date: string) => !input.today || date.slice(0, 10) <= input.today;
   const candidates: LatestCaseEvent[] = [];
-  if (input.filedOn) candidates.push({ date: input.filedOn, label: "Case filed" });
-  if (input.latestEntryOn && input.latestEntryDescription?.trim()) {
+  if (input.filedOn && allowed(input.filedOn)) candidates.push({ date: input.filedOn, label: "Case filed" });
+  if (input.latestEntryOn && allowed(input.latestEntryOn) && input.latestEntryDescription?.trim()) {
     candidates.push({ date: input.latestEntryOn, label: input.latestEntryDescription.replace(/\s+/g, " ").trim() });
   }
-  if (input.decidedOn) candidates.push({ date: input.decidedOn, label: "Decision issued" });
+  if (input.decidedOn && allowed(input.decidedOn)) candidates.push({ date: input.decidedOn, label: "Decision issued" });
   return candidates.reduce<LatestCaseEvent | null>((latest, event) => (!latest || event.date >= latest.date ? event : latest), null);
 }
 

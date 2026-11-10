@@ -311,6 +311,14 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
   if (options.decided) conditions.push(sql`legal_case.decided_on IS NOT NULL`);
   if (options.verified) conditions.push(sql`legal_case.verification = 'verified'`);
   if (options.opinion) conditions.push(publicDocumentExists);
+  // A future filed or decided date must not lead Most recent. The bound is the
+  // same expression as legal_case_published_recency_idx.
+  if ((sort === "recent" || sort === "oldest") && !query) {
+    conditions.push(sql`(
+      COALESCE(legal_case.decided_on, legal_case.filed_on) IS NULL
+      OR COALESCE(legal_case.decided_on, legal_case.filed_on) <= (timezone('America/New_York', now()))::date
+    )`);
+  }
   if (options.fromYear) conditions.push(sql`COALESCE(legal_case.decided_on, legal_case.filed_on) >= make_date(${options.fromYear}::int, 1, 1)`);
   if (options.toYear) conditions.push(sql`COALESCE(legal_case.decided_on, legal_case.filed_on) < make_date(${options.toYear}::int + 1, 1, 1)`);
   const before = recentKeyset ? options.before ?? null : null;

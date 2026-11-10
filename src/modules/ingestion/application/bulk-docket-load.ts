@@ -120,7 +120,7 @@ export function stageDocket(docket: CourtListenerBulkDocket): StageDocket | null
   const caption = (docket.case_name_short || docket.case_name).trim();
   const normalizedDocket = normalizeDocketKey(docketNumber);
   if (!docket.id || !docket.court_id.trim() || !docketNumber || !caption || !normalizedDocket) return null;
-  const filedOn = isoDate(docket.date_filed);
+  const filedOn = trustedFiledOn(isoDate(docket.date_filed), docketNumber);
   return {
     docketId: docket.id,
     courtCode: docket.court_id.trim(),
@@ -145,6 +145,33 @@ function blankToNull(value: string | null | undefined): string | null {
 function isoDate(value: string | null | undefined): string | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}/.test(value)) return null;
   return value.slice(0, 10);
+}
+
+/**
+ * CourtListener's date_filed is stored only when it is a real calendar day.
+ * A day after today, or a year more than five years from the docket-number
+ * year (1:83-cv with 2027-09-29), is the source's typo. Return null instead
+ * of inventing a replacement.
+ */
+export function trustedFiledOn(filedOn: string | null, docketNumber: string, today = easternToday()): string | null {
+  if (!filedOn || !/^\d{4}-\d{2}-\d{2}$/.test(filedOn) || filedOn > today) return null;
+  const match = /^\s*\d{1,2}:(\d{2})-[a-z]/i.exec(docketNumber);
+  if (!match?.[1]) return filedOn;
+  const yy = Number(match[1]);
+  const pivot = Number(today.slice(0, 4)) % 100;
+  const docketYear = yy <= pivot ? 2000 + yy : 1900 + yy;
+  if (Math.abs(Number(filedOn.slice(0, 4)) - docketYear) > 5) return null;
+  return filedOn;
+}
+
+function easternToday(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return `${year}-${month}-${day}`;
 }
 
 function isoTimestamp(value: string | null | undefined): string | null {

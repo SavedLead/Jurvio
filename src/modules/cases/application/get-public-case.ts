@@ -1,3 +1,4 @@
+import { dateOnOrBeforeToday } from "@/lib/time/calendar-date";
 import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { stripReporterRunningHeads } from "@/modules/cases/domain/reporter-text";
@@ -134,6 +135,8 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
   const courtKind = courtKindFromJurisdiction(courtJurisdiction, record.courtName, record.courtCode);
   return {
     ...record,
+    filedOn: dateOnOrBeforeToday(record.filedOn),
+    decidedOn: dateOnOrBeforeToday(record.decidedOn),
     courtJurisdiction,
     captionCategory: captionTag(record.caption),
     caption: displayCaption(record.caption, record.docketNumber, courtKind),

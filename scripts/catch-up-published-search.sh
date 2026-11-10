@@ -355,6 +355,98 @@ COMMIT;
 SQL
 }
 
+# A filed or decided date after today was copied from the source as written
+# (CourtListener date_filed 2027-09-29 on 1:83-cv-00594). Keep the earliest
+# docket entry on or before today when its year is within five years of the
+# docket-number year. Otherwise clear the date. Do not invent one, and do
+# not change updated_at. This does not use the sweep cursor, so a later run
+# continues it. The count is an index range on legal_case_published_recency_idx.
+repair_future_dates() {
+  echo "future sort dates before $(psql -q -tA -c "SELECT count(*) FROM legal_case WHERE publication = 'published' AND COALESCE(decided_on, filed_on) > (timezone('America/New_York', now()))::date;")"
+  rounds=0
+  while true; do
+    rounds=$((rounds + 1))
+    if [ "$rounds" -gt 20 ]; then
+      echo "future date repair paused; a later catch-up continues it"
+      break
+    fi
+    fixed=$(psql_sql -q -tA <<'SQL' || true
+BEGIN;
+SET LOCAL statement_timeout = '20s';
+SET LOCAL lock_timeout = '3s';
+WITH today AS (
+  SELECT (timezone('America/New_York', now()))::date AS day
+),
+bad AS (
+  SELECT c.id
+  FROM legal_case c
+  CROSS JOIN today
+  WHERE c.publication = 'published'
+    AND (c.filed_on > today.day OR c.decided_on > today.day)
+  LIMIT 200
+),
+chosen AS (
+  SELECT bad.id,
+    (
+      SELECT min(entry.filed_on)
+      FROM docket_entry entry, today
+      WHERE entry.case_id = bad.id
+        AND entry.filed_on <= today.day
+        AND (
+          (regexp_match(c.docket_number, ':(\d{2})-'))[1] IS NULL
+          OR abs(
+            EXTRACT(YEAR FROM entry.filed_on)::int
+            - CASE
+                WHEN (regexp_match(c.docket_number, ':(\d{2})-'))[1]::int
+                  <= EXTRACT(YEAR FROM today.day)::int % 100
+                THEN 2000 + (regexp_match(c.docket_number, ':(\d{2})-'))[1]::int
+                ELSE 1900 + (regexp_match(c.docket_number, ':(\d{2})-'))[1]::int
+              END
+          ) <= 5
+        )
+    ) AS entry_day
+  FROM bad
+  JOIN legal_case c ON c.id = bad.id
+),
+updated AS (
+  UPDATE legal_case AS c
+  SET filed_on = CASE
+        WHEN c.filed_on > (SELECT day FROM today) THEN chosen.entry_day
+        ELSE c.filed_on
+      END,
+      decided_on = CASE
+        WHEN c.decided_on > (SELECT day FROM today) THEN NULL
+        ELSE c.decided_on
+      END,
+      updated_at = c.updated_at
+  FROM chosen
+  WHERE c.id = chosen.id
+  RETURNING c.id
+),
+cleared_entries AS (
+  UPDATE docket_entry AS entry
+  SET filed_on = NULL, updated_at = entry.updated_at
+  FROM bad
+  WHERE entry.case_id = bad.id
+    AND entry.filed_on > (SELECT day FROM today)
+  RETURNING entry.id
+)
+SELECT count(*)::text FROM updated;
+COMMIT;
+SQL
+)
+    fixed=$(printf '%s' "$fixed" | tr -d '[:space:]')
+    case "$fixed" in
+      ''|*[!0-9]*) echo "future date repair skipped"; break ;;
+    esac
+    echo "future dates corrected this batch $fixed"
+    if [ "$fixed" = "0" ]; then break; fi
+  done
+  echo "future sort dates after $(psql -q -tA -c "SELECT count(*) FROM legal_case WHERE publication = 'published' AND COALESCE(decided_on, filed_on) > (timezone('America/New_York', now()))::date;")"
+}
+
+repair_future_dates
+
 echo "resuming from search_catchup_cursor"
 psql -c "SELECT phase, passed_dates, batches, scanned, corrected, indexed, cursor_date, cursor_at FROM search_catchup_cursor WHERE singleton = 1;"
 
