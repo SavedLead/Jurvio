@@ -2,9 +2,10 @@ name: Catch up published search (once)
 
 # Fills the case text index for published cases the bulk publish transaction
 # left out, and corrects filing days stored as the UTC calendar day.
-# Runs on the ingestion host through the builder. It does not run on web-01,
+# Runs on the ingestion host through a builder. It does not run on web-01,
 # does not cancel the bulk publish job, and does not submit a sitemap to Google.
 #
+# A run that is canceled resumes from search_catchup_cursor on the next dispatch.
 # confirm=CATCH_UP_PUBLISHED_SEARCH
 
 on:
@@ -26,7 +27,9 @@ jobs:
   catch-up:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 120
+    # 48 hours. The published set is millions of rows; a canceled run resumes
+    # from search_catchup_cursor instead of starting over.
+    timeout-minutes: 2880
     env:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
