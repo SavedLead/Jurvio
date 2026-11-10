@@ -34,7 +34,14 @@ describe("bulk publish of complete drafts", () => {
     expect(workflow).toContain("BULK_PUBLISH_COUNT");
     expect(workflow).toContain("BULK_PUBLISH_RUN");
     expect(workflow).toContain("10.116.0.2");
+    expect(workflow).toContain("timeout-minutes: 2880");
+    expect(workflow).not.toContain("timeout-minutes: 360");
     expect(workflow).not.toContain("sudo");
+    expect(script).toContain("resuming from bulk_publish_cursor");
+    expect(script).toContain("bulk publish ended without completing");
+    expect(script).toContain("ORDER BY c.created_at DESC, c.id DESC");
+    expect(script).toContain("c.publication = 'draft'");
+    expect(script).toContain("</dev/null");
   });
 
   it("catches the text index up outside the publish transaction and leaves alerts alone", () => {
@@ -48,7 +55,9 @@ describe("bulk publish of complete drafts", () => {
     expect(catchUp).toContain("lock_timeout = '3s'");
     expect(catchUp).toContain("updated_at = c.updated_at");
     expect(catchUp).toContain("updated_at = entry.updated_at");
-    expect(catchUp).toContain("AT TIME ZONE r.time_zone");
+    expect(catchUp).toContain("WHEN r.court_code IN ('cand', 'caed', 'cacd', 'casd', 'ord', 'waed', 'wawd', 'nvd') THEN 'America/Los_Angeles'");
+    expect(catchUp).toContain("recent.filed_on = min(entry.filed_on) + 1");
+    expect(catchUp).toContain("COALESCE(c.decided_on, c.filed_on) > state.cursor_date");
     expect(catchUp).not.toContain("interval '3 days'");
     expect(catchUp).not.toContain("batches\" -lt 2000");
     expect(catchUp).not.toContain("legal_case.updated_at = now()");

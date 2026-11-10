@@ -35,7 +35,9 @@ jobs:
   bulk:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 360
+    # 48 hours. A canceled run keeps bulk_publish_cursor and the next
+    # dispatch continues newest-first through drafts that are still unpublished.
+    timeout-minutes: 2880
     env:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
