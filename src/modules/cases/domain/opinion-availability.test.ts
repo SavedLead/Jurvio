@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { officialOpinionNotice, opinionTextIsPending } from "./opinion-availability";
+import { officialOpinionNotice, opinionHasExtractedText, opinionTextIsPending, viewableOpinionPdf } from "./opinion-availability";
 
 describe("opinion text availability", () => {
   it("asks for a notice only when no readable opinion is published", () => {
@@ -20,5 +20,15 @@ describe("opinion text availability", () => {
   it("shows nothing when there is no official link", () => {
     expect(officialOpinionNotice(null)).toBeNull();
     expect(officialOpinionNotice("javascript:alert(1)")).toBeNull();
+  });
+
+  it("embeds only an official https PDF and treats blank text as missing", () => {
+    expect(viewableOpinionPdf("https://www.supremecourt.gov/opinions/26pdf/26a560_onkq.pdf")).toMatch(/26a560/);
+    expect(viewableOpinionPdf("https://www.supremecourt.gov/opinions/26pdf/26a560_onkq.pdf#page=2")).toMatch(/#page=2/);
+    expect(viewableOpinionPdf("http://www.supremecourt.gov/opinions/26pdf/x.pdf")).toBeNull();
+    expect(viewableOpinionPdf("https://example.com/opinion.pdf")).toBeNull();
+    expect(viewableOpinionPdf("javascript:alert(1)")).toBeNull();
+    expect(opinionHasExtractedText({ wordCount: 0, contentText: "" })).toBe(false);
+    expect(opinionHasExtractedText({ wordCount: 12, contentText: "The Court denies the application." })).toBe(true);
   });
 });

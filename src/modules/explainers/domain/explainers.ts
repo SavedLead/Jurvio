@@ -215,8 +215,15 @@ export const legalExplainers: readonly LegalExplainer[] = [
   },
 ] as const;
 
+function explainerKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+/** Slug or alias. "certiorari" is the public alias of writ-of-certiorari. */
 export function getExplainer(slug: string): LegalExplainer | undefined {
-  return legalExplainers.find((explainer) => explainer.slug === slug);
+  const key = explainerKey(slug);
+  return legalExplainers.find((explainer) => explainer.slug === key)
+    ?? legalExplainers.find((explainer) => explainer.aliases.some((alias) => explainerKey(alias) === key));
 }
 
 export function explainerGlossary() {

@@ -71,7 +71,7 @@ async function listScotusActivityIn(sql: Queryable): Promise<ActivityFeedItem[]>
     ...opinions.map((row) => ({
       id: `${origin}/feeds/scotus#opinion-${row.id}`,
       title: `${row.docket_number}: ${row.title || row.caption}`,
-      url: `${origin}/case/${row.public_id}/documents/${row.document_id}`,
+      url: `${origin}/case/${row.public_id}`,
       updated: stamp(row.filed_on),
       summary: "Published opinion on Jurvio.",
       category: "opinion",
