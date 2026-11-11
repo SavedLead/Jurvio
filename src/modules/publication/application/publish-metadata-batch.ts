@@ -152,6 +152,11 @@ async function publishChunk(sql: Sql, limit: number, tier: Tier, timeoutMs: numb
   });
 }
 
+export interface DraftCursor {
+  at: string | null;
+  id: string | null;
+}
+
 export interface AdaptivePublishStats extends MetadataBatchStats {
   batchSize: number;
   searchMs: number | null;
@@ -159,6 +164,110 @@ export interface AdaptivePublishStats extends MetadataBatchStats {
   slowQueries: number;
   lockWaits: number;
   elapsedMs: number;
+  draftCursor: DraftCursor;
+}
+
+/**
+ * Read a fixed number of draft rows from the partial created_at index, then
+ * publish the ones in that window that have case metadata. The window is
+ * exactly `limit` rows, so a desert of empty drafts cannot run until the
+ * statement timeout. The caller keeps the cursor and continues on the next pass.
+ */
+async function publishRecordWindow(sql: Sql, limit: number, cursor: DraftCursor): Promise<ChunkStats & { cursor: DraftCursor }> {
+  return sql.begin(async (tx) => {
+    await tx.unsafe(`SET LOCAL statement_timeout = '30s'`);
+    await tx`SELECT set_config('jurvio.defer_search_refresh', 'on', true)`;
+    const [row] = await tx<{
+      published: number; scanned: number; sealed: number;
+      cursorAt: string | null; cursorId: string | null;
+    }[]>`
+      WITH windowed AS (
+        SELECT c.id, c.created_at, c.caption, c.docket_number, c.filed_on,
+          c.cause_of_action, c.nature_of_suit_code, court.provider_court_id
+        FROM legal_case c
+        JOIN court ON court.id = c.court_id
+        WHERE c.publication = 'draft'
+          AND (
+            ${cursor.at}::timestamptz IS NULL
+            OR c.created_at < ${cursor.at}::timestamptz
+            OR (c.created_at = ${cursor.at}::timestamptz AND c.id < ${cursor.id}::uuid)
+          )
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT ${limit}
+      ),
+      picked AS (
+        SELECT id,
+          (concat_ws(' ', caption, docket_number) ~* ${RESTRICTED}) AS sealed
+        FROM windowed
+        WHERE lower(coalesce(provider_court_id, '')) <> 'scotus'
+          AND (
+            length(btrim(caption)) > 0
+            OR length(btrim(docket_number)) > 0
+            OR filed_on IS NOT NULL
+            OR nullif(btrim(coalesce(cause_of_action, '')), '') IS NOT NULL
+            OR nullif(btrim(coalesce(nature_of_suit_code, '')), '') IS NOT NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM federal_publication_hold hold
+            WHERE hold.case_id = windowed.id
+              AND hold.rule_version = ${RULE}
+              AND NOT (${tx.unsafe(metadataHoldReopenSql())})
+          )
+      ),
+      updated AS (
+        UPDATE legal_case AS c
+        SET verification = 'verified', publication = 'published'
+        FROM picked
+        WHERE c.id = picked.id AND NOT picked.sealed AND c.publication = 'draft'
+        RETURNING c.id
+      ),
+      decided AS (
+        INSERT INTO publication_decision (
+          object_type, object_id, displayable, indexable, machine_accessible,
+          downloadable, summary_eligible, reason_code, rule_version
+        )
+        SELECT 'legal_case', id, true, false, true, false, false, ${REASON}, ${RULE}
+        FROM updated
+        RETURNING id, object_id, decided_at
+      ),
+      mirrored AS (
+        INSERT INTO publication_current (object_type, object_id, displayable, decided_at, decision_id)
+        SELECT 'legal_case', object_id, true, decided_at, id FROM decided
+        ON CONFLICT (object_type, object_id) DO UPDATE SET
+          displayable = EXCLUDED.displayable,
+          decided_at = EXCLUDED.decided_at,
+          decision_id = EXCLUDED.decision_id
+        RETURNING object_id
+      ),
+      cleared AS (
+        DELETE FROM federal_publication_hold AS hold
+        USING updated
+        WHERE hold.case_id = updated.id
+        RETURNING hold.case_id
+      ),
+      held AS (
+        INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
+        SELECT picked.id, ARRAY['restricted_or_sensitive']::text[], ${RULE}
+        FROM picked
+        WHERE picked.sealed
+        ON CONFLICT (case_id) DO UPDATE SET
+          reasons = EXCLUDED.reasons, rule_version = EXCLUDED.rule_version, held_at = now()
+        RETURNING case_id
+      )
+      SELECT
+        (SELECT count(*)::int FROM updated) AS published,
+        (SELECT count(*)::int FROM windowed) AS scanned,
+        (SELECT count(*)::int FROM picked WHERE sealed) AS sealed,
+        (SELECT created_at::text FROM windowed ORDER BY created_at ASC, id ASC LIMIT 1) AS "cursorAt",
+        (SELECT id::text FROM windowed ORDER BY created_at ASC, id ASC LIMIT 1) AS "cursorId"`;
+    const advanced = row?.scanned ? { at: row.cursorAt, id: row.cursorId } : { at: null, id: null };
+    return {
+      published: row?.published ?? 0,
+      scanned: row?.scanned ?? 0,
+      sealed: row?.sealed ?? 0,
+      cursor: advanced,
+    };
+  });
 }
 
 /**
@@ -166,30 +275,47 @@ export interface AdaptivePublishStats extends MetadataBatchStats {
  * walk millions of drafts that have no document, and a timeout there used to
  * end the slice before any case was published. A timed-out tier is skipped.
  */
-export async function publishMetadataSlice(sql: Sql, limit: number): Promise<MetadataBatchStats> {
+export async function publishMetadataSlice(sql: Sql, limit: number, cursor: DraftCursor = { at: null, id: null }): Promise<MetadataBatchStats & { draftCursor: DraftCursor }> {
   const size = Math.min(5_000, Math.max(1, Math.floor(limit)));
+  try {
+    const windowed = await publishRecordWindow(sql, size, cursor);
+    if (windowed.scanned > 0) {
+      return {
+        published: windowed.published,
+        scanned: windowed.scanned,
+        held: windowed.sealed,
+        heldByReason: windowed.sealed ? { restricted_or_sensitive: windowed.sealed } : {},
+        draftCursor: windowed.cursor,
+      };
+    }
+  } catch {
+    return {
+      published: 0, scanned: 0, held: 0, heldByReason: { query_timeout: 1 }, draftCursor: cursor,
+    };
+  }
   let timeouts = 0;
-  for (const tier of ["record", "docket", "opinion"] as const) {
+  for (const tier of ["docket", "opinion"] as const) {
     try {
-      const chunk = await publishChunk(sql, size, tier, tier === "record" ? 30_000 : 8_000);
+      const chunk = await publishChunk(sql, size, tier, 8_000);
       if (chunk.scanned === 0) continue;
       return {
         published: chunk.published,
         scanned: chunk.scanned,
         held: chunk.sealed,
         heldByReason: chunk.sealed ? { restricted_or_sensitive: chunk.sealed } : {},
+        draftCursor: cursor,
       };
     } catch {
       timeouts += 1;
     }
   }
-  return { published: 0, scanned: 0, held: 0, heldByReason: timeouts ? { query_timeout: timeouts } : {} };
+  return { published: 0, scanned: 0, held: 0, heldByReason: timeouts ? { query_timeout: timeouts } : {}, draftCursor: { at: null, id: null } };
 }
 
 /** Keep committing while the site stays fast, until the time budget or the draft pool runs out. */
 export async function runAdaptiveMetadataPublish(
   sql: Sql,
-  options: { budgetMs: number; startBatch?: number },
+  options: { budgetMs: number; startBatch?: number; draftCursor?: DraftCursor },
 ): Promise<AdaptivePublishStats> {
   const { nextPublishBatch } = await import("../domain/continuous-publish");
   const { lockWaitCount, measurePublicSearchMs, medianMs, slowPublicQueryCount } = await import("./search-pace");
@@ -198,6 +324,7 @@ export async function runAdaptiveMetadataPublish(
   const stats: AdaptivePublishStats = {
     published: 0, scanned: 0, held: 0, heldByReason: {}, batchSize: batch,
     searchMs: null, casePageMs: null, slowQueries: 0, lockWaits: 0, elapsedMs: 0,
+    draftCursor: options.draftCursor ?? { at: null, id: null },
   };
   const started = Date.now();
   const searches: Array<number | null> = [];
@@ -218,7 +345,8 @@ export async function runAdaptiveMetadataPublish(
     batch = nextPublishBatch(batch, pace, failures);
     stats.batchSize = batch;
     if (batch === 0) break;
-    const slice = await publishMetadataSlice(sql, batch);
+    const slice = await publishMetadataSlice(sql, batch, stats.draftCursor);
+    stats.draftCursor = slice.draftCursor;
     stats.published += slice.published;
     stats.scanned += slice.scanned;
     stats.held += slice.held;

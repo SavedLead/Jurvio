@@ -1148,9 +1148,20 @@ async function runPublicationAndQuarantine() {
     // query was spending the whole cycle before it could publish.
     if (allowMetadataWithoutOpinionText) {
       const remainingMs = Math.max(20_000, jobDeadlineMs - Date.now());
+      const [previousCursor] = publishCap === 0 ? [] : await sql<{ at: string | null; id: string | null }[]>`
+        SELECT selection->>'draftCursorAt' AS at, selection->>'draftCursorId' AS id
+        FROM ingestion_run
+        WHERE run_type = 'publication-quarantine' AND status = 'completed'
+          AND jsonb_exists(selection, 'draftCursorAt')
+        ORDER BY started_at DESC
+        LIMIT 1`;
       const batch = publishCap === 0
-        ? { published: 0, scanned: 0, held: 0, heldByReason: { search_slow: 1 }, batchSize: 0, searchMs, casePageMs: null, slowQueries, lockWaits: 0, elapsedMs: 0 }
-        : await runAdaptiveMetadataPublish(sql, { budgetMs: remainingMs, startBatch: 500 });
+        ? { published: 0, scanned: 0, held: 0, heldByReason: { search_slow: 1 }, batchSize: 0, searchMs, casePageMs: null, slowQueries, lockWaits: 0, elapsedMs: 0, draftCursor: { at: null, id: null } }
+        : await runAdaptiveMetadataPublish(sql, {
+          budgetMs: remainingMs,
+          startBatch: 500,
+          draftCursor: { at: previousCursor?.at ?? null, id: previousCursor?.id ?? null },
+        });
       published += batch.published;
       discovered += batch.scanned;
       held = batch.held;
@@ -1177,6 +1188,8 @@ async function runPublicationAndQuarantine() {
             perHour,
             draftEstimate,
             publishCap,
+            draftCursorAt: batch.draftCursor.at,
+            draftCursorId: batch.draftCursor.id,
           })}
         WHERE id = ${runId}`;
       return {
