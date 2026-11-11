@@ -1,8 +1,10 @@
 -- Read-only census of publication = 'draft'. One pass over those rows plus the
--- small court table. Child tables are separate statements with a short timeout
--- so a slow join stops instead of sitting on the database.
+-- small court table. Child tables are separate statements so a slow join stops
+-- instead of sitting on the database.
+-- Each statement may run for 10 minutes. The diagnose session caps a statement
+-- at 15 minutes (statement_timeout=900s) and the job at 45 minutes.
 SET LOCAL lock_timeout = '3s';
-SET LOCAL statement_timeout = '45s';
+SET LOCAL statement_timeout = '10min';
 
 WITH draft AS MATERIALIZED (
   SELECT
@@ -64,7 +66,7 @@ FROM (
 ) census
 ORDER BY section, n DESC;
 
-SET LOCAL statement_timeout = '25s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'related'::text AS section, key, n
 FROM (
@@ -73,7 +75,7 @@ FROM (
   FROM legal_case c WHERE c.publication = 'draft'
 ) s;
 
-SET LOCAL statement_timeout = '25s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'related'::text AS section, key, n
 FROM (
@@ -85,7 +87,7 @@ FROM (
   FROM legal_case c WHERE c.publication = 'draft'
 ) s;
 
-SET LOCAL statement_timeout = '25s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'related'::text AS section, key, n
 FROM (
@@ -99,7 +101,7 @@ FROM (
   FROM legal_case c WHERE c.publication = 'draft'
 ) s;
 
-SET LOCAL statement_timeout = '25s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'related'::text AS section, key, n
 FROM (
@@ -108,7 +110,7 @@ FROM (
   FROM legal_case c WHERE c.publication = 'draft'
 ) s;
 
-SET LOCAL statement_timeout = '25s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'related'::text AS section, key, n
 FROM (
@@ -117,7 +119,7 @@ FROM (
   FROM legal_case c WHERE c.publication = 'draft'
 ) s;
 
-SET LOCAL statement_timeout = '25s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'related'::text AS section, key, n
 FROM (
@@ -126,7 +128,7 @@ FROM (
   FROM legal_case c WHERE c.publication = 'draft'
 ) s;
 
-SET LOCAL statement_timeout = '20s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'related'::text AS section, 'median_entries_among_drafts_with_any'::text AS key,
   percentile_cont(0.5) WITHIN GROUP (ORDER BY n)::bigint AS n
@@ -137,14 +139,14 @@ FROM (
   GROUP BY e.case_id
 ) entry_counts;
 
-SET LOCAL statement_timeout = '20s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'hold'::text AS section, 'on_publication_hold'::text AS key, count(*)::bigint AS n
 FROM legal_case c
 WHERE c.publication = 'draft'
   AND EXISTS (SELECT 1 FROM federal_publication_hold h WHERE h.case_id = c.id);
 
-SET LOCAL statement_timeout = '30s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'source'::text AS section, coalesce(p.code, '(no source artifact)') AS key, count(*)::bigint AS n
 FROM legal_case c
@@ -154,7 +156,7 @@ WHERE c.publication = 'draft'
 GROUP BY 2
 ORDER BY n DESC;
 
-SET LOCAL statement_timeout = '15s';
+SET LOCAL statement_timeout = '10min';
 
 SELECT 'example'::text AS section, bucket AS key, public_id || ' ' || id::text AS n
 FROM (
