@@ -8,7 +8,9 @@ const databaseUrl = process.env.DATABASE_URL;
 class Rollback extends Error {}
 
 const migration = readFileSync("db/migrations/0206_published_case_counter.sql", "utf8");
+const install = readFileSync("db/migrations/0207_published_case_counter_v2.sql", "utf8");
 const chunks = splitMigrationChunks(migration);
+const installChunks = splitMigrationChunks(install);
 const triggerNames = [
   "court_published_count_insert",
   "court_published_count_delete",
@@ -186,6 +188,44 @@ describe.skipIf(!databaseUrl)("published case counter migration", () => {
         await tx`SELECT apply_published_count_seed(${first}::uuid, ${snap!.counted}, ${snap!.delta_at_count})`;
         expect(await countOf(first)).toEqual({ case_count: 3, published_delta: 3 });
 
+        throw new Rollback();
+      }).catch((error) => { if (!(error instanceof Rollback)) throw error; });
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("installs the resumable seed twice and marks complete only when no court remains", async () => {
+    const client = postgres(databaseUrl!, { max: 1, onnotice: () => {} });
+    try {
+      await client.begin(async (tx) => {
+        expect(install).not.toContain("CALL ");
+        for (let pass = 0; pass < 2; pass += 1) {
+          for (const chunk of installChunks) await tx.unsafe(chunk);
+        }
+        const triggers = await tx<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_trigger
+          WHERE NOT tgisinternal AND tgname = 'court_published_count_update'
+        `;
+        expect(triggers[0]?.n).toBe(1);
+        const [procedure] = await tx<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_proc WHERE proname = 'seed_court_published_counts'
+        `;
+        expect(procedure?.n).toBe(0);
+        await tx`
+          INSERT INTO published_count_seed_cursor (singleton, court_id, seeded, complete)
+          VALUES (1, 'ffffffff-ffff-ffff-ffff-ffffffffffff', 0, false)
+          ON CONFLICT (singleton) DO UPDATE
+            SET court_id = EXCLUDED.court_id, seeded = 0, complete = false
+        `;
+        const [done] = await tx<{ id: string | null }[]>`
+          SELECT seed_next_published_count_court() AS id
+        `;
+        expect(done?.id ?? null).toBeNull();
+        const [cursor] = await tx<{ complete: boolean }[]>`
+          SELECT complete FROM published_count_seed_cursor WHERE singleton = 1
+        `;
+        expect(cursor?.complete).toBe(true);
         throw new Rollback();
       }).catch((error) => { if (!(error instanceof Rollback)) throw error; });
     } finally {

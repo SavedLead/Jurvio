@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const migration = readFileSync("db/migrations/0206_published_case_counter.sql", "utf8");
+const install = readFileSync("db/migrations/0207_published_case_counter_v2.sql", "utf8");
 const seedJob = readFileSync("scripts/seed-published-case-counts.sh", "utf8");
 const refresh = readFileSync("src/modules/directory/application/public-directory-stats.ts", "utf8");
 const listing = readFileSync("src/modules/cases/application/list-public-cases.ts", "utf8");
@@ -76,6 +77,22 @@ describe("published case counter", () => {
     expect(migration).toContain("(counted - delta_at_count) + published_delta");
     expect(migration).not.toMatch(/case_count = stats\.case_count \+ counted/);
     expect(migration).not.toContain("statement_timeout', '0'");
+  });
+
+  it("installs the resumable seed without walking every court", () => {
+    expect(install).toContain("CREATE OR REPLACE FUNCTION seed_next_published_count_court");
+    expect(install).toContain("CREATE OR REPLACE FUNCTION legal_case_is_public");
+    expect(install).toContain("CREATE OR REPLACE FUNCTION sync_court_published_count");
+    expect(install).toContain("CREATE OR REPLACE FUNCTION sync_published_count_on_decision");
+    expect(install).toContain("DROP TRIGGER IF EXISTS court_published_count_update ON legal_case");
+    expect(install).toContain("ADD COLUMN IF NOT EXISTS published_base");
+    expect(install).toContain("ADD COLUMN IF NOT EXISTS complete boolean NOT NULL DEFAULT false");
+    expect(install).toContain("SET complete = true");
+    expect(install.indexOf("IF NOT FOUND THEN")).toBeLessThan(install.indexOf("SELECT count(*)::int FROM legal_case"));
+    expect(install).toContain("DROP PROCEDURE IF EXISTS seed_court_published_counts");
+    expect(install).not.toContain("CALL ");
+    expect(install).not.toContain("FOREACH");
+    expect(install).not.toContain("SET TRANSACTION");
   });
 
   it("resumes the seed after a timeout without moving the checkpoint", () => {
