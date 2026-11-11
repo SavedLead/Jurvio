@@ -455,7 +455,12 @@ batch_size=500
 small_failures=0
 # A backup can make every batch time out. Wait and retry instead of exiting,
 # for about 3 hours, then stop only if nothing has committed.
-stall_wait=300
+# The defaults are the production waits. The stdin test sets them to 0 so the
+# failure path returns immediately; spawnSync cannot be interrupted by the
+# test timeout, and a real 300s sleep hangs the CI job until the 45-minute limit.
+stall_wait=${CATCHUP_STALL_WAIT:-300}
+stall_wait_cap=${CATCHUP_STALL_WAIT_CAP:-1800}
+stall_limit=${CATCHUP_STALL_LIMIT:-10800}
 stalled_for=0
 while true; do
   phase=$(psql -q -tA -c "SELECT phase FROM search_catchup_cursor WHERE singleton = 1;")
@@ -481,7 +486,7 @@ while true; do
       echo "batch $line"
       batch_size=500
       small_failures=0
-      stall_wait=300
+      stall_wait=${CATCHUP_STALL_WAIT:-300}
       stalled_for=0
       sleep 0.2
       ;;
@@ -496,14 +501,14 @@ while true; do
       else
         small_failures=$((small_failures + 1))
         if [ "$small_failures" -ge 3 ]; then
-          if [ "$stalled_for" -ge 10800 ]; then
+          if [ "$stalled_for" -ge "$stall_limit" ]; then
             echo "catch-up stopped after ${stalled_for}s without a committed batch" >&2
             exit 1
           fi
           echo "catch-up waiting ${stall_wait}s after repeated failures at 100" >&2
           sleep "$stall_wait"
           stalled_for=$((stalled_for + stall_wait))
-          if [ "$stall_wait" -lt 1800 ]; then
+          if [ "$stall_wait" -lt "$stall_wait_cap" ]; then
             stall_wait=$((stall_wait * 2))
           fi
           small_failures=0

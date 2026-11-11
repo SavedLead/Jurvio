@@ -78,7 +78,10 @@ describe("bulk publish of complete drafts", () => {
     expect(catchUp).toContain("catch-up waiting ${stall_wait}s after repeated failures at 100");
     expect(catchUp).toContain("stalled_for=$((stalled_for + stall_wait))");
     expect(catchUp).toContain("stall_wait=$((stall_wait * 2))");
-    expect(catchUp).toContain('if [ "$stalled_for" -ge 10800 ]; then');
+    expect(catchUp).toContain("stall_wait=${CATCHUP_STALL_WAIT:-300}");
+    expect(catchUp).toContain("stall_wait_cap=${CATCHUP_STALL_WAIT_CAP:-1800}");
+    expect(catchUp).toContain("stall_limit=${CATCHUP_STALL_LIMIT:-10800}");
+    expect(catchUp).toContain('if [ "$stalled_for" -ge "$stall_limit" ]; then');
     expect(catchUp).toContain("catch-up stopped after ${stalled_for}s without a committed batch");
     const stall = catchUp.slice(catchUp.indexOf('if [ "$small_failures" -ge 3 ]; then'));
     expect(stall.indexOf("catch-up stopped after")).toBeLessThan(stall.indexOf("catch-up waiting"));
