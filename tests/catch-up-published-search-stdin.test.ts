@@ -25,7 +25,15 @@ exit 0
   const result = spawnSync("bash", ["-s"], {
     input: script,
     encoding: "utf8",
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` },
+    env: {
+      ...process.env,
+      PATH: `${dir}:${process.env.PATH ?? ""}`,
+      // Production waits 5 minutes, then longer, for about 3 hours. This test
+      // feeds the script a docker that never commits a batch. Leave the waits
+      // at zero or spawnSync blocks until CI hits its 45-minute limit.
+      CATCHUP_STALL_WAIT: "0",
+      CATCHUP_STALL_LIMIT: "0",
+    },
   });
   const stdinBytes = readFileSync(bytes, "utf8")
     .split("\n")
@@ -48,6 +56,8 @@ describe("catch-up script fed to bash -s", () => {
   it("fails when the loop never prints catch-up complete", () => {
     const result = runFedToBash("");
     expect(result.stdout).not.toContain("catch-up complete");
+    expect(result.stderr).toContain("catch-up stopped after 0s without a committed batch");
+    expect(result.stderr).not.toContain("catch-up waiting");
     expect(result.status).not.toBe(0);
   });
 });
