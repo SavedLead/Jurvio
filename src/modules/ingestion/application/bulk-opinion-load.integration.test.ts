@@ -125,7 +125,7 @@ describe.skipIf(!databaseUrl)("bulk opinion load", () => {
       expect(docs[1]!.text).toBe("Dissent & html");
       const holds = await sql<{ case_id: string; reasons: string[] }[]>`
         SELECT case_id, reasons FROM federal_publication_hold WHERE case_id = ANY(${[federalCase, publishedCase]}::uuid[])`;
-      expect(holds).toEqual([{ case_id: federalCase, reasons: [BULK_OPINION_HOLD_REASON] }]);
+      expect(holds).toEqual([]);
       const [published] = await sql<{ publication: string }[]>`SELECT publication::text FROM legal_case WHERE id = ${publishedCase}`;
       expect(published!.publication).toBe("published");
 

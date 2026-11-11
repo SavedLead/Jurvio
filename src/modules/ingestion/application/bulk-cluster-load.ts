@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
-import { FEDERAL_PUBLICATION_RULE_VERSION, isRestrictedDocketText } from "../domain/federal-stream";
+import { isRestrictedDocketText } from "../domain/federal-stream";
 import type { CourtListenerBulkOpinionCluster } from "../providers/courtlistener/bulk-opinions";
 import { csvField, isEasternQuietWindow, rowsPerHour } from "./bulk-docket-load";
 import { federalOpinionCourtIds, gateBulkChunk } from "./bulk-load-gate";
-import { BULK_OPINION_HOLD_REASON, isFederalOpinionCourt } from "./bulk-opinion-load";
+import { isFederalOpinionCourt } from "./bulk-opinion-load";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -172,8 +172,8 @@ interface MergeContext {
 /**
  * Set-based merge of one staged chunk. A cluster whose docket is a loaded federal case
  * (not restricted or suppressed) becomes an opinion_cluster on that case; the case
- * stays as it is (draft stays draft) and a draft case gets a federal_publication_hold,
- * so no publisher promotes it on cluster metadata. An existing cluster is left alone.
+ * stays as it is (draft stays draft). A new cluster does not write
+ * bulk_opinion_text_pending_review onto the case. An existing cluster is left alone.
  * A cluster whose docket is not loaded goes to courtlistener_pending_cluster when
  * keepUnmatched (docket load unfinished); otherwise it is only counted.
  */
@@ -221,16 +221,6 @@ export async function mergeClusterStage(sql: Sql, ctx: MergeContext, rows: reado
         FROM eligible
         ON CONFLICT (provider_id, provider_cluster_id) DO NOTHING
         RETURNING case_id
-      ), held AS (
-        INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
-        SELECT DISTINCT eligible.case_id, ARRAY[${BULK_OPINION_HOLD_REASON}]::text[], ${FEDERAL_PUBLICATION_RULE_VERSION}
-        FROM eligible
-        WHERE eligible.case_publication = 'draft' AND eligible.case_id IN (SELECT case_id FROM created)
-        ON CONFLICT (case_id) DO UPDATE SET
-          reasons = ARRAY(SELECT DISTINCT reason FROM unnest(federal_publication_hold.reasons || EXCLUDED.reasons) reason ORDER BY reason),
-          rule_version = EXCLUDED.rule_version,
-          held_at = now()
-        RETURNING case_id
       ), pending AS (
         INSERT INTO courtlistener_pending_cluster (cluster_id, docket_id, snapshot_date, case_name, date_filed,
           precedential_status, citation_count, judges, restricted, date_modified, public_id, provider_metadata)
@@ -248,7 +238,7 @@ export async function mergeClusterStage(sql: Sql, ctx: MergeContext, rows: reado
       )
       SELECT
         (SELECT count(*)::int FROM created) AS created,
-        (SELECT count(*)::int FROM held) AS held,
+        0 AS held,
         (SELECT count(*)::int FROM pending) AS pending,
         (SELECT count(*)::int FROM resolved WHERE case_id IS NULL) AS unmatched,
         (SELECT count(*)::int FROM resolved WHERE case_id IS NOT NULL AND NOT federal) AS non_federal,
@@ -322,16 +312,6 @@ export async function resolvePendingClusters(
           FROM eligible
           ON CONFLICT (provider_id, provider_cluster_id) DO NOTHING
           RETURNING case_id
-        ), held AS (
-          INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
-          SELECT DISTINCT eligible.case_id, ARRAY[${BULK_OPINION_HOLD_REASON}]::text[], ${FEDERAL_PUBLICATION_RULE_VERSION}
-          FROM eligible
-          WHERE eligible.case_publication = 'draft' AND eligible.case_id IN (SELECT case_id FROM created)
-          ON CONFLICT (case_id) DO UPDATE SET
-            reasons = ARRAY(SELECT DISTINCT reason FROM unnest(federal_publication_hold.reasons || EXCLUDED.reasons) reason ORDER BY reason),
-            rule_version = EXCLUDED.rule_version,
-            held_at = now()
-          RETURNING case_id
         ), removed AS (
           DELETE FROM courtlistener_pending_cluster pending
           USING resolved
@@ -342,8 +322,7 @@ export async function resolvePendingClusters(
           (SELECT count(*)::int FROM removed) AS resolved,
           (SELECT count(*)::int FROM created) AS created,
           (SELECT count(*)::int FROM resolved WHERE NOT federal) AS non_federal,
-          (SELECT count(*)::int FROM resolved WHERE federal AND (restricted OR case_publication NOT IN ('draft', 'published'))) AS restricted,
-          (SELECT count(*)::int FROM held) AS held
+          (SELECT count(*)::int FROM resolved WHERE federal AND (restricted OR case_publication NOT IN ('draft', 'published'))) AS restricted
       `;
     });
     result.resolved += counts?.resolved ?? 0;

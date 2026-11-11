@@ -7,7 +7,7 @@ import postgres from "postgres";
 import { openBulkCsv } from "../providers/courtlistener/bulk";
 import { readBulkOpinionClusters, readBulkOpinions } from "../providers/courtlistener/bulk-opinions";
 import { bulkClusterStreamName, loadCourtListenerBulkClusters } from "./bulk-cluster-load";
-import { BULK_OPINION_HOLD_REASON, bulkOpinionStreamName, loadCourtListenerBulkOpinions } from "./bulk-opinion-load";
+import { bulkOpinionStreamName, loadCourtListenerBulkOpinions } from "./bulk-opinion-load";
 
 // These tests cover merge/checkpoint logic, not the disk floor (bulk-disk-floor.test.ts
 // covers that). Without this they read the real free disk of whatever box runs them, and
@@ -102,7 +102,7 @@ describe.skipIf(!databaseUrl)("bulk cluster load", () => {
       expect(first.stopped).toBe("complete");
       expect(first.rowsConsumed).toBe(8);
       expect(first).toMatchObject({ created: 2, alreadyPresent: 1, pending: 1, unmatched: 0, nonFederal: 1, restricted: 3 });
-      expect(first.casesHeld).toBe(1);
+      expect(first.casesHeld).toBe(0);
       const clusters = await sql<{ id: string; case_id: string; case_name: string; citation_count: number; syllabus: string | null; metadata: Record<string, unknown> }[]>`
         SELECT provider_cluster_id AS id, case_id, case_name, citation_count, syllabus, provider_metadata AS metadata
         FROM opinion_cluster WHERE provider_id = ${providerId} AND provider_cluster_id = ANY(${[1, 2, 3, 4, 5, 6, 7].map(id)}::text[])
@@ -114,7 +114,7 @@ describe.skipIf(!databaseUrl)("bulk cluster load", () => {
       expect(clusters[1]!.case_name).toBe('Gamma v. Delta, "Inc."');
       const holds = await sql<{ case_id: string; reasons: string[] }[]>`
         SELECT case_id, reasons FROM federal_publication_hold WHERE case_id = ANY(${[caseA, caseB]}::uuid[])`;
-      expect(holds).toEqual([{ case_id: caseA, reasons: [BULK_OPINION_HOLD_REASON] }]);
+      expect(holds).toEqual([]);
       const [published] = await sql<{ publication: string }[]>`SELECT publication::text FROM legal_case WHERE id = ${caseB}`;
       expect(published!.publication).toBe("published");
       const pending = await sql<{ cluster_id: string; docket_id: string }[]>`

@@ -1,0 +1,51 @@
+name: Clear bulk opinion case holds (once)
+
+# Removes bulk_opinion_text_pending_review from federal-publication-v3 holds
+# on the ingestion host. It does not run on the public web server, does not
+# read or write legal_case, and does not change updated_at.
+#
+# confirm=CLEAR_BULK_OPINION_HOLDS
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CLEAR_BULK_OPINION_HOLDS"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clear-bulk-opinion-holds
+  cancel-in-progress: false
+
+jobs:
+  clear:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 360
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Require confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CLEAR_BULK_OPINION_HOLDS" ]; then
+            echo "::error::Refusing to run. confirm must be CLEAR_BULK_OPINION_HOLDS."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run on the ingestion host
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" < scripts/clear-bulk-opinion-holds.sh
