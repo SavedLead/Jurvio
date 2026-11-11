@@ -36,7 +36,9 @@ postgres_container() {
 
 cleanup_release_space() {
   # Only release disposable deployment material. Database and artifact volumes are never pruned.
-  find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'jurvio-*.sql' -o -name 'jurvio-*.partial' \) -delete
+  # A second backup (the nightly) must not unlink a dump this script is still
+  # writing. Only unfinished files older than two hours are disposable.
+  find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'jurvio-*.sql' -o -name 'jurvio-*.partial' \) -mmin +120 -delete
   mapfile -t backups < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'jurvio-*.sql.gz' -printf '%T@ %p\n' | sort -rn | awk 'NR > keep { $1=""; sub(/^ /, ""); print }' keep="$KEEP_BACKUPS")
   ((${#backups[@]} == 0)) || rm -f -- "${backups[@]}"
   docker image prune -f --filter "until=$PRUNE_UNTIL" >/dev/null || true
