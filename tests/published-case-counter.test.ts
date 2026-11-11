@@ -96,13 +96,24 @@ describe("published case counter", () => {
   });
 
   it("resumes the seed after a timeout without moving the checkpoint", () => {
-    const body = seedJob.slice(seedJob.indexOf("seed_once()"));
-    expect(body.indexOf("BEGIN;")).toBeLessThan(body.indexOf("seed_next_published_count_court"));
-    expect(body.indexOf("seed_next_published_count_court")).toBeLessThan(body.indexOf("COMMIT;"));
-    expect(body).toContain("SET LOCAL statement_timeout = '${seconds}s'");
-    expect(body).toContain("SET LOCAL lock_timeout = '3s'");
-    expect(body).toContain("for seconds in 30 60 120");
-    expect(body).toContain("checkpoint not moved");
+    const light = readFileSync("db/migrations/0208_published_count_seed_light.sql", "utf8");
+    const countFn = light.slice(
+      light.indexOf("CREATE OR REPLACE FUNCTION seed_published_count_for_court"),
+      light.indexOf("CREATE OR REPLACE FUNCTION seed_next_published_count_court"),
+    );
+    expect(countFn).toContain("c.publication = 'published'");
+    expect(countFn).toContain("decision.displayable");
+    expect(countFn).not.toContain("published_count_seed_cursor");
+    expect(light).toContain("PERFORM seed_published_count_for_court(next_court)");
+    expect(seedJob.indexOf("seed_published_count_for_court")).toBeLessThan(seedJob.indexOf("advance_cursor"));
+    expect(seedJob).toContain("SET LOCAL statement_timeout = '${seconds}s'");
+    expect(seedJob).toContain("SET LOCAL lock_timeout = '3s'");
+    expect(seedJob).toContain("for seconds in 30 60 120");
+    expect(seedJob).toContain("checkpoint not moved; court $target");
+    expect(seedJob).toContain("re-dispatch retries this court");
+    expect(seedJob).toContain('SEED_COURT_PAUSE_SECONDS:-3');
+    expect(seedJob).toContain('sleep "$PAUSE"');
+    expect(seedJob).not.toContain("seed_next_published_count_court");
     expect(seedJob).not.toContain("legal_case.updated_at");
     expect(seedJob).not.toContain("statement_timeout', '0'");
   });

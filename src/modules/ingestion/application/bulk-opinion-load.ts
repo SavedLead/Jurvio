@@ -2,7 +2,6 @@ import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import { CITED_OPINION_RULE_VERSION } from "@/modules/citations/application/publish-cited-federal-opinions";
 import { evaluatePublicationCandidate } from "@/modules/publication/domain/publication-policy";
-import { FEDERAL_PUBLICATION_RULE_VERSION } from "../domain/federal-stream";
 import { matchesBulkFederalJurisdiction } from "./ingest-courtlistener-bulk-federal-dockets";
 import { csvField, isEasternQuietWindow, rowsPerHour } from "./bulk-docket-load";
 import { federalOpinionCourtIds, gateBulkChunk } from "./bulk-load-gate";
@@ -21,7 +20,7 @@ type Sql = ReturnType<typeof postgres>;
 /** Opinions per merge. Text is large, so chunks are also capped by bytes. */
 export const BULK_OPINION_CHUNK_ROWS = 1_000;
 export const BULK_OPINION_CHUNK_BYTES = 32 * 1024 * 1024;
-/** Reason recorded on holds so the federal and cited publishers leave bulk text draft. */
+/** Reason recorded on the opinion document so cited publication leaves bulk text draft. */
 export const BULK_OPINION_HOLD_REASON = "bulk_opinion_text_pending_review";
 export const BULK_OPINION_LANE = "federal-bulk-opinions";
 
@@ -268,9 +267,9 @@ export interface OpinionMergeCounts {
 /**
  * Set-based merge of one staged chunk. Only NEW opinions are written (an opinion
  * already in judicial_opinion is left exactly as it is, published or not). Every new
- * document is draft and gets a citation_publication_hold, and every draft case gets a
- * federal_publication_hold, both under the publishers' current rule versions, so
- * neither automatic publisher promotes bulk text without review.
+ * document is draft and gets a citation_publication_hold, so cited publication
+ * does not promote bulk text without review. The case itself is not given
+ * bulk_opinion_text_pending_review; that reason was blocking metadata publish.
  */
 export async function mergeOpinionStage(
   sql: Sql,
@@ -348,16 +347,6 @@ export async function mergeOpinionStage(
         FROM created JOIN courtlistener_opinion_stage stage ON stage.document_public_id = created.public_id
         ON CONFLICT (document_id) DO NOTHING
         RETURNING document_id
-      ), case_hold AS (
-        INSERT INTO federal_publication_hold (case_id, reasons, rule_version)
-        SELECT DISTINCT stage.case_id, ARRAY[${BULK_OPINION_HOLD_REASON}]::text[], ${FEDERAL_PUBLICATION_RULE_VERSION}
-        FROM courtlistener_opinion_stage stage
-        WHERE stage.case_is_draft
-        ON CONFLICT (case_id) DO UPDATE SET
-          reasons = ARRAY(SELECT DISTINCT reason FROM unnest(federal_publication_hold.reasons || EXCLUDED.reasons) reason ORDER BY reason),
-          rule_version = EXCLUDED.rule_version,
-          held_at = now()
-        RETURNING case_id
       ), review AS (
         INSERT INTO publication_review (object_type, object_id, status, requested_by_type, preflight_version, risk_flags, evidence, reviewed_at)
         SELECT 'document', created.id, ${reviewStatus}, 'system', ${preflight.version}, ${tx.json(preflight.reasons)},
@@ -371,7 +360,7 @@ export async function mergeOpinionStage(
       SELECT
         (SELECT count(*)::int FROM opinion) AS inserted,
         (SELECT count(*)::int FROM document_hold) AS documents_held,
-        (SELECT count(*)::int FROM case_hold) AS cases_held,
+        0 AS cases_held,
         (SELECT count(*)::int FROM identifier) + (SELECT count(*)::int FROM content)
           + (SELECT count(*)::int FROM projection) + (SELECT count(*)::int FROM review) AS side_rows
     `;

@@ -9,8 +9,10 @@ class Rollback extends Error {}
 
 const migration = readFileSync("db/migrations/0206_published_case_counter.sql", "utf8");
 const install = readFileSync("db/migrations/0207_published_case_counter_v2.sql", "utf8");
+const light = readFileSync("db/migrations/0208_published_count_seed_light.sql", "utf8");
 const chunks = splitMigrationChunks(migration);
 const installChunks = splitMigrationChunks(install);
+const lightChunks = splitMigrationChunks(light);
 const triggerNames = [
   "court_published_count_insert",
   "court_published_count_delete",
@@ -226,6 +228,47 @@ describe.skipIf(!databaseUrl)("published case counter migration", () => {
           SELECT complete FROM published_count_seed_cursor WHERE singleton = 1
         `;
         expect(cursor?.complete).toBe(true);
+        for (const chunk of lightChunks) await tx.unsafe(chunk);
+        const courtId = "ffffffff-ffff-ffff-ffff-ffffffffff11";
+        const mark = "lightseed";
+        await tx`
+          INSERT INTO court (id, public_id, name, verification, provider_court_id)
+          VALUES (${courtId}::uuid, ${`jc-${mark}`}, 'Light Seed Court', 'verified', ${`light-${mark}`})
+        `;
+        await tx`
+          INSERT INTO court_public_stats (court_id, case_count, published_base, published_delta, recent_case_ids)
+          VALUES (${courtId}::uuid, 9, 0, 4, '{}')
+        `;
+        const addCase = async (publicId: string, displayable: boolean) => {
+          const [added] = await tx<{ id: string }[]>`
+            INSERT INTO legal_case (public_id, court_id, docket_number, caption, filed_on, publication)
+            VALUES (${publicId}, ${courtId}::uuid, ${publicId}, 'Light v. Seed', '2024-02-02', 'published')
+            RETURNING id
+          `;
+          await tx`
+            INSERT INTO publication_decision (
+              object_type, object_id, displayable, indexable, machine_accessible,
+              downloadable, summary_eligible, reason_code, rule_version
+            ) VALUES ('legal_case', ${added!.id}, ${displayable}, true, true, false, false, 'fixture', 'v1')
+          `;
+        };
+        await addCase(`jv-${mark}-yes`, true);
+        await addCase(`jv-${mark}-no`, false);
+        const before = await tx<{ court_id: string }[]>`
+          SELECT court_id::text FROM published_count_seed_cursor WHERE singleton = 1
+        `;
+        const [counted] = await tx<{ n: number }[]>`
+          SELECT seed_published_count_for_court(${courtId}::uuid) AS n
+        `;
+        expect(counted?.n).toBe(1);
+        const after = await tx<{ court_id: string }[]>`
+          SELECT court_id::text FROM published_count_seed_cursor WHERE singleton = 1
+        `;
+        expect(after[0]?.court_id).toBe(before[0]?.court_id);
+        const [stats] = await tx<{ case_count: number; published_delta: number }[]>`
+          SELECT case_count, published_delta FROM court_public_stats WHERE court_id = ${courtId}::uuid
+        `;
+        expect(stats).toEqual({ case_count: 1, published_delta: 5 });
         throw new Rollback();
       }).catch((error) => { if (!(error instanceof Rollback)) throw error; });
     } finally {
