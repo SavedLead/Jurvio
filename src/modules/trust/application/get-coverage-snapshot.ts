@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { publishedCountSeedComplete, readPlannerPublishedEstimate } from "@/modules/cases/application/published-count-seed";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -23,7 +24,8 @@ export interface CorpusCoverage {
   publishedCases: number;
   /** Null when no precomputed opinion total is available. Never counted live. */
   publishedOpinions: number | null;
-  courtsWithRecords: number;
+  /** Null while the per-court seed is unfinished and this count would be a mix. */
+  courtsWithRecords: number | null;
   earliestFiledOn: string | null;
   latestFiledOn: string | null;
   lastSourceRetrievedAt: string | null;
@@ -60,6 +62,11 @@ export interface CoverageSnapshot {
   corpus: CorpusCoverage | null;
   families: CourtFamilyCoverage[] | null;
   limitations: CoverageLimitations | null;
+  /**
+   * True when publishedCases is the planner estimate. Family rows stay hidden
+   * until the seed has finished every court.
+   */
+  publishedCasesApproximate?: boolean;
 }
 
 interface CourtRow {
@@ -196,8 +203,9 @@ async function readStatCourts(sql: Sql): Promise<CourtRow[]> {
 
 export async function getCoverageSnapshot(sql: Sql): Promise<CoverageSnapshot> {
   const checkedAt = new Date().toISOString();
+  const seeded = await safe(() => publishedCountSeedComplete(sql));
 
-  const loaded = await safe(async () => {
+  const loaded = seeded === true ? await safe(async () => {
     const courts = await readStatCourts(sql);
     const circuits = await sql<{ code: string }[]>`
       SELECT lower(court_code) AS code FROM appellate_source_registry
@@ -221,19 +229,29 @@ export async function getCoverageSnapshot(sql: Sql): Promise<CoverageSnapshot> {
       districtsWithoutRecords: Math.max(0, districts.length - withRecords),
       districtsLiveMonitored: districts.filter((row) => row.live).length,
     };
-  });
+  }) : null;
   const families = loaded?.families ?? null;
-  const publishedCases = families ? publishedCasesFromFamilies(families) : null;
+  const familyTotal = families ? publishedCasesFromFamilies(families) : null;
   const familyEarliest = families?.map((family) => family.earliestFiledOn).filter((value): value is string => Boolean(value)).sort().at(0) ?? null;
   const familyLatest = families?.map((family) => family.latestFiledOn).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
-  const corpus = publishedCases === null ? null : {
-    publishedCases,
-    publishedOpinions: null,
-    courtsWithRecords: families?.reduce((total, family) => total + family.courtsWithRecords, 0) ?? 0,
-    earliestFiledOn: familyEarliest,
-    latestFiledOn: familyLatest,
-    lastSourceRetrievedAt: null,
-  };
+  const estimate = seeded === true ? null : await safe(() => readPlannerPublishedEstimate(sql));
+  const corpus = seeded === true
+    ? (familyTotal === null ? null : {
+      publishedCases: familyTotal,
+      publishedOpinions: null,
+      courtsWithRecords: families?.reduce((total, family) => total + family.courtsWithRecords, 0) ?? 0,
+      earliestFiledOn: familyEarliest,
+      latestFiledOn: familyLatest,
+      lastSourceRetrievedAt: null,
+    })
+    : {
+      publishedCases: estimate ?? 0,
+      publishedOpinions: null,
+      courtsWithRecords: null,
+      earliestFiledOn: null,
+      latestFiledOn: null,
+      lastSourceRetrievedAt: null,
+    };
 
   const held = await safe(async () => {
     const [estimate] = await sql<{ total: string }[]>`
@@ -267,7 +285,13 @@ export async function getCoverageSnapshot(sql: Sql): Promise<CoverageSnapshot> {
     districtsLiveMonitored: loaded.districtsLiveMonitored,
   } : null;
 
-  return { checkedAt, corpus, families, limitations };
+  return {
+    checkedAt,
+    corpus,
+    families,
+    limitations,
+    publishedCasesApproximate: seeded !== true,
+  };
 }
 
 /** Human-readable reason for a text-extraction blocker. Falls back to the raw code. */

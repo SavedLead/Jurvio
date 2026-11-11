@@ -20,10 +20,21 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
   return (
     <div className={styles.report}>
       <p className={styles.asOf}>
-        Measured from precomputed per-court totals as of{" "}
-        <strong>{formatEasternDateTime(snapshot.checkedAt)}</strong>. The published-case total is
-        the sum of the family rows. These figures can lag new publication. Draft, held, and
-        suppressed records are excluded.
+        {snapshot.publishedCasesApproximate ? (
+          <>
+            The published-case total is a planner estimate as of{" "}
+            <strong>{formatEasternDateTime(snapshot.checkedAt)}</strong>. Per-court totals stay
+            off this page until every court has been seeded, so a partial seed is not shown as
+            the corpus.
+          </>
+        ) : (
+          <>
+            Measured from precomputed per-court totals as of{" "}
+            <strong>{formatEasternDateTime(snapshot.checkedAt)}</strong>. The published-case total is
+            the sum of the family rows. These figures can lag new publication. Draft, held, and
+            suppressed records are excluded.
+          </>
+        )}
       </p>
 
       {corpus ? (
@@ -38,7 +49,7 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
           </div>
           <div>
             <dt>Courts with records</dt>
-            <dd>{count(corpus.courtsWithRecords)}</dd>
+            <dd>{corpus.courtsWithRecords === null ? "Not available" : count(corpus.courtsWithRecords)}</dd>
           </div>
           <div>
             <dt>Filing years covered</dt>
@@ -106,12 +117,14 @@ export function CoverageReport({ snapshot }: { snapshot: CoverageSnapshot }) {
 
       {limitations ? (
         <ul className={styles.gaps}>
-          <li>
-            <strong>District court coverage is incomplete.</strong>{" "}
-            {count(limitations.districtsWithoutRecords)} of the district courts Jurvio tracks have no
-            published records yet, and {count(limitations.districtsLiveMonitored)} are on a live
-            source feed. A case absent from Jurvio is not evidence that no such case exists.
-          </li>
+          {snapshot.publishedCasesApproximate ? null : (
+            <li>
+              <strong>District court coverage is incomplete.</strong>{" "}
+              {count(limitations.districtsWithoutRecords)} of the district courts Jurvio tracks have no
+              published records yet, and {count(limitations.districtsLiveMonitored)} are on a live
+              source feed. A case absent from Jurvio is not evidence that no such case exists.
+            </li>
+          )}
           {limitations.heldForReview > 0 ? (
             <li>
               <strong>{limitations.heldApproximate ? "About " : ""}{count(limitations.heldForReview)} collected records are waiting for a quality check</strong>{" "}

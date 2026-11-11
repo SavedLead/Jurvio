@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { publishedCountSeedComplete, readPlannerPublishedEstimate } from "./published-count-seed";
 import { publicCaseSearchReady } from "./public-case-search";
 import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
@@ -93,30 +94,26 @@ export function listingHasNarrowingFilter(options: Pick<
 }
 
 /**
- * Published-case headline for the unfiltered listing. Sums the running
- * per-court counters (court_public_stats.case_count). A publish or unpublish
- * changes the counter in that same transaction. When the table is empty or
- * not migrated yet, uses the planner estimate on the published-recency index.
- * Neither path counts legal_case.
+ * Published-case headline for the unfiltered listing. After every court has
+ * been seeded, sums the running per-court counters
+ * (court_public_stats.case_count). Until that seed finishes, uses the planner
+ * estimate on the published-recency index so a partial seed cannot show a
+ * mixed total. Neither path counts legal_case.
  */
 export async function readCachedPublishedTotal(sql: Sql): Promise<number> {
-  try {
-    const [row] = await sql<{ total: string }[]>`
-      SELECT coalesce(sum(case_count), 0)::bigint AS total
-      FROM court_public_stats
-    `;
-    const total = Number(row?.total ?? 0);
-    if (Number.isFinite(total) && total > 0) return total;
-  } catch (error) {
-    if ((error as { code?: string } | null)?.code !== "42P01") throw error;
+  if (await publishedCountSeedComplete(sql)) {
+    try {
+      const [row] = await sql<{ total: string }[]>`
+        SELECT coalesce(sum(case_count), 0)::bigint AS total
+        FROM court_public_stats
+      `;
+      const total = Number(row?.total ?? 0);
+      if (Number.isFinite(total) && total > 0) return total;
+    } catch (error) {
+      if ((error as { code?: string } | null)?.code !== "42P01") throw error;
+    }
   }
-  const [estimate] = await sql<{ total: string }[]>`
-    SELECT greatest(coalesce(reltuples, 0), 0)::bigint AS total
-    FROM pg_class
-    WHERE relname = 'legal_case_published_recency_idx'
-  `;
-  const estimated = Number(estimate?.total ?? 0);
-  return Number.isFinite(estimated) ? estimated : 0;
+  return readPlannerPublishedEstimate(sql);
 }
 
 /** Escapes LIKE wildcards so user text is matched literally. */

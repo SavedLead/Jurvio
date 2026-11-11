@@ -5,6 +5,7 @@ import { listingHasNarrowingFilter } from "./list-public-cases";
 
 const listing = readFileSync("src/modules/cases/application/list-public-cases.ts", "utf8");
 const coverage = readFileSync("src/modules/trust/application/get-coverage-snapshot.ts", "utf8");
+const seedGate = readFileSync("src/modules/cases/application/published-count-seed.ts", "utf8");
 
 describe("published case totals stay off the full table", () => {
   it("loads the unfiltered headline from stats or a planner estimate", () => {
@@ -12,8 +13,11 @@ describe("published case totals stay off the full table", () => {
       listing.indexOf("export async function readCachedPublishedTotal"),
       listing.indexOf("export function courtFacetKeySql"),
     );
+    expect(cached.indexOf("publishedCountSeedComplete")).toBeLessThan(cached.indexOf("court_public_stats"));
     expect(cached).toContain("court_public_stats");
-    expect(cached).toContain("reltuples");
+    expect(cached).toContain("readPlannerPublishedEstimate");
+    expect(seedGate).toContain("reltuples");
+    expect(seedGate).toContain("published_count_seed_cursor");
     expect(cached).not.toMatch(/count\s*\(\s*\*\s*\)/i);
     expect(cached).not.toMatch(/from\s+legal_case/i);
   });
@@ -34,6 +38,8 @@ describe("published case totals stay off the full table", () => {
   it("does not recount every published case for the coverage headline", () => {
     expect(coverage).not.toMatch(/count\(\*\)::int FROM legal_case WHERE publication='published'/);
     expect(coverage).toContain("publishedCasesFromFamilies");
+    expect(coverage.indexOf("publishedCountSeedComplete")).toBeLessThan(coverage.indexOf("readStatCourts(sql)"));
+    expect(coverage).toContain("readPlannerPublishedEstimate");
   });
 
   it("keeps the newest-first listing on a keyset and a limit", () => {
