@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EmailMessage } from "../infrastructure/email";
-import { maskEmail, notifySignupEvent, signupNotificationEmail, signupNotifyRecipient } from "./signup-notify";
+import { maskEmail, notifySignupEvent, signupDetailsFromRow, signupNotificationEmail, signupNotifyRecipient } from "./signup-notify";
 
 const details = {
   email: "jane.doe@gmail.com", createdAt: new Date("2026-11-05T03:22:00Z"), plan: "free", status: "active",
@@ -43,9 +43,8 @@ describe("signup notification", () => {
 });
 
 describe("pre-existing sign-up backfill", () => {
-  it("maps psql rows onto the live template", async () => {
-    const { toDetails } = await import("../../../../scripts/notify-existing-signups");
-    const d = toDetails({ id: "u", email: "a@b.com", created_at: "2026-11-01T12:00:00Z", plan: null, status: null,
+  it("maps psql rows onto the live template", () => {
+    const d = signupDetailsFromRow({ id: "u", email: "a@b.com", created_at: "2026-11-01T12:00:00Z", plan: null, status: null,
       attribution: { source: "x", referrer_host: "x.com", landing_path: "/", utm_source: null, utm_medium: null, utm_campaign: null, first_touch_at: null, signin_from_path: null },
       follows: null });
     const m = signupNotificationEmail(d);
