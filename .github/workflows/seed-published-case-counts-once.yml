@@ -14,6 +14,11 @@ on:
         description: "Type SEED_PUBLISHED_CASE_COUNTS"
         required: true
         type: string
+      pause_seconds:
+        description: "Seconds to pause after each committed court (default 3)"
+        required: false
+        default: "3"
+        type: string
 
 permissions:
   contents: read
@@ -32,6 +37,7 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
       CONFIRM: ${{ inputs.confirm }}
+      SEED_COURT_PAUSE_SECONDS: ${{ inputs.pause_seconds }}
     steps:
       - name: Require confirm
         env:
@@ -50,4 +56,5 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1090
           source "$HOME/vpc-ssh.sh"
-          vpc_ssh "$INGESTION_USER@$DB_HOST" "bash -s" < scripts/seed-published-case-counts.sh
+          pause="${SEED_COURT_PAUSE_SECONDS:-3}"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SEED_COURT_PAUSE_SECONDS=$(printf '%q' "$pause") bash -s" < scripts/seed-published-case-counts.sh
