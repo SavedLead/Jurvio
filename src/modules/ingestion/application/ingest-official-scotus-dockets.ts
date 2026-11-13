@@ -18,7 +18,11 @@ function dispositionScope(value: string) {
 }
 
 
-export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: ArtifactStore, options: { limit: number }) {
+export async function ingestOfficialScotusDockets(
+  sql: Sql,
+  artifactStore: ArtifactStore,
+  options: { limit: number; caseId?: string; skipPdfs?: boolean },
+) {
   if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100) throw new Error("Docket limit must be between 1 and 100");
   const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'scotus_official'`;
   if (!provider) throw new Error("Official Supreme Court provider seed is missing");
@@ -27,12 +31,19 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
     FROM legal_case JOIN court ON court.id = legal_case.court_id
     LEFT JOIN scotus_case_enrichment enrichment ON enrichment.case_id = legal_case.id
     WHERE lower(court.provider_court_id) = 'scotus'
-      AND (enrichment.case_id IS NULL
+      AND (${options.caseId ?? null}::uuid IS NULL OR legal_case.id = ${options.caseId ?? null}::uuid)
+      AND (
+        (${options.caseId ?? null}::uuid IS NOT NULL)
+        OR EXISTS (SELECT 1 FROM followed_item_priority priority WHERE priority.case_id = legal_case.id
+          AND (enrichment.case_id IS NULL OR enrichment.updated_at < now() - interval '30 minutes'))
+        OR enrichment.case_id IS NULL
         OR enrichment.updated_at < now() - interval '24 hours'
         OR (((enrichment.completeness->>'docketEvents') IS DISTINCT FROM 'true'
           OR (enrichment.completeness->>'docketDocuments') IS DISTINCT FROM 'true')
-          AND enrichment.updated_at < now() - interval '5 minutes'))
-    ORDER BY enrichment.updated_at NULLS FIRST, legal_case.decided_on DESC NULLS LAST, legal_case.id
+          AND enrichment.updated_at < now() - interval '5 minutes')
+      )
+    ORDER BY EXISTS (SELECT 1 FROM followed_item_priority priority WHERE priority.case_id = legal_case.id) DESC,
+      enrichment.updated_at NULLS FIRST, legal_case.decided_on DESC NULLS LAST, legal_case.id
     LIMIT ${options.limit}
   `;
   let succeeded = 0;
@@ -64,7 +75,7 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
       let caseDocuments = 0;
       let questionPresented: string | null = null;
       let questionSourceUrl: string | null = null;
-      const petition = docket.events.flatMap((event) => event.documents).find((document) => document.documentType === "petition");
+      const petition = options.skipPdfs ? undefined : docket.events.flatMap((event) => event.documents).find((document) => document.documentType === "petition");
       if (petition) {
         try {
           const pdf = await fetchOfficialFilingPdf(petition.url);
@@ -133,8 +144,12 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
           await tx`
             INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible,
               downloadable, summary_eligible, reason_code, rule_version)
-            VALUES ('docket_entry', ${entry.id}, true, true, true, false, false,
-              'verified_official_scotus_docket', 'official-scotus-docket-v1')
+            SELECT 'docket_entry', ${entry.id}, true, true, true, false, false,
+              'verified_official_scotus_docket', 'official-scotus-docket-v1'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM publication_decision existing
+              WHERE existing.object_type = 'docket_entry' AND existing.object_id = ${entry.id}
+            )
           `;
           caseEvents += 1;
           for (const filing of event.documents) {
@@ -164,8 +179,12 @@ export async function ingestOfficialScotusDockets(sql: Sql, artifactStore: Artif
             await tx`
               INSERT INTO publication_decision (object_type, object_id, displayable, indexable, machine_accessible,
                 downloadable, summary_eligible, reason_code, rule_version)
-              VALUES ('document', ${document.id}, true, true, true, true, false,
-                'verified_official_scotus_docket_document', 'official-scotus-docket-v1')
+              SELECT 'document', ${document.id}, true, true, true, true, false,
+                'verified_official_scotus_docket_document', 'official-scotus-docket-v1'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM publication_decision existing
+                WHERE existing.object_type = 'document' AND existing.object_id = ${document.id}
+              )
             `;
             caseDocuments += 1;
           }

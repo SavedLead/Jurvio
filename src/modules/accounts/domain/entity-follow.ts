@@ -2,7 +2,7 @@
 // about timing. Copy must never promise "instant" alerts: Jurvio only sees a
 // filing when it next checks that court.
 
-export const ENTITY_KINDS = ["judge", "topic", "party", "emergency"] as const;
+export const ENTITY_KINDS = ["judge", "topic", "party", "emergency", "court"] as const;
 export type EntityKind = (typeof ENTITY_KINDS)[number];
 
 export const ENTITY_FREQUENCIES = ["asap", "daily"] as const;
@@ -16,7 +16,7 @@ export function isEntityFrequency(value: unknown): value is EntityFrequency {
   return typeof value === "string" && (ENTITY_FREQUENCIES as readonly string[]).includes(value);
 }
 
-export const KIND_LABEL: Readonly<Record<EntityKind, string>> = { judge: "Judge", topic: "Topic", party: "Party", emergency: "Emergency docket" };
+export const KIND_LABEL: Readonly<Record<EntityKind, string>> = { judge: "Judge", topic: "Topic", party: "Party", emergency: "Emergency docket", court: "Court" };
 
 export const FREQUENCY_LABEL: Readonly<Record<EntityFrequency, string>> = {
   asap: "As soon as Jurvio finds a match",
@@ -49,4 +49,5 @@ export const KIND_EXPLAINER: Readonly<Record<EntityKind, string>> = {
   topic: "New cases, filings and decisions in public cases with this nature of suit.",
   party: "New cases, filings and decisions in public cases that name this party.",
   emergency: "New Supreme Court emergency applications and each new step in them (responses requested, administrative stays, referrals, rulings), with a plain-English line. Routine requests for more time to file are never sent.",
+  court: "New filings and decisions in the newest public cases in this court.",
 };

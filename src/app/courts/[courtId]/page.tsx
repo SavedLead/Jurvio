@@ -10,6 +10,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { circuitJusticeFor, circuitOfCourt } from "@/modules/scotus/domain/circuit-justice";
 import { CircuitJusticeBox } from "@/modules/scotus/ui/circuit-justice-box";
+import { FollowEntityButton } from "@/modules/accounts/ui/follow-entity-button";
 
 export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ courtId: string }> }
@@ -37,6 +38,7 @@ export default async function CourtPage({ params }: Props) {
     <nav className={styles.breadcrumbs} aria-label="Breadcrumb"><Link href="/courts">Courts</Link> / {court.publicId}</nav>
     <header className={styles.profileHeader}><p className={styles.eyebrow}>Court directory</p><h1>{court.name}</h1>
       <p>{court.shortName ? `${court.shortName}. ` : ""}Published case information connected to this court.</p>
+      {court.verification === "verified" ? <FollowEntityButton kind="court" target={court.publicId} name={court.name} /> : null}
       <dl className={styles.facts}><div><dt>Jurvio ID</dt><dd>{court.publicId}</dd></div><div><dt>Jurisdiction</dt><dd>{court.jurisdiction ?? "Unavailable"}</dd></div>
         <div><dt>Public cases</dt><dd>{court.caseCount.toLocaleString()}</dd></div><div><dt>Verification</dt><dd>{court.verification.replaceAll("_", " ")}</dd></div></dl></header>
     {circuitJustice ? <CircuitJusticeBox justice={circuitJustice} relation={isCircuit ? "circuit" : "court-in-circuit"} /> : null}

@@ -25,6 +25,7 @@ export async function ingestCourtListenerDocket(
   sql: Sql,
   artifactStore: ArtifactStore,
   docketId: number,
+  options: { maximumEntryPages?: number; maximumPartyPages?: number; newestEntriesFirst?: boolean } = {},
 ) {
   const [stored] = await sql<{
     case_id: string;
@@ -66,12 +67,15 @@ export async function ingestCourtListenerDocket(
     providerId: caseResult.providerId,
     caseId: caseResult.internalCaseId,
     docketId,
+    maximumPages: options.maximumPartyPages,
   });
 
   const docketEntries = await ingestCourtListenerDocketEntries(sql, artifactStore, {
     providerId: caseResult.providerId,
     caseId: caseResult.internalCaseId,
     docketId,
+    maximumPages: options.maximumEntryPages,
+    newestFirst: options.newestEntriesFirst,
   });
 
   return {

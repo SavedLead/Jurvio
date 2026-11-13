@@ -156,7 +156,7 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   },
   {
     // Followed-case docket alert digests. Every 10 minutes; each user is emailed at
-    // most once per plan cadence (Free daily, Plus hourly, Pro/Team every tick).
+    // most once per plan cadence (Free, Pro, and Team every tick; Plus hourly).
     // No-op until RESEND_API_KEY, EMAIL_FROM and EMAIL_POSTAL_ADDRESS are set.
     lane: "core",
     name: "account-alerts",
@@ -164,6 +164,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     intervalMs: 10 * minute,
     budgetMs: 8 * minute,
     command: ["jobs/run-account-alerts.mjs", "--max-users=500"],
+  },
+  {
+    // Followed cases, judges, courts, parties, topics, and emergency applications.
+    // Ahead of backlog: a few CourtListener docket checks, or one official SCOTUS
+    // docket without a PDF. Stops on the first 429. Runs on the ingestion host.
+    lane: "core",
+    name: "followed-item-priority",
+    initialDelayMs: 2 * minute,
+    intervalMs: 5 * minute,
+    budgetMs: 5 * minute,
+    command: ["jobs/run-followed-item-priority.mjs", "--limit=6"],
   },
   {
     lane: "core",
