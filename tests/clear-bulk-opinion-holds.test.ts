@@ -13,6 +13,13 @@ describe("bulk opinion case holds", () => {
     expect(script).toContain("array_remove(hold.reasons, '${REASON}')");
     expect(script).toContain("cardinality(hold.reasons) = 0");
     expect(script).toContain("DELETE FROM federal_publication_hold");
+    expect(script).toContain("same snapshot");
+    expect(script).toContain("empty_v3_holds_deleted");
+    const updateAt = script.indexOf("array_remove(hold.reasons, '${REASON}')");
+    const deleteAt = script.indexOf("DELETE FROM federal_publication_hold");
+    expect(updateAt).toBeGreaterThan(-1);
+    expect(deleteAt).toBeGreaterThan(updateAt);
+    expect(script.slice(updateAt, deleteAt)).not.toContain("WITH ");
     expect(script).not.toContain("legal_case");
     expect(script).not.toContain("updated_at");
     expect(workflow).toContain("CLEAR_BULK_OPINION_HOLDS");

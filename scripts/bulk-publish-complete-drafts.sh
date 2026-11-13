@@ -105,6 +105,49 @@ CREATE TABLE IF NOT EXISTS bulk_publish_cursor (
 INSERT INTO bulk_publish_cursor (singleton) VALUES (1) ON CONFLICT DO NOTHING;
 SQL
 
+# An empty federal-publication-v3 reason list still suppresses a draft. The
+# opinion-review clear removed that one reason and, because the delete shared
+# the update's snapshot, left the row in place. Drop those rows before the
+# walk. A hold with any remaining reason, including sealed, stays.
+echo "deleting v3 holds whose reason list is empty"
+empty_deleted=0
+while true; do
+  n=$(psql -q -tA <<SQL
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '30s';
+WITH doomed AS (
+  SELECT case_id
+  FROM federal_publication_hold
+  WHERE rule_version = '${RULE}'
+    AND cardinality(reasons) = 0
+  ORDER BY case_id
+  LIMIT 5000
+),
+deleted AS (
+  DELETE FROM federal_publication_hold AS hold
+  USING doomed
+  WHERE hold.case_id = doomed.case_id
+    AND cardinality(hold.reasons) = 0
+  RETURNING hold.case_id
+)
+SELECT count(*)::text FROM deleted;
+COMMIT;
+SQL
+)
+  n=$(printf '%s\n' "$n" | grep -E '^[0-9]+$' | tail -n 1 || true)
+  case "$n" in
+    [0-9]*) ;;
+    *) echo "empty-hold delete failed" >&2; exit 1 ;;
+  esac
+  if [ "$n" = "0" ]; then
+    break
+  fi
+  empty_deleted=$((empty_deleted + n))
+  echo "empty_hold_batch_deleted=$n"
+done
+echo "empty_v3_holds_deleted=$empty_deleted"
+
 started=$(date +%s)
 MIN_RANGE=5000
 floor_failures=0

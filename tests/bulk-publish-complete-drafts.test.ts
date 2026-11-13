@@ -45,6 +45,8 @@ describe("bulk publish of complete drafts", () => {
     expect(workflow).not.toContain("timeout-minutes: 360");
     expect(workflow).not.toContain("sudo");
     expect(script).toContain("resuming from bulk_publish_cursor");
+    expect(script).toContain("cardinality(reasons) = 0");
+    expect(script).toContain("empty_v3_holds_deleted");
     expect(script).toContain("bulk publish ended without completing");
     expect(script).toContain("ORDER BY c.created_at DESC, c.id DESC");
     expect(script).toContain("legal_case_draft_created_idx");
