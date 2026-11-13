@@ -28,7 +28,7 @@ export async function generateMetadata({ params }: SectionPageProps): Promise<Me
     title: [caption, "Docket", legalCase.docketNumber, legalCase.courtName].filter(Boolean).join(" | "),
     description: `Official docket entries currently available for ${caption}, docket ${legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${caseId}/docket` },
-    robots: robotsFor(!legalCase.searchExcluded),
+    robots: robotsFor(!legalCase.searchExcluded, legalCase.redacted),
   };
 }
 

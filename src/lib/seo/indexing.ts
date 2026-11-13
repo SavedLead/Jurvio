@@ -27,7 +27,11 @@ const LOCKED_DOWN_ROBOTS: Metadata["robots"] = {
 // Page-level robots metadata. While locked down every page reports
 // noindex/nofollow regardless of its intended post-launch indexability; after
 // launch it honors `indexWhenLaunched`.
-export function robotsFor(indexWhenLaunched: boolean): Metadata["robots"] {
+/** Exact robots policy for a page whose rendered text had a name redacted. */
+export const REDACTED_ROBOTS_CONTENT = "noindex, noarchive, nosnippet";
+
+export function robotsFor(indexWhenLaunched: boolean, redacted = false): Metadata["robots"] {
+  if (redacted) return REDACTED_ROBOTS_CONTENT;
   if (!sitePubliclyLaunched()) return LOCKED_DOWN_ROBOTS;
   return indexWhenLaunched ? { index: true, follow: true } : { index: false, follow: true };
 }

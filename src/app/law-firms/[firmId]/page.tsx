@@ -21,7 +21,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return { title: `${firm.displayName} — Cases and Court Records`,
     description: `Published court cases connected to ${firm.displayName} on Jurvio.`,
     alternates: { canonical: `/law-firms/${firm.publicId}` },
-    robots: robotsFor(canIndexDirectoryProfile(firm)) };
+    robots: robotsFor(canIndexDirectoryProfile(firm), Boolean(firm.redacted)) };
 }
 export default async function LawFirmPage({ params }: Props) {
   const firm = await load(params); if (!firm) notFound();

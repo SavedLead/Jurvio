@@ -49,7 +49,7 @@ function batchTransaction<T>(sql: Sql, fn: (tx: Tx) => Promise<T>): Promise<T> {
 
 /** Search text for the cases in `batch` (a CTE with id, public_id, caption, docket_number, official_citation). */
 const SEARCH_TEXT = `
-  concat_ws(E'\\n',
+  redact_public_text(concat_ws(E'\\n',
     batch.caption,
     batch.docket_number,
     batch.official_citation,
@@ -64,7 +64,7 @@ const SEARCH_TEXT = `
         FROM party_appearance appearance JOIN entity ON entity.id = appearance.entity_id
         WHERE appearance.case_id = batch.id
       ) names)
-  )
+  ))
 `;
 
 async function upsertSweepBatch(sql: Sql, cursor: string | null, limit: number) {

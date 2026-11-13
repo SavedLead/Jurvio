@@ -1,3 +1,4 @@
+import { redactPublicFields } from "@/modules/privacy/application/active-redactions";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
@@ -23,6 +24,8 @@ export interface PublicOpinion {
   wordCount: number;
   sourceDownloadUrl: string | null;
   indexable: boolean;
+  /** A name redaction changed text on this opinion. The page stays up and is not indexed. */
+  redacted: boolean;
   /** Search-excluded (sealed-style) case: the opinion is shown only to paid subscribers. */
   subscriberOnly: boolean;
 }
@@ -84,5 +87,7 @@ export async function getPublicOpinion(
       ), false)
     LIMIT 1
   `;
-  return record ?? null;
+  if (!record) return null;
+  const redactedFields = await redactPublicFields(sql, record, ["caseCaption", "title", "authorName", "contentHtml", "contentText"]);
+  return { ...redactedFields.record, redacted: redactedFields.changed };
 }

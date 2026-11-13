@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: `${party.displayName} — Public Court Cases`,
     description: `Public court cases involving ${party.displayName}, with source-backed court and docket information.`,
     alternates: { canonical: `/parties/${party.publicId}` },
-    robots: robotsFor(canIndexDirectoryProfile(party)),
+    robots: robotsFor(canIndexDirectoryProfile(party), Boolean(party.redacted)),
   };
 }
 

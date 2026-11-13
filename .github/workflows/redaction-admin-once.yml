@@ -1,0 +1,66 @@
+name: Redaction admin (once)
+
+# Preview or apply name redactions on the ingestion host. Not the public web.
+# confirm=PREVIEW_REDACTION or APPLY_REDACTION. Subject names are inputs.
+# Do not put a requester email in the inputs or the logs.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "PREVIEW_REDACTION or APPLY_REDACTION"
+        required: true
+        type: string
+      names:
+        description: "Subject full names, separated by |"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redaction-admin
+  cancel-in-progress: false
+
+jobs:
+  redaction:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      NAMES: ${{ inputs.names }}
+    steps:
+      - name: Require confirm
+        run: |
+          if [ "$CONFIRM" != "PREVIEW_REDACTION" ] && [ "$CONFIRM" != "APPLY_REDACTION" ]; then
+            echo "::error::confirm must be PREVIEW_REDACTION or APPLY_REDACTION"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run on the ingestion host
+        run: |
+          set -euo pipefail
+          mode=preview
+          label=""
+          if [ "$CONFIRM" = "APPLY_REDACTION" ]; then
+            mode=apply
+            label="privacy request"
+          fi
+          ssh "$INGESTION_USER@$DB_HOST" "MODE=$(printf %q "$mode") LABEL=$(printf %q "$label") NAMES=$(printf %q "$NAMES") bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          image="$(docker inspect -f '{{.Config.Image}}' "$(docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)")"
+          test -n "$image"
+          docker run --rm --network host --env-file .env.production \
+            -e REDACTION_MODE="$MODE" \
+            -e REDACTION_NAMES="$NAMES" \
+            -e REDACTION_LABEL="$LABEL" \
+            "$image" \
+            node jobs/redaction-admin.mjs
+          REMOTE

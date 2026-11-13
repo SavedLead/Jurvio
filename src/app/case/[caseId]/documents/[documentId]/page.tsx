@@ -64,7 +64,7 @@ export async function generateMetadata({ params }: OpinionPageProps): Promise<Me
     description,
     alternates: { canonical: `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}` },
     openGraph: { title, description, type: "article" },
-    robots: robotsFor(opinion.indexable && opinionHasExtractedText(opinion)),
+    robots: robotsFor(opinion.indexable && opinionHasExtractedText(opinion) && !opinion.redacted, opinion.redacted),
   };
 }
 

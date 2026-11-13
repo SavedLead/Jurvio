@@ -28,7 +28,7 @@ export async function generateMetadata({ params }: SectionPageProps): Promise<Me
     title: [caption, "Timeline", legalCase.docketNumber, legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified case timeline events currently available for ${caption}, docket ${legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${caseId}/timeline` },
-    robots: robotsFor(!legalCase.searchExcluded),
+    robots: robotsFor(!legalCase.searchExcluded, legalCase.redacted),
   };
 }
 

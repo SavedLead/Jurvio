@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { redactPublicText, redactRows } from "@/modules/privacy/application/active-redactions";
 import { ORDER_LINE_PATTERN } from "@/modules/cases/domain/docket-classification";
 import { latestPublicationColumnSql, type PublicationFlag } from "@/modules/publication/application/current-visibility";
 
@@ -96,7 +97,7 @@ export async function listPublicDocketEntries(
 ) {
   const boundedLimit = Math.min(PUBLIC_DOCKET_LIST_LIMIT, Math.max(1, Math.floor(limit) || 1));
   const boundedOffset = Math.min(MAX_DOCKET_OFFSET, Math.max(0, Math.floor(offset) || 0));
-  return sql<PublicDocketEntry[]>`
+  const rows = await sql<PublicDocketEntry[]>`
     SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
       entry.filed_on::text AS "filedOn", entry.description, entry.importance
     FROM docket_entry entry
@@ -106,6 +107,7 @@ export async function listPublicDocketEntries(
     LIMIT ${boundedLimit}
     OFFSET ${boundedOffset}
   `;
+  return redactRows(sql, rows, ["description"]);
 }
 
 export async function countPublicOrderEntries(sql: Sql, casePublicId: string): Promise<number> {
@@ -121,7 +123,7 @@ export async function countPublicOrderEntries(sql: Sql, casePublicId: string): P
 
 export async function listPublicOrderEntries(sql: Sql, casePublicId: string, limit = PUBLIC_DOCKET_PAGE_SIZE) {
   const boundedLimit = Math.min(PUBLIC_DOCKET_LIST_LIMIT, Math.max(1, Math.floor(limit) || 1));
-  return sql<PublicDocketEntry[]>`
+  const rows = await sql<PublicDocketEntry[]>`
     SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
       entry.filed_on::text AS "filedOn", entry.description, entry.importance
     FROM docket_entry entry
@@ -131,6 +133,7 @@ export async function listPublicOrderEntries(sql: Sql, casePublicId: string, lim
     ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST, entry.public_id DESC
     LIMIT ${boundedLimit}
   `;
+  return redactRows(sql, rows, ["description"]);
 }
 
 /** A few stored lines that state a jury demand or a jurisdiction basis. */
@@ -144,7 +147,7 @@ export async function listStoredFactLines(sql: Sql, casePublicId: string): Promi
     ORDER BY entry.filed_on DESC NULLS LAST
     LIMIT 30
   `.catch(() => []);
-  return rows.map((row) => row.description);
+  return (await redactRows(sql, rows, ["description"])).map((row) => row.description);
 }
 
 export async function countPublicDocketEntries(sql: Sql, casePublicId: string): Promise<number> {
@@ -158,7 +161,7 @@ export async function countPublicDocketEntries(sql: Sql, casePublicId: string): 
 }
 
 export async function listPublicParties(sql: Sql, casePublicId: string) {
-  return sql<PublicParty[]>`
+  const rows = await sql<PublicParty[]>`
     SELECT entity.public_id AS "publicId", entity.display_name AS "displayName",
       appearance.role, appearance.party_name_as_filed AS "nameAsFiled"
     FROM party_appearance appearance
@@ -174,10 +177,17 @@ export async function listPublicParties(sql: Sql, casePublicId: string) {
     WHERE ${sql.unsafe(latestPublicationColumnSql("displayable", "entity", "entity.id", true))}
     ORDER BY appearance.role, entity.normalized_name
   `;
+  const parties: PublicParty[] = [];
+  for (const party of rows) {
+    const name = await redactPublicText(sql, party.displayName);
+    const filed = await redactPublicText(sql, party.nameAsFiled);
+    parties.push({ ...party, displayName: name.text ?? party.displayName, nameAsFiled: filed.text ?? party.nameAsFiled });
+  }
+  return parties;
 }
 
 export async function listPublicDocuments(sql: Sql, casePublicId: string) {
-  return sql<PublicDocument[]>`
+  const rows = await sql<PublicDocument[]>`
     SELECT document.public_id AS "publicId", document.title,
       document.document_type AS "documentType", document.filed_on::text AS "filedOn",
       document.extraction_confidence::text AS "extractionConfidence",
@@ -196,4 +206,5 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
       AND ${visible(sql, "displayable", "document", "document.id")}
     ORDER BY document.filed_on DESC NULLS LAST, document.title
   `;
+  return redactRows(sql, rows, ["title", "authorName"]);
 }

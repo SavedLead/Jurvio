@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { sitePubliclyLaunched } from "@/lib/seo/indexing";
+import { REDACTED_ROBOTS_CONTENT, sitePubliclyLaunched } from "@/lib/seo/indexing";
 import { siteOrigin } from "@/lib/config/site-url";
 import { getMachineCase } from "@/modules/discovery/application/get-machine-case";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
@@ -51,7 +51,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ case
   }, {
     headers: {
       "Cache-Control": "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400",
-      "X-Robots-Tag": sitePubliclyLaunched() ? "index, follow" : "noindex, nofollow, noarchive, nosnippet, noimageindex",
+      "X-Robots-Tag": record.redacted
+        ? REDACTED_ROBOTS_CONTENT
+        : sitePubliclyLaunched() ? "index, follow" : "noindex, nofollow, noarchive, nosnippet, noimageindex",
     },
   });
 }

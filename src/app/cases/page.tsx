@@ -3,6 +3,7 @@ import Link from "next/link";
 import { viewerHasSubscriberAccess } from "@/modules/accounts/http/viewer";
 import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
+import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import {
   listPublicCaseCourts,
   listPublicCases,
@@ -103,17 +104,23 @@ function pageWindow(current: number, last: number) {
 }
 
 export default async function CasesPage({ searchParams }: { searchParams: Promise<CaseListingParams> }) {
-  const filters = parseCaseListingParams(await searchParams);
+  const requested = parseCaseListingParams(await searchParams);
   // Browsing traffic and crawlers reuse a five-minute snapshot. Searches containing
   // user-entered text stay live so free text never pollutes the shared cache.
   const [result, courts] = await Promise.all([
     // Paid subscribers' live text searches also include subscriber-only (sealed-style) records;
     // the shared snapshot never does.
-    hasUserText(filters)
-      ? listPublicCases(db(), { ...toQueryOptions(filters), includeSubscriberOnly: await viewerHasSubscriberAccess() })
-      : listCachedPublicCases(toQueryOptions(filters)),
+    hasUserText(requested)
+      ? listPublicCases(db(), { ...toQueryOptions(requested), includeSubscriberOnly: await viewerHasSubscriberAccess() })
+      : listCachedPublicCases(toQueryOptions(requested)),
     listCachedPublicCaseCourts(),
   ]);
+  const filters: CaseListingFilters = {
+    ...requested,
+    query: (await redactPublicText(db(), requested.query)).text ?? requested.query,
+    party: (await redactPublicText(db(), requested.party)).text ?? requested.party,
+    firm: (await redactPublicText(db(), requested.firm)).text ?? requested.firm,
+  };
   const pages = result.totalApproximate ? 1 : Math.max(1, Math.ceil(result.total / result.pageSize));
   const activeCourt = filters.court ? courts.find((court) => court.value === filters.court) ?? null : null;
   const chips = activeFilterChips(filters, activeCourt?.label ?? null);

@@ -1,3 +1,4 @@
+import { redactPublicFields } from "@/modules/privacy/application/active-redactions";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
@@ -23,6 +24,7 @@ export interface MachineCaseRecord {
     filedOn: string | null;
     documentType: string;
   }>;
+  redacted?: boolean;
 }
 
 export async function getMachineCase(sql: Sql, publicId: string): Promise<MachineCaseRecord | null> {
@@ -61,5 +63,13 @@ export async function getMachineCase(sql: Sql, publicId: string): Promise<Machin
       ), false)
     ORDER BY document.filed_on DESC NULLS LAST, document.public_id
   `;
-  return { ...record, documents };
+  const redacted = await redactPublicFields(sql, record, ["caption", "statusExplanation"]);
+  const docs = [];
+  let changed = redacted.changed;
+  for (const document of documents) {
+    const title = await redactPublicFields(sql, document, ["title"]);
+    changed = changed || title.changed;
+    docs.push(title.record);
+  }
+  return { ...redacted.record, documents: docs, redacted: changed };
 }
