@@ -6,7 +6,10 @@
 # A hold row whose reasons are empty after the removal is deleted. An empty
 # reason list would still block. A row that still has another blocking reason
 # stays. A row left with only the six reopenable reasons no longer blocks.
-# Running this again finds nothing to change.
+# The delete is its own statement. Postgres runs every data-modifying CTE in
+# one statement against the same snapshot, so a DELETE beside the UPDATE still
+# sees the old reason list and deletes nothing. A later sweep removes rows
+# this already left empty. Running this again finds nothing to change.
 set -eu
 set -o pipefail
 
@@ -39,32 +42,28 @@ while true; do
 BEGIN;
 SET LOCAL lock_timeout = '3s';
 SET LOCAL statement_timeout = '30s';
-WITH batch AS (
-  SELECT case_id
-  FROM federal_publication_hold
-  WHERE rule_version = '${RULE}'
-    AND '${REASON}' = ANY (reasons)
-  ORDER BY case_id
-  LIMIT ${BATCH}
-),
-cleared AS (
-  UPDATE federal_publication_hold AS hold
-  SET reasons = array_remove(hold.reasons, '${REASON}')
-  FROM batch
-  WHERE hold.case_id = batch.case_id
-    AND hold.rule_version = '${RULE}'
-  RETURNING hold.case_id, hold.reasons
-),
-dropped AS (
-  DELETE FROM federal_publication_hold AS hold
-  USING cleared
-  WHERE hold.case_id = cleared.case_id
-    AND cardinality(hold.reasons) = 0
-  RETURNING hold.case_id
-)
-SELECT (SELECT count(*) FROM batch)::text || '|' ||
-       (SELECT count(*) FROM cleared)::text || '|' ||
-       (SELECT count(*) FROM dropped)::text;
+CREATE TEMP TABLE clear_batch ON COMMIT DROP AS
+SELECT case_id
+FROM federal_publication_hold
+WHERE rule_version = '${RULE}'
+  AND '${REASON}' = ANY (reasons)
+ORDER BY case_id
+LIMIT ${BATCH};
+UPDATE federal_publication_hold AS hold
+SET reasons = array_remove(hold.reasons, '${REASON}')
+FROM clear_batch
+WHERE hold.case_id = clear_batch.case_id
+  AND hold.rule_version = '${RULE}';
+DELETE FROM federal_publication_hold AS hold
+USING clear_batch
+WHERE hold.case_id = clear_batch.case_id
+  AND cardinality(hold.reasons) = 0;
+SELECT (SELECT count(*) FROM clear_batch)::text || '|' ||
+       (SELECT count(*) FROM clear_batch)::text || '|' ||
+       ((SELECT count(*) FROM clear_batch) - (
+         SELECT count(*) FROM federal_publication_hold hold
+         JOIN clear_batch ON clear_batch.case_id = hold.case_id
+       ))::text;
 COMMIT;
 SQL
 )
@@ -84,3 +83,42 @@ done
 echo "clear complete removed_reason=$cleared deleted_empty=$dropped"
 left=$(psql_c -q -tA -c "SELECT count(*) FROM federal_publication_hold WHERE rule_version = '${RULE}' AND '${REASON}' = ANY (reasons);")
 echo "remaining_v3_rows_with_reason=$left"
+
+# Rows already stripped of the reason, with nothing left, still block.
+swept=0
+while true; do
+  n=$(psql_sql -q -tA <<SQL
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '30s';
+WITH doomed AS (
+  SELECT case_id
+  FROM federal_publication_hold
+  WHERE rule_version = '${RULE}'
+    AND cardinality(reasons) = 0
+  ORDER BY case_id
+  LIMIT ${BATCH}
+),
+deleted AS (
+  DELETE FROM federal_publication_hold AS hold
+  USING doomed
+  WHERE hold.case_id = doomed.case_id
+    AND cardinality(hold.reasons) = 0
+  RETURNING hold.case_id
+)
+SELECT count(*)::text FROM deleted;
+COMMIT;
+SQL
+)
+  n=$(printf '%s\n' "$n" | grep -E '^[0-9]+$' | tail -n 1 || true)
+  if [ -z "$n" ]; then
+    echo "empty-hold sweep failed" >&2
+    exit 1
+  fi
+  if [ "$n" = "0" ]; then
+    break
+  fi
+  swept=$((swept + n))
+  echo "sweep deleted_empty=$n"
+done
+echo "empty_v3_holds_deleted=$swept"
