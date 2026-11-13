@@ -94,11 +94,26 @@ function entityPath(entity: EntityHit): string {
   return entity.entityType === "law_firm" ? `/law-firms/${entity.publicId}` : `/parties/${entity.publicId}`;
 }
 
+function publicReport(kind: "preview" | "applied", hits: Hit[], entities: EntityHit[], extra: Record<string, string | number> = {}) {
+  const caseIds = [...new Set(hits.map((hit) => hit.casePublicId))].sort();
+  const documentIds = [...new Set(hits.flatMap((hit) => hit.documentPublicId ? [hit.documentPublicId] : []))].sort();
+  console.log(JSON.stringify({
+    redaction: kind,
+    subjects: names.length,
+    cases: caseIds.length,
+    documents: documentIds.length,
+    entities: entities.length,
+    caseIds,
+    documentIds,
+    ...extra,
+  }));
+}
+
 try {
   const { hits, entities } = await findHits();
   const paths = [...new Set([...hits.flatMap(pathsFor), ...entities.map(entityPath)])].sort();
   if (command === "preview") {
-    console.log(JSON.stringify({ redaction: "preview", subjects: names.length, urls: paths.length, paths }));
+    publicReport("preview", hits, entities);
     process.exit(0);
   }
   const rules = names.map((fullName) => ({ fullName, initials: initialsFor(fullName) }));
@@ -177,13 +192,13 @@ try {
       purged = purged && response.ok;
     }
   }
-  console.log(JSON.stringify({
-    redaction: "applied",
-    subjects: names.length,
-    urls: paths,
-    purge: token && zone ? (purged ? "purged" : "purge failed") : "purge missing; edge copies expire on the cache TTL",
+  publicReport("applied", hits, entities, {
+    purge: token && zone ? (purged ? "purged" : "purge failed") : "purge missing",
     sharedPages: pagesToRefresh().length,
-  }));
+  });
+} catch {
+  console.error(JSON.stringify({ redaction: "failed" }));
+  process.exitCode = 1;
 } finally {
   await sql.end({ timeout: 5 });
 }
