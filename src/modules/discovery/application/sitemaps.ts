@@ -96,6 +96,13 @@ export async function listDirectorySitemapRecords(
           JOIN legal_case ON legal_case.id = appearance.case_id
           WHERE appearance.entity_id = entity.id AND legal_case.publication = 'published' AND ${sql.unsafe(indexableCase)}
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM name_redactions rule
+          WHERE rule.active AND entity.display_name ILIKE '%' || rule.full_name || '%'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM redaction_hits hit WHERE hit.path = ${prefix} || entity.public_id
+        )
         AND entity.public_id >= ${startId}
         AND (${endId}::text IS NULL OR entity.public_id < ${endId})
       ORDER BY entity.public_id

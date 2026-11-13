@@ -1,3 +1,4 @@
+import { redactPublicText, redactRows } from "@/modules/privacy/application/active-redactions";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
@@ -20,6 +21,8 @@ export interface DirectoryEntitySummary {
 export interface DirectoryEntityProfile extends DirectoryEntitySummary {
   verification: string;
   indexable: boolean;
+  /** True when this profile's public text had a name replaced with initials. */
+  redacted?: boolean;
   appearances: Array<{
     casePublicId: string;
     caption: string;
@@ -83,7 +86,7 @@ export async function listPublicEntities(
       SELECT published_generation AS generation FROM public_stats_generation WHERE name = 'entity'
     `;
     if (state?.generation != null) {
-      return await sql<DirectoryEntitySummary[]>`
+      const rows = await sql<DirectoryEntitySummary[]>`
         SELECT entity.public_id AS "publicId", entity.display_name AS "displayName",
           entity.entity_type AS "entityType", stats.case_count AS "caseCount",
           stats.latest_case_date::text AS "latestCaseDate"
@@ -100,6 +103,7 @@ export async function listPublicEntities(
         ORDER BY stats.case_count DESC, entity.display_name, entity.public_id
         LIMIT ${safeLimit}
       `;
+      return redactRows(sql, rows, ["displayName"]);
     }
   } catch (error) {
     if (!isMissingTable(error)) throw error;
@@ -117,7 +121,7 @@ export async function listPublicEntitiesLive(
     ? sql`entity.entity_type IN ('unknown', 'person', 'organization', 'agency')`
     : sql`entity.entity_type = 'law_firm'`;
 
-  return sql<DirectoryEntitySummary[]>`
+  const rows = await sql<DirectoryEntitySummary[]>`
     SELECT entity.public_id AS "publicId", entity.display_name AS "displayName",
       entity.entity_type AS "entityType", count(DISTINCT legal_case.id)::int AS "caseCount",
       max(legal_case.filed_on)::text AS "latestCaseDate"
@@ -135,6 +139,7 @@ export async function listPublicEntitiesLive(
     ORDER BY count(DISTINCT legal_case.id) DESC, entity.display_name, entity.public_id
     LIMIT ${safeLimit}
   `;
+  return redactRows(sql, rows, ["displayName"]);
 }
 
 export async function getPublicEntity(
@@ -170,7 +175,7 @@ export async function getPublicEntity(
   `;
   if (!entity) return null;
 
-  const appearances = await sql<DirectoryEntityProfile["appearances"]>`
+  const appearanceRows = await sql<DirectoryEntityProfile["appearances"]>`
     SELECT legal_case.public_id AS "casePublicId", legal_case.caption,
       legal_case.docket_number AS "docketNumber", court.name AS "courtName",
       appearance.role, appearance.party_name_as_filed AS "nameAsFiled",
@@ -184,7 +189,10 @@ export async function getPublicEntity(
     ORDER BY legal_case.filed_on DESC NULLS LAST, legal_case.caption, appearance.role
     LIMIT 100
   `;
-  return { ...entity, appearances };
+  const name = await redactPublicText(sql, entity.displayName);
+  const appearances = await redactRows(sql, appearanceRows, ["caption", "nameAsFiled"]);
+  const redacted = name.changed || appearances.some((row, index) => row.caption !== appearanceRows[index]?.caption || row.nameAsFiled !== appearanceRows[index]?.nameAsFiled);
+  return { ...entity, displayName: name.text ?? entity.displayName, appearances, redacted };
 }
 
 const displayableCourt = `
@@ -285,7 +293,7 @@ export async function getPublicCourt(sql: Sql, publicId: string): Promise<CourtD
       AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
     ORDER BY recent.ord
   ` : [];
-  return { ...profile, caseCount, cases };
+  return { ...profile, caseCount, cases: await redactRows(sql, cases, ["caption"]) };
 }
 
 export async function getPublicCourtLive(sql: Sql, publicId: string): Promise<CourtDirectoryProfile | null> {
@@ -313,5 +321,5 @@ export async function getPublicCourtLive(sql: Sql, publicId: string): Promise<Co
       AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
     ORDER BY legal_case.filed_on DESC NULLS LAST, legal_case.caption LIMIT 100
   `;
-  return { ...court, cases };
+  return { ...court, cases: await redactRows(sql, cases, ["caption"]) };
 }

@@ -7,10 +7,10 @@ import { pagesToRefresh } from "@/lib/http/refresh-public-pages";
 //   node jobs/redaction-admin.mjs preview --name "Given Surname"
 //   node jobs/redaction-admin.mjs apply --confirm APPLY_REDACTION --name "Given Surname" --label "privacy request"
 const args = process.argv.slice(2);
-const command = args[0];
-const names: string[] = [];
-let label = "privacy request";
-let confirm = "";
+const command = process.env.REDACTION_MODE || args[0];
+const names = (process.env.REDACTION_NAMES ?? "").split("|").map((name) => name.trim()).filter(Boolean);
+let label = process.env.REDACTION_LABEL || "privacy request";
+let confirm = process.env.REDACTION_MODE === "apply" ? "APPLY_REDACTION" : "";
 for (let i = 1; i < args.length; i += 1) {
   const arg = args[i] ?? "";
   if (arg === "--name") names.push(args[++i] ?? "");
@@ -33,9 +33,11 @@ const sql = postgres(env().DATABASE_URL, {
 });
 
 interface Hit { caseId: string; casePublicId: string; documentId: string | null; documentPublicId: string | null }
+interface EntityHit { publicId: string; entityType: string }
 
-async function findHits(): Promise<Hit[]> {
+async function findHits(): Promise<{ hits: Hit[]; entities: EntityHit[] }> {
   const found = new Map<string, Hit>();
+  const entities = new Map<string, EntityHit>();
   const add = (hit: Hit) => found.set(`${hit.caseId}:${hit.documentPublicId ?? ""}`, hit);
   for (const name of names) {
     const like = `%${name.replace(/[%_\\]/g, "")}%`;
@@ -44,18 +46,41 @@ async function findHits(): Promise<Hit[]> {
       FROM legal_case c
       WHERE c.caption ILIKE ${like}
       UNION
+      SELECT c.id, c.public_id, NULL::uuid, NULL::text
+      FROM legal_case c
+      JOIN party_appearance appearance ON appearance.case_id = c.id
+      LEFT JOIN entity ON entity.id = appearance.entity_id
+      WHERE appearance.party_name_as_filed ILIKE ${like}
+         OR entity.display_name ILIKE ${like}
+      UNION
       SELECT c.id, c.public_id, d.id, d.public_id
       FROM document d
       JOIN legal_case c ON c.id = d.case_id
-      JOIN opinion_search_projection projection ON projection.document_id = d.id
+      LEFT JOIN opinion_search_projection projection ON projection.document_id = d.id
       WHERE projection.search_vector @@ websearch_to_tsquery('english', ${name})
          OR projection.case_caption ILIKE ${like}
          OR projection.title ILIKE ${like}
          OR d.title ILIKE ${like}
     `;
     for (const row of rows) add(row);
+    const people = await sql<EntityHit[]>`
+      SELECT entity.public_id AS "publicId", entity.entity_type AS "entityType"
+      FROM entity
+      WHERE entity.display_name ILIKE ${like}
+    `;
+    for (const person of people) entities.set(person.publicId, person);
   }
-  return [...found.values()];
+  const caseIds = [...new Set([...found.values()].map((hit) => hit.caseId))];
+  if (caseIds.length > 0) {
+    const documents = await sql<Hit[]>`
+      SELECT c.id AS "caseId", c.public_id AS "casePublicId", d.id AS "documentId", d.public_id AS "documentPublicId"
+      FROM document d
+      JOIN legal_case c ON c.id = d.case_id
+      WHERE c.id = ANY(${sql.array(caseIds)}::uuid[])
+    `;
+    for (const row of documents) add(row);
+  }
+  return { hits: [...found.values()], entities: [...entities.values()] };
 }
 
 function pathsFor(hit: Hit): string[] {
@@ -65,9 +90,13 @@ function pathsFor(hit: Hit): string[] {
   return paths;
 }
 
+function entityPath(entity: EntityHit): string {
+  return entity.entityType === "law_firm" ? `/law-firms/${entity.publicId}` : `/parties/${entity.publicId}`;
+}
+
 try {
-  const hits = await findHits();
-  const paths = [...new Set(hits.flatMap(pathsFor))].sort();
+  const { hits, entities } = await findHits();
+  const paths = [...new Set([...hits.flatMap(pathsFor), ...entities.map(entityPath)])].sort();
   if (command === "preview") {
     console.log(JSON.stringify({ redaction: "preview", subjects: names.length, urls: paths.length, paths }));
     process.exit(0);
@@ -93,24 +122,41 @@ try {
         `;
       }
     }
+    for (const entity of entities) {
+      await sql`
+        INSERT INTO redaction_hits (redaction_id, path)
+        VALUES (${redaction!.id}, ${entityPath(entity)})
+        ON CONFLICT (redaction_id, path) DO NOTHING
+      `;
+    }
   }
-  await sql`
-    UPDATE opinion_search_projection projection
-    SET case_caption = redact_public_text(projection.case_caption),
-        title = redact_public_text(projection.title),
-        body = redact_public_text(projection.body),
-        updated_at = now()
-    WHERE projection.document_id IN (
-      SELECT document_id FROM redaction_hits WHERE document_id IS NOT NULL
-    )
-  `;
-  await sql`
-    UPDATE opinion_search_meta meta
-    SET caption_vector = to_tsvector('english', coalesce(projection.case_caption, '') || ' ' || coalesce(projection.title, ''))
-    FROM opinion_search_projection projection
-    WHERE projection.document_id = meta.document_id
-      AND projection.document_id IN (SELECT document_id FROM redaction_hits WHERE document_id IS NOT NULL)
-  `;
+  const caseIds = [...new Set(hits.map((hit) => hit.caseId))];
+  if (caseIds.length > 0) {
+    await sql`
+      UPDATE opinion_search_projection projection
+      SET case_caption = redact_public_text(projection.case_caption),
+          title = redact_public_text(projection.title),
+          body = redact_public_text(projection.body),
+          updated_at = now()
+      WHERE projection.document_id IN (
+        SELECT d.id FROM document d WHERE d.case_id = ANY(${sql.array(caseIds)}::uuid[])
+      )
+    `;
+    await sql`
+      UPDATE opinion_search_meta meta
+      SET caption_vector = to_tsvector('english', coalesce(projection.case_caption, '') || ' ' || coalesce(projection.title, ''))
+      FROM opinion_search_projection projection
+      WHERE projection.document_id = meta.document_id
+        AND projection.document_id IN (
+          SELECT d.id FROM document d WHERE d.case_id = ANY(${sql.array(caseIds)}::uuid[])
+        )
+    `;
+    await sql`
+      UPDATE public_case_search
+      SET search_text = redact_public_text(search_text), refreshed_at = now()
+      WHERE case_id = ANY(${sql.array(caseIds)}::uuid[])
+    `;
+  }
   await sql`
     UPDATE redaction_requests SET status = 'applied', applied_at = now(), updated_at = now()
     WHERE id = ${request!.id}
@@ -121,12 +167,15 @@ try {
   const zone = process.env.CLOUDFLARE_ZONE_ID;
   let purged = false;
   if (token && zone && urls.length > 0) {
-    const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zone)}/purge_cache`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ files: urls.slice(0, 30) }),
-    });
-    purged = response.ok;
+    purged = true;
+    for (let index = 0; index < urls.length; index += 30) {
+      const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zone)}/purge_cache`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ files: urls.slice(index, index + 30) }),
+      });
+      purged = purged && response.ok;
+    }
   }
   console.log(JSON.stringify({
     redaction: "applied",

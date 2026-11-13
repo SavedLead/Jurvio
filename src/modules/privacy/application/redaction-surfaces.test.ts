@@ -12,8 +12,14 @@ describe("redaction surfaces", () => {
     const search = readFileSync("src/modules/search/application/search-public-opinions.ts", "utf8");
     const sitemap = readFileSync("src/modules/discovery/application/sitemaps.ts", "utf8");
     const migration = readFileSync("db/migrations/0212_name_redactions.sql", "utf8");
+    const directory = readFileSync("src/modules/directory/application/public-directory.ts", "utf8");
+    const documents = readFileSync("src/modules/cases/application/list-public-case-sections.ts", "utf8");
     expect(search).toContain("redactSearchResults");
+    expect(search).toContain("redactFacetLabels");
+    expect(directory).toContain("redactPublicText");
+    expect(documents).toContain("redactRows");
     expect(sitemap).toContain("redaction_hits");
+    expect(sitemap).toContain("name_redactions");
     expect(migration).toContain("BEFORE INSERT OR UPDATE OF case_caption, title, body");
     expect(migration).not.toContain("requester@");
   });

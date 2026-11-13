@@ -7,6 +7,7 @@
  * decision is never shown.
  */
 import type postgres from "postgres";
+import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { alertEligibleSql } from "@/modules/accounts/application/follows";
 import { circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
@@ -136,7 +137,11 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
         -- pending application. The live lane adopts any history row it re-reads ('live').
         ORDER BY (a.status = 'pending') DESC, coalesce(a.last_entry_on, a.submitted_on) DESC NULLS LAST, a.docket_number DESC
         LIMIT ${Math.min(filters.limit ?? 150, 500)}`;
-      const rows: EmergencyListRow[] = raw.map((row) => withResponseStatus(row));
+      const rows: EmergencyListRow[] = [];
+      for (const row of raw.map((item) => withResponseStatus(item))) {
+        const caption = await redactPublicText(tx as never, row.caption);
+        rows.push({ ...row, caption: caption.text ?? row.caption });
+      }
       const [counts] = await tx<EmergencyList["counts"][]>`
         SELECT count(*) FILTER (WHERE kind <> 'extension' AND status = 'pending')::int AS "openSerious",
           count(*) FILTER (WHERE kind <> 'extension' AND status <> 'pending' AND ruling_on >= current_date - 30)::int AS "decided30",
@@ -240,14 +245,25 @@ export async function getEmergencyApplication(sql: Sql, docketNumber: string): P
       // The full timeline is already loaded: derive the deadline from it.
       const rest = withResponseStatus({ ...stored, responseLines: events.map((event) => ({ filedOn: event.filedOn, kind: event.kind, description: event.description })) });
       void _caseId;
+      const caption = await redactPublicText(tx as never, rest.caption);
+      const applicant = await redactPublicText(tx as never, rest.applicant);
+      const eventsRedacted = [];
+      for (const event of events) {
+        const description = await redactPublicText(tx as never, event.description);
+        const plain = await redactPublicText(tx as never, event.plain);
+        eventsRedacted.push({ ...event, description: description.text ?? event.description, plain: plain.text ?? event.plain });
+      }
+      const lowerCaption = linkedLowerCase ? await redactPublicText(tx as never, linkedLowerCase.caption) : null;
       return {
         ...rest,
+        caption: caption.text ?? rest.caption,
+        applicant: applicant.text ?? rest.applicant,
         lowerCaseNumbers,
         votes: Array.isArray(votes) ? votes as NotedVote[] : [],
         lastEvent: events.length ? { kind: events.at(-1)!.kind, filedOn: events.at(-1)!.filedOn } : null,
-        events,
+        events: eventsRedacted,
         jurvioCase: casePublicId ? { publicId: casePublicId, followable: Boolean(followable) } : null,
-        linkedLowerCase,
+        linkedLowerCase: linkedLowerCase && lowerCaption ? { ...linkedLowerCase, caption: lowerCaption.text ?? linkedLowerCase.caption } : linkedLowerCase,
         linkedMerits,
       };
     });
@@ -318,9 +334,14 @@ export async function listResponseDeadlines(sql: Sql, options: { userId?: string
     LIMIT 600`;
   const today = options.today ?? easternDate(new Date());
   const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-  return raw.map((row) => withResponseStatus(row))
+  const pending = raw.map((row) => withResponseStatus(row))
     .filter((row): row is typeof row & { responseDueOn: string } => Boolean(row.responseDueOn) && !row.responseFiledOn && row.responseDueOn! >= yesterday)
-    .map((row) => ({ docketNumber: row.docketNumber, caption: row.caption, responseDueOn: row.responseDueOn, responseDueText: row.responseDueText, requestedBy: row.responseRequestedBy }))
     .sort((a, b) => a.responseDueOn.localeCompare(b.responseDueOn) || a.docketNumber.localeCompare(b.docketNumber))
     .slice(0, 300);
+  const deadlines = [];
+  for (const row of pending) {
+    const caption = await redactPublicText(sql, row.caption);
+    deadlines.push({ docketNumber: row.docketNumber, caption: caption.text ?? row.caption, responseDueOn: row.responseDueOn, responseDueText: row.responseDueText, requestedBy: row.responseRequestedBy });
+  }
+  return deadlines;
 }

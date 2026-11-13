@@ -1,4 +1,4 @@
-import { redactPublicText } from "@/modules/privacy/application/active-redactions";
+import { redactPublicText, redactRows } from "@/modules/privacy/application/active-redactions";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
@@ -593,11 +593,19 @@ async function readStoredFacets(sql: Sql): Promise<OpinionSearchFacets | null> {
       SELECT value, label, count FROM opinion_search_facet
       WHERE kind = 'type'
       ORDER BY count DESC, value`;
-    return { courts, precedentialStatuses: statuses, opinionTypes: types };
+    return redactFacetLabels(sql, { courts, precedentialStatuses: statuses, opinionTypes: types });
   } catch (error) {
     if (isMissingSearchColumn(error)) return null;
     throw error;
   }
+}
+
+async function redactFacetLabels(sql: Sql, facets: OpinionSearchFacets): Promise<OpinionSearchFacets> {
+  return {
+    courts: await redactRows(sql, facets.courts, ["label"]),
+    precedentialStatuses: await redactRows(sql, facets.precedentialStatuses, ["label"]),
+    opinionTypes: await redactRows(sql, facets.opinionTypes, ["label"]),
+  };
 }
 
 export async function listOpinionSearchFacets(
@@ -630,7 +638,7 @@ export async function listOpinionSearchFacets(
         WHERE meta.visible
         GROUP BY meta.opinion_type
         ORDER BY count DESC, value`;
-      return { courts, precedentialStatuses: statuses, opinionTypes: types };
+      return redactFacetLabels(tx, { courts, precedentialStatuses: statuses, opinionTypes: types });
     });
   } catch (error) {
     if (isStatementTimeout(error)) return emptyOpinionSearchFacets();

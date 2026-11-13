@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import { siteOrigin } from "@/lib/config/site-url";
 import { isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
 import { visibleSql } from "./emergency-docket";
@@ -21,7 +22,7 @@ export async function listScotusActivity(sql: Sql): Promise<ActivityFeedItem[]> 
 export async function listEmergencyFeed(sql: Sql): Promise<ActivityFeedItem[]> {
   return sql.begin(async (tx) => {
     await tx`SET LOCAL statement_timeout = '4s'`;
-    return mapEmergency(await emergencyRows(tx));
+    return redactFeedItems(tx, mapEmergency(await emergencyRows(tx)));
   });
 }
 
@@ -79,9 +80,19 @@ async function listScotusActivityIn(sql: Queryable): Promise<ActivityFeedItem[]>
     ...mapEmergency(emergency),
     ...orders,
   ];
-  return items.filter((item) => !isRestrictedDocketText(`${item.title} ${item.summary}`))
+  return redactFeedItems(sql, items.filter((item) => !isRestrictedDocketText(`${item.title} ${item.summary}`))
     .sort((a, b) => b.updated.localeCompare(a.updated))
-    .slice(0, 40);
+    .slice(0, 40));
+}
+
+async function redactFeedItems(sql: Queryable, items: ActivityFeedItem[]): Promise<ActivityFeedItem[]> {
+  const next: ActivityFeedItem[] = [];
+  for (const item of items) {
+    const title = await redactPublicText(sql as never, item.title);
+    const summary = await redactPublicText(sql as never, item.summary);
+    next.push({ ...item, title: title.text ?? item.title, summary: summary.text ?? item.summary });
+  }
+  return next;
 }
 
 async function emergencyRows(sql: Queryable) {
@@ -139,12 +150,12 @@ async function listAdministrationIn(sql: Queryable): Promise<ActivityFeedItem[]>
       AND a.kind <> 'extension' AND a.applicant_kind = 'federal' AND a.administration IS NOT NULL
     ORDER BY coalesce(a.last_entry_on, a.submitted_on) DESC NULLS LAST
     LIMIT 40`;
-  return rows.filter((row) => !isRestrictedDocketText(row.caption)).map((row) => ({
+  return redactFeedItems(sql, rows.filter((row) => !isRestrictedDocketText(row.caption)).map((row) => ({
     id: `${origin}/feeds/scotus/administration#${row.docket_number}`,
     title: `${row.docket_number}: ${row.caption}`,
     url: `${origin}/supreme-court/emergency/${row.docket_number}`,
     updated: stamp(row.last_entry_on),
     summary: `Automatic label: ${row.administration}. Status ${row.status}.`,
     category: "administration-approximate",
-  }));
+  })));
 }

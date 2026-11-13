@@ -6,16 +6,26 @@ type Sql = ReturnType<typeof postgres>;
 let cached: { at: number; rules: NameRedactionRule[] } | null = null;
 const TTL_MS = 30_000;
 
+async function loadActiveRules(sql: Sql): Promise<NameRedactionRule[]> {
+  const rows = await sql<{ fullName: string; initials: string }[]>`
+    SELECT full_name AS "fullName", initials
+    FROM name_redactions
+    WHERE active
+    ORDER BY length(full_name) DESC
+  `;
+  return rows;
+}
+
 export async function activeNameRedactions(sql: Sql): Promise<NameRedactionRule[]> {
   const now = Date.now();
   if (cached && now - cached.at < TTL_MS) return cached.rules;
+  // A missing table inside a transaction aborts that transaction. A savepoint
+  // keeps the caller's transaction usable until the migration has run.
+  const transactional = sql as Sql & { savepoint?: (fn: (tx: Sql) => Promise<NameRedactionRule[]>) => Promise<NameRedactionRule[]> };
   try {
-    const rows = await sql<{ fullName: string; initials: string }[]>`
-      SELECT full_name AS "fullName", initials
-      FROM name_redactions
-      WHERE active
-      ORDER BY length(full_name) DESC
-    `;
+    const rows = typeof transactional.savepoint === "function"
+      ? await transactional.savepoint((tx) => loadActiveRules(tx))
+      : await loadActiveRules(sql);
     cached = { at: now, rules: rows };
     return rows;
   } catch (error) {
@@ -50,4 +60,13 @@ export async function redactPublicFields<T extends object>(sql: Sql, record: T, 
     }
   }
   return { record: next, changed };
+}
+
+export async function redactRows<T extends object>(sql: Sql, rows: readonly T[], fields: readonly (keyof T)[]): Promise<T[]> {
+  const next: T[] = [];
+  for (const row of rows) {
+    const redacted = await redactPublicFields(sql, row, fields);
+    next.push(redacted.record);
+  }
+  return next;
 }

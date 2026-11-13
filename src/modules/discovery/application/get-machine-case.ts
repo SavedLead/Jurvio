@@ -24,6 +24,7 @@ export interface MachineCaseRecord {
     filedOn: string | null;
     documentType: string;
   }>;
+  redacted?: boolean;
 }
 
 export async function getMachineCase(sql: Sql, publicId: string): Promise<MachineCaseRecord | null> {
@@ -64,9 +65,11 @@ export async function getMachineCase(sql: Sql, publicId: string): Promise<Machin
   `;
   const redacted = await redactPublicFields(sql, record, ["caption", "statusExplanation"]);
   const docs = [];
+  let changed = redacted.changed;
   for (const document of documents) {
     const title = await redactPublicFields(sql, document, ["title"]);
+    changed = changed || title.changed;
     docs.push(title.record);
   }
-  return { ...redacted.record, documents: docs };
+  return { ...redacted.record, documents: docs, redacted: changed };
 }
