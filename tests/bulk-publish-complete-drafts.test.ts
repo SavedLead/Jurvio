@@ -10,12 +10,11 @@ describe("bulk publish of complete drafts", () => {
   it("publishes only complete non-thin drafts and leaves the alert clock alone", () => {
     expect(script).toContain("length(btrim(windowed.caption)) > 0");
     expect(script).toContain("length(btrim(windowed.docket_number)) > 0");
-    expect(script).toContain("windowed.filed_on IS NOT NULL");
-    expect(script).toContain("judge_case_assignment");
-    expect(script).toContain("party_appearance");
-    expect(script).toContain("docket_entry");
-    expect(script).toContain("cause_of_action");
-    expect(script).toContain("nature_of_suit_code");
+    expect(script).not.toContain("windowed.filed_on IS NOT NULL");
+    expect(script).not.toContain("judge_case_assignment");
+    expect(script).not.toContain("party_appearance");
+    expect(script).not.toContain("cause_of_action");
+    expect(script).not.toContain("nature_of_suit_code");
     expect(script).toContain("<> 'scotus'");
     expect(script).toContain("updated_at = c.updated_at");
     expect(script).toContain("SELECT set_config('jurvio.defer_search_refresh', 'on', true);");
