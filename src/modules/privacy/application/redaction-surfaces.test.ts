@@ -22,5 +22,17 @@ describe("redaction surfaces", () => {
     expect(sitemap).toContain("name_redactions");
     expect(migration).toContain("BEFORE INSERT OR UPDATE OF case_caption, title, body");
     expect(migration).not.toContain("requester@");
+    const workflow = readFileSync(".github/workflows/redaction-admin-once.yml", "utf8");
+    const admin = readFileSync("scripts/redaction-admin.ts", "utf8");
+    expect(workflow).toContain("secrets.REDACTION_NAMES");
+    expect(workflow).toContain("::add-mask::");
+    expect(workflow).not.toContain("inputs.names");
+    expect(workflow).not.toContain("echo \"$REDACTION_NAMES\"");
+    expect(workflow).not.toContain("echo \"$NAMES\"");
+    expect(admin).toContain("caseIds");
+    expect(admin).toContain("documentIds");
+    expect(admin).not.toContain("urls: paths");
+    expect(admin).not.toContain("console.log(names");
+    expect(admin).not.toContain("console.log(JSON.stringify(names");
   });
 });

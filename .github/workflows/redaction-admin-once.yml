@@ -1,17 +1,15 @@
 name: Redaction admin (once)
 
 # Preview or apply name redactions on the ingestion host. Not the public web.
-# confirm=PREVIEW_REDACTION or APPLY_REDACTION. Subject names are inputs.
-# Do not put a requester email in the inputs or the logs.
+# confirm=PREVIEW_REDACTION or APPLY_REDACTION.
+# Subject names are the REDACTION_NAMES repository secret, pipe-separated.
+# This repository is public: do not add names as a dispatch input, and do not
+# echo them. The run log may show counts and case or document ids only.
 on:
   workflow_dispatch:
     inputs:
       confirm:
         description: "PREVIEW_REDACTION or APPLY_REDACTION"
-        required: true
-        type: string
-      names:
-        description: "Subject full names, separated by |"
         required: true
         type: string
 
@@ -31,7 +29,7 @@ jobs:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
       CONFIRM: ${{ inputs.confirm }}
-      NAMES: ${{ inputs.names }}
+      REDACTION_NAMES: ${{ secrets.REDACTION_NAMES }}
     steps:
       - name: Require confirm
         run: |
@@ -46,20 +44,40 @@ jobs:
       - name: Run on the ingestion host
         run: |
           set -euo pipefail
+          if [ -z "${REDACTION_NAMES:-}" ]; then
+            echo "::error::REDACTION_NAMES is not set"
+            exit 1
+          fi
+          # Mask the secret and each subject before any later output.
+          echo "::add-mask::$REDACTION_NAMES"
+          IFS='|' read -r -a subjects <<< "$REDACTION_NAMES"
+          count=0
+          for name in "${subjects[@]}"; do
+            name="${name#"${name%%[![:space:]]*}"}"
+            name="${name%"${name##*[![:space:]]}"}"
+            [ -n "$name" ] || continue
+            echo "::add-mask::$name"
+            count=$((count + 1))
+          done
+          if [ "$count" -lt 1 ]; then
+            echo "::error::REDACTION_NAMES has no subjects"
+            exit 1
+          fi
+          echo "subjects=$count"
           mode=preview
           label=""
           if [ "$CONFIRM" = "APPLY_REDACTION" ]; then
             mode=apply
             label="privacy request"
           fi
-          ssh "$INGESTION_USER@$DB_HOST" "MODE=$(printf %q "$mode") LABEL=$(printf %q "$label") NAMES=$(printf %q "$NAMES") bash -s" <<'REMOTE'
+          ssh "$INGESTION_USER@$DB_HOST" "MODE=$(printf %q "$mode") LABEL=$(printf %q "$label") REDACTION_NAMES=$(printf %q "$REDACTION_NAMES") bash -s" <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
           image="$(docker inspect -f '{{.Config.Image}}' "$(docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)")"
           test -n "$image"
           docker run --rm --network host --env-file .env.production \
             -e REDACTION_MODE="$MODE" \
-            -e REDACTION_NAMES="$NAMES" \
+            -e REDACTION_NAMES="$REDACTION_NAMES" \
             -e REDACTION_LABEL="$LABEL" \
             "$image" \
             node jobs/redaction-admin.mjs
