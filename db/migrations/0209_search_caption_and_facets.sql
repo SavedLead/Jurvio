@@ -140,46 +140,20 @@ BEGIN
 END;
 $$;
 
--- Each batch commits on its own so a caption backfill cannot sit on one lock.
-CREATE OR REPLACE PROCEDURE backfill_opinion_caption_vector(batch_size integer, max_batches integer)
-LANGUAGE plpgsql
-SET search_path = public
-AS $$
-DECLARE
-  filled integer;
-  batches integer := 0;
-BEGIN
-  IF batch_size < 1 OR max_batches < 1 THEN
-    RETURN;
-  END IF;
-  LOOP
-    EXIT WHEN batches >= max_batches;
-    WITH todo AS (
-      SELECT document_id
-      FROM opinion_search_meta
-      WHERE caption_vector IS NULL
-      LIMIT batch_size
-    )
-    UPDATE opinion_search_meta meta
-    SET caption_vector = COALESCE((
-      SELECT to_tsvector('english', coalesce(projection.case_caption, '') || ' ' || coalesce(projection.title, ''))
-      FROM opinion_search_projection projection
-      WHERE projection.document_id = meta.document_id
-    ), ''::tsvector)
-    FROM todo
-    WHERE meta.document_id = todo.document_id;
-    GET DIAGNOSTICS filled = ROW_COUNT;
-    COMMIT;
-    batches := batches + 1;
-    EXIT WHEN filled = 0;
-    PERFORM pg_sleep(0.05);
-  END LOOP;
-END;
-$$;
-
 -- @commit
 
-CALL backfill_opinion_caption_vector(2500, 2000);
+-- One statement. The migrator cannot call a procedure that commits, and this
+-- column is unused until the new application starts, so holding the row locks
+-- until this statement ends does not block a page read.
+SET statement_timeout = '15min';
+UPDATE opinion_search_meta meta
+SET caption_vector = to_tsvector('english', coalesce(projection.case_caption, '') || ' ' || coalesce(projection.title, ''))
+FROM opinion_search_projection projection
+WHERE projection.document_id = meta.document_id
+  AND meta.caption_vector IS NULL;
+UPDATE opinion_search_meta
+SET caption_vector = ''::tsvector
+WHERE caption_vector IS NULL;
 
 -- @commit
 

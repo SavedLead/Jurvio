@@ -353,7 +353,16 @@ export async function refreshPublicDirectoryStats(sql: Sql, options: RefreshOpti
     await sql.unsafe(`RESET statement_timeout`).catch(() => undefined);
   }
   try {
-    await sql.unsafe(`CALL backfill_opinion_caption_vector(2500, 4)`);
+    await sql`
+      WITH todo AS (
+        SELECT document_id FROM opinion_search_meta WHERE caption_vector IS NULL LIMIT 2500
+      )
+      UPDATE opinion_search_meta meta
+      SET caption_vector = to_tsvector('english', coalesce(projection.case_caption, '') || ' ' || coalesce(projection.title, ''))
+      FROM todo
+      JOIN opinion_search_projection projection ON projection.document_id = todo.document_id
+      WHERE meta.document_id = todo.document_id
+    `;
   } catch (error) {
     log({ directoryStats: "caption-backfill-skipped", reason: error instanceof Error ? error.message : "failed" });
   }
