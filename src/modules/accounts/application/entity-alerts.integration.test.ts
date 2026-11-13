@@ -159,10 +159,9 @@ describe.skipIf(!databaseUrl)("judge, topic and party alerts", () => {
     const userId = await fx.createUser(`entity-free-${fx.tag}@example.test`);
     const first = await resolveEntityTarget(sql, "topic", "contracts");
     const second = await resolveEntityTarget(sql, "topic", "antitrust");
-    expect((await followEntity(sql, userId, first!, "daily")).status).toBe("followed");
+    expect((await followEntity(sql, userId, first!, "daily")).status).toBe("paid_required");
     const over = await followEntity(sql, userId, second!, "daily");
-    expect(over.status).toBe("limit_reached");
-    expect(over.state).toMatchObject({ plan: "free", entityCount: 1, entityLimit: 1, following: false, upgrade: { plan: "plus" } });
-    expect((await followEntity(sql, userId, first!, "asap")).status).toBe("updated");
+    expect(over.status).toBe("paid_required");
+    expect(over.state).toMatchObject({ plan: "free", paidRequired: true, following: false, upgrade: { plan: "plus" } });
   });
 });

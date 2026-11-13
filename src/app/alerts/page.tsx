@@ -101,6 +101,7 @@ export default async function MyAlertsPage({ searchParams }: { searchParams: Pro
               </div>
             </div>
             <p className="alertsMeta">
+              {follow.status === "needs_upgrade" ? "Paused. Following a judge, court, party, or topic is a paid feature. This follow is saved and sends no email until the account is on Plus, Pro, or Team. " : null}
               {KIND_EXPLAINER[follow.kind]} {matchesSinceLabel(follow.matches7d, follow.createdAt)}
               {follow.queued ? ` · ${follow.queued.toLocaleString("en-US")} waiting for the next email` : ""}
               {follow.lastSentAt ? ` · last emailed ${follow.lastSentAt.slice(0, 10)}` : ""}

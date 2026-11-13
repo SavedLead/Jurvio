@@ -59,6 +59,7 @@ export async function POST(request: NextRequest) {
   const frequency = isEntityFrequency(body.frequency) ? body.frequency : "daily";
   const result = await followEntity(sql, user.userId, target, frequency);
   if (result.status === "limit_reached") return json({ signedIn: true, error: "limit_reached", label: target.label, ...result.state }, 409);
+  if (result.status === "paid_required") return json({ signedIn: true, error: "paid_required", label: target.label, ...result.state }, 402);
   return json({ signedIn: true, status: result.status, label: target.label, ...result.state });
 }
 

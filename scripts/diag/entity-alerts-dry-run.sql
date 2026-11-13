@@ -11,10 +11,19 @@ FROM entity_follow f JOIN app_user u ON u.id = f.user_id
 WHERE u.email = 'alerts-qa@example.com' ORDER BY f.kind;
 
 \echo '== dry run: matches in the last 7 days by follow and event kind'
-WITH match_follow AS MATERIALIZED (
+WITH     match_follow AS MATERIALIZED (
       SELECT id, kind, target_key, created_at FROM (SELECT f.id, f.kind, f.target_key, now() - interval '7 days' AS created_at
         FROM entity_follow f JOIN app_user u ON u.id = f.user_id
         WHERE u.email = 'alerts-qa@example.com') test_follow
+      WHERE id NOT IN (
+        SELECT paused.id FROM entity_follow paused
+        LEFT JOIN account_subscription subscription
+          ON subscription.user_id = paused.user_id
+         AND subscription.plan IN ('plus', 'pro', 'team')
+         AND subscription.status IN ('active', 'trialing', 'past_due')
+        WHERE paused.kind IN ('judge', 'court', 'party', 'topic')
+          AND (paused.status = 'needs_upgrade' OR subscription.user_id IS NULL)
+      )
     ),
     match_event AS MATERIALIZED (
       SELECT 'entry:' || e.id AS item_key, e.case_id, 'docket_entry' AS event_kind, e.filed_on AS occurred_on,
@@ -194,10 +203,19 @@ FROM ranked r JOIN entity_follow f ON f.id = r.follow_id
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 
 \echo '== dry run: newest 8 matches per follow (public-safe summaries as they would be emailed)'
-WITH match_follow AS MATERIALIZED (
+WITH     match_follow AS MATERIALIZED (
       SELECT id, kind, target_key, created_at FROM (SELECT f.id, f.kind, f.target_key, now() - interval '7 days' AS created_at
         FROM entity_follow f JOIN app_user u ON u.id = f.user_id
         WHERE u.email = 'alerts-qa@example.com') test_follow
+      WHERE id NOT IN (
+        SELECT paused.id FROM entity_follow paused
+        LEFT JOIN account_subscription subscription
+          ON subscription.user_id = paused.user_id
+         AND subscription.plan IN ('plus', 'pro', 'team')
+         AND subscription.status IN ('active', 'trialing', 'past_due')
+        WHERE paused.kind IN ('judge', 'court', 'party', 'topic')
+          AND (paused.status = 'needs_upgrade' OR subscription.user_id IS NULL)
+      )
     ),
     match_event AS MATERIALIZED (
       SELECT 'entry:' || e.id AS item_key, e.case_id, 'docket_entry' AS event_kind, e.filed_on AS occurred_on,

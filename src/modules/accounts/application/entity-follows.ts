@@ -5,7 +5,7 @@ import { topicBySlug } from "../domain/topics";
 import { cleanPartyName, isFollowablePartyName, partyKey } from "../domain/party-names";
 import { syncFollowedItemPriority } from "@/modules/ingestion/application/followed-item-priority";
 import { alertEligibleSql, followEligibleSql } from "./follows";
-import type { EntityFrequency, EntityKind } from "../domain/entity-follow";
+import { isFanOutKind, type EntityFrequency, type EntityKind } from "../domain/entity-follow";
 import { isPublicId } from "@/lib/ids/public-id";
 import { userPlan } from "./account";
 import { emergencyFeedBySlug } from "@/modules/scotus/domain/emergency-application";
@@ -91,6 +91,10 @@ async function resolvePartyTarget(sql: Sql, value: string): Promise<EntityTarget
 export interface EntityFollowState {
   following: boolean;
   frequency: EntityFrequency | null;
+  /** Stored follow is paused because a fan-out follow needs a paid plan. The row is kept. */
+  needsUpgrade: boolean;
+  /** Creating this kind of follow is refused for a free account. */
+  paidRequired: boolean;
   plan: PlanId;
   entityCount: number;
   entityLimit: number;
@@ -114,14 +118,22 @@ function upgradeFor(plan: PlanId) {
 
 export async function entityFollowState(sql: Sql, userId: string, target: Pick<EntityTarget, "kind" | "targetKey">): Promise<EntityFollowState> {
   const plan = await userPlan(sql, userId);
-  const [row] = await sql<{ frequency: EntityFrequency | null; entityCount: number }[]>`
+  const [row] = await sql<{ frequency: EntityFrequency | null; status: string | null; entityCount: number }[]>`
     SELECT
-      (SELECT frequency FROM entity_follow WHERE user_id = ${userId} AND kind = ${target.kind} AND target_key = ${target.targetKey}) AS frequency,
-      (SELECT count(*)::int FROM entity_follow WHERE user_id = ${userId}) AS "entityCount"`;
+      mine.frequency, mine.status,
+      (SELECT count(*)::int FROM entity_follow WHERE user_id = ${userId} AND status = 'active') AS "entityCount"
+    FROM (SELECT 1) one
+    LEFT JOIN LATERAL (
+      SELECT frequency, status FROM entity_follow
+      WHERE user_id = ${userId} AND kind = ${target.kind} AND target_key = ${target.targetKey}
+    ) mine ON true`;
   const limits = planLimits(plan);
+  const needsUpgrade = row?.status === "needs_upgrade";
   return {
-    following: Boolean(row?.frequency),
+    following: Boolean(row?.frequency) && !needsUpgrade,
     frequency: row?.frequency ?? null,
+    needsUpgrade,
+    paidRequired: isFanOutKind(target.kind) && plan === "free",
     plan,
     entityCount: row?.entityCount ?? 0,
     entityLimit: limits.entityFollowLimit,
@@ -132,7 +144,7 @@ export async function entityFollowState(sql: Sql, userId: string, target: Pick<E
 
 export type EntityFollowResult =
   | { status: "followed" | "already_following" | "updated"; state: EntityFollowState }
-  | { status: "limit_reached"; state: EntityFollowState };
+  | { status: "limit_reached" | "paid_required"; state: EntityFollowState };
 
 /** Follows within the plan's judge/topic/party limit. Serialized per user (row lock) so double clicks cannot exceed it. */
 export async function followEntity(sql: Sql, userId: string, target: EntityTarget, frequency: EntityFrequency = "daily"): Promise<EntityFollowResult> {
@@ -140,17 +152,18 @@ export async function followEntity(sql: Sql, userId: string, target: EntityTarge
     const db = tx as unknown as Sql;
     await db`SELECT 1 FROM app_user WHERE id = ${userId} FOR UPDATE`;
     const plan = await userPlan(db, userId);
+    if (isFanOutKind(target.kind) && plan === "free") return "paid_required" as const;
     const limits = planLimits(plan);
     const wanted: EntityFrequency = frequency === "asap" && !asapAllowedFor(plan, target.kind) ? "daily" : frequency;
-    const [existing] = await db<{ frequency: string }[]>`
-      SELECT frequency FROM entity_follow WHERE user_id = ${userId} AND kind = ${target.kind} AND target_key = ${target.targetKey}`;
+    const [existing] = await db<{ frequency: string; status: string }[]>`
+      SELECT frequency, status FROM entity_follow WHERE user_id = ${userId} AND kind = ${target.kind} AND target_key = ${target.targetKey}`;
     if (existing) {
-      if (existing.frequency === wanted) return "already_following" as const;
-      await db`UPDATE entity_follow SET frequency = ${wanted}, updated_at = now()
+      if (existing.frequency === wanted && existing.status === "active") return "already_following" as const;
+      await db`UPDATE entity_follow SET frequency = ${wanted}, status = 'active', updated_at = now()
         WHERE user_id = ${userId} AND kind = ${target.kind} AND target_key = ${target.targetKey}`;
       return "updated" as const;
     }
-    const [count] = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM entity_follow WHERE user_id = ${userId}`;
+    const [count] = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM entity_follow WHERE user_id = ${userId} AND status = 'active'`;
     if ((count?.n ?? 0) >= limits.entityFollowLimit) return "limit_reached" as const;
     await db`
       INSERT INTO entity_follow (user_id, kind, target_key, label, frequency)
@@ -158,7 +171,7 @@ export async function followEntity(sql: Sql, userId: string, target: EntityTarge
       ON CONFLICT (user_id, kind, target_key) DO NOTHING`;
     return "followed" as const;
   });
-  if (outcome === "followed") await syncFollowedItemPriority(sql).catch(() => undefined);
+  if (outcome === "followed" || outcome === "updated") await syncFollowedItemPriority(sql).catch(() => undefined);
   return { status: outcome, state: await entityFollowState(sql, userId, target) } as EntityFollowResult;
 }
 
@@ -178,8 +191,9 @@ export async function updateEntityFollowById(sql: Sql, userId: string, followId:
   const plan = await userPlan(sql, userId);
   const [follow] = await sql<{ kind: EntityKind }[]>`SELECT kind FROM entity_follow WHERE id = ${followId} AND user_id = ${userId}`;
   if (!follow) return false;
+  if (isFanOutKind(follow.kind) && plan === "free") return false;
   const frequency = change.frequency === "asap" && !asapAllowedFor(plan, follow.kind) ? "daily" : change.frequency;
-  const rows = await sql`UPDATE entity_follow SET frequency = ${frequency}, updated_at = now() WHERE id = ${followId} AND user_id = ${userId} RETURNING id`;
+  const rows = await sql`UPDATE entity_follow SET frequency = ${frequency}, status = 'active', updated_at = now() WHERE id = ${followId} AND user_id = ${userId} RETURNING id`;
   return rows.length > 0;
 }
 
@@ -189,6 +203,7 @@ export interface EntityFollowSummary {
   targetKey: string;
   label: string;
   frequency: EntityFrequency;
+  status: "active" | "needs_upgrade";
   createdAt: string;
   lastSentAt: string | null;
   queued: number;
@@ -199,7 +214,7 @@ export interface EntityFollowSummary {
 /** Follows with their latest matches (only items the match job stored; nothing non-public). */
 export async function listEntityFollows(sql: Sql, userId: string): Promise<EntityFollowSummary[]> {
   const follows = await sql<Omit<EntityFollowSummary, "recent">[]>`
-    SELECT f.id, f.kind, f.target_key AS "targetKey", f.label, f.frequency, f.created_at::text AS "createdAt",
+    SELECT f.id, f.kind, f.target_key AS "targetKey", f.label, f.frequency, f.status, f.created_at::text AS "createdAt",
       f.last_sent_at::text AS "lastSentAt",
       (SELECT count(*)::int FROM entity_alert_item i WHERE i.follow_id = f.id AND i.sent_at IS NULL) AS queued,
       (SELECT count(*)::int FROM entity_alert_item i WHERE i.follow_id = f.id AND i.found_at > now() - interval '7 days') AS "matches7d"

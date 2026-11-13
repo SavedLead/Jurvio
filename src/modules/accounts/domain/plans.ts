@@ -56,8 +56,8 @@ export const PLANS: Readonly<Record<PlanId, PlanDefinition>> = {
   free: {
     id: "free", name: "Free", monthlyPriceUsd: 0, annualPriceUsd: null, emergencyTools: false, seats: 1, followLimit: 5, entityFollowLimit: 1, entityAsap: true, alertCadence: "instant",
     monitors: false, available: true,
-    tagline: "Follow a few cases and one judge, topic or party.",
-    features: ["Follow up to 5 cases", "Follow 1 judge, topic, party or emergency-docket feed", "Daily email digest of new docket activity", "Emergency docket: follow up to 5 applications; feed emails on weekdays", "All public case pages, free forever"],
+    tagline: "Follow a few cases. Judge, court, party, and topic alerts are paid.",
+    features: ["Follow up to 5 cases", "Emergency-docket feed follows stay on Free", "Email alerts every 10 minutes for cases you follow", "Judge, court, party, and topic follows are a paid feature", "All public case pages, free forever"],
   },
   plus: {
     id: "plus", name: "Plus", monthlyPriceUsd: 19, annualPriceUsd: 190, emergencyTools: false, seats: 1, followLimit: 50, entityFollowLimit: 10, entityAsap: true, alertCadence: "hourly",
