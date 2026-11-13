@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { publishedCountSeedComplete, readPlannerPublishedEstimate } from "./published-count-seed";
 import { publicCaseSearchReady } from "./public-case-search";
 import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
@@ -224,14 +225,7 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
 
   const conditions = [
     sql`legal_case.publication = 'published'`,
-    sql`COALESCE((
-      SELECT decision.displayable
-      FROM publication_decision decision
-      WHERE decision.object_type = 'legal_case'
-        AND decision.object_id = legal_case.id
-      ORDER BY decision.decided_at DESC, decision.id DESC
-      LIMIT 1
-    ), false)`,
+    sql`${sql.unsafe(latestPublicationColumnSql("displayable", "legal_case", "legal_case.id"))}`,
   ];
   if (queryPattern) {
     conditions.push(sql`(

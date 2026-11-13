@@ -593,5 +593,9 @@ export async function publishVerifiedOfficialScotusOpinions(
     }
   }
 
+  if (published > 0) {
+    const { refreshPublishedPages } = await import("@/lib/http/refresh-public-pages");
+    void refreshPublishedPages({ casePublicIds: publicRecords.map((record) => record.caseId) }).catch(() => undefined);
+  }
   return { selected: candidates.length, published, held, failed, publicRecords };
 }

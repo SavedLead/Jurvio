@@ -2,6 +2,7 @@ import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
 import { listAdministrationFeed } from "@/modules/scotus/application/scotus-activity-feed";
+import { PUBLIC_EDGE_CACHE_CONTROL } from "@/lib/http/edge-cache";
 import { ADMINISTRATION_FEED_NOTE, atomFeed } from "@/modules/scotus/domain/activity-feed";
 
 export const dynamic = "force-dynamic";
@@ -21,5 +22,5 @@ export async function GET() {
     subtitle: ADMINISTRATION_FEED_NOTE,
     updated: items[0]?.updated ?? new Date().toISOString(), items,
   });
-  return new Response(body, { headers: { "Content-Type": "application/atom+xml; charset=utf-8", "Cache-Control": "public, max-age=300" } });
+  return new Response(body, { headers: { "Content-Type": "application/atom+xml; charset=utf-8", "Cache-Control": PUBLIC_EDGE_CACHE_CONTROL } });
 }

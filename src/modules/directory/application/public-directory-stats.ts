@@ -344,6 +344,19 @@ export async function refreshPublicDirectoryStats(sql: Sql, options: RefreshOpti
     if (!isMissingTable(error)) throw error;
   }
   const result = { courts, judges: { ...judgeWalk, removed }, entities };
+  try {
+    await sql.unsafe(`SET statement_timeout = '20s'`);
+    await sql`SELECT refresh_opinion_search_facets()`;
+  } catch (error) {
+    log({ directoryStats: "search-refresh-skipped", reason: error instanceof Error ? error.message : "failed" });
+  } finally {
+    await sql.unsafe(`RESET statement_timeout`).catch(() => undefined);
+  }
+  try {
+    await sql.unsafe(`CALL backfill_opinion_caption_vector(2500, 4)`);
+  } catch (error) {
+    log({ directoryStats: "caption-backfill-skipped", reason: error instanceof Error ? error.message : "failed" });
+  }
   log({ directoryStats: "done", ...result });
   return result;
 }

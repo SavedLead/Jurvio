@@ -24,6 +24,7 @@ describe("edge cache and subscriber-only case records", () => {
   it("never shares the Pro emergency analytics page, even its anonymous teaser", () => {
     expect(publicEdgeCacheControl(request("/supreme-court/emergency/analytics"))).toBeNull();
     expect(publicEdgeCacheControl(request("/supreme-court/emergency/analytics", { search: "term=2025" }))).toBeNull();
+    expect(PUBLIC_EDGE_CACHE_CONTROL).toBe("public, s-maxage=3600, stale-while-revalidate=86400");
     expect(publicEdgeCacheControl(request("/supreme-court/emergency"))).toBe(PUBLIC_EDGE_CACHE_CONTROL);
     expect(publicEdgeCacheControl(request("/supreme-court/emergency/25A1"))).toBe(PUBLIC_EDGE_CACHE_CONTROL);
   });

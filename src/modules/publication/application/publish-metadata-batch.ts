@@ -228,5 +228,9 @@ export async function runAdaptiveMetadataPublish(
     if (slice.scanned === 0 && !slice.heldByReason.query_timeout) break;
   }
   stats.elapsedMs = Date.now() - started;
+  if (stats.published > 0) {
+    const { refreshPublishedPages } = await import("@/lib/http/refresh-public-pages");
+    void refreshPublishedPages().catch(() => undefined);
+  }
   return stats;
 }
