@@ -4,6 +4,7 @@ import { latestPublicationColumnSql } from "@/modules/publication/application/cu
 import { stripReporterRunningHeads } from "@/modules/cases/domain/reporter-text";
 import { captionTag, cleanCourtName, courtKindFromJurisdiction, type CourtKind } from "@/modules/cases/domain/record-answers";
 import { displayCaption } from "@/modules/cases/domain/case-title";
+import { redactPublicFields } from "@/modules/privacy/application/active-redactions";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import { readableOpinionExistsSql, tierReleaseIndexableSql } from "@/modules/cases/domain/readable-opinion";
 
@@ -77,6 +78,8 @@ export interface PublicCase {
   tierReleaseIndexable?: boolean;
   /** Sealed-related case (search-exclusion rule): displayable, but never indexed or listed in sitemaps. */
   searchExcluded?: boolean;
+  /** A name redaction changed text on this case. The page stays up and is not indexed. */
+  redacted?: boolean;
   /** Stored court.jurisdiction value, such as "Federal District". */
   courtJurisdiction?: string | null;
 }
@@ -133,7 +136,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
   if (!row) return null;
   const { courtJurisdiction, ...record } = row;
   const courtKind = courtKindFromJurisdiction(courtJurisdiction, record.courtName, record.courtCode);
-  return {
+  const built = {
     ...record,
     filedOn: dateOnOrBeforeToday(record.filedOn),
     decidedOn: dateOnOrBeforeToday(record.decidedOn),
@@ -145,4 +148,9 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
     // Holdings read from U.S. Reports PDFs can carry the page's running head ("260 RILEY v. BONDI Syllabus").
     exactHolding: record.exactHolding ? stripReporterRunningHeads(record.exactHolding) : record.exactHolding,
   };
+  const redacted = await redactPublicFields(sql, built, [
+    "caption", "judgeName", "statusExplanation", "backgroundSummary", "significanceSummary",
+    "questionPresented", "exactHolding", "exactDisposition",
+  ]);
+  return { ...redacted.record, redacted: redacted.changed };
 }

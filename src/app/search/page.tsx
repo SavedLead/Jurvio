@@ -3,6 +3,7 @@ import Link from "next/link";
 import { headers } from "next/headers";
 import { unstable_cache } from "next/cache";
 import { searchDb } from "@/db/client";
+import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { FACET_STATEMENT_TIMEOUT_MS, interpretSettledSearch, listOpinionSearchFacets, normalizeOpinionSearchFilters, QueryTimedOutError, searchPublicOpinions, settleSearchThenFacets } from "@/modules/search/application/search-public-opinions";
 import styles from "./search.module.css";
@@ -42,6 +43,7 @@ const loadCachedFacets = unstable_cache(
 
 export default async function SearchPage({ searchParams }:{searchParams:Promise<Params>}) {
   const raw=await searchParams; const filters=normalizeOpinionSearchFilters(raw);
+  const shownQuery=(await redactPublicText(searchDb(), filters.query)).text ?? filters.query;
   const active=filters.query.length>=2||Boolean(filters.court||filters.dateFrom||filters.dateTo||filters.precedentialStatus||filters.opinionType);
   const settled=await settleSearchThenFacets(active,()=>loadCachedSearch(filters),()=>loadCachedFacets());
   const {response,facets}=interpretSettledSearch(filters,settled.search,settled.facets);
@@ -52,7 +54,7 @@ export default async function SearchPage({ searchParams }:{searchParams:Promise<
   return <main className={styles.page}><div className={styles.inner}>
     <p className={styles.eyebrow}>Jurvio research</p><h1 className={styles.heading}>Search published opinions</h1><p className={styles.lede}>Search readable court text, then narrow the record by court, filing date, precedential status, or opinion type.</p>
     <form className={styles.searchForm} action="/search" role="search">
-      <div className={styles.queryRow}><input name="q" defaultValue={filters.query} aria-label="Keywords or case name" placeholder="Keywords, case name, citation, or legal issue"/><button>Search</button></div>
+      <div className={styles.queryRow}><input name="q" defaultValue={shownQuery} aria-label="Keywords or case name" placeholder="Keywords, case name, citation, or legal issue"/><button>Search</button></div>
       <div className={styles.filters}>
         <div className={styles.field}><label htmlFor="court">Court</label><select id="court" name="court" defaultValue={filters.court??""}><option value="">All courts</option>{facets.courts.map(x=><option key={x.value} value={x.value}>{x.label} ({x.count})</option>)}</select></div>
         <div className={styles.field}><label htmlFor="status">Precedential status</label><select id="status" name="status" defaultValue={filters.precedentialStatus??""}><option value="">Any status</option>{facets.precedentialStatuses.map(x=><option key={x.value} value={x.value}>{label(x.label)} ({x.count})</option>)}</select></div>

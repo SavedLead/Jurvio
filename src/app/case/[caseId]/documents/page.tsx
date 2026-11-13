@@ -39,7 +39,7 @@ export async function generateMetadata({ params }: DocumentsPageProps): Promise<
     title: [caption, "Documents", loaded.legalCase.docketNumber, loaded.legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified court documents currently available for ${caption}, docket ${loaded.legalCase.docketNumber}.`,
     alternates: { canonical: `/case/${loaded.caseId}/documents` },
-    robots: robotsFor(loaded.legalCase.hasReadableOpinion && !loaded.legalCase.searchExcluded),
+    robots: robotsFor(loaded.legalCase.hasReadableOpinion && !loaded.legalCase.searchExcluded, loaded.legalCase.redacted),
   };
 }
 

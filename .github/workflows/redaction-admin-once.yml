@@ -1,0 +1,71 @@
+name: Redaction admin (once)
+
+# Preview or apply name redactions on the ingestion host. Not the public web.
+# confirm=PREVIEW_REDACTION or APPLY_REDACTION. Subject names are inputs.
+# Do not put a requester email in the inputs or the logs.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "PREVIEW_REDACTION or APPLY_REDACTION"
+        required: true
+        type: string
+      names:
+        description: "Subject full names, separated by |"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redaction-admin
+  cancel-in-progress: false
+
+jobs:
+  redaction:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 30
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      NAMES: ${{ inputs.names }}
+    steps:
+      - name: Require confirm
+        run: |
+          case "$CONFIRM" in
+            PREVIEW_REDACTION|APPLY_REDACTION) ;;
+            *) echo "::error::confirm must be PREVIEW_REDACTION or APPLY_REDACTION"; exit 1 ;;
+          esac
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - name: Run on the ingestion host
+        run: |
+          set -euo pipefail
+          name_args=()
+          IFS='|' read -r -a subjects <<< "$NAMES"
+          for name in "${subjects[@]}"; do
+            name="$(printf '%s' "$name" | sed 's/^ *//;s/ *$//')"
+            [ -n "$name" ] || continue
+            name_args+=(--name "$name")
+          done
+          [ "${#name_args[@]}" -gt 0 ] || { echo "::error::at least one name is required"; exit 1; }
+          mode=preview
+          confirm_args=()
+          if [ "$CONFIRM" = "APPLY_REDACTION" ]; then
+            mode=apply
+            confirm_args=(--confirm APPLY_REDACTION --label "privacy request")
+          fi
+          ssh "$INGESTION_USER@$DB_HOST" "MODE=$(printf %q "$mode") CONFIRM_ARGS=$(printf %q "${confirm_args[*]}") NAME_ARGS=$(printf %q "${name_args[*]}") bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          image="$(docker inspect -f '{{.Config.Image}}' "$(docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)")"
+          test -n "$image"
+          # shellcheck disable=SC2086
+          docker run --rm --network host --env-file .env.production "$image" \
+            node jobs/redaction-admin.mjs "$MODE" $CONFIRM_ARGS $NAME_ARGS
+          REMOTE

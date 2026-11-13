@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import { ORDER_LINE_PATTERN } from "@/modules/cases/domain/docket-classification";
 import { latestPublicationColumnSql, type PublicationFlag } from "@/modules/publication/application/current-visibility";
 
@@ -158,7 +159,7 @@ export async function countPublicDocketEntries(sql: Sql, casePublicId: string): 
 }
 
 export async function listPublicParties(sql: Sql, casePublicId: string) {
-  return sql<PublicParty[]>`
+  const rows = await sql<PublicParty[]>`
     SELECT entity.public_id AS "publicId", entity.display_name AS "displayName",
       appearance.role, appearance.party_name_as_filed AS "nameAsFiled"
     FROM party_appearance appearance
@@ -174,6 +175,13 @@ export async function listPublicParties(sql: Sql, casePublicId: string) {
     WHERE ${sql.unsafe(latestPublicationColumnSql("displayable", "entity", "entity.id", true))}
     ORDER BY appearance.role, entity.normalized_name
   `;
+  const parties: PublicParty[] = [];
+  for (const party of rows) {
+    const name = await redactPublicText(sql, party.displayName);
+    const filed = await redactPublicText(sql, party.nameAsFiled);
+    parties.push({ ...party, displayName: name.text ?? party.displayName, nameAsFiled: filed.text ?? party.nameAsFiled });
+  }
+  return parties;
 }
 
 export async function listPublicDocuments(sql: Sql, casePublicId: string) {

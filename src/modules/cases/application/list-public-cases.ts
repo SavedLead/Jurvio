@@ -1,4 +1,5 @@
 import type postgres from "postgres";
+import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { publishedCountSeedComplete, readPlannerPublishedEstimate } from "./published-count-seed";
 import { publicCaseSearchReady } from "./public-case-search";
@@ -377,18 +378,24 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
   ]);
 
   const details = rows.length ? await listPublicCaseDetails(sql, rows.map((row) => row.id)) : new Map<string, PublicCaseDetailRow>();
-  const cases: PublicCaseListItem[] = rows.map(({ id, ...row }) => {
+  const cases: PublicCaseListItem[] = [];
+  for (const { id, ...row } of rows) {
     const detail = details.get(id);
-    return {
+    const caption = await redactPublicText(sql, row.caption);
+    const holding = await redactPublicText(sql, detail?.holding ?? null);
+    const author = await redactPublicText(sql, detail?.opinionAuthor ?? null);
+    const entry = await redactPublicText(sql, detail?.latestEntryDescription ?? null);
+    cases.push({
       ...row,
+      caption: caption.text ?? row.caption,
       latestEntryOn: detail?.latestEntryOn ?? null,
-      latestEntryDescription: detail?.latestEntryDescription ?? null,
-      opinionAuthor: detail?.opinionAuthor ?? null,
+      latestEntryDescription: entry.text,
+      opinionAuthor: author.text,
       perCuriam: detail?.perCuriam ?? false,
-      holding: detail?.holding ?? null,
+      holding: holding.text,
       authorJudges: detail?.authorJudges ?? [],
-    };
-  });
+    });
+  }
 
   const last = rows.at(-1);
   const nextBefore = recentKeyset && rows.length === pageSize && last

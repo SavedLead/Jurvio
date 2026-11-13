@@ -38,6 +38,7 @@ export async function listCaseSitemapRecords(sql: Sql, startId: string, endId: s
       FROM legal_case
       WHERE legal_case.publication = 'published'
         AND ${sql.unsafe(indexableCase)}
+        AND NOT EXISTS (SELECT 1 FROM redaction_hits hit WHERE hit.case_id = legal_case.id)
         AND legal_case.public_id >= ${startId}
         AND (${endId}::text IS NULL OR legal_case.public_id < ${endId})
     ) eligible
@@ -66,6 +67,7 @@ export async function listOpinionSitemapRecords(sql: Sql, startId: string, endId
     WHERE document.publication = 'published'
       AND ${sql.unsafe(indexableCase)}
       AND ${sql.unsafe(indexableDocument)}
+      AND NOT EXISTS (SELECT 1 FROM redaction_hits hit WHERE hit.case_id = legal_case.id OR hit.document_id = document.id)
       AND EXISTS (SELECT 1 FROM document_content content WHERE content.document_id = document.id)
       AND document.public_id >= ${startId}
       AND (${endId}::text IS NULL OR document.public_id < ${endId})

@@ -126,7 +126,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
     description,
     alternates: { canonical: `/case/${loaded.caseId}` },
     openGraph: { title, description, type: "article" },
-    robots: robotsFor(casePageIndexable(loaded.legalCase)),
+    robots: robotsFor(casePageIndexable(loaded.legalCase), loaded.legalCase.redacted),
   };
 }
 

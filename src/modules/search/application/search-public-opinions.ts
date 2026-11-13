@@ -1,3 +1,4 @@
+import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 import type postgres from "postgres";
 
@@ -400,7 +401,7 @@ export async function searchPublicOpinions(
         : hasQuery
           ? await keywordHits(tx, filters, courtId, pageSize, offset)
           : await filterHits(tx, filters, courtId, pageSize, offset);
-      const results = await hydrateHits(tx, hits.rows, hasQuery ? excerptAnchor(filters.query) : "");
+      const results = await redactSearchResults(tx, await hydrateHits(tx, hits.rows, hasQuery ? excerptAnchor(filters.query) : ""));
       return {
         results,
         total: hits.total,
@@ -462,6 +463,22 @@ async function captionHits(
     if (isMissingSearchColumn(error)) return null;
     throw error;
   }
+}
+
+async function redactSearchResults(sql: Sql, results: OpinionSearchResult[]): Promise<OpinionSearchResult[]> {
+  const next: OpinionSearchResult[] = [];
+  for (const result of results) {
+    const caption = await redactPublicText(sql, result.caseCaption);
+    const title = await redactPublicText(sql, result.title);
+    const excerpt = await redactPublicText(sql, result.excerpt);
+    next.push({
+      ...result,
+      caseCaption: caption.text ?? result.caseCaption,
+      title: title.text ?? result.title,
+      excerpt: excerpt.text ?? result.excerpt,
+    });
+  }
+  return next;
 }
 
 async function keywordHits(
