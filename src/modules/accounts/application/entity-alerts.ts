@@ -109,8 +109,17 @@ export function entityMatchCtes(options: EntityMatchSqlOptions): string {
     ? topics.map((topic) => `(f.target_key = '${topic.slug}' AND ${topicMatchSql(topic, "c.nature_of_suit_code")})`).join("\n          OR ")
     : "false";
   const restricted = RESTRICTED_TEXT.replaceAll("'", "''");
-  return `match_follow AS MATERIALIZED (
+  return `    match_follow AS MATERIALIZED (
       SELECT id, kind, target_key, created_at FROM ${options.follows}
+      WHERE id NOT IN (
+        SELECT paused.id FROM entity_follow paused
+        LEFT JOIN account_subscription subscription
+          ON subscription.user_id = paused.user_id
+         AND subscription.plan IN ('plus', 'pro', 'team')
+         AND subscription.status IN ('active', 'trialing', 'past_due')
+        WHERE paused.kind IN ('judge', 'court', 'party', 'topic')
+          AND (paused.status = 'needs_upgrade' OR subscription.user_id IS NULL)
+      )
     ),
     match_event AS MATERIALIZED (
       SELECT 'entry:' || e.id AS item_key, e.case_id, 'docket_entry' AS event_kind, e.filed_on AS occurred_on,
@@ -434,6 +443,14 @@ export async function sendEntityAlerts(sql: Sql, deps: {
     FROM entity_follow f JOIN app_user u ON u.id = f.user_id
     LEFT JOIN account_subscription s ON s.user_id = u.id
     WHERE u.alerts_unsubscribed_at IS NULL AND u.email_verified_at IS NOT NULL
+      AND f.status = 'active'
+      AND (
+        f.kind NOT IN ('judge', 'court', 'party', 'topic')
+        OR (
+          s.plan IN ('plus', 'pro', 'team')
+          AND s.status IN ('active', 'trialing', 'past_due')
+        )
+      )
       AND EXISTS (SELECT 1 FROM entity_alert_item i WHERE i.follow_id = f.id AND i.sent_at IS NULL)
     ORDER BY f.user_id, f.created_at
     LIMIT 20000`;

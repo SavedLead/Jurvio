@@ -22,6 +22,14 @@ export const GROUP_CASE_LIMIT = 25;
 /** CourtListener calls per run: one docket, one entry page, one party page. */
 export const REFRESH_BATCH = 6;
 
+/** Fan-out rows count only while a paid plan is entitled. Case and emergency follows do not use this. */
+const PAID_FANOUT = `EXISTS (
+  SELECT 1 FROM account_subscription s
+  WHERE s.user_id = f.user_id
+    AND s.plan IN ('plus', 'pro', 'team')
+    AND s.status IN ('active', 'trialing', 'past_due')
+)`;
+
 const ELIGIBLE = `(
   c.publication = 'published'
   AND ${latestPublicationColumnSql("displayable", "legal_case", "c.id")}
@@ -77,7 +85,7 @@ export async function syncFollowedItemPriority(sql: Sql): Promise<{ cases: numbe
         ORDER BY c.updated_at DESC
         LIMIT ${GROUP_CASE_LIMIT}
       ) picked ON true
-      WHERE f.kind = 'judge'
+      WHERE f.kind = 'judge' AND f.status = 'active' AND ${db.unsafe(PAID_FANOUT)}
     `;
     await db`
       INSERT INTO followed_wanted (case_id, reason)
@@ -90,7 +98,7 @@ export async function syncFollowedItemPriority(sql: Sql): Promise<{ cases: numbe
         ORDER BY c.updated_at DESC
         LIMIT ${GROUP_CASE_LIMIT}
       ) picked ON true
-      WHERE f.kind = 'court'
+      WHERE f.kind = 'court' AND f.status = 'active' AND ${db.unsafe(PAID_FANOUT)}
     `;
     await db`
       INSERT INTO followed_wanted (case_id, reason)
@@ -104,7 +112,7 @@ export async function syncFollowedItemPriority(sql: Sql): Promise<{ cases: numbe
         ORDER BY c.updated_at DESC
         LIMIT ${GROUP_CASE_LIMIT}
       ) picked ON true
-      WHERE f.kind = 'party'
+      WHERE f.kind = 'party' AND f.status = 'active' AND ${db.unsafe(PAID_FANOUT)}
     `;
     await db`
       INSERT INTO followed_wanted (case_id, reason)
@@ -121,6 +129,7 @@ export async function syncFollowedItemPriority(sql: Sql): Promise<{ cases: numbe
         FROM entity_follow f
         JOIN legal_case c ON ${db.unsafe(topicMatchSql(topic, "c.nature_of_suit_code"))}
         WHERE f.kind = 'topic' AND f.target_key = ${topic.slug}
+          AND f.status = 'active' AND ${db.unsafe(PAID_FANOUT)}
           AND ${db.unsafe(ELIGIBLE)}
         ORDER BY c.updated_at DESC
         LIMIT ${GROUP_CASE_LIMIT}

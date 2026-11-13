@@ -11,6 +11,8 @@ interface EntityApiState {
   signedIn: boolean;
   following?: boolean;
   frequency?: EntityFrequency | null;
+  needsUpgrade?: boolean;
+  paidRequired?: boolean;
   entityCount?: number;
   entityLimit?: number;
   asapAllowed?: boolean;
@@ -96,7 +98,7 @@ export function FollowEntityButton({ kind, target, name, compact = false }: {
         aria-label={`Follow ${name}: sign in to get email alerts`}>
         {compact ? "Follow" : `Follow ${kindWord}`}
       </Link>
-      {compact ? null : <small className="entityFollowNote">Sign in to get email alerts. Free includes one judge, topic, party or emergency docket feed.</small>}
+      {compact ? null : <small className="entityFollowNote">Sign in to follow. A single case is free. A judge, court, party, or topic is a paid feature.</small>}
     </span>;
   }
 
@@ -121,6 +123,11 @@ export function FollowEntityButton({ kind, target, name, compact = false }: {
       </button>
       {!compact || state.following ? frequencyPicker : null}
     </span>
+    {state.paidRequired || state.needsUpgrade || state.error === "paid_required" ? <span className="entityFollowUpgrade" role="status">
+      Following a {kindWord} is a paid feature (Plus, Pro, or Team). Checkout is not open yet.
+      {state.needsUpgrade ? " Your saved follow stays on the account and stays quiet until then." : ""}
+      {" "}<Link href={"/pricing" as Route}>See plans</Link>
+    </span> : null}
     {state.error === "limit_reached" ? <span className="entityFollowUpgrade" role="alert">
       Your plan includes {formatLimit(state.entityLimit ?? 1)} judge, topic, party or emergency feed {state.entityLimit === 1 ? "follow" : "follows"} ({state.entityCount} used).
       {state.upgrade ? <> {state.upgrade.name} raises this to {formatLimit(state.upgrade.entityFollowLimit)}: upgrade coming soon.</> : null}
