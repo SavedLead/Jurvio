@@ -173,6 +173,13 @@ export function entityMatchCtes(options: EntityMatchSqlOptions): string {
       JOIN scotus_application a ON a.case_id = ev.case_id
       WHERE f.kind = 'emergency' AND ev.event_kind IN ('docket_entry', 'new_case')
         AND ${emergencyFeedConditionSql("a")}
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN legal_case c ON c.id = ev.case_id
+      JOIN court ON court.id = c.court_id AND court.public_id = f.target_key
+      WHERE f.kind = 'court'
     ),
     kept AS (
       SELECT DISTINCT ON (cand.follow_id, cand.item_key)
@@ -219,7 +226,7 @@ export async function matchEntityAlerts(sql: Sql, options: {
   dryRun?: boolean;
   followIds?: string[];
 } = {}): Promise<EntityMatchSummary> {
-  const byKind: Record<EntityKind, number> = { judge: 0, topic: 0, party: 0, emergency: 0 };
+  const byKind: Record<EntityKind, number> = { judge: 0, topic: 0, party: 0, emergency: 0, court: 0 };
   return sql.begin(async (tx) => {
     const db = tx as unknown as Sql;
     if (options.followIds && !options.followIds.every((id) => /^[0-9a-f-]{36}$/.test(id))) throw new Error("invalid follow id");

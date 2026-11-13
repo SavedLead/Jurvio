@@ -4,7 +4,7 @@ import { CADENCE_INTERVAL_MS, PLANS, UNLIMITED, effectivePlan, formatAnnualPrice
 describe("plans config", () => {
   it("has the decided prices, follow limits and cadences", () => {
     expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => [plan.monthlyPriceUsd, plan.followLimit, plan.alertCadence]))
-      .toEqual([[0, 5, "daily"], [19, 50, "hourly"], [59, UNLIMITED, "instant"], [249, UNLIMITED, "instant"]]);
+      .toEqual([[0, 5, "instant"], [19, 50, "hourly"], [59, UNLIMITED, "instant"], [249, UNLIMITED, "instant"]]);
     expect([PLANS.free, PLANS.plus, PLANS.pro, PLANS.team].map((plan) => plan.entityFollowLimit)).toEqual([1, 10, UNLIMITED, UNLIMITED]);
     expect(formatLimit(PLANS.pro.followLimit)).toBe("unlimited");
     expect(formatLimit(PLANS.free.followLimit)).toBe("5");

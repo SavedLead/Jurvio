@@ -25,6 +25,7 @@ function targetHref(kind: string, targetKey: string): Route | null {
   if (kind === "judge") return `/judges/${targetKey}` as Route;
   if (kind === "topic") return `/topics/${targetKey}` as Route;
   if (kind === "emergency") return "/supreme-court/emergency" as Route;
+  if (kind === "court") return `/courts/${targetKey}` as Route;
   return null;
 }
 

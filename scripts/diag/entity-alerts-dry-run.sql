@@ -109,6 +109,13 @@ WITH match_follow AS MATERIALIZED (
         OR (f.target_key = 'justice:neil-m-gorsuch' AND a.submitted_justice_slug = 'neil-m-gorsuch')
         OR (f.target_key = 'justice:clarence-thomas' AND a.submitted_justice_slug = 'clarence-thomas')
       ))
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN legal_case c ON c.id = ev.case_id
+      JOIN court ON court.id = c.court_id AND court.public_id = f.target_key
+      WHERE f.kind = 'court'
     ),
     kept AS (
       SELECT DISTINCT ON (cand.follow_id, cand.item_key)
@@ -285,6 +292,13 @@ WITH match_follow AS MATERIALIZED (
         OR (f.target_key = 'justice:neil-m-gorsuch' AND a.submitted_justice_slug = 'neil-m-gorsuch')
         OR (f.target_key = 'justice:clarence-thomas' AND a.submitted_justice_slug = 'clarence-thomas')
       ))
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN legal_case c ON c.id = ev.case_id
+      JOIN court ON court.id = c.court_id AND court.public_id = f.target_key
+      WHERE f.kind = 'court'
     ),
     kept AS (
       SELECT DISTINCT ON (cand.follow_id, cand.item_key)

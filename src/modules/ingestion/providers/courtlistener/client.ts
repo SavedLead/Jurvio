@@ -409,6 +409,7 @@ export async function fetchDocketParties(
 export async function fetchDocketEntries(
   docketId: number,
   maximumPages = 500,
+  orderBy: "date_filed,id" | "-date_filed,-id" = "date_filed,id",
 ): Promise<RetrievedRecord<CourtListenerDocketEntry>[]> {
   const records: RetrievedRecord<CourtListenerDocketEntry>[] = [];
   let next: string | null = null;
@@ -420,7 +421,7 @@ export async function fetchDocketEntries(
 
     if (!next) {
       url.searchParams.set("docket", String(docketId));
-      url.searchParams.set("order_by", "date_filed,id");
+      url.searchParams.set("order_by", orderBy);
     }
 
     const { response, body } = await retrieve(url);

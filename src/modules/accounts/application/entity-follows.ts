@@ -3,6 +3,7 @@ import { latestPublicationColumnSql } from "@/modules/publication/application/cu
 import { nextPlanUp, planLimits, type PlanId } from "../domain/plans";
 import { topicBySlug } from "../domain/topics";
 import { cleanPartyName, isFollowablePartyName, partyKey } from "../domain/party-names";
+import { syncFollowedItemPriority } from "@/modules/ingestion/application/followed-item-priority";
 import { alertEligibleSql, followEligibleSql } from "./follows";
 import type { EntityFrequency, EntityKind } from "../domain/entity-follow";
 import { isPublicId } from "@/lib/ids/public-id";
@@ -35,6 +36,13 @@ export async function resolveEntityTarget(sql: Sql, kind: EntityKind, raw: unkno
   if (kind === "emergency") {
     const feed = emergencyFeedBySlug(value);
     return feed ? { kind, targetKey: feed.slug, label: feed.label } : null;
+  }
+  if (kind === "court") {
+    if (!isPublicId("court", value)) return null;
+    const [court] = await sql<{ publicId: string; name: string }[]>`
+      SELECT court.public_id AS "publicId", court.name FROM court
+      WHERE court.public_id = ${value} AND court.verification = 'verified'`;
+    return court ? { kind, targetKey: court.publicId, label: court.name } : null;
   }
   if (kind === "topic") {
     const topic = topicBySlug(value);
@@ -95,8 +103,7 @@ export interface EntityFollowState {
  * weekday daily email only (Plus is hourly, Pro every 10 minutes, applied at
  * send time from the plan's alert cadence).
  */
-export function asapAllowedFor(plan: PlanId, kind: EntityKind): boolean {
-  if (kind === "emergency" && plan === "free") return false;
+export function asapAllowedFor(plan: PlanId, _kind: EntityKind): boolean {
   return planLimits(plan).entityAsap;
 }
 
@@ -151,6 +158,7 @@ export async function followEntity(sql: Sql, userId: string, target: EntityTarge
       ON CONFLICT (user_id, kind, target_key) DO NOTHING`;
     return "followed" as const;
   });
+  if (outcome === "followed") await syncFollowedItemPriority(sql).catch(() => undefined);
   return { status: outcome, state: await entityFollowState(sql, userId, target) } as EntityFollowResult;
 }
 

@@ -9,9 +9,13 @@ type Sql = ReturnType<typeof postgres>;
 export async function ingestCourtListenerDocketEntries(
   sql: Sql,
   artifactStore: ArtifactStore,
-  input: { providerId: string; caseId: string; docketId: number },
+  input: { providerId: string; caseId: string; docketId: number; maximumPages?: number; newestFirst?: boolean },
 ): Promise<{ accepted: number; rejected: number; documents: number }> {
-  const retrievedEntries = await fetchDocketEntries(input.docketId);
+  const retrievedEntries = await fetchDocketEntries(
+    input.docketId,
+    input.maximumPages ?? 500,
+    input.newestFirst ? "-date_filed,-id" : "date_filed,id",
+  );
   let accepted = 0;
   let rejected = 0;
   let documents = 0;

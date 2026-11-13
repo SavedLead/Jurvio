@@ -1,4 +1,5 @@
 import type { Sql } from "postgres";
+import { queueFollowedCase } from "@/modules/ingestion/application/followed-item-priority";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { nextPlanUp, planLimits, type PlanId } from "../domain/plans";
 import { userPlan } from "./account";
@@ -182,6 +183,7 @@ export async function followCase(
     await tx`
       INSERT INTO case_follow (user_id, case_id, activity, citations)
       VALUES (${userId}, ${legalCase.id}, ${kinds.activity}, ${kinds.citations}) ON CONFLICT DO NOTHING`;
+    await queueFollowedCase(tx as unknown as Sql, legalCase.id);
     return "followed" as const;
   });
   if (outcome === "not_eligible") return { status: outcome };

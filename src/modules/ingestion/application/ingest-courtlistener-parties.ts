@@ -9,9 +9,9 @@ type Sql = ReturnType<typeof postgres>;
 export async function ingestCourtListenerParties(
   sql: Sql,
   artifactStore: ArtifactStore,
-  input: { providerId: string; caseId: string; docketId: number },
+  input: { providerId: string; caseId: string; docketId: number; maximumPages?: number },
 ): Promise<{ accepted: number; rejected: number }> {
-  const retrievedParties = await fetchDocketParties(input.docketId);
+  const retrievedParties = await fetchDocketParties(input.docketId, input.maximumPages ?? 100);
   let accepted = 0;
   let rejected = 0;
 
