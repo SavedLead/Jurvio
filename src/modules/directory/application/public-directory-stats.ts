@@ -344,6 +344,28 @@ export async function refreshPublicDirectoryStats(sql: Sql, options: RefreshOpti
     if (!isMissingTable(error)) throw error;
   }
   const result = { courts, judges: { ...judgeWalk, removed }, entities };
+  try {
+    await sql.unsafe(`SET statement_timeout = '20s'`);
+    await sql`SELECT refresh_opinion_search_facets()`;
+  } catch (error) {
+    log({ directoryStats: "search-refresh-skipped", reason: error instanceof Error ? error.message : "failed" });
+  } finally {
+    await sql.unsafe(`RESET statement_timeout`).catch(() => undefined);
+  }
+  try {
+    await sql`
+      WITH todo AS (
+        SELECT document_id FROM opinion_search_meta WHERE caption_vector IS NULL LIMIT 2500
+      )
+      UPDATE opinion_search_meta meta
+      SET caption_vector = to_tsvector('english', coalesce(projection.case_caption, '') || ' ' || coalesce(projection.title, ''))
+      FROM todo
+      JOIN opinion_search_projection projection ON projection.document_id = todo.document_id
+      WHERE meta.document_id = todo.document_id
+    `;
+  } catch (error) {
+    log({ directoryStats: "caption-backfill-skipped", reason: error instanceof Error ? error.message : "failed" });
+  }
   log({ directoryStats: "done", ...result });
   return result;
 }

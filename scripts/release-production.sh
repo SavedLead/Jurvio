@@ -9,6 +9,10 @@ PREVIOUS_IMAGE=""
 # nightly backup (41065461876), so the old 1800s budget failed every release
 # with a pending migration (41050301671). 3600s leaves headroom for growth.
 BACKUP_TIMEOUT_SECONDS=${BACKUP_TIMEOUT_SECONDS:-3600}
+# A migration deploy can reuse a dump the nightly already finished. Six hours
+# is inside the nightly cadence, so the file is still a recovery point for
+# this release, and the off-site upload below still runs.
+REUSE_BACKUP_MAX_AGE_SECONDS=${REUSE_BACKUP_MAX_AGE_SECONDS:-21600}
 PULL_TIMEOUT_SECONDS=${PULL_TIMEOUT_SECONDS:-900}
 # 0124 builds a concurrent index and backfills search visibility on the live
 # opinion corpus. 300s can kill that mid-build and leave an INVALID index.
@@ -95,16 +99,40 @@ elif docker compose -f "$COMPOSE" ps -q postgres | grep -q .; then
   # Capture the dump path (last line of backup-production.sh). Write to a temp
   # file first so a failed dump cannot be masked by tee/tail exit status
   # (this script is #!/bin/sh — often dash — with no pipefail).
-  BACKUP_LOG=$(mktemp)
-  if ! timeout --signal=TERM --kill-after=30s "${BACKUP_TIMEOUT_SECONDS}s" \
-      "$DEPLOY_DIR/scripts/backup-production.sh" >"$BACKUP_LOG"; then
-    cat "$BACKUP_LOG" >&2 || true
-    rm -f "$BACKUP_LOG"
-    fail "Database backup did not complete within ${BACKUP_TIMEOUT_SECONDS}s"
+  BACKUP_PATH=""
+  now=$(date +%s)
+  newest=$(find "$DEPLOY_DIR/backups" -maxdepth 1 -type f -name 'jurvio-????????T??????Z.sql.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 || true)
+  if [ -n "$newest" ]; then
+    newest_stamp=${newest%% *}
+    newest_path=${newest#* }
+    newest_age=$(awk -v now="$now" -v then="$newest_stamp" 'BEGIN { printf "%d", now - then }')
+    if [ "$newest_age" -ge 0 ] && [ "$newest_age" -le "$REUSE_BACKUP_MAX_AGE_SECONDS" ] && gzip -t "$newest_path"; then
+      BACKUP_PATH=$newest_path
+      printf 'Reusing verified local dump completed %ss ago: %s\n' "$newest_age" "$BACKUP_PATH"
+    fi
   fi
-  cat "$BACKUP_LOG" >&2 || true
-  BACKUP_PATH=$(tail -n 1 "$BACKUP_LOG")
-  rm -f "$BACKUP_LOG"
+  if [ -z "$BACKUP_PATH" ]; then
+    if find "$DEPLOY_DIR/backups" -maxdepth 1 -type f -name 'jurvio-*.sql.gz.partial' -mmin -120 | grep -q .; then
+      fail "Another database backup is still writing. Refusing to start a second pg_dump."
+    fi
+    BACKUP_LOG=$(mktemp)
+    set +e
+    timeout --signal=TERM --kill-after=30s "${BACKUP_TIMEOUT_SECONDS}s" \
+      "$DEPLOY_DIR/scripts/backup-production.sh" >"$BACKUP_LOG"
+    backup_status=$?
+    set -e
+    if [ "$backup_status" -ne 0 ]; then
+      cat "$BACKUP_LOG" >&2 || true
+      rm -f "$BACKUP_LOG"
+      if [ "$backup_status" -eq 124 ]; then
+        fail "Database backup did not complete within ${BACKUP_TIMEOUT_SECONDS}s"
+      fi
+      fail "Database backup failed with exit ${backup_status} before the ${BACKUP_TIMEOUT_SECONDS}s deadline"
+    fi
+    cat "$BACKUP_LOG" >&2 || true
+    BACKUP_PATH=$(tail -n 1 "$BACKUP_LOG")
+    rm -f "$BACKUP_LOG"
+  fi
   case "$BACKUP_PATH" in
     /opt/jurvio/backups/jurvio-????????T??????Z.sql.gz) ;;
     *) fail "Database backup reported unexpected path: $BACKUP_PATH" ;;

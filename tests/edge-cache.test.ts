@@ -44,6 +44,8 @@ describe("edge cache policy for anonymous public pages", () => {
     "/sitemaps/cases/40",
     "/sitemaps/static.xml",
     "/pricing",
+    "/feeds/scotus",
+    "/feeds/scotus/emergency",
   ])("marks %s as publicly cacheable", (path) => {
     expect(cacheControl(path)).toBe(PUBLIC_EDGE_CACHE_CONTROL);
   });

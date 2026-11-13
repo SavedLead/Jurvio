@@ -120,6 +120,7 @@ describe.skipIf(!databaseUrl)("public opinion search", () => {
           "Louisiana v. Callais",
         ]);
 
+        await tx`SELECT refresh_opinion_search_facets()`.catch(() => undefined);
         const facets = await listOpinionSearchFacets(sql);
         expect(facets.timedOut).toBeFalsy();
         expect(facets.courts.find((court) => court.value === "jc-searchfix")).toMatchObject({ count: 2 });

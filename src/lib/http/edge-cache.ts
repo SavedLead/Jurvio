@@ -23,7 +23,10 @@
 // The Cloudflare Cache Rule mirrors the cookie and path exclusions so the two
 // layers agree; the origin header remains the source of truth for TTLs.
 
-export const PUBLIC_EDGE_CACHE_CONTROL = "public, s-maxage=300, stale-while-revalidate=600";
+// One hour fresh, then a day of stale-while-revalidate. Cloudflare can answer
+// from the edge immediately and refresh in the background, instead of making
+// the visitor wait on the origin once the previous 15-minute window expires.
+export const PUBLIC_EDGE_CACHE_CONTROL = "public, s-maxage=3600, stale-while-revalidate=86400";
 
 // Customer sessions (jurvio_session) are listed too: subscriber-only case
 // records render their full content for paid customers, so no response to a
@@ -88,6 +91,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/sitemaps",
   // Topic pages: same HTML for everyone; the Follow button loads its state in the browser.
   "/topics",
+  "/feeds",
 ] as const;
 
 // /cases filters that carry visitor-typed free text. Kept live (never cached).

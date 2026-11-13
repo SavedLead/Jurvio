@@ -45,6 +45,10 @@ const schema = z.object({
   STRIPE_PRICE_PLUS: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
   STRIPE_PRICE_TEAM: z.string().optional(),
+  // Optional Cloudflare purge. When both are set, a publish drops the edge
+  // copy of the pages it changed. Pre-warming still runs without them.
+  CLOUDFLARE_API_TOKEN: z.string().optional(),
+  CLOUDFLARE_ZONE_ID: z.string().optional(),
 });
 
 let cached: z.infer<typeof schema> | undefined;

@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { readableOpinionExistsSql } from "@/modules/cases/domain/readable-opinion";
+import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
 
 type Sql = ReturnType<typeof postgres>;
@@ -37,14 +38,7 @@ export async function listRecentlyUpdatedPublicCases(
       SELECT legal_case.id
       FROM legal_case
       WHERE legal_case.publication = 'published'
-        AND COALESCE((
-          SELECT decision.displayable
-          FROM publication_decision decision
-          WHERE decision.object_type = 'legal_case'
-            AND decision.object_id = legal_case.id
-          ORDER BY decision.decided_at DESC, decision.id DESC
-          LIMIT 1
-        ), false)
+        AND ${sql.unsafe(latestPublicationColumnSql("displayable", "legal_case", "legal_case.id"))}
         AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
       ORDER BY legal_case.updated_at DESC
       LIMIT ${RECENT_CANDIDATE_POOL}

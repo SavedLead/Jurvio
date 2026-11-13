@@ -323,19 +323,23 @@ async function hydrateHits(sql: Sql, hits: SearchHit[], anchor: string): Promise
       projection.precedential_status AS "precedentialStatus",
       projection.opinion_type AS "opinionType",
       projection.citation_count AS "citationCount",
-      regexp_replace(btrim(
-        CASE
-          WHEN located.anchor_at > 140 THEN '… ' || substring(projection.body from located.anchor_at - 140 for 340)
-          WHEN located.anchor_at > 0 THEN substring(projection.body from 1 for 340)
-          ELSE left(projection.body, 300)
-        END
-      ), '[[:space:]]+', ' ', 'g') AS excerpt
+      CASE
+        WHEN ${anchor} <> '' AND strpos(lower(coalesce(projection.case_caption, '')), lower(${anchor})) > 0
+          THEN left(projection.case_caption, 300)
+        ELSE regexp_replace(btrim(
+          CASE
+            WHEN located.anchor_at > 140 THEN '… ' || substring(projection.body from located.anchor_at - 140 for 340)
+            WHEN located.anchor_at > 0 THEN substring(projection.body from 1 for 340)
+            ELSE left(projection.body, 300)
+          END
+        ), '[[:space:]]+', ' ', 'g')
+      END AS excerpt
     FROM opinion_search_projection projection
     JOIN document ON document.id = projection.document_id
     JOIN legal_case ON legal_case.id = projection.case_id
     CROSS JOIN LATERAL (
       SELECT CASE
-        WHEN ${anchor} = '' THEN 0
+        WHEN ${anchor} = '' OR strpos(lower(coalesce(projection.case_caption, '')), lower(${anchor})) > 0 THEN 0
         ELSE strpos(lower(substring(projection.body from 1 for ${OPINION_SEARCH_EXCERPT_SCAN_CHARS})), lower(${anchor}))
       END AS anchor_at
     ) located
@@ -386,9 +390,16 @@ export async function searchPublicOpinions(
         await tx`SELECT set_config('gin_fuzzy_search_limit', ${String(OPINION_SEARCH_GIN_FUZZY_LIMIT)}, true)`;
       }
 
-      const hits: { rows: SearchHit[]; total: number; countTimedOut?: boolean; totalCapped?: boolean } = hasQuery
-        ? await keywordHits(tx, filters, courtId, pageSize, offset)
-        : await filterHits(tx, filters, courtId, pageSize, offset);
+      const caption = hasQuery ? await captionHits(tx, filters, courtId, pageSize, offset) : null;
+      // A full page of caption matches is the same first page the body rank
+      // would return (caption weight is what relevance sorts on). Skip the
+      // body scan in that case. A short caption list still searches bodies.
+      const captionFillsPage = filters.sort === "relevance" && Boolean(caption && (caption.rows.length >= pageSize || caption.totalCapped));
+      const hits: { rows: SearchHit[]; total: number; countTimedOut?: boolean; totalCapped?: boolean } = captionFillsPage && caption
+        ? caption
+        : hasQuery
+          ? await keywordHits(tx, filters, courtId, pageSize, offset)
+          : await filterHits(tx, filters, courtId, pageSize, offset);
       const results = await hydrateHits(tx, hits.rows, hasQuery ? excerptAnchor(filters.query) : "");
       return {
         results,
@@ -402,6 +413,53 @@ export async function searchPublicOpinions(
   } catch (error) {
     const degraded = responseForSearchError(filters, error);
     if (degraded) return degraded;
+    throw error;
+  }
+}
+
+function isMissingSearchColumn(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  return code === "42703" || code === "42P01";
+}
+
+/**
+ * Caption and title live on the narrow meta row. A common name such as
+ * "smith" answers from this index and does not open opinion bodies. Body
+ * search runs only when the caption index does not already fill the page.
+ */
+async function captionHits(
+  sql: Sql,
+  filters: OpinionSearchFilters,
+  courtId: string | null,
+  pageSize: number,
+  offset: number,
+): Promise<{ rows: SearchHit[]; total: number; totalCapped?: boolean } | null> {
+  try {
+    const hits = await sql<SearchHit[]>`
+      WITH matched AS MATERIALIZED (
+        SELECT
+          meta.document_id,
+          ts_rank_cd(meta.caption_vector, websearch_to_tsquery('english', ${filters.query})) AS caption_rank
+        FROM opinion_search_meta meta
+        WHERE meta.caption_vector @@ websearch_to_tsquery('english', ${filters.query})
+          AND ${metaFilters(sql, filters, courtId)}
+        ORDER BY caption_rank DESC, meta.citation_count DESC, meta.date_filed DESC NULLS LAST, meta.document_id
+        LIMIT ${OPINION_SEARCH_CANDIDATE_CAP}
+      )
+      SELECT matched.document_id AS "documentId", (count(*) OVER ())::int AS total
+      FROM matched
+      ORDER BY matched.caption_rank DESC, matched.document_id
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
+    if (hits.length === 0 && offset > 0) return null;
+    const total = hits[0]?.total ?? 0;
+    return {
+      rows: hits,
+      total,
+      totalCapped: total >= OPINION_SEARCH_CANDIDATE_CAP,
+    };
+  } catch (error) {
+    if (isMissingSearchColumn(error)) return null;
     throw error;
   }
 }
@@ -502,6 +560,29 @@ async function filterHits(
   return { rows, total: count?.value ?? 0 };
 }
 
+async function readStoredFacets(sql: Sql): Promise<OpinionSearchFacets | null> {
+  try {
+    const courts = await sql<OpinionSearchFacets["courts"]>`
+      SELECT value, label, count FROM opinion_search_facet
+      WHERE kind = 'court'
+      ORDER BY count DESC, label
+      LIMIT 100`;
+    if (courts.length === 0) return null;
+    const statuses = await sql<OpinionSearchFacets["precedentialStatuses"]>`
+      SELECT value, label, count FROM opinion_search_facet
+      WHERE kind = 'status'
+      ORDER BY count DESC, value`;
+    const types = await sql<OpinionSearchFacets["opinionTypes"]>`
+      SELECT value, label, count FROM opinion_search_facet
+      WHERE kind = 'type'
+      ORDER BY count DESC, value`;
+    return { courts, precedentialStatuses: statuses, opinionTypes: types };
+  } catch (error) {
+    if (isMissingSearchColumn(error)) return null;
+    throw error;
+  }
+}
+
 export async function listOpinionSearchFacets(
   sql: Sql,
   options?: { statementTimeoutMs?: number },
@@ -509,6 +590,8 @@ export async function listOpinionSearchFacets(
   const timeoutMs = options?.statementTimeoutMs ?? OPINION_SEARCH_STATEMENT_TIMEOUT_MS;
   try {
     return await withStatementTimeout(sql, timeoutMs, async (tx) => {
+      const stored = await readStoredFacets(tx);
+      if (stored) return stored;
       // One connection, in order. These scans read the narrow meta table only.
       const courts = await tx<OpinionSearchFacets["courts"]>`
         SELECT court.public_id AS value, court.name AS label, count(*)::int AS count

@@ -481,9 +481,15 @@ describe("workflow trigger policy", () => {
 
     it("uploads the pre-release dump to Spaces before migrating", () => {
       const release = readFileSync(join(process.cwd(), "scripts", "release-production.sh"), "utf8");
+      const backup = readFileSync(join(process.cwd(), "scripts", "backup-production.sh"), "utf8");
       expect(release).toContain("upload-database-backup.mjs");
       expect(release).toContain("Off-site backup upload failed");
       expect(release).toContain("Uploading pre-release dump to encrypted off-site storage");
+      expect(release).toContain("REUSE_BACKUP_MAX_AGE_SECONDS:-21600");
+      expect(release).toContain("Reusing verified local dump completed");
+      expect(release).toContain("Another database backup is still writing");
+      expect(release).toContain("Database backup failed with exit");
+      expect(backup).toContain("-mmin +120 -delete");
     });
   });
 });

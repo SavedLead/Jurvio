@@ -77,6 +77,17 @@ function visibleEntry(sql: Sql) {
   `;
 }
 
+/** One lookup of the published case, then the docket index. The case check is not repeated per line. */
+function publishedCase(sql: Sql, casePublicId: string) {
+  return sql`
+    SELECT legal_case.id
+    FROM legal_case
+    WHERE legal_case.public_id = ${casePublicId}
+      AND legal_case.publication = 'published'
+      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+  `;
+}
+
 export async function listPublicDocketEntries(
   sql: Sql,
   casePublicId: string,
@@ -89,11 +100,8 @@ export async function listPublicDocketEntries(
     SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
       entry.filed_on::text AS "filedOn", entry.description, entry.importance
     FROM docket_entry entry
-    JOIN legal_case legal_case ON legal_case.id = entry.case_id
-    WHERE legal_case.public_id = ${casePublicId}
-      AND legal_case.publication = 'published'
-      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      AND ${visibleEntry(sql)}
+    JOIN (${publishedCase(sql, casePublicId)}) subject ON subject.id = entry.case_id
+    WHERE ${visibleEntry(sql)}
     ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST, entry.public_id DESC
     LIMIT ${boundedLimit}
     OFFSET ${boundedOffset}
@@ -104,11 +112,8 @@ export async function countPublicOrderEntries(sql: Sql, casePublicId: string): P
   const [row] = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
     FROM docket_entry entry
-    JOIN legal_case legal_case ON legal_case.id = entry.case_id
-    WHERE legal_case.public_id = ${casePublicId}
-      AND legal_case.publication = 'published'
-      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      AND ${visibleEntry(sql)}
+    JOIN (${publishedCase(sql, casePublicId)}) subject ON subject.id = entry.case_id
+    WHERE ${visibleEntry(sql)}
       AND entry.description ~* ${ORDER_LINE_PATTERN}
   `;
   return row?.n ?? 0;
@@ -120,11 +125,8 @@ export async function listPublicOrderEntries(sql: Sql, casePublicId: string, lim
     SELECT entry.public_id AS "publicId", entry.entry_number AS "entryNumber",
       entry.filed_on::text AS "filedOn", entry.description, entry.importance
     FROM docket_entry entry
-    JOIN legal_case legal_case ON legal_case.id = entry.case_id
-    WHERE legal_case.public_id = ${casePublicId}
-      AND legal_case.publication = 'published'
-      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      AND ${visibleEntry(sql)}
+    JOIN (${publishedCase(sql, casePublicId)}) subject ON subject.id = entry.case_id
+    WHERE ${visibleEntry(sql)}
       AND entry.description ~* ${ORDER_LINE_PATTERN}
     ORDER BY entry.filed_on DESC NULLS LAST, entry.entry_number DESC NULLS LAST, entry.public_id DESC
     LIMIT ${boundedLimit}
@@ -136,11 +138,8 @@ export async function listStoredFactLines(sql: Sql, casePublicId: string): Promi
   const rows = await sql<{ description: string }[]>`
     SELECT entry.description
     FROM docket_entry entry
-    JOIN legal_case legal_case ON legal_case.id = entry.case_id
-    WHERE legal_case.public_id = ${casePublicId}
-      AND legal_case.publication = 'published'
-      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      AND ${visibleEntry(sql)}
+    JOIN (${publishedCase(sql, casePublicId)}) subject ON subject.id = entry.case_id
+    WHERE ${visibleEntry(sql)}
       AND (entry.description ~* 'jury demand' OR entry.description ~* '\\mjurisdiction\\M')
     ORDER BY entry.filed_on DESC NULLS LAST
     LIMIT 30
@@ -152,11 +151,8 @@ export async function countPublicDocketEntries(sql: Sql, casePublicId: string): 
   const [row] = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
     FROM docket_entry entry
-    JOIN legal_case legal_case ON legal_case.id = entry.case_id
-    WHERE legal_case.public_id = ${casePublicId}
-      AND legal_case.publication = 'published'
-      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      AND ${visibleEntry(sql)}
+    JOIN (${publishedCase(sql, casePublicId)}) subject ON subject.id = entry.case_id
+    WHERE ${visibleEntry(sql)}
   `;
   return row?.n ?? 0;
 }
@@ -166,19 +162,16 @@ export async function listPublicParties(sql: Sql, casePublicId: string) {
     SELECT entity.public_id AS "publicId", entity.display_name AS "displayName",
       appearance.role, appearance.party_name_as_filed AS "nameAsFiled"
     FROM party_appearance appearance
-    JOIN legal_case legal_case ON legal_case.id = appearance.case_id
+    JOIN (${publishedCase(sql, casePublicId)}) subject ON subject.id = appearance.case_id
     JOIN entity ON entity.id = appearance.entity_id
-    WHERE legal_case.public_id = ${casePublicId}
-      AND legal_case.publication = 'published'
-      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
-      -- A party with no entity-level decision of its own is displayable, because
+    -- A party with no entity-level decision of its own is displayable, because
       -- the gate that matters has already been applied above: the case it appears
       -- in is published AND carries a displayable publication decision. Nothing
       -- writes an entity decision outside the manual publication-review workflow,
       -- so requiring one here (the previous default of false) hid EVERY party on
       -- EVERY case. The directory queries in modules/directory already default this
       -- to true; an explicit entity decision still suppresses a party on both.
-      AND ${sql.unsafe(latestPublicationColumnSql("displayable", "entity", "entity.id", true))}
+    WHERE ${sql.unsafe(latestPublicationColumnSql("displayable", "entity", "entity.id", true))}
     ORDER BY appearance.role, entity.normalized_name
   `;
 }
@@ -195,14 +188,11 @@ export async function listPublicDocuments(sql: Sql, casePublicId: string) {
       COALESCE(judicial.per_curiam, false) AS "perCuriam",
       COALESCE(content.content_text ILIKE '%REPORTER''S NOTE%' OR content.content_text ILIKE '%REPORTER’S NOTE%', false) AS "hasReportersNote"
     FROM document
-    JOIN legal_case legal_case ON legal_case.id = document.case_id
+    JOIN (${publishedCase(sql, casePublicId)}) subject ON subject.id = document.case_id
     LEFT JOIN document_content content ON content.document_id = document.id
     LEFT JOIN judicial_opinion judicial ON judicial.document_id = document.id
     LEFT JOIN scotus_docket_document docket_document ON docket_document.document_id = document.id
-    WHERE legal_case.public_id = ${casePublicId}
-      AND legal_case.publication = 'published'
-      AND document.publication = 'published'
-      AND ${visible(sql, "displayable", "legal_case", "legal_case.id")}
+    WHERE document.publication = 'published'
       AND ${visible(sql, "displayable", "document", "document.id")}
     ORDER BY document.filed_on DESC NULLS LAST, document.title
   `;
