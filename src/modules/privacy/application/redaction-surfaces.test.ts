@@ -31,6 +31,10 @@ describe("redaction surfaces", () => {
     expect(workflow).not.toContain("echo \"$NAMES\"");
     expect(admin).toContain("caseIds");
     expect(admin).toContain("documentIds");
+    expect(admin).toContain("scrubRedactionLog");
+    expect(admin).toContain("opinion-text");
+    expect(admin).toContain("SET LOCAL enable_seqscan = off");
+    expect(admin).not.toContain("d.title ILIKE");
     expect(admin).not.toContain("urls: paths");
     expect(admin).not.toContain("console.log(names");
     expect(admin).not.toContain("console.log(JSON.stringify(names");

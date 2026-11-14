@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { env } from "@/lib/config/env";
 import { initialsFor } from "@/modules/privacy/domain/redact-names";
+import { scrubRedactionLog } from "@/modules/privacy/domain/scrub-redaction-log";
 import { pagesToRefresh } from "@/lib/http/refresh-public-pages";
 
 // Ingestion-host admin for privacy redactions. Does not print contact details.
@@ -35,50 +36,123 @@ const sql = postgres(env().DATABASE_URL, {
 interface Hit { caseId: string; casePublicId: string; documentId: string | null; documentPublicId: string | null }
 interface EntityHit { publicId: string; entityType: string }
 
+const MATCH_LIMIT = 500;
+
+function tsqueryText(name: string): string {
+  return name.replace(/[^\p{L}\s'-]/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+async function inStep<T>(step: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const wrapped = error instanceof Error ? error : new Error("query failed");
+    (wrapped as Error & { step?: string }).step = step;
+    throw wrapped;
+  }
+}
+
 async function findHits(): Promise<{ hits: Hit[]; entities: EntityHit[] }> {
+  // A startup parameter does not beat the role's statement_timeout. The previous
+  // preview OR'd an unindexed document-title scan into the opinion GIN lookup,
+  // and that scan was canceled after about eight seconds.
+  await sql.unsafe(`SET statement_timeout = '60s'`);
+  await sql.unsafe(`SET lock_timeout = '5s'`);
   const found = new Map<string, Hit>();
   const entities = new Map<string, EntityHit>();
   const add = (hit: Hit) => found.set(`${hit.caseId}:${hit.documentPublicId ?? ""}`, hit);
+  const indexed = async (step: string, run: (tx: postgres.TransactionSql<Record<string, never>>) => Promise<void>) => {
+    await inStep(step, () => sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = '30s'`);
+      await tx.unsafe(`SET LOCAL lock_timeout = '3s'`);
+      await tx.unsafe(`SET LOCAL enable_seqscan = off`);
+      await run(tx);
+    }));
+  };
   for (const name of names) {
     const like = `%${name.replace(/[%_\\]/g, "")}%`;
-    const rows = await sql<Hit[]>`
-      SELECT c.id AS "caseId", c.public_id AS "casePublicId", NULL::uuid AS "documentId", NULL::text AS "documentPublicId"
-      FROM legal_case c
-      WHERE c.caption ILIKE ${like}
-      UNION
-      SELECT c.id, c.public_id, NULL::uuid, NULL::text
-      FROM legal_case c
-      JOIN party_appearance appearance ON appearance.case_id = c.id
-      LEFT JOIN entity ON entity.id = appearance.entity_id
-      WHERE appearance.party_name_as_filed ILIKE ${like}
-         OR entity.display_name ILIKE ${like}
-      UNION
-      SELECT c.id, c.public_id, d.id, d.public_id
-      FROM document d
-      JOIN legal_case c ON c.id = d.case_id
-      LEFT JOIN opinion_search_projection projection ON projection.document_id = d.id
-      WHERE projection.search_vector @@ websearch_to_tsquery('english', ${name})
-         OR projection.case_caption ILIKE ${like}
-         OR projection.title ILIKE ${like}
-         OR d.title ILIKE ${like}
-    `;
-    for (const row of rows) add(row);
-    const people = await sql<EntityHit[]>`
-      SELECT entity.public_id AS "publicId", entity.entity_type AS "entityType"
-      FROM entity
-      WHERE entity.display_name ILIKE ${like}
-    `;
-    for (const person of people) entities.set(person.publicId, person);
+    const terms = tsqueryText(name);
+    await indexed("caption", async (tx) => {
+      const rows = await tx<Hit[]>`
+        SELECT c.id AS "caseId", c.public_id AS "casePublicId", NULL::uuid AS "documentId", NULL::text AS "documentPublicId"
+        FROM legal_case c
+        WHERE c.caption ILIKE ${like}
+        LIMIT ${MATCH_LIMIT}
+      `;
+      for (const row of rows) add(row);
+    });
+    await indexed("party-name", async (tx) => {
+      const rows = await tx<Hit[]>`
+        SELECT c.id AS "caseId", c.public_id AS "casePublicId", NULL::uuid AS "documentId", NULL::text AS "documentPublicId"
+        FROM party_appearance appearance
+        JOIN legal_case c ON c.id = appearance.case_id
+        WHERE appearance.party_name_as_filed ILIKE ${like}
+        LIMIT ${MATCH_LIMIT}
+      `;
+      for (const row of rows) add(row);
+    });
+    await indexed("entity-name", async (tx) => {
+      const rows = await tx<(Hit & EntityHit)[]>`
+        SELECT entity.public_id AS "publicId", entity.entity_type AS "entityType",
+          c.id AS "caseId", c.public_id AS "casePublicId", NULL::uuid AS "documentId", NULL::text AS "documentPublicId"
+        FROM entity
+        JOIN party_appearance appearance ON appearance.entity_id = entity.id
+        JOIN legal_case c ON c.id = appearance.case_id
+        WHERE entity.display_name ILIKE ${like}
+        LIMIT ${MATCH_LIMIT}
+      `;
+      for (const row of rows) {
+        entities.set(row.publicId, { publicId: row.publicId, entityType: row.entityType });
+        add(row);
+      }
+    });
+    await indexed("case-search", async (tx) => {
+      const rows = await tx<Hit[]>`
+        SELECT c.id AS "caseId", c.public_id AS "casePublicId", NULL::uuid AS "documentId", NULL::text AS "documentPublicId"
+        FROM public_case_search search
+        JOIN legal_case c ON c.id = search.case_id
+        WHERE search.search_text ILIKE ${like}
+        LIMIT ${MATCH_LIMIT}
+      `;
+      for (const row of rows) add(row);
+    });
+    if (terms.length >= 3) {
+      await indexed("opinion-caption", async (tx) => {
+        const rows = await tx<Hit[]>`
+          SELECT c.id AS "caseId", c.public_id AS "casePublicId", d.id AS "documentId", d.public_id AS "documentPublicId"
+          FROM opinion_search_meta meta
+          JOIN document d ON d.id = meta.document_id
+          JOIN legal_case c ON c.id = meta.case_id
+          WHERE meta.caption_vector @@ websearch_to_tsquery('english', ${terms})
+          LIMIT ${MATCH_LIMIT}
+        `;
+        for (const row of rows) add(row);
+      });
+      await indexed("opinion-text", async (tx) => {
+        const rows = await tx<Hit[]>`
+          SELECT c.id AS "caseId", c.public_id AS "casePublicId", d.id AS "documentId", d.public_id AS "documentPublicId"
+          FROM opinion_search_projection projection
+          JOIN document d ON d.id = projection.document_id
+          JOIN legal_case c ON c.id = projection.case_id
+          WHERE projection.search_vector @@ websearch_to_tsquery('english', ${terms})
+          LIMIT ${MATCH_LIMIT}
+        `;
+        for (const row of rows) add(row);
+      });
+    }
   }
   const caseIds = [...new Set([...found.values()].map((hit) => hit.caseId))];
   if (caseIds.length > 0) {
-    const documents = await sql<Hit[]>`
-      SELECT c.id AS "caseId", c.public_id AS "casePublicId", d.id AS "documentId", d.public_id AS "documentPublicId"
-      FROM document d
-      JOIN legal_case c ON c.id = d.case_id
-      WHERE c.id = ANY(${sql.array(caseIds)}::uuid[])
-    `;
-    for (const row of documents) add(row);
+    await indexed("case-documents", async (tx) => {
+      const documents = await tx<Hit[]>`
+        SELECT c.id AS "caseId", c.public_id AS "casePublicId", d.id AS "documentId", d.public_id AS "documentPublicId"
+        FROM document d
+        JOIN legal_case c ON c.id = d.case_id
+        WHERE c.id = ANY(${tx.array(caseIds)}::uuid[])
+        LIMIT ${MATCH_LIMIT}
+      `;
+      for (const row of documents) add(row);
+    });
   }
   return { hits: [...found.values()], entities: [...entities.values()] };
 }
@@ -196,8 +270,17 @@ try {
     purge: token && zone ? (purged ? "purged" : "purge failed") : "purge missing",
     sharedPages: pagesToRefresh().length,
   });
-} catch {
-  console.error(JSON.stringify({ redaction: "failed" }));
+} catch (error) {
+  const failed = error instanceof Error ? error : new Error("query failed");
+  const step = (failed as Error & { step?: string }).step ?? "redaction";
+  const code = (failed as Error & { code?: string }).code ?? "";
+  console.error(JSON.stringify({
+    redaction: "failed",
+    step,
+    code,
+    message: scrubRedactionLog(failed.message, names),
+    stack: scrubRedactionLog(failed.stack ?? "", names).split("\n").slice(0, 12),
+  }));
   process.exitCode = 1;
 } finally {
   await sql.end({ timeout: 5 });
