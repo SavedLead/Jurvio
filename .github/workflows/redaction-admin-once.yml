@@ -73,9 +73,14 @@ jobs:
           ssh "$INGESTION_USER@$DB_HOST" "MODE=$(printf %q "$mode") LABEL=$(printf %q "$label") REDACTION_NAMES=$(printf %q "$REDACTION_NAMES") bash -s" <<'REMOTE'
           set -euo pipefail
           cd /opt/jurvio
-          image="$(docker inspect -f '{{.Config.Image}}' "$(docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)")"
+          # .env.production names the database host "postgres", which resolves
+          # only on the compose network. Share the running app's network
+          # namespace so that name resolves the same way the app resolves it.
+          app="$(docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)"
+          test -n "$app"
+          image="$(docker inspect -f '{{.Config.Image}}' "$app")"
           test -n "$image"
-          docker run --rm --network host --env-file .env.production \
+          docker run --rm --network "container:${app}" --env-file .env.production \
             -e REDACTION_MODE="$MODE" \
             -e REDACTION_NAMES="$REDACTION_NAMES" \
             -e REDACTION_LABEL="$LABEL" \

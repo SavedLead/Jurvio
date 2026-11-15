@@ -26,6 +26,8 @@ describe("redaction surfaces", () => {
     const admin = readFileSync("scripts/redaction-admin.ts", "utf8");
     expect(workflow).toContain("secrets.REDACTION_NAMES");
     expect(workflow).toContain("::add-mask::");
+    expect(workflow).toContain('--network "container:${app}"');
+    expect(workflow).not.toContain("--network host");
     expect(workflow).not.toContain("inputs.names");
     expect(workflow).not.toContain("echo \"$REDACTION_NAMES\"");
     expect(workflow).not.toContain("echo \"$NAMES\"");
