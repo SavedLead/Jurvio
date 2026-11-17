@@ -484,8 +484,11 @@ jobs:
           SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
           timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          cd /opt/jurvio
-          docker compose -f docker-compose.production.yml exec -T app node --input-type=module <<'NODE'
+          # Compose requires JURVIO_IMAGE, which is not stored on the box.
+          # The running app container already has the env file from the release.
+          app="$(docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ]
+          docker exec -i "$app" node --input-type=module <<'NODE'
           const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
           const zone = process.env.CLOUDFLARE_ZONE_ID ?? "";
           if (!token || !zone) {

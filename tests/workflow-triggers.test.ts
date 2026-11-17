@@ -486,6 +486,8 @@ describe("migrations only run behind Deploy production's backup", () => {
       const probeRun = probe?.run ?? "";
       expect(probeRun).toContain("https://jurvio.com/feeds/scotus");
       expect(probeRun).toContain("purge_http");
+      expect(probeRun).toContain("com.docker.compose.service=app");
+      expect(probeRun).not.toContain("docker compose");
       expect(index(prodSteps, "Sync Cloudflare cache purge settings to box env")).toBeLessThan(index(prodSteps, "Release and verify"));
     });
 
