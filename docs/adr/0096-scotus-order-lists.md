@@ -26,7 +26,19 @@ Parse the public orders index and order-list text into `scotus_order_list` and
 The dry-run workflow fetches the public index and prints a coverage report. It
 does not write. The `scotus-orders-index` scheduler, every six hours, upserts
 those index rows and skips when migration 0201 is absent. It does not download
-PDFs or send alerts. PDF text remains a later bounded apply.
+PDFs or send alerts.
+
+`scotus-orders-pdf` runs hourly on the core worker, not on the public web. It
+stores at most thirty order-list PDFs that do not yet have a checksum, newest
+term and date first, and parses them with `pdftotext`. Each request to
+supremecourt.gov starts at least five seconds after the previous response.
+When the current term has none left, the same run records the index for one
+older term, stopping at October Term 2017. Miscellaneous orders stay index
+rows. Thirty an hour covers the 284 lists from 2017 through 2026 in about ten
+hours.
+The public Supreme Court page links each list's official PDF whether or not
+the lines are stored. Case pages show parsed lines. Neither path writes
+`docket_entry` or queues an alert.
 
 ## Alternatives considered
 
@@ -55,6 +67,7 @@ Revisit if the orders-index HTML changes, or if a tested alert path for new
 2. Dispatch `diagnose-scotus-coverage-once.yml` with `confirm=DIAGNOSE_SCOTUS_COVERAGE`.
 3. Dispatch `ingest-official-scotus-orders-once.yml` with `confirm=DIAGNOSE_SCOTUS_ORDERS`.
    That run only prints the public index.
-4. After deploy, a later apply can store one term's lists. Rollback is
-   `DELETE FROM scotus_order_list WHERE term_year = '26'`, which cascades items.
-   Published cases are unchanged.
+4. After deploy, `scotus-orders-pdf` stores two unstored lists an hour.
+   Rollback of one term is `DELETE FROM scotus_order_list WHERE term_year = '26'`,
+   which cascades items. Published cases are unchanged. Pause the PDF job by
+   removing `scotus-orders-pdf` from `scripts/scheduler-jobs.ts`.

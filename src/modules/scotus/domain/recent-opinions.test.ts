@@ -29,7 +29,7 @@ const slip = (patch: Partial<SlipOpinionCard> = {}): SlipOpinionCard => ({
 
 describe("recent Supreme Court opinion cards", () => {
   it("keeps one card when the slip index and the published opinion share a docket and PDF", () => {
-    const cards = mergeRecentOpinions([published()], [slip()]);
+    const cards = mergeRecentOpinions([published()], [slip()], "2026-11-17");
     expect(cards).toHaveLength(1);
     expect(cards[0]?.casePath).toBe("/case/jv-nlorv068wz");
     expect(cards[0]?.documentPath).toBe("/case/jv-nlorv068wz/documents/jd-igmi9rwamk");
@@ -41,6 +41,7 @@ describe("recent Supreme Court opinion cards", () => {
     const cards = mergeRecentOpinions(
       [published()],
       [slip({ sourceRecordId: "other", pdfUrl: "https://www.supremecourt.gov/opinions/26pdf/26a560_dissent.pdf", documentPublicId: "jd-otherdoc1" })],
+      "2026-11-17",
     );
     expect(cards).toHaveLength(2);
   });
@@ -48,9 +49,18 @@ describe("recent Supreme Court opinion cards", () => {
   it("never emits an internal path that is not a real case or opinion id", () => {
     expect(casePagePath("not-an-id")).toBeNull();
     expect(opinionPagePath("jv-nlorv068wz", "not-a-document")).toBeNull();
-    const cards = mergeRecentOpinions([], [slip({ casePublicId: null, documentPublicId: null })]);
+    const cards = mergeRecentOpinions([], [slip({ casePublicId: null, documentPublicId: null })], "2026-11-17");
     expect(cards[0]?.casePath).toBeNull();
     expect(cards[0]?.documentPath).toBeNull();
     expect(cards[0]?.pdfUrl).toMatch(/^https:\/\/www\.supremecourt\.gov\//);
+  });
+
+  it("omits an opinion dated after the Court's current day", () => {
+    const cards = mergeRecentOpinions(
+      [published({ filedOn: "2026-11-18", documentPublicId: "jd-future001" })],
+      [slip({ filedOn: "2026-11-18", sourceRecordId: "future" })],
+      "2026-11-17",
+    );
+    expect(cards).toHaveLength(0);
   });
 });

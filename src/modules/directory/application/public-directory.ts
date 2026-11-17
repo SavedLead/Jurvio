@@ -203,6 +203,25 @@ const displayableCourt = `
   ), true)
 `;
 
+const notRedirectedCourt = `
+  NOT EXISTS (
+    SELECT 1 FROM court_public_redirect redirect
+    WHERE redirect.public_id = court.public_id
+  )
+`;
+
+/** Old public id for a court that was merged. Null when this id is the page to show. */
+export async function courtRedirectTarget(sql: Sql, publicId: string): Promise<string | null> {
+  try {
+    const [row] = await sql<{ target: string }[]>`
+      SELECT target_public_id AS target FROM court_public_redirect WHERE public_id = ${publicId} LIMIT 1`;
+    return row?.target && row.target !== publicId ? row.target : null;
+  } catch (error) {
+    if (isMissingTable(error)) return null;
+    throw error;
+  }
+}
+
 /**
  * Court directory from court_public_stats (refreshed by the citations-lane
  * `public-directory-stats` job). Falls back to the live GROUP BY when the
@@ -219,6 +238,7 @@ export async function listPublicCourts(sql: Sql, limit = 100): Promise<CourtDire
       JOIN court ON court.id = stats.court_id
       WHERE stats.case_count > 0
         AND ${sql.unsafe(displayableCourt)}
+        AND ${sql.unsafe(notRedirectedCourt)}
       ORDER BY stats.case_count DESC, court.name
       LIMIT ${safeLimit}
     `;
@@ -238,6 +258,7 @@ export async function listPublicCourtsLive(sql: Sql, limit = 100): Promise<Court
     FROM court JOIN legal_case ON legal_case.court_id = court.id
     WHERE ${sql.unsafe(displayableCase)}
       AND ${sql.unsafe(displayableCourt)}
+      AND ${sql.unsafe(notRedirectedCourt)}
     GROUP BY court.id
     ORDER BY count(legal_case.id) DESC, court.name
     LIMIT ${safeLimit}
