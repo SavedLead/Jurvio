@@ -21,6 +21,7 @@ export interface PublisherCycle {
   batchSize: number | null;
   perHour: number | null;
   draftEstimate: number | null;
+  stopped: string | null;
 }
 
 const REASON = /^[a-z0-9_]+$/;
@@ -68,6 +69,7 @@ export async function listPublisherCycles(sql: Sql, limit = 12): Promise<Publish
       batchSize: typeof selection.batchSize === "number" ? selection.batchSize : null,
       perHour: typeof selection.perHour === "number" ? selection.perHour : null,
       draftEstimate: typeof selection.draftEstimate === "number" ? selection.draftEstimate : null,
+      stopped: typeof selection.stopped === "string" && REASON.test(selection.stopped) ? selection.stopped : null,
     };
   });
 }
