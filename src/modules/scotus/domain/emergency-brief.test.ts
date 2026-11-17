@@ -137,6 +137,11 @@ describe("emergency brief packets", () => {
     expect(compareSql).toContain("kind <> 'extension'");
     expect(compareSql).not.toContain("scotus_application_brief");
     expect(compareSql).not.toContain("scotus_brief_call");
+    const messy = exportCompareSql(["24A884", "25A326", "not a docket"]);
+    expect(messy).toContain("'24A884'");
+    expect(messy).toContain("'25A326'");
+    expect(messy).not.toContain("not a docket");
+    expect(messy).not.toContain("LIMIT 80");
   });
 
   it("keeps application, response, reply, and a lower-court opinion, and drops service and outside PDFs", () => {

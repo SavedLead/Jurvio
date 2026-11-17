@@ -1,0 +1,114 @@
+name: Write lower-court descriptions (once)
+
+# After the Supreme Court backlog, unused OpenAI credit can write descriptions
+# for published court of appeals cases, newest first, then district cases the
+# same way. The model is gpt-6.1-sol only. gpt-6-astra stays on the Supreme
+# Court job. Routine filings are skipped in the script and never sent.
+#
+# This workflow is not on a schedule. Dispatch it only after the budget is
+# approved. budget_usd defaults to 0, and a zero budget calls no model and
+# writes nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type WRITE_LOWER_COURT_BRIEFS to run this workflow against production"
+        required: true
+        type: string
+      budget_usd:
+        description: "Total dollars this job may spend, including earlier runs of this job. 0 spends nothing."
+        required: true
+        default: "0"
+        type: string
+      lane:
+        description: "circuit, then district when both. circuit or district limits the run to one level."
+        required: true
+        default: "both"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-lower-court-briefs
+  cancel-in-progress: false
+
+jobs:
+  write:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 360
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      BUDGET: ${{ inputs.budget_usd }}
+      LANE: ${{ inputs.lane }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Require confirm and a budget
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "WRITE_LOWER_COURT_BRIEFS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WRITE_LOWER_COURT_BRIEFS."
+            exit 1
+          fi
+          if [ "$LANE" != "circuit" ] && [ "$LANE" != "district" ] && [ "$LANE" != "both" ]; then
+            echo "::error::lane must be circuit, district, or both"
+            exit 1
+          fi
+          if ! printf '%s' "$BUDGET" | grep -Eq '^[0-9]+(\.[0-9]{1,2})?$'; then
+            echo "::error::budget_usd must be a dollar amount"
+            exit 1
+          fi
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY secret is empty."
+            exit 1
+          fi
+          if awk "BEGIN { exit !($BUDGET > 0) }"; then
+            echo "go=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "Budget is 0. No model was called and nothing was stored."
+            echo "go=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'yes'
+      - uses: ./.github/actions/vpc-ssh
+        if: steps.gate.outputs.go == 'yes'
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        if: steps.gate.outputs.go == 'yes'
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.go == 'yes'
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+        if: steps.gate.outputs.go == 'yes'
+
+      - name: Pull packets and write descriptions
+        if: steps.gate.outputs.go == 'yes'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/lower-court-briefs"
+          mkdir -p "$work"
+          LANE="$LANE" pnpm exec tsx scripts/write-lower-court-briefs.ts export-sql > "$work/export.sql"
+          pnpm exec tsx scripts/write-lower-court-briefs.ts spent-sql > "$work/spent.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/spent.sql" > "$work/spent.txt"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/export.sql" > "$work/packets.jsonl"
+          LOWER_COURT_BUDGET_USD="$BUDGET" pnpm exec tsx scripts/write-lower-court-briefs.ts write \
+            --packets "$work/packets.jsonl" \
+            --spent "$work/spent.txt" \
+            --out-sql "$work/upserts.sql" | tee "$work/run.log"
+          if [ -s "$work/upserts.sql" ]; then
+            vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q' < "$work/upserts.sql"
+          fi
+          { echo "### Lower-court descriptions"; echo; echo '```json'; grep '^SUMMARY ' "$work/run.log" | sed 's/^SUMMARY //'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

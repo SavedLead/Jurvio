@@ -567,7 +567,7 @@ function recordFor(source: BriefPacketSource): { record: string; pageUrl: string
     record = fit();
   }
   if (record.length > PACKET_CAP) record = `${record.slice(0, PACKET_CAP)}\n[further docket lines omitted]`;
-  const filings = (source.filings ?? []).filter((filing) => !filing.withheld && filing.text && !isRestrictedDocketText(filing.text));
+  const filings = (source.filings ?? []).filter((filing) => !filing.withheld && filing.text);
   const withheld = (source.filings ?? []).filter((filing) => filing.withheld).map((filing) => filing.role);
   const filingBlock = [
     filings.length ? "Filing PDFs from the public supremecourt.gov case JSON:" : "Filing PDFs: none listed in the public case JSON.",
@@ -708,8 +708,21 @@ export function exportPacketsSql(): string {
 `;
 }
 
+/**
+ * The five long federal emergency applications used when compare or showcase
+ * is dispatched with selection=messy. Each has a federal or administration
+ * party and several filings (application, response, reply, amicus, or a
+ * lower-court opinion).
+ */
+export const MESSY_COMPARE_DOCKETS = ["24A884", "25A326", "26A406", "26A416", "26A274"] as const;
+
 /** Read-only packet export. Uses tables that already exist, so a comparison can run before the brief migration. */
-export function exportCompareSql(): string {
+export function exportCompareSql(dockets: readonly string[] = []): string {
+  const safe = dockets.filter((docket) => /^[0-9]{2}A[0-9]{1,4}$/.test(docket));
+  const where = safe.length > 0
+    ? `a.docket_number IN (${safe.map((docket) => `'${docket}'`).join(", ")})`
+    : "a.kind <> 'extension'";
+  const limit = safe.length > 0 ? "" : "\n  LIMIT 80";
   return `COPY (
   SELECT regexp_replace(json_build_object(
     'docketNumber', a.docket_number,
@@ -743,9 +756,8 @@ export function exportCompareSql(): string {
   )::text, E'[\\n\\r]+', ' ', 'g')
   FROM scotus_application a
   LEFT JOIN legal_case c ON c.id = a.case_id
-  WHERE a.kind <> 'extension'
-  ORDER BY a.last_entry_on DESC NULLS LAST, a.docket_number DESC
-  LIMIT 80
+  WHERE ${where}
+  ORDER BY a.last_entry_on DESC NULLS LAST, a.docket_number DESC${limit}
 ) TO STDOUT;
 `;
 }
@@ -779,7 +791,10 @@ VALUES ('${row.docketNumber}', '${row.sourceHash}', '${row.lane}', '${row.model}
 `;
 }
 
-export function renderBriefUpsert(row: StoredBrief): string {
+export function renderBriefUpsert(
+  row: StoredBrief,
+  table: "scotus_application_brief" | "scotus_application_brief_alt" = "scotus_application_brief",
+): string {
   assertStored(row);
   if (!Number.isInteger(row.entryCount) || row.entryCount < 0 || !Number.isInteger(row.withheldLines) || row.withheldLines < 0) {
     throw new Error("entry counts must be non-negative integers");
@@ -792,7 +807,8 @@ export function renderBriefUpsert(row: StoredBrief): string {
   let marker = `b${row.sourceHash.slice(0, 16)}`;
   while (row.body.includes(`$${marker}$`)) marker += "x";
   const quote = `$${marker}$${row.body}$${marker}$`;
-  return `INSERT INTO scotus_application_brief (
+  const conflict = table === "scotus_application_brief_alt" ? "(docket_number, model)" : "(docket_number)";
+  return `INSERT INTO ${table} (
   docket_number, brief_kind, body, model, prompt_version, source_hash, input_tokens, output_tokens, cost_usd,
   ai_generated, entry_count, last_entry_on, status, withheld_lines, generated_at
 ) VALUES (
@@ -800,7 +816,7 @@ export function renderBriefUpsert(row: StoredBrief): string {
   '${row.sourceHash}', ${row.inputTokens}, ${row.outputTokens}, ${row.costUsd.toFixed(6)}, ${row.aiGenerated ? "true" : "false"},
   ${row.entryCount}, ${row.lastEntryOn ? `'${row.lastEntryOn}'` : "NULL"}, '${row.status}', ${row.withheldLines}, now()
 )
-ON CONFLICT (docket_number) DO UPDATE SET
+ON CONFLICT ${conflict} DO UPDATE SET
   brief_kind = EXCLUDED.brief_kind,
   body = EXCLUDED.body,
   model = EXCLUDED.model,

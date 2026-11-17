@@ -6,7 +6,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
-import { loadEmergencyBrief, loadEmergencyTeaser } from "@/modules/scotus/application/load-emergency-brief";
+import { loadEmergencyBrief, loadEmergencyBriefVersions, loadEmergencyTeaser } from "@/modules/scotus/application/load-emergency-brief";
 import { teaserPreview } from "@/modules/scotus/domain/emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
@@ -74,9 +74,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const [app, stats, gate, brief, teaser] = await Promise.all([
+  const [app, stats, gate, briefs, teaser] = await Promise.all([
     getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
-    loadEmergencyBrief(db(), docket), loadEmergencyTeaser(db(), docket),
+    loadEmergencyBriefVersions(db(), docket), loadEmergencyTeaser(db(), docket),
   ]);
   if (!app) {
     const officialUrl = officialEmergencyDocketUrl(docket);
@@ -142,13 +142,13 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <p>{plain || "The Court has docketed this application."}</p>
         </section>
 
-        {brief ? <section className={styles.plain} aria-labelledby="ai-title" data-ai-generated={brief.aiGenerated ? "true" : "false"}>
-          <h2 id="ai-title">{brief.aiGenerated ? "AI-generated description" : "Summary from the docket"}</h2>
+        {briefs.map((brief, index) => <section key={brief.model} className={styles.plain} aria-labelledby={index === 0 ? "ai-title" : `ai-title-${index}`} data-ai-generated={brief.aiGenerated ? "true" : "false"} data-model={brief.model}>
+          <h2 id={index === 0 ? "ai-title" : `ai-title-${index}`}>{brief.aiGenerated ? (index === 0 ? "AI-generated description" : `Also written by ${brief.model}`) : "Summary from the docket"}</h2>
           <p>{brief.body}</p>
           <p className={styles.note}>{brief.aiGenerated
-            ? `AI-generated from the public docket lines on this page by ${brief.model} (prompt ${brief.promptVersion}). It is not a court opinion and it does not add facts. Written ${easternTime(brief.generatedAt)}.`
+            ? `AI-generated from the public filings and docket lines on this page by ${brief.model} (prompt ${brief.promptVersion}). It is not a court opinion and it does not add facts. Written ${easternTime(brief.generatedAt)}.`
             : `Written from the public docket lines by a fixed template. No model was used. It does not add facts. Written ${easternTime(brief.generatedAt)}.`}</p>
-        </section> : null}
+        </section>)}
 
         {teaser ? <section className={styles.plain} aria-labelledby="teaser-title" data-email-preview="true">
           <h2 id="teaser-title">Follower email preview</h2>

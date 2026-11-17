@@ -14,10 +14,19 @@ description. That email is not approved, and charging stays off.
 
 ## Decision
 
-- David picked `gpt-6-astra` ($10 / $50 per million tokens) for full
-  descriptions. `gpt-6.1-sol` ($2 / $10) fills gaps after the Astra cap.
-  `gpt-6-luna` is only for follower teasers. No teaser email is sent, and
-  charging stays off.
+- The final Supreme Court model is not picked. `gpt-6-astra` ($10 / $50
+  per million tokens) and `gpt-6.1-sol` ($2 / $10) are both written for five
+  long federal cases: 24A884 Trump v. CASA, 25A326 Noem v. National TPS
+  Alliance, 26A406 DHS v. D.V.D., 26A416 Trump v. Kingdom, and 26A274 NRCC v.
+  Brown. Astra is stored as the page text. Sol is stored beside it.
+  `mode=compare` stores nothing. `mode=showcase` stores both. A later backlog
+  still prefers Astra until that comparison is read. `gpt-6-luna` is only for
+  follower teasers. No teaser email is sent, and charging stays off.
+- After the Supreme Court backlog, unused credit can go to `gpt-6.1-sol` for
+  published court of appeals cases, newest first, then district cases the
+  same way. That job is `Write lower-court descriptions (once)`. It is not
+  on a schedule, its budget defaults to $0, and it skips routine filings
+  without a model call. Astra is not used on that job.
 - An extension of time, and a thin filing that is not a stay, injunction,
   vacatur, bail request, capital case, or federal application, gets a fixed
   template. Those rows record model `rule` and `ai_generated = false`.
