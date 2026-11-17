@@ -13,12 +13,9 @@
  * --limit 0 means no count cap on model descriptions. --top-only stays on
  * Astra. --teasers writes follower previews. OPENAI_API_KEY is never printed.
  */
-import { execFile } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { officialEmergencyDocketUrl } from "../src/modules/scotus/domain/emergency-application";
+import { textFromPdfBytes } from "../src/modules/scotus/domain/filing-pdf-text";
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, acceptFilingExcerpt, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
@@ -350,7 +347,6 @@ async function runCompare(): Promise<void> {
     process.exit(1);
   }
   const chosen = packets.filter(needsModel).slice(0, limitArg);
-  await assertPdftotext();
   const cases: Array<Record<string, unknown>> = [];
   let total = 0;
   for (const packet of chosen) {
@@ -389,6 +385,7 @@ async function runCompare(): Promise<void> {
       results,
       filings: loaded.filings,
       filingNote: loaded.note,
+      skippedFilings: loaded.skipped,
     });
   }
   const markdown = renderComparison(cases, total);
@@ -435,6 +432,8 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
     } else {
       lines.push("- No filing PDF text was added.");
     }
+    const skipped = (row.skippedFilings as Array<{ role: string; reason: string }> | undefined) ?? [];
+    for (const skip of skipped) lines.push(`- Skipped ${skip.role}: ${skip.reason}`);
     lines.push("");
     lines.push("| Model | Input tokens | Output tokens | Cost |");
     lines.push("| --- | ---: | ---: | ---: |");
@@ -458,23 +457,10 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
   return lines.join("\n");
 }
 
-const execFileAsync = promisify(execFile);
 const COMPARE_USER_AGENT = process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 (+https://jurvio.com; public court records)";
 const REQUEST_GAP_MS = 1_200;
 const MAX_PDF_BYTES = 6_000_000;
 let lastCourtRequest = 0;
-
-async function assertPdftotext(): Promise<void> {
-  try {
-    await execFileAsync("pdftotext", ["-v"]);
-  } catch (error) {
-    const failure = error as NodeJS.ErrnoException;
-    if (failure.code === "ENOENT") {
-      console.error("pdftotext is not installed (poppler-utils). Nothing was sent.");
-      process.exit(1);
-    }
-  }
-}
 
 async function courtFetch(url: string): Promise<Response> {
   const wait = REQUEST_GAP_MS - (Date.now() - lastCourtRequest);
@@ -487,50 +473,52 @@ async function courtFetch(url: string): Promise<Response> {
   });
 }
 
-async function pdfText(bytes: Uint8Array): Promise<string> {
-  const dir = mkdtempSync(join(tmpdir(), "jurvio-brief-"));
-  const path = join(dir, "filing.pdf");
-  writeFileSync(path, bytes);
-  try {
-    const { stdout } = await execFileAsync("pdftotext", ["-layout", path, "-"], { encoding: "utf8", maxBuffer: 8_000_000, timeout: 60_000 });
-    return stdout;
-  } finally {
-    try { unlinkSync(path); } catch { /* temp file already gone */ }
-  }
+function skipFiling(docketNumber: string, role: string, url: string, reason: string): { role: FilingExcerpt["role"]; url: string; reason: string } {
+  console.log(JSON.stringify({ docket: docketNumber, filing: role, skipped: reason, stored: false }));
+  return { role: role as FilingExcerpt["role"], url, reason };
 }
 
-async function loadFilingExcerpts(docketNumber: string): Promise<{ filings: FilingExcerpt[]; note: string | null }> {
+async function loadFilingExcerpts(docketNumber: string): Promise<{ filings: FilingExcerpt[]; skipped: Array<{ role: string; url: string; reason: string }>; note: string | null }> {
   const pageUrl = officialEmergencyDocketUrl(docketNumber);
-  if (!pageUrl) return { filings: [], note: "Docket number has no official page URL." };
+  if (!pageUrl) return { filings: [], skipped: [], note: "Docket number has no official page URL." };
   let html: string;
   try {
     const response = await courtFetch(pageUrl);
-    if (!response.ok) return { filings: [], note: `Docket page returned HTTP ${response.status}.` };
+    if (!response.ok) return { filings: [], skipped: [], note: `Docket page returned HTTP ${response.status}.` };
     html = await response.text();
   } catch (error) {
-    return { filings: [], note: error instanceof Error ? error.message : "Docket page fetch failed." };
+    return { filings: [], skipped: [], note: error instanceof Error ? error.message : "Docket page fetch failed." };
   }
   const links = filingLinksFromDocketHtml(html);
   const filings: FilingExcerpt[] = [];
+  const skipped: Array<{ role: string; url: string; reason: string }> = [];
   for (const link of links) {
     try {
       const response = await courtFetch(link.url);
       if (!response.ok) {
-        filings.push({ role: link.role, url: link.url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: false });
+        skipped.push(skipFiling(docketNumber, link.role, link.url, `HTTP ${response.status}`));
         continue;
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > MAX_PDF_BYTES || bytes.byteLength < 5 || String.fromCharCode(...bytes.slice(0, 4)) !== "%PDF") {
-        filings.push({ role: link.role, url: link.url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: false });
+      if (bytes.byteLength > MAX_PDF_BYTES) {
+        skipped.push(skipFiling(docketNumber, link.role, link.url, "larger than 6 MB"));
         continue;
       }
-      const excerpt = acceptFilingExcerpt(await pdfText(bytes), link.role, link.url);
+      const extracted = await textFromPdfBytes(bytes);
+      if (!extracted) {
+        skipped.push(skipFiling(docketNumber, link.role, link.url, "unreadable PDF"));
+        continue;
+      }
+      const excerpt = acceptFilingExcerpt(extracted, link.role, link.url);
+      if (excerpt.withheld || !excerpt.text) {
+        skipped.push(skipFiling(docketNumber, link.role, link.url, excerpt.withheld ? "sealed or restricted text" : "empty extract"));
+        continue;
+      }
       filings.push(excerpt);
-      console.log(JSON.stringify({ docket: docketNumber, filing: link.role, chars: excerpt.chars, estimatedTokens: excerpt.estimatedTokens, trimmed: excerpt.trimmed, withheld: excerpt.withheld, stored: false }));
+      console.log(JSON.stringify({ docket: docketNumber, filing: link.role, chars: excerpt.chars, estimatedTokens: excerpt.estimatedTokens, trimmed: excerpt.trimmed, stored: false }));
     } catch (error) {
-      console.error(`${docketNumber} ${link.role}: ${error instanceof Error ? error.message : "PDF failed"}`);
-      filings.push({ role: link.role, url: link.url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: false });
+      skipped.push(skipFiling(docketNumber, link.role, link.url, error instanceof Error ? error.message : "PDF failed"));
     }
   }
-  return { filings, note: links.length ? null : "The public docket page linked no application, response, reply, or lower-court opinion PDF." };
+  return { filings, skipped, note: links.length ? null : "The public docket page linked no application, response, reply, or lower-court opinion PDF." };
 }
