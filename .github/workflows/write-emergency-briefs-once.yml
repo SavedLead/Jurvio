@@ -7,7 +7,9 @@ name: Write emergency application briefs (once)
 # email. Runs on the builder. Dispatch by hand with
 # confirm=WRITE_EMERGENCY_BRIEFS.
 # mode=compare writes the same 5 newest serious applications with gpt-6-astra
-# and gpt-6.1-sol and does not store them. mode=dry and mode=apply store text.
+# and gpt-6.1-sol and does not store them. It does not use the production
+# environment, because that environment only allows main. mode=dry and
+# mode=apply store text and do use the production environment.
 #
 # Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=110, BRIEF_BUDGET_MID_USD=8,
 # BRIEF_BUDGET_TEASER_USD=2, BRIEF_BUDGET_TOTAL_USD=118. After that date the
@@ -35,7 +37,71 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  compare:
+    if: inputs.mode == 'compare'
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    timeout-minutes: 90
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      MODE: ${{ inputs.mode }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Require confirm=WRITE_EMERGENCY_BRIEFS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "WRITE_EMERGENCY_BRIEFS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WRITE_EMERGENCY_BRIEFS."
+            exit 1
+          fi
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY secret is empty. Add it to the repository secrets, then re-run."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Pull comparison packets
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          mkdir -p "$work"
+          pnpm exec tsx scripts/write-emergency-briefs.ts export-compare-sql > "$work/export.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/export.sql" > "$work/packets.jsonl"
+          echo "packets=$(wc -l < "$work/packets.jsonl")"
+
+      - name: Compare both models without storing
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/emergency-briefs"
+          pnpm exec tsx scripts/write-emergency-briefs.ts compare \
+            --packets "$work/packets.jsonl" \
+            --limit 5 \
+            --out "$work/comparison.md" | tee "$work/run.log"
+          { echo "### Model comparison (not published)"; echo; cat "$work/comparison.md"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emergency-brief-comparison
+          path: ${{ runner.temp }}/emergency-briefs/comparison.md
+          retention-days: 14
+
   write:
+    if: inputs.mode != 'compare'
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
     timeout-minutes: 360
