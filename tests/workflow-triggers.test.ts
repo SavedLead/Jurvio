@@ -503,6 +503,11 @@ describe("migrations only run behind Deploy production's backup", () => {
       expect(run).not.toContain('printf "%s\\n" "$CLOUDFLARE_API_TOKEN"');
       const probeRun = probe?.run ?? "";
       expect(probeRun).toContain("https://jurvio.com/feeds/scotus");
+      expect(probeRun).toContain("https://jurvio.com/feeds/scotus/emergency");
+      expect(probeRun).toContain("https://jurvio.com/feeds/scotus/administration");
+      expect(probeRun).toContain("zone_name");
+      expect(probeRun).toContain('zoneName !== "jurvio.com"');
+      expect(probeRun).toContain("feed_check");
       expect(probeRun).toContain("purge_http");
       expect(probeRun).toContain("com.docker.compose.service=app");
       expect(probeRun).not.toContain("docker compose");

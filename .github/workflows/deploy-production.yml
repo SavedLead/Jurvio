@@ -495,10 +495,21 @@ jobs:
             console.log("purge_result missing");
             process.exit(1);
           }
+          const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+          const zoneResponse = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zone)}`, { headers });
+          const zoneBody = await zoneResponse.json().catch(() => ({}));
+          const zoneName = zoneBody && zoneBody.result && zoneBody.result.name;
+          console.log(`zone_http ${zoneResponse.status} zone_name ${zoneName || "missing"}`);
+          if (zoneName !== "jurvio.com") process.exit(1);
+          const files = [
+            "https://jurvio.com/feeds/scotus",
+            "https://jurvio.com/feeds/scotus/emergency",
+            "https://jurvio.com/feeds/scotus/administration",
+          ];
           const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zone)}/purge_cache`, {
             method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ files: ["https://jurvio.com/feeds/scotus"] }),
+            headers,
+            body: JSON.stringify({ files }),
           });
           const body = await response.json().catch(() => ({}));
           const codes = Array.isArray(body.errors) ? body.errors.map((error) => error && error.code).filter((code) => code != null) : [];
@@ -507,6 +518,13 @@ jobs:
           process.exit(1);
           NODE
           REMOTE
+          for path in /feeds/scotus /feeds/scotus/emergency /feeds/scotus/administration; do
+            code="$(curl -sS -o "$RUNNER_TEMP/feed-body.txt" -D "$RUNNER_TEMP/feed-headers.txt" -w '%{http_code}' --max-time 25 "https://jurvio.com${path}")"
+            cache="$(awk 'tolower($1)=="cf-cache-status:" { print $2 }' "$RUNNER_TEMP/feed-headers.txt" | tr -d '\r')"
+            echo "feed_check ${path} http ${code} cf ${cache:-none}"
+            test "$code" = "200"
+            grep -q '<feed xmlns="http://www.w3.org/2005/Atom">' "$RUNNER_TEMP/feed-body.txt"
+          done
       - name: Verify hosted command-center login externally
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
