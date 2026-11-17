@@ -454,6 +454,24 @@ describe("migrations only run behind Deploy production's backup", () => {
       expect(script).not.toMatch(/node\s+\S*migrate\.mjs|run-migrations|db:migrate/);
     });
 
+    it("boots the next public container before it stops the one that is serving", () => {
+      const run = publicSteps[index(publicSteps, "Replace public app container")]?.run ?? "";
+      const candidate = run.indexOf("jurvio-app-next");
+      const ready = run.indexOf("http://127.0.0.1:3001/api/ready");
+      const replace = run.indexOf("up -d --no-deps app");
+      expect(candidate).toBeGreaterThan(0);
+      expect(ready).toBeGreaterThan(candidate);
+      expect(replace).toBeGreaterThan(ready);
+      expect(run).toContain("current container is still serving");
+    });
+
+    it("the command-center login check waits through origin 502s", () => {
+      const run = prodSteps[index(prodSteps, "Verify hosted command-center login externally")]?.run ?? "";
+      expect(run).toContain("502|503|520|522|525|000");
+      expect(run).toContain("seq 1 36");
+      expect(run).not.toContain("--retry 12");
+    });
+
     it("the public web deploy checks pending migrations before it switches containers", () => {
       const check = index(publicSteps, "Hold the release if database migrations are pending");
       const replace = index(publicSteps, "Replace public app container");
