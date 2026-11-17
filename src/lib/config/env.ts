@@ -46,6 +46,9 @@ const schema = z.object({
   // unless JURVIO_BILLING_LIVE is "1".
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  // OpenAI key for the emergency-brief job. The public site does not call
+  // OpenAI. The key is read by scripts/write-emergency-briefs.ts.
+  OPENAI_API_KEY: z.string().optional(),
   STRIPE_PRICE_PLUS: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
   STRIPE_PRICE_TEAM: z.string().optional(),

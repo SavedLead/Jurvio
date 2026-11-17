@@ -6,6 +6,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
+import { loadEmergencyBrief } from "@/modules/scotus/application/load-emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
   APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, officialEmergencyDocketUrl,
@@ -39,10 +40,11 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
       robots: robotsFor(false),
     };
   }
+  const brief = await loadEmergencyBrief(db(), application.docketNumber);
   const caption = cleanCaseCaption(application.caption);
   return {
     title: `${caption} (No. ${application.docketNumber}): Supreme Court emergency application`,
-    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.`,
+    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.${brief ? " Includes an AI-generated description, labeled as such." : ""}`,
     alternates: { canonical: `/supreme-court/emergency/${application.docketNumber}` },
     // Routine extension requests are thin pages: kept out of search.
     robots: robotsFor(application.kind !== "extension"),
@@ -71,8 +73,8 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const [app, stats, gate] = await Promise.all([
-    getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
+  const [app, stats, gate, brief] = await Promise.all([
+    getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(), loadEmergencyBrief(db(), docket),
   ]);
   if (!app) {
     const officialUrl = officialEmergencyDocketUrl(docket);
@@ -137,6 +139,12 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <h2 id="plain-title">In plain English</h2>
           <p>{plain || "The Court has docketed this application."}</p>
         </section>
+
+        {brief ? <section className={styles.plain} aria-labelledby="ai-title" data-ai-generated="true">
+          <h2 id="ai-title">AI-generated description</h2>
+          <p>{brief.body}</p>
+          <p className={styles.note}>AI-generated from the public docket lines on this page by {brief.model} (prompt {brief.promptVersion}). It is not a court opinion and it does not add facts. Written {easternTime(brief.generatedAt)}.</p>
+        </section> : null}
 
         <dl className={styles.facts}>
           <div><dt>Status</dt><dd>{uncertain ? <>Not clear<small>Some lines are withheld; see the <a href={app.sourceUrl}>Court&apos;s docket ↗</a></small></> : STATUS_LABEL[app.status]}{happened(app.rulingOn) ? <small>{shortDate(happened(app.rulingOn))}{app.ruledBy === "court" ? " · by the full Court" : app.ruledBy === "justice" ? " · by one justice" : ""}{app.writtenReasons ? " · with a written opinion" : ""}</small> : null}</dd></div>

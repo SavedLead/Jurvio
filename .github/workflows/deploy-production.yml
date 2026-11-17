@@ -455,6 +455,36 @@ jobs:
             mv "$tmp" "$env_file"
             rm -f "$updates"
           ' < "$payload"
+      - name: Sync OpenAI API key to box env
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          # The emergency-brief job reads OPENAI_API_KEY. Upsert it into the box
+          # env as one line, over stdin, and never print the value. No-op when
+          # the secret is unset. The public web process does not call OpenAI.
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::notice title=OpenAI key not set::OPENAI_API_KEY secret is empty; leaving box env unchanged."
+            exit 0
+          fi
+          case "$OPENAI_API_KEY" in *$'\n'*|*$'\r'*) echo "::error::OPENAI_API_KEY contains a newline"; exit 1;; esac
+          SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+          printf '%s' "$OPENAI_API_KEY" | timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" '
+            set -euo pipefail
+            umask 077
+            env_file=/opt/jurvio/.env.production
+            key="$(cat)"
+            touch "$env_file"
+            tmp="$(mktemp)"
+            grep -v "^OPENAI_API_KEY=" "$env_file" > "$tmp" || true
+            printf "OPENAI_API_KEY=%s\n" "$key" >> "$tmp"
+            chmod 600 "$tmp"
+            mv "$tmp" "$env_file"
+            echo "OPENAI_API_KEY synced into box env (value not printed)."
+          '
       - name: Release and verify
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:

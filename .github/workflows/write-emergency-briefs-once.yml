@@ -1,0 +1,107 @@
+name: Write emergency application briefs (once)
+
+# Writes AI descriptions for Supreme Court emergency applications, federal
+# ones first, then other serious applications, then one-line extension
+# summaries. Runs on the builder. OpenAI calls happen here, not on a web host.
+# Stops at $100 of stored spend. Dispatch by hand with
+# confirm=WRITE_EMERGENCY_BRIEFS. mode=dry writes 5 and stops so the text can
+# be read before mode=apply.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type WRITE_EMERGENCY_BRIEFS to run this workflow against production"
+        required: true
+        type: string
+      mode:
+        description: "dry writes 5 descriptions; apply continues until the queue or the $100 cap"
+        required: true
+        default: "dry"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-emergency-briefs
+  cancel-in-progress: false
+
+jobs:
+  write:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 360
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      MODE: ${{ inputs.mode }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Require confirm=WRITE_EMERGENCY_BRIEFS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "WRITE_EMERGENCY_BRIEFS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WRITE_EMERGENCY_BRIEFS."
+            exit 1
+          fi
+          if [ "$MODE" != "dry" ] && [ "$MODE" != "apply" ]; then
+            echo "::error::mode must be dry or apply"
+            exit 1
+          fi
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY secret is empty. Add it to the repository secrets, then re-run."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Pull packets from production
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          mkdir -p "$work"
+          pnpm exec tsx scripts/write-emergency-briefs.ts export-sql > "$work/export.sql"
+          pnpm exec tsx scripts/write-emergency-briefs.ts spent-sql > "$work/spent.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/spent.sql" > "$work/spent.txt"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/export.sql" > "$work/packets.jsonl"
+          echo "spent=$(cat "$work/spent.txt") packets=$(wc -l < "$work/packets.jsonl")"
+
+      - name: Write descriptions
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/emergency-briefs"
+          limit=0
+          if [ "$MODE" = "dry" ]; then limit=5; fi
+          pnpm exec tsx scripts/write-emergency-briefs.ts write \
+            --packets "$work/packets.jsonl" \
+            --spent "$(tr -d '[:space:]' < "$work/spent.txt")" \
+            --limit "$limit" \
+            --out-sql "$work/upserts.sql" \
+            --log "$work/costs.jsonl" | tee "$work/run.log"
+          # The key is not in the log. Keep the summary, including the five
+          # dry-run descriptions, where a person can read them.
+          { echo "### Emergency brief run ($MODE)"; echo; echo '```json'; grep '^SUMMARY ' "$work/run.log" | sed 's/^SUMMARY //'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Store descriptions
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q' < "$work/upserts.sql"
+          echo "Stored the descriptions written this run."
