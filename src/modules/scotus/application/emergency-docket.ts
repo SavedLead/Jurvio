@@ -309,7 +309,7 @@ async function loadEmergencyApplicationBrief(sql: Sql, docketNumber: string): Pr
           to_json(a.first_seen_at)#>>'{}' AS "firstSeenAt", to_json(p.checked_at)#>>'{}' AS "checkedAt"
         FROM scotus_application a
         LEFT JOIN scotus_source_poll p ON p.url = a.source_url
-        WHERE a.docket_number = ${docketNumber}`;
+        WHERE a.docket_number = ${docketNumber} AND ${tx.unsafe(visibleSql("a"))}`;
       if (!row) return null;
       const events = await tx<EmergencyEventRow[]>`
         SELECT source_record_id AS "sourceRecordId", filed_on::text AS "filedOn", kind, description, plain_line AS plain, justices,
