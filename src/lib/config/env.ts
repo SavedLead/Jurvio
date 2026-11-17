@@ -38,8 +38,12 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
   EMAIL_POSTAL_ADDRESS: z.string().optional(),
+  // Stripe test checkout can run while this is unset or "0". Only the exact
+  // value "1" allows an sk_live_ key and live-mode webhooks.
+  JURVIO_BILLING_LIVE: z.string().optional(),
   // Stripe billing stays off while STRIPE_SECRET_KEY is unset (see
-  // src/modules/accounts/infrastructure/stripe.ts).
+  // src/modules/accounts/infrastructure/stripe.ts). A live key is ignored
+  // unless JURVIO_BILLING_LIVE is "1".
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PRICE_PLUS: z.string().optional(),

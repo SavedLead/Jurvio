@@ -22,7 +22,7 @@ export const GROUP_CASE_LIMIT = 25;
 /** CourtListener calls per run: one docket, one entry page, one party page. */
 export const REFRESH_BATCH = 6;
 
-/** Fan-out rows count only while a paid plan is entitled. Case and emergency follows do not use this. */
+/** Fan-out rows count only while a paid plan is entitled. A follow of one case does not use this. */
 const PAID_FANOUT = `EXISTS (
   SELECT 1 FROM account_subscription s
   WHERE s.user_id = f.user_id
@@ -120,7 +120,8 @@ export async function syncFollowedItemPriority(sql: Sql): Promise<{ cases: numbe
       FROM entity_follow f
       JOIN scotus_application a ON a.kind <> 'extension' AND a.source_lane = 'live'
       JOIN legal_case c ON c.id = a.case_id
-      WHERE f.kind = 'emergency' AND ${db.unsafe(emergencyFeedConditionSql("a"))} AND ${db.unsafe(ELIGIBLE)}
+      WHERE f.kind = 'emergency' AND f.status = 'active' AND ${db.unsafe(PAID_FANOUT)}
+        AND ${db.unsafe(emergencyFeedConditionSql("a"))} AND ${db.unsafe(ELIGIBLE)}
     `;
     for (const topic of TOPICS) {
       await db`

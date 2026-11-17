@@ -3,8 +3,8 @@
 // filing when it next checks that court.
 
 export const ENTITY_KINDS = ["judge", "topic", "party", "emergency", "court"] as const;
-/** Follows that pull in many cases. Paid plans only. Case follows and emergency feeds stay free. */
-export const FAN_OUT_KINDS = ["judge", "court", "party", "topic"] as const;
+/** Follows that pull in many cases. Paid plans only. A follow of one case stays free. */
+export const FAN_OUT_KINDS = ["judge", "court", "party", "topic", "emergency"] as const;
 export type FanOutKind = (typeof FAN_OUT_KINDS)[number];
 
 export function isFanOutKind(kind: EntityKind): kind is FanOutKind {

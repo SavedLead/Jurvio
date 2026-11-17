@@ -162,7 +162,7 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     expect(await getEmergencyApplication(sql, "'; select 1")).toBeNull();
   });
 
-  it("lets a Free user follow a serious application and an emergency feed, which matches new lines", async () => {
+  it("lets a Free user follow one application, and a paid plan follow an emergency feed that matches new lines", async () => {
     const [user] = await sql<{ id: string }[]>`INSERT INTO app_user (email, email_verified_at) VALUES (${`emerg-${Date.now()}@example.test`}, now()) RETURNING id`;
     users.push(user!.id);
     expect((await followCase(sql, user!.id, "jv-emerg600")).status).toBe("not_eligible"); // extension
@@ -174,6 +174,8 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     const target = await resolveEntityTarget(sql, "emergency", "capital");
     expect(target).toMatchObject({ kind: "emergency", targetKey: "capital" });
     expect(await resolveEntityTarget(sql, "emergency", "not-a-feed")).toBeNull();
+    expect((await followEntity(sql, user!.id, target!, "daily")).status).toBe("paid_required");
+    await sql`INSERT INTO account_subscription (user_id, plan, status) VALUES (${user!.id}, 'plus', 'active')`;
     const followed = await followEntity(sql, user!.id, target!, "daily");
     expect(followed.status).toBe("followed");
     await sql`UPDATE entity_follow SET created_at = now() - interval '2 hours' WHERE user_id = ${user!.id}`;

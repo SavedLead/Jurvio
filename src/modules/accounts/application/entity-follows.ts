@@ -8,6 +8,7 @@ import { alertEligibleSql, followEligibleSql } from "./follows";
 import { isFanOutKind, type EntityFrequency, type EntityKind } from "../domain/entity-follow";
 import { isPublicId } from "@/lib/ids/public-id";
 import { userPlan } from "./account";
+import { billingConfig, checkoutEnabled } from "../infrastructure/stripe";
 import { emergencyFeedBySlug } from "@/modules/scotus/domain/emergency-application";
 
 // Judge, topic and party follows. A follow stores a stable target key:
@@ -99,7 +100,7 @@ export interface EntityFollowState {
   entityCount: number;
   entityLimit: number;
   asapAllowed: boolean;
-  upgrade: { plan: PlanId; name: string; monthlyPriceUsd: number; entityFollowLimit: number } | null;
+  upgrade: { plan: PlanId; name: string; monthlyPriceUsd: number; entityFollowLimit: number; checkout: boolean } | null;
 }
 
 /**
@@ -113,7 +114,11 @@ export function asapAllowedFor(plan: PlanId, _kind: EntityKind): boolean {
 
 function upgradeFor(plan: PlanId) {
   const next = nextPlanUp(plan, "entityFollowLimit");
-  return next ? { plan: next.id, name: next.name, monthlyPriceUsd: next.monthlyPriceUsd, entityFollowLimit: next.entityFollowLimit } : null;
+  if (!next) return null;
+  return {
+    plan: next.id, name: next.name, monthlyPriceUsd: next.monthlyPriceUsd, entityFollowLimit: next.entityFollowLimit,
+    checkout: checkoutEnabled(billingConfig(), next.id),
+  };
 }
 
 export async function entityFollowState(sql: Sql, userId: string, target: Pick<EntityTarget, "kind" | "targetKey">): Promise<EntityFollowState> {

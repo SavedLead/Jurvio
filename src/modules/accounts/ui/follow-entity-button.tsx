@@ -17,7 +17,7 @@ interface EntityApiState {
   entityLimit?: number;
   asapAllowed?: boolean;
   error?: string;
-  upgrade?: { name: string; entityFollowLimit: number } | null;
+  upgrade?: { plan?: string; name: string; monthlyPriceUsd?: number; entityFollowLimit: number; checkout?: boolean } | null;
 }
 
 const HINT = "jurvio_signed_in=1";
@@ -73,7 +73,8 @@ export function FollowEntityButton({ kind, target, name, compact = false }: {
       const body = await response.json() as EntityApiState;
       setState(body);
       if (body.frequency) setFrequency(body.frequency);
-      if (!body.error) setMessage(!body.following ? "Stopped following."
+      if (body.paidRequired || body.needsUpgrade) setMessage("");
+      else if (!body.error) setMessage(!body.following ? "Stopped following."
         : body.frequency === "asap" ? "Following. We email you when Jurvio finds a match." : "Following. You get a daily digest of matches.");
     } catch {
       setMessage("Something went wrong. Try again.");
@@ -98,7 +99,7 @@ export function FollowEntityButton({ kind, target, name, compact = false }: {
         aria-label={`Follow ${name}: sign in to get email alerts`}>
         {compact ? "Follow" : `Follow ${kindWord}`}
       </Link>
-      {compact ? null : <small className="entityFollowNote">Sign in to follow. A single case is free. A judge, court, party, or topic is a paid feature.</small>}
+      {compact ? null : <small className="entityFollowNote">Sign in to follow. A single case is free. A judge, court, party, topic, or the emergency docket is a paid feature.</small>}
     </span>;
   }
 
@@ -124,13 +125,15 @@ export function FollowEntityButton({ kind, target, name, compact = false }: {
       {!compact || state.following ? frequencyPicker : null}
     </span>
     {state.paidRequired || state.needsUpgrade || state.error === "paid_required" ? <span className="entityFollowUpgrade" role="status">
-      Following a {kindWord} is a paid feature (Plus, Pro, or Team). Checkout is not open yet.
-      {state.needsUpgrade ? " Your saved follow stays on the account and stays quiet until then." : ""}
-      {" "}<Link href={"/pricing" as Route}>See plans</Link>
+      Following a {kindWord} is a paid feature.
+      {state.upgrade?.monthlyPriceUsd ? <> {state.upgrade.name} is ${state.upgrade.monthlyPriceUsd}/mo.</> : null}
+      {state.needsUpgrade ? " Your saved follow stays on the account and stays quiet until you upgrade." : ""}
+      {" "}
+      {state.upgrade?.checkout && state.upgrade.plan ? <form action="/api/billing/checkout" method="post"><input type="hidden" name="plan" value={state.upgrade.plan} /><button type="submit">Upgrade to {state.upgrade.name}</button></form> : <Link href={"/pricing" as Route}>See plans</Link>}
     </span> : null}
     {state.error === "limit_reached" ? <span className="entityFollowUpgrade" role="alert">
       Your plan includes {formatLimit(state.entityLimit ?? 1)} judge, topic, party or emergency feed {state.entityLimit === 1 ? "follow" : "follows"} ({state.entityCount} used).
-      {state.upgrade ? <> {state.upgrade.name} raises this to {formatLimit(state.upgrade.entityFollowLimit)}: upgrade coming soon.</> : null}
+      {state.upgrade ? <> {state.upgrade.name} raises this to {formatLimit(state.upgrade.entityFollowLimit)}.</> : null}
       {" "}<Link href="/alerts">Manage alerts</Link> · <Link href={"/pricing" as Route}>See plans</Link>
     </span> : null}
     {!compact && !state.error ? <small className="entityFollowNote">

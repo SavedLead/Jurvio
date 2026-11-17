@@ -21,7 +21,7 @@ WITH     match_follow AS MATERIALIZED (
           ON subscription.user_id = paused.user_id
          AND subscription.plan IN ('plus', 'pro', 'team')
          AND subscription.status IN ('active', 'trialing', 'past_due')
-        WHERE paused.kind IN ('judge', 'court', 'party', 'topic')
+        WHERE paused.kind IN ('judge', 'court', 'party', 'topic', 'emergency')
           AND (paused.status = 'needs_upgrade' OR subscription.user_id IS NULL)
       )
     ),
@@ -213,7 +213,7 @@ WITH     match_follow AS MATERIALIZED (
           ON subscription.user_id = paused.user_id
          AND subscription.plan IN ('plus', 'pro', 'team')
          AND subscription.status IN ('active', 'trialing', 'past_due')
-        WHERE paused.kind IN ('judge', 'court', 'party', 'topic')
+        WHERE paused.kind IN ('judge', 'court', 'party', 'topic', 'emergency')
           AND (paused.status = 'needs_upgrade' OR subscription.user_id IS NULL)
       )
     ),
