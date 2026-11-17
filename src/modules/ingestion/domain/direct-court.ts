@@ -120,6 +120,11 @@ export function shouldCreateCase(event: Pick<DirectCourtEvent, "docketNumber" | 
     event.caption.trim().length >= 3;
 }
 
+/** A complaint or an explicit new-case line is the case's filing date. A later motion is not. */
+export function eventOpensCase(eventType: DirectEventType): boolean {
+  return eventType === "case_filed" || eventType === "complaint_or_petition_filed";
+}
+
 /** District or appellate docket numbers a feed entry may publish. Sealed text is a separate check. */
 export function isPublishableFeedDocket(docketNumber: string): boolean {
   return DISTRICT_DOCKET.test(docketNumber) || APPELLATE_DOCKET.test(docketNumber);

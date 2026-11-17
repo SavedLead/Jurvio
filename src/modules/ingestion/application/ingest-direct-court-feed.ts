@@ -3,7 +3,7 @@ import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import { calendarDateInZone, utcCalendarDate } from "@/lib/time/calendar-date";
 import type { ArtifactStore } from "./artifact-store";
-import { shouldCreateCase } from "../domain/direct-court";
+import { shouldCreateCase, eventOpensCase } from "../domain/direct-court";
 import { publishDraftFeedCase, recordFeedPublication } from "../live-feeds/persist";
 import { fetchCmecfRss } from "../providers/courts/cmecf-rss";
 import type { FederalCourtSource } from "../providers/courts/registry";
@@ -163,8 +163,8 @@ async function ingestOneDirectCourtFeed(
             RETURNING id
           `;
           if (!courtRecord) throw new Error("Official court was not persisted");
-          const filedOn = event.eventType === "case_filed" ? calendarDateInZone(event.filedAt, court.timeZone) : null;
-          const filedOnUtc = event.eventType === "case_filed" ? utcCalendarDate(event.filedAt) : null;
+          const filedOn = eventOpensCase(event.eventType) ? calendarDateInZone(event.filedAt, court.timeZone) : null;
+          const filedOnUtc = eventOpensCase(event.eventType) ? utcCalendarDate(event.filedAt) : null;
           const [insertedCase] = await tx<{ id: string; public_id: string; publication: string; inserted: boolean }[]>`
             INSERT INTO legal_case (
               public_id, court_id, docket_number, caption, filed_on,
@@ -178,6 +178,8 @@ async function ingestOneDirectCourtFeed(
             DO UPDATE SET source_artifact_id = EXCLUDED.source_artifact_id,
               source_updated_at = EXCLUDED.source_updated_at,
               filed_on = CASE
+                WHEN legal_case.filed_on IS NULL AND ${filedOn}::date IS NOT NULL
+                THEN ${filedOn}::date
                 WHEN ${filedOn}::date IS NOT NULL
                   AND legal_case.filed_on IS NOT DISTINCT FROM ${filedOnUtc}::date
                   AND legal_case.filed_on IS DISTINCT FROM ${filedOn}::date
