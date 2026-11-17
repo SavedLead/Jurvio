@@ -1,0 +1,124 @@
+name: Backfill court filings (once)
+
+# Dispatch only. Streams the free CourtListener dockets snapshot on the builder
+# and writes matching appeals or district cases through the ingestion box.
+# CourtListener does not publish a free docket-entries file. This loads cases
+# (date_filed), not each docket line. Lines newer than the snapshot still come
+# from the RSS lanes.
+#
+# New rows use the court filing date for filed_on, created_at, and updated_at,
+# so follower alerts and the 24-hour feeds do not see them. Sealed captions are
+# skipped. The run stops for the 1-7am ET window, low disk, high load, or the
+# 90-minute budget. It does not publish cases.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type BACKFILL_FILINGS to run this backfill"
+        required: true
+        type: string
+      window_days:
+        description: "30, 60, 90, or 365"
+        required: true
+        default: "30"
+        type: string
+      family:
+        description: "appeals first, then district"
+        required: true
+        default: "appeals"
+        type: string
+      snapshot_date:
+        description: "auto, latest, or YYYY-MM-DD"
+        required: true
+        default: "auto"
+        type: string
+      allow_anytime:
+        description: "true skips the 1-7am ET window"
+        required: true
+        default: "false"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-filing-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 150
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      WINDOW_DAYS: ${{ inputs.window_days }}
+      FAMILY: ${{ inputs.family }}
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      ALLOW_ANYTIME: ${{ inputs.allow_anytime }}
+    steps:
+      - name: Require confirm=BACKFILL_FILINGS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "BACKFILL_FILINGS" ]; then
+            echo "::error::Refusing to backfill. Re-run with confirm=BACKFILL_FILINGS."
+            exit 1
+          fi
+          case "$WINDOW_DAYS" in 30|60|90|365) ;; *) echo "::error::window_days must be 30, 60, 90, or 365"; exit 1;; esac
+          case "$FAMILY" in appeals|district) ;; *) echo "::error::family must be appeals or district"; exit 1;; esac
+          case "$ALLOW_ANYTIME" in true|false) ;; *) echo "::error::allow_anytime must be true or false"; exit 1;; esac
+          case "$SNAPSHOT_DATE" in
+            auto|latest|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be auto, latest, or YYYY-MM-DD"; exit 1;;
+          esac
+          hour="$(TZ=America/New_York date +%-H)"
+          if [ "$ALLOW_ANYTIME" != "true" ] && { [ "$hour" -lt 1 ] || [ "$hour" -ge 7 ]; }; then
+            echo "::notice::Outside the 1-7am America/New_York window (hour $hour); nothing to do."
+            echo "OUTSIDE_WINDOW=true" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.OUTSIDE_WINDOW != 'true'
+      - uses: ./.github/actions/vpc-ssh
+        if: env.OUTSIDE_WINDOW != 'true'
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+
+      - name: Stream the dockets snapshot for this window
+        if: env.OUTSIDE_WINDOW != 'true'
+        run: |
+          set -euo pipefail
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' WINDOW_DAYS='$WINDOW_DAYS' FAMILY='$FAMILY' ALLOW_ANYTIME='$ALLOW_ANYTIME' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          app="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo "::error::app container missing"; exit 1; }
+          if ! sudo -n docker exec "$app" test -f jobs/backfill-court-filings.mjs; then
+            echo "::error::jobs/backfill-court-filings.mjs is not in the running image. Deploy production first."
+            exit 1
+          fi
+          bucket="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          latest="$(curl -fsS "${bucket}/?list-type=2&prefix=bulk-data/dockets-" | grep -oE 'dockets-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' | sort | tail -1 | sed -E 's/dockets-([0-9-]+)\.csv\.bz2/\1/')"
+          snap="$SNAPSHOT_DATE"
+          if [ "$snap" = "auto" ] || [ "$snap" = "latest" ]; then snap="$latest"; fi
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::could not resolve snapshot date ($snap)"; exit 1;;
+          esac
+          echo "snapshot=${snap} family=${FAMILY} window_days=${WINDOW_DAYS}"
+          cache=/var/lib/jurvio/artifacts/bulk
+          sudo -n docker exec "$app" mkdir -p "$cache"
+          file="$cache/dockets-${snap}.csv.bz2"
+          if ! sudo -n docker exec "$app" test -s "$file"; then
+            echo "downloading dockets snapshot"
+            sudo -n docker exec "$app" curl -fsSL --retry 3 -o "$file.partial" "${bucket}/bulk-data/dockets-${snap}.csv.bz2"
+            sudo -n docker exec "$app" mv "$file.partial" "$file"
+          fi
+          sudo -n docker exec "$app" node jobs/backfill-court-filings.mjs \
+            --family="$FAMILY" --window-days="$WINDOW_DAYS" --snapshot-date="$snap" \
+            --file="$file" --allow-anytime="$ALLOW_ANYTIME"
+          REMOTE
