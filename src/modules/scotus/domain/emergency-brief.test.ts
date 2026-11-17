@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
-  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml,
+  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml, inspectCaseJson,
   FILING_CHAR_CAP, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
 } from "./emergency-brief";
@@ -172,6 +172,16 @@ describe("emergency brief packets", () => {
       ],
     });
     expect(fromJson.map((link) => link.role)).toEqual(["application", "response", "reply", "lower_court"]);
+    const inspected = inspectCaseJson({
+      ProceedingsandOrder: [
+        { Text: "Application (26A686) for a stay.", Links: [
+          { Description: "Main Document", File: "app.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf" },
+          { Description: "Proof of Service", File: "service.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/1/service.pdf" },
+        ] },
+      ],
+    });
+    expect(inspected.rawLinks).toBe(2);
+    expect(inspected.kept.map((link) => link.role)).toEqual(["application"]);
     expect(fromJson.map((link) => link.url).join(" ")).not.toContain("service.pdf");
     expect(fromJson.map((link) => link.url).join(" ")).not.toContain("cos.pdf");
     const built = prepareBrief(source({

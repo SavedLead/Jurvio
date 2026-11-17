@@ -353,17 +353,19 @@ export function officialCaseJsonUrl(docketNumber: string): string | null {
   return /^[0-9]{2}A[0-9]{1,4}$/.test(docketNumber) ? `${PDF_ORIGIN}/RSS/Cases/JSON/${docketNumber}.json` : null;
 }
 
-/** One PDF per role from ProceedingsandOrder[].Links[].DocumentUrl. */
-export function filingLinksFromCaseJson(value: unknown): FilingLink[] {
-  if (!value || typeof value !== "object") return [];
+/** Every Links entry, and the ones kept for the model. rawLinks counts service PDFs too. */
+export function inspectCaseJson(value: unknown): { rawLinks: number; kept: FilingLink[] } {
+  if (!value || typeof value !== "object") return { rawLinks: 0, kept: [] };
   const proceedings = (value as { ProceedingsandOrder?: unknown }).ProceedingsandOrder;
-  if (!Array.isArray(proceedings)) return [];
+  if (!Array.isArray(proceedings)) return { rawLinks: 0, kept: [] };
   const found = new Map<FilingRole, FilingLink>();
+  let rawLinks = 0;
   for (const item of proceedings) {
     if (!item || typeof item !== "object") continue;
     const proceeding = typeof (item as { Text?: unknown }).Text === "string" ? (item as { Text: string }).Text : "";
     const links = (item as { Links?: unknown }).Links;
     if (!Array.isArray(links)) continue;
+    rawLinks += links.length;
     for (const link of links) {
       if (!link || typeof link !== "object") continue;
       const description = typeof (link as { Description?: unknown }).Description === "string" ? (link as { Description: string }).Description : "";
@@ -376,10 +378,16 @@ export function filingLinksFromCaseJson(value: unknown): FilingLink[] {
       found.set(role, { role, url, title: description || file || "Document" });
     }
   }
-  return ["application", "response", "reply", "lower_court"].flatMap((role) => {
+  const kept = ["application", "response", "reply", "lower_court"].flatMap((role) => {
     const link = found.get(role as FilingRole);
     return link ? [link] : [];
   });
+  return { rawLinks, kept };
+}
+
+/** One PDF per role from ProceedingsandOrder[].Links[].DocumentUrl. */
+export function filingLinksFromCaseJson(value: unknown): FilingLink[] {
+  return inspectCaseJson(value).kept;
 }
 
 /** Main-document PDFs linked from a public supremecourt.gov docket page. One per role. */
