@@ -14,8 +14,10 @@ description. That email is not approved, and charging stays off.
 
 ## Decision
 
-- `gpt-6-astra` ($10 / $50 per million tokens) writes the full description
-  while its cap remains. `gpt-6.1-sol` ($2 / $10) fills gaps after that.
+- David picked `gpt-6-astra` ($10 / $50 per million tokens) for full
+  descriptions. `gpt-6.1-sol` ($2 / $10) fills gaps after the Astra cap.
+  `gpt-6-luna` is only for follower teasers. No teaser email is sent, and
+  charging stays off.
 - An extension of time, and a thin filing that is not a stay, injunction,
   vacatur, bail request, capital case, or federal application, gets a fixed
   template. Those rows record model `rule` and `ai_generated = false`.

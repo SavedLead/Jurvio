@@ -1,8 +1,9 @@
 /**
  * Writes descriptions for Supreme Court emergency applications.
  *
- * Runs on the builder, not on a web host. Serious applications use gpt-6-astra
- * until that cap is reached, then gpt-6.1-sol. Extensions and other routine
+ * Runs on the builder, not on a web host. David picked gpt-6-astra for full
+ * descriptions. gpt-6.1-sol fills gaps after that cap. gpt-6-luna is teasers
+ * only. Extensions and other routine
  * filings get a template and no model call. Followed cases can get a cheap
  * teaser, stored as a preview. This process does not send email.
  *
@@ -18,7 +19,7 @@ import { loadFilingExcerpts } from "../src/modules/scotus/application/load-filin
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall, worstCaseBriefCost,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -361,6 +362,8 @@ async function runCompare(): Promise<void> {
       pdfs: loaded.pdfs,
       pdfCount: loaded.filings.length,
       extractedChars: loaded.filings.reduce((sum, filing) => sum + filing.chars, 0),
+      ocrPages: loaded.filings.reduce((sum, filing) => sum + (filing.ocrPages ?? 0), 0),
+      worstCaseUsd: worstCaseBriefCost(loaded.filings.reduce((sum, filing) => sum + filing.chars, 0) + 2_000).usd,
       note: loaded.note,
       stored: false,
     }));

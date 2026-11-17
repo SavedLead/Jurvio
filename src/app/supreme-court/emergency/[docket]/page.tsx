@@ -10,7 +10,7 @@ import { loadEmergencyBrief, loadEmergencyTeaser } from "@/modules/scotus/applic
 import { teaserPreview } from "@/modules/scotus/domain/emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
-  APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, officialEmergencyDocketUrl,
+  APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, hasFederalGovernmentParty, officialEmergencyDocketUrl,
   justiceSlugForRef, plainEnglishFor, responseDisplay, type ApplicationEventKind, type NotedVote,
 } from "@/modules/scotus/domain/emergency-application";
 import { loadEmergencyStats } from "@/modules/scotus/application/emergency-stats";
@@ -180,7 +180,7 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <div><dt>Lower court</dt><dd>{app.lowerCourt ?? "Not stated"}
             {app.lowerCaseNumbers.length ? <small>No. {app.lowerCaseNumbers.join(", ")}</small> : null}
             {app.linkedLowerCase ? <small><Link href={`/case/${app.linkedLowerCase.publicId}` as Route}>Open the lower-court case on Jurvio →</Link></small> : null}</dd></div>
-          {app.administration && app.applicantKind === "federal" ? <div><dt>Administration</dt><dd>{app.administration}<small>{ADMINISTRATION_FEED_NOTE}</small></dd></div> : null}
+          {app.administration && hasFederalGovernmentParty(app.caption, app.applicant) ? <div><dt>Administration</dt><dd>{app.administration}<small>{ADMINISTRATION_FEED_NOTE}</small></dd></div> : null}
           {app.amicusCount ? <div><dt>Amicus briefs</dt><dd>{app.amicusCount}</dd></div> : null}
         </dl>
 

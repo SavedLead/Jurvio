@@ -13,7 +13,7 @@ import { casePagePath, opinionPagePath } from "@/modules/scotus/domain/recent-op
 import { alertEligibleSql } from "@/modules/accounts/application/follows";
 import { circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
 import {
-  easternDate, responseStatusFrom,
+  easternDate, hasFederalGovernmentParty, responseStatusFrom,
   type ApplicantKind, type ApplicationEventKind, type ApplicationKind, type ApplicationStatus, type NotedVote,
 } from "@/modules/scotus/domain/emergency-application";
 
@@ -157,7 +157,7 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
         rows.push({
           ...row,
           caption: caption.text ?? row.caption,
-          administration: row.applicantKind === "federal" ? row.administration : null,
+          administration: hasFederalGovernmentParty(row.caption, null) ? row.administration : null,
         });
       }
       const [counts] = await tx<EmergencyList["counts"][]>`

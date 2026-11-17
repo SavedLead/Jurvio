@@ -4,7 +4,7 @@
  * the script is still starting, so a const declared later would throw
  * "before initialization" and look like a network block.
  */
-import { acceptFilingExcerpt, inspectCaseJson, officialCaseJsonUrl, type FilingExcerpt } from "@/modules/scotus/domain/emergency-brief";
+import { acceptFilingExcerpt, fitFilingsToCase, inspectCaseJson, officialCaseJsonUrl, type FilingExcerpt } from "@/modules/scotus/domain/emergency-brief";
 import { textFromPdfBytes } from "@/modules/scotus/domain/filing-pdf-text";
 
 const COURT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -117,11 +117,12 @@ export async function loadFilingExcerpts(docketNumber: string, options: FilingFe
         continue;
       }
       const extracted = await textFromPdfBytes(bytes);
-      if (!extracted) {
+      if (!extracted?.text) {
         empty.skipped.push(skipFiling(docketNumber, link.role, link.url, "unreadable PDF"));
         continue;
       }
-      const excerpt = acceptFilingExcerpt(extracted, link.role, link.url);
+      const excerpt = acceptFilingExcerpt(extracted.text, link.role, link.url);
+      excerpt.ocrPages = extracted.ocrPages;
       if (excerpt.withheld || !excerpt.text) {
         empty.skipped.push(skipFiling(docketNumber, link.role, link.url, excerpt.withheld ? "sealed or restricted text" : "empty extract"));
         continue;
@@ -133,6 +134,7 @@ export async function loadFilingExcerpts(docketNumber: string, options: FilingFe
       empty.skipped.push(skipFiling(docketNumber, link.role, link.url, error instanceof Error ? error.message : "PDF failed"));
     }
   }
+  empty.filings = fitFilingsToCase(empty.filings);
   empty.note = inspected.kept.length ? null : "The case JSON listed no application, response, reply, or lower-court opinion PDF.";
   return empty;
 }
