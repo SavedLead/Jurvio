@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { billingConfig, checkoutEnabled, createCheckoutSession, planForPrice, verifyStripeSignature } from "./stripe";
 
@@ -13,6 +14,13 @@ describe("stripe scaffolding", () => {
     expect(checkoutEnabled(on, "plus")).toBe(true);
     expect(checkoutEnabled(on, "pro")).toBe(false);
     expect(checkoutEnabled(on, "free")).toBe(false);
+    expect(on.live).toBe(false);
+    const liveKey = billingConfig({ STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "whsec_x", STRIPE_PRICE_PLUS: "price_plus" });
+    expect(liveKey.enabled).toBe(false);
+    expect(checkoutEnabled(liveKey, "plus")).toBe(false);
+    const liveOn = billingConfig({ STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "whsec_x", STRIPE_PRICE_PLUS: "price_plus", JURVIO_BILLING_LIVE: "1" });
+    expect(liveOn.live).toBe(true);
+    expect(checkoutEnabled(liveOn, "plus")).toBe(true);
     expect(planForPrice(on, "price_plus")).toBe("plus");
     expect(planForPrice(on, "price_other")).toBeNull();
   });
@@ -40,5 +48,9 @@ describe("stripe scaffolding", () => {
     expect(sent!.get("client_reference_id")).toBe("u1");
     expect(sent!.get("customer_email")).toBe("a@example.com");
     expect(sent!.get("line_items[0][price]")).toBe("price_plus");
+  });
+
+  it("does not apply a live-mode webhook while live charging is off", () => {
+    expect(readFileSync("src/modules/accounts/application/billing.ts", "utf8")).toContain("event.livemode && !config.live");
   });
 });

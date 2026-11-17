@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { isFanOutKind } from "../domain/entity-follow";
 
 describe("fan-out follows are paid", () => {
-  it("treats judge, court, party, and topic as fan-out, and leaves cases and emergency free", () => {
+  it("treats judge, court, party, topic, and the emergency docket as paid, and leaves a single case free", () => {
     expect(isFanOutKind("judge")).toBe(true);
     expect(isFanOutKind("court")).toBe(true);
     expect(isFanOutKind("party")).toBe(true);
     expect(isFanOutKind("topic")).toBe(true);
-    expect(isFanOutKind("emergency")).toBe(false);
+    expect(isFanOutKind("emergency")).toBe(true);
   });
 
   it("refuses a free account in the server follow function and keeps the row", () => {

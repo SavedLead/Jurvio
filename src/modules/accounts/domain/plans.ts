@@ -54,16 +54,16 @@ export interface PlanDefinition {
 
 export const PLANS: Readonly<Record<PlanId, PlanDefinition>> = {
   free: {
-    id: "free", name: "Free", monthlyPriceUsd: 0, annualPriceUsd: null, emergencyTools: false, seats: 1, followLimit: 5, entityFollowLimit: 1, entityAsap: true, alertCadence: "instant",
+    id: "free", name: "Free", monthlyPriceUsd: 0, annualPriceUsd: null, emergencyTools: false, seats: 1, followLimit: 5, entityFollowLimit: 0, entityAsap: true, alertCadence: "instant",
     monitors: false, available: true,
-    tagline: "Follow a few cases. Judge, court, party, and topic alerts are paid.",
-    features: ["Follow up to 5 cases", "Emergency-docket feed follows stay on Free", "Email alerts every 10 minutes for cases you follow", "Judge, court, party, and topic follows are a paid feature", "All public case pages, free forever"],
+    tagline: "Follow cases for free. Judge, court, party, topic, and emergency-docket follows are paid.",
+    features: ["Follow up to 5 cases", "Email alerts every 10 minutes for cases you follow", "Judge, court, party, topic, and emergency-docket follows are paid", "All public case pages, free forever"],
   },
   plus: {
     id: "plus", name: "Plus", monthlyPriceUsd: 19, annualPriceUsd: 190, emergencyTools: false, seats: 1, followLimit: 50, entityFollowLimit: 10, entityAsap: true, alertCadence: "hourly",
     monitors: false, available: true,
     tagline: "For journalists, researchers and close followers.",
-    features: ["Follow up to 50 cases", "Follow up to 10 judges, topics, parties or emergency-docket feeds", "Hourly email alerts", "Everything in Free"],
+    features: ["Follow up to 50 cases", "Follow up to 10 judges, courts, topics, parties, or emergency-docket feeds", "Hourly email alerts", "Everything in Free"],
   },
   pro: {
     id: "pro", name: "Pro", monthlyPriceUsd: 59, annualPriceUsd: 590, emergencyTools: true, seats: 1, followLimit: UNLIMITED, entityFollowLimit: UNLIMITED, entityAsap: true, alertCadence: "instant",

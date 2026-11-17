@@ -29,6 +29,10 @@ export async function applyStripeEvent(sql: Sql, event: StripeEvent, config: Bil
     VALUES (${event.id}, ${event.type}, ${Boolean(event.livemode)}, ${sql.json(event as never)})
     ON CONFLICT (id) DO NOTHING RETURNING id`;
   if (!inserted) return false;
+  if (event.livemode && !config.live) {
+    await sql`UPDATE stripe_webhook_event SET processed_at = now() WHERE id = ${event.id}`;
+    return true;
+  }
   const object = event.data.object;
   try {
     if (event.type === "checkout.session.completed") {

@@ -13,24 +13,47 @@ export interface StripeEnv {
   STRIPE_PRICE_PLUS?: string;
   STRIPE_PRICE_PRO?: string;
   STRIPE_PRICE_TEAM?: string;
+  /** Exactly "1" allows a live secret key and live-mode webhooks. Anything else is test mode. */
+  JURVIO_BILLING_LIVE?: string;
 }
 
 export type PaidPlanId = Exclude<PlanId, "free">;
 
 export interface BillingConfig {
   enabled: boolean;
+  /** True only when JURVIO_BILLING_LIVE is exactly "1". Live keys and live webhooks are ignored otherwise. */
+  live: boolean;
   secretKey: string | null;
   webhookSecret: string | null;
   prices: Partial<Record<PaidPlanId, string>>;
 }
 
+/** Live charging is off unless the flag is exactly "1". */
+export function billingLiveEnabled(source: StripeEnv = process.env as StripeEnv): boolean {
+  return source.JURVIO_BILLING_LIVE === "1";
+}
+
+function usableSecretKey(source: StripeEnv): string | null {
+  const key = source.STRIPE_SECRET_KEY?.trim() || null;
+  if (!key) return null;
+  if (key.startsWith("sk_test_")) return key;
+  if (key.startsWith("sk_live_")) return billingLiveEnabled(source) ? key : null;
+  return null;
+}
+
 export function billingConfig(source: StripeEnv = process.env as StripeEnv): BillingConfig {
-  const secretKey = source.STRIPE_SECRET_KEY?.trim() || null;
+  const secretKey = usableSecretKey(source);
   const prices: Partial<Record<PaidPlanId, string>> = {};
   if (source.STRIPE_PRICE_PLUS?.trim()) prices.plus = source.STRIPE_PRICE_PLUS.trim();
   if (source.STRIPE_PRICE_PRO?.trim()) prices.pro = source.STRIPE_PRICE_PRO.trim();
   if (source.STRIPE_PRICE_TEAM?.trim()) prices.team = source.STRIPE_PRICE_TEAM.trim();
-  return { enabled: Boolean(secretKey), secretKey, webhookSecret: source.STRIPE_WEBHOOK_SECRET?.trim() || null, prices };
+  return {
+    enabled: Boolean(secretKey),
+    live: billingLiveEnabled(source),
+    secretKey,
+    webhookSecret: source.STRIPE_WEBHOOK_SECRET?.trim() || null,
+    prices,
+  };
 }
 
 /** Checkout is offered for a plan only with a secret key, a webhook secret and that plan's price id. */

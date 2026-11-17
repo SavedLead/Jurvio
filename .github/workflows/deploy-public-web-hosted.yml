@@ -196,19 +196,27 @@ jobs:
           STRIPE_PRICE_PLUS: ${{ secrets.STRIPE_PRICE_PLUS }}
           STRIPE_PRICE_PRO: ${{ secrets.STRIPE_PRICE_PRO }}
           STRIPE_PRICE_TEAM: ${{ secrets.STRIPE_PRICE_TEAM }}
+          JURVIO_BILLING_LIVE: ${{ secrets.JURVIO_BILLING_LIVE }}
         run: |
           set -euo pipefail
           # Customer sign-in email (Resend) and Stripe stay off until David adds
           # these repository secrets. Each set secret is upserted into the public
           # box env as one line, sent over stdin so values never appear in argv or
           # logs; unset secrets leave the box env untouched (never deleted here).
+          # Live charging is pinned off unless JURVIO_BILLING_LIVE is exactly 1.
           # "Replace public app container" below re-reads env_file.
           payload="$(mktemp)"
           trap 'rm -f "$payload"' EXIT
           chmod 600 "$payload"
+          live="${JURVIO_BILLING_LIVE:-0}"
+          [ "$live" = "1" ] || live=0
+          printf 'JURVIO_BILLING_LIVE=%s\n' "$live" >> "$payload"
           for name in RESEND_API_KEY EMAIL_FROM EMAIL_POSTAL_ADDRESS STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_PRICE_PLUS STRIPE_PRICE_PRO STRIPE_PRICE_TEAM; do
             value="${!name:-}"
             [ -n "$value" ] || continue
+            if [ "$name" = "STRIPE_SECRET_KEY" ] && [ "$live" != "1" ]; then
+              case "$value" in sk_live_*) echo "::notice title=Live Stripe key ignored::JURVIO_BILLING_LIVE is not 1, so a live secret key is not written."; continue;; esac
+            fi
             case "$value" in *$'\n'*|*$'\r'*) echo "::error::$name contains a newline"; exit 1;; esac
             printf '%s=%s\n' "$name" "$value" >> "$payload"
           done
