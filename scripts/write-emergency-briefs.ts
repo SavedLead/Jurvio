@@ -17,7 +17,7 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import {
   BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportPacketsSql, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  exportCompareSql, exportPacketsSql, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -33,8 +33,21 @@ if (command === "spent-sql") {
   process.stdout.write(spentSql());
   process.exit(0);
 }
+if (command === "export-compare-sql") {
+  process.stdout.write(exportCompareSql());
+  process.exit(0);
+}
+if (command === "compare") {
+  try {
+    await runCompare();
+    process.exit(0);
+  } catch (error) {
+    console.error(error instanceof Error ? redact(error.message) : "compare failed");
+    process.exit(1);
+  }
+}
 if (command !== "write") {
-  console.error("usage: write-emergency-briefs.ts export-sql | spent-sql | write --packets --spent --limit --out-sql --log [--top-only] [--teasers]");
+  console.error("usage: write-emergency-briefs.ts export-sql | export-compare-sql | spent-sql | compare --packets --out | write --packets --spent --limit --out-sql --log [--top-only] [--teasers]");
   process.exit(1);
 }
 
@@ -68,8 +81,17 @@ if (!apiKey || /[\r\n]/.test(apiKey)) {
   process.exit(1);
 }
 
+function apiKeyValue(): string {
+  const key = process.env.OPENAI_API_KEY ?? "";
+  if (!key || /[\r\n]/.test(key)) {
+    console.error("OPENAI_API_KEY is not set. Nothing was sent.");
+    process.exit(1);
+  }
+  return key;
+}
+
 function redact(text: string): string {
-  return text.split(apiKey).join("[redacted]").slice(0, 400);
+  return text.split(apiKeyValue()).join("[redacted]").slice(0, 400);
 }
 
 interface Completion {
@@ -93,7 +115,7 @@ async function complete(model: string, effort: string, system: string, user: str
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${apiKeyValue()}`, "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(120_000),
     });
@@ -313,3 +335,92 @@ main().catch((error: unknown) => {
   console.error(error instanceof Error ? redact(error.message) : "failed");
   process.exit(1);
 });
+
+async function runCompare(): Promise<void> {
+  const packets = readPackets(flag("--packets"));
+  const outPath = flag("--out");
+  const limitArg = args.includes("--limit") ? Number(flag("--limit")) : 5;
+  if (!Number.isInteger(limitArg) || limitArg < 1 || limitArg > 5) {
+    console.error("compare limit must be 1-5");
+    process.exit(1);
+  }
+  const chosen = packets.filter(needsModel).slice(0, limitArg);
+  const cases: Array<Record<string, unknown>> = [];
+  let total = 0;
+  for (const packet of chosen) {
+    const prepared = prepareBrief(packet, TOP_MODEL);
+    if (prepared.kind !== "prompt") continue;
+    const models = [TOP_MODEL, MID_MODEL] as const;
+    const results: Array<Record<string, unknown>> = [];
+    for (const model of models) {
+      try {
+        const result = await complete(model.id, model.reasoningEffort, prepared.system, prepared.user, model.maxOutputTokens);
+        const cost = costUsd(model.inputPerMillion, model.outputPerMillion, result.inputTokens, result.outputTokens);
+        total = Math.round((total + cost) * 1_000_000) / 1_000_000;
+        const raw = parseDescription(result.content) ?? result.content;
+        const description = acceptDescription(raw, packet.docketNumber, "full");
+        results.push({
+          model: model.id, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: cost,
+          description: description ?? raw, rejected: !description,
+        });
+        console.log(JSON.stringify({ docket: packet.docketNumber, model: model.id, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: cost, totalUsd: total, stored: false }));
+      } catch (error) {
+        results.push({ model: model.id, error: error instanceof Error ? error.message : "call failed" });
+        console.error(`${packet.docketNumber} ${model.id}: ${error instanceof Error ? error.message : "call failed"}`);
+      }
+    }
+    cases.push({
+      docketNumber: packet.docketNumber,
+      caption: packet.caption,
+      kind: packet.kind,
+      status: packet.status,
+      applicant: packet.applicant,
+      administration: packet.administration,
+      lowerCourt: packet.lowerCourt,
+      url: `https://jurvio.com/supreme-court/emergency/${packet.docketNumber}`,
+      record: prepared.user,
+      results,
+    });
+  }
+  const markdown = renderComparison(cases, total);
+  writeFileSync(outPath, markdown);
+  writeFileSync(outPath.replace(/\.md$/, "") + ".json", JSON.stringify({ totalUsd: total, published: false, cases }, null, 2));
+  console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, totalUsd: total, published: false, out: outPath })}`);
+}
+
+function renderComparison(cases: Array<Record<string, unknown>>, total: number): string {
+  const lines = [
+    "# Emergency description comparison",
+    "",
+    "Not published. These descriptions are not stored on Jurvio pages. David has not picked a model, and the backlog has not been run.",
+    "",
+    `Comparison spend: $${total.toFixed(4)}. Count this toward the $118 cap before any backlog run.`,
+    "",
+  ];
+  cases.forEach((row, index) => {
+    lines.push(`## ${index + 1}. ${row.caption} (No. ${row.docketNumber})`, "");
+    lines.push(`- Kind: ${row.kind}. Status: ${row.status}. Applicant: ${row.applicant ?? "not stated"}.`);
+    if (row.administration) lines.push(`- Administration: ${row.administration}.`);
+    if (row.lowerCourt) lines.push(`- Lower court: ${row.lowerCourt}.`);
+    lines.push(`- Page: ${row.url}`, "");
+    lines.push("| Model | Input tokens | Output tokens | Cost |");
+    lines.push("| --- | ---: | ---: | ---: |");
+    const results = row.results as Array<Record<string, unknown>>;
+    for (const result of results) {
+      if (result.error) {
+        lines.push(`| ${result.model} |  |  | failed |`);
+      } else {
+        lines.push(`| ${result.model} | ${result.inputTokens} | ${result.outputTokens} | $${Number(result.costUsd).toFixed(4)} |`);
+      }
+    }
+    lines.push("");
+    for (const result of results) {
+      lines.push(`### ${result.model}`, "");
+      const note = result.rejected ? "\n\nRejected by the publication filter (missing the docket number, or it matched the sealed-text check). Not for publication.\n" : "";
+      lines.push(result.error ? `Call failed: ${result.error}` : `${String(result.description ?? "")}${note}`);
+      lines.push("");
+    }
+    lines.push("### Public record sent to both models", "", String(row.record), "");
+  });
+  return lines.join("\n");
+}

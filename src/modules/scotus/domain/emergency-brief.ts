@@ -465,6 +465,48 @@ export function exportPacketsSql(): string {
 `;
 }
 
+/** Read-only packet export. Uses tables that already exist, so a comparison can run before the brief migration. */
+export function exportCompareSql(): string {
+  return `COPY (
+  SELECT regexp_replace(json_build_object(
+    'docketNumber', a.docket_number,
+    'caption', a.caption,
+    'applicant', a.applicant,
+    'kind', a.kind,
+    'capital', a.capital,
+    'applicantKind', a.applicant_kind,
+    'administration', a.administration,
+    'status', a.status,
+    'lowerCourt', a.lower_court,
+    'lowerCaseNumbers', a.lower_case_numbers,
+    'rulingOn', a.ruling_on,
+    'ruledBy', a.ruled_by,
+    'votes', a.noted_votes,
+    'withheldLines', a.withheld_lines,
+    'entryCount', a.entry_count,
+    'casePublicId', c.public_id,
+    'followed', EXISTS (SELECT 1 FROM case_follow cf WHERE cf.case_id = a.case_id),
+    'storedHash', NULL,
+    'lastEntryOn', a.last_entry_on,
+    'events', (
+      SELECT coalesce(json_agg(json_build_object(
+        'filedOn', e.filed_on,
+        'kind', e.kind,
+        'description', e.description
+      ) ORDER BY e.position), '[]'::json)
+      FROM scotus_application_event e
+      WHERE e.docket_number = a.docket_number
+    )
+  )::text, E'[\\n\\r]+', ' ', 'g')
+  FROM scotus_application a
+  LEFT JOIN legal_case c ON c.id = a.case_id
+  WHERE a.kind <> 'extension'
+  ORDER BY a.last_entry_on DESC NULLS LAST, a.docket_number DESC
+  LIMIT 80
+) TO STDOUT;
+`;
+}
+
 export function spentSql(): string {
   return `SELECT json_build_object(
   'top', coalesce(sum(cost_usd) FILTER (WHERE lane = 'description' AND model = 'gpt-6-astra'), 0),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
-  costUsd, exportPacketsSql, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
+  costUsd, exportCompareSql, exportPacketsSql, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
 } from "./emergency-brief";
 
@@ -132,5 +132,9 @@ describe("emergency brief packets", () => {
     expect(sql).toContain("false");
     expect(exportPacketsSql()).toContain("a.last_entry_on DESC");
     expect(exportPacketsSql()).toContain("emergency-brief-v2");
+    const compareSql = exportCompareSql();
+    expect(compareSql).toContain("kind <> 'extension'");
+    expect(compareSql).not.toContain("scotus_application_brief");
+    expect(compareSql).not.toContain("scotus_brief_call");
   });
 });

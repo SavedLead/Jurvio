@@ -5,7 +5,9 @@ name: Write emergency application briefs (once)
 # Extensions and other routine filings use a template and no model call.
 # mode=apply can also write cheap follower-email previews. It does not send
 # email. Runs on the builder. Dispatch by hand with
-# confirm=WRITE_EMERGENCY_BRIEFS. mode=dry writes 5 Astra descriptions.
+# confirm=WRITE_EMERGENCY_BRIEFS.
+# mode=compare writes the same 5 newest serious applications with gpt-6-astra
+# and gpt-6.1-sol and does not store them. mode=dry and mode=apply store text.
 #
 # Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=110, BRIEF_BUDGET_MID_USD=8,
 # BRIEF_BUDGET_TEASER_USD=2, BRIEF_BUDGET_TOTAL_USD=118. After that date the
@@ -20,7 +22,7 @@ on:
         required: true
         type: string
       mode:
-        description: "dry writes 5 descriptions; apply continues until the queue or the $100 cap"
+        description: "compare = 5 cases, both models, nothing stored; dry stores 5; apply runs the backlog"
         required: true
         default: "dry"
         type: string
@@ -51,8 +53,8 @@ jobs:
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WRITE_EMERGENCY_BRIEFS."
             exit 1
           fi
-          if [ "$MODE" != "dry" ] && [ "$MODE" != "apply" ]; then
-            echo "::error::mode must be dry or apply"
+          if [ "$MODE" != "dry" ] && [ "$MODE" != "apply" ] && [ "$MODE" != "compare" ]; then
+            echo "::error::mode must be compare, dry, or apply"
             exit 1
           fi
           if [ -z "${OPENAI_API_KEY:-}" ]; then
@@ -74,6 +76,7 @@ jobs:
       - run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Pull packets from production
+        if: inputs.mode != 'compare'
         run: |
           set -euo pipefail
           # shellcheck disable=SC1090
@@ -86,7 +89,38 @@ jobs:
           vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/export.sql" > "$work/packets.jsonl"
           echo "spent=$(cat "$work/spent.txt") packets=$(wc -l < "$work/packets.jsonl")"
 
+      - name: Pull comparison packets
+        if: inputs.mode == 'compare'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          mkdir -p "$work"
+          pnpm exec tsx scripts/write-emergency-briefs.ts export-compare-sql > "$work/export.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/export.sql" > "$work/packets.jsonl"
+          echo "packets=$(wc -l < "$work/packets.jsonl")"
+
+      - name: Compare both models without storing
+        if: inputs.mode == 'compare'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/emergency-briefs"
+          pnpm exec tsx scripts/write-emergency-briefs.ts compare \
+            --packets "$work/packets.jsonl" \
+            --limit 5 \
+            --out "$work/comparison.md" | tee "$work/run.log"
+          { echo "### Model comparison (not published)"; echo; cat "$work/comparison.md"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'compare'
+        with:
+          name: emergency-brief-comparison
+          path: ${{ runner.temp }}/emergency-briefs/comparison.md
+          retention-days: 14
+
       - name: Write descriptions
+        if: inputs.mode != 'compare'
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/emergency-briefs"
@@ -105,6 +139,7 @@ jobs:
           { echo "### Emergency brief run ($MODE)"; echo; echo '```json'; grep '^SUMMARY ' "$work/run.log" | sed 's/^SUMMARY //'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Store descriptions
+        if: inputs.mode != 'compare'
         run: |
           set -euo pipefail
           # shellcheck disable=SC1090
