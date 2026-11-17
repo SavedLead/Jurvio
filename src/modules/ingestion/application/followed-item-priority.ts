@@ -8,8 +8,6 @@ import {
   setCourtListenerRequestPolicy,
 } from "../providers/courtlistener/client";
 import type { ArtifactStore } from "./artifact-store";
-import { ingestCourtListenerDocket } from "./ingest-courtlistener-docket";
-import { ingestOfficialScotusDockets } from "./ingest-official-scotus-dockets";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -19,7 +17,7 @@ export const CASE_REFRESH_MINUTES = 15;
 export const GROUP_REFRESH_MINUTES = 30;
 /** Newest cases kept per judge, court, party, or topic follow. */
 export const GROUP_CASE_LIMIT = 25;
-/** CourtListener calls per run: one docket, one entry page, one party page. */
+/** Cases claimed per run. Each case spends at most one CourtListener signal and one entry page. */
 export const REFRESH_BATCH = 6;
 
 /** Fan-out rows count only while a paid plan is entitled. A follow of one case does not use this. */
@@ -180,7 +178,7 @@ export async function refreshDueFollowedCases(
       SELECT case_id AS "caseId", reasons
       FROM followed_item_priority
       WHERE due_at <= now()
-      ORDER BY due_at, case_id
+      ORDER BY (last_refresh_at IS NULL), due_at, case_id
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
     `;
@@ -241,27 +239,13 @@ function nextMinutes(reasons: string[]): number {
   return reasons.includes("case") || reasons.includes("emergency") ? CASE_REFRESH_MINUTES : GROUP_REFRESH_MINUTES;
 }
 
+/**
+ * Free court sources first, then one CourtListener change signal, then one
+ * entry page only when that signal is newer than what we stored.
+ */
 async function refreshOne(sql: Sql, artifactStore: ArtifactStore, caseId: string): Promise<"refreshed" | "not_modified" | "skipped"> {
-  const [row] = await sql<{ docketNumber: string | null; courtCode: string | null; clId: string | null }[]>`
-    SELECT c.docket_number AS "docketNumber", lower(court.provider_court_id) AS "courtCode",
-      (SELECT identifier.identifier_value FROM case_identifier identifier
-        WHERE identifier.case_id = c.id AND identifier.identifier_type = 'courtlistener_docket_id'
-        LIMIT 1) AS "clId"
-    FROM legal_case c
-    JOIN court ON court.id = c.court_id
-    WHERE c.id = ${caseId}
-  `;
-  if (!row) return "skipped";
-  if (row.courtCode === "scotus" && row.docketNumber) {
-    await ingestOfficialScotusDockets(sql, artifactStore, { limit: 1, caseId, skipPdfs: true });
-    return "refreshed";
-  }
-  const docketId = Number(row.clId);
-  if (!Number.isInteger(docketId) || docketId <= 0) return "skipped";
-  const result = await ingestCourtListenerDocket(sql, artifactStore, docketId, {
-    maximumEntryPages: 1,
-    maximumPartyPages: 1,
-    newestEntriesFirst: true,
-  });
-  return result.notModified ? "not_modified" : "refreshed";
+  const { refreshFollowedCase } = await import("./follow-refresh");
+  const result = await refreshFollowedCase(sql, artifactStore, caseId);
+  if (result.outcome === "quota") return "skipped";
+  return result.outcome;
 }

@@ -38,7 +38,49 @@ export async function POST(request: NextRequest, context: Context) {
   const result = await followCase(sql, user.userId, caseId, kinds);
   if (result.status === "not_eligible") return json({ signedIn: true, error: "not_eligible" }, 404);
   if (result.status === "limit_reached") return json({ signedIn: true, error: "limit_reached", ...result.state }, 409);
-  return json({ signedIn: true, ...result.state });
+  let refresh: { outcome: string; courtListenerCalls: number; freeFilled: boolean; elapsedMs: number } | null = null;
+  if (result.status === "followed") {
+    const [legalCase] = await sql<{ id: string }[]>`SELECT id FROM legal_case WHERE public_id = ${caseId}`;
+    if (legalCase) {
+      const [ready] = await sql<{ ok: boolean }[]>`
+        SELECT to_regclass('public.followed_item_priority') IS NOT NULL AS ok
+      `;
+      if (ready?.ok) {
+        await sql`
+          UPDATE followed_item_priority SET due_at = now() + interval '20 minutes', updated_at = now()
+          WHERE case_id = ${legalCase.id}
+        `;
+      }
+      const started = Date.now();
+      const pending = (async () => {
+        const { refreshFollowedCase } = await import("@/modules/ingestion/application/follow-refresh");
+        const { createArtifactStore } = await import("@/modules/ingestion/infrastructure/create-artifact-store");
+        return refreshFollowedCase(
+          sql,
+          createArtifactStore({ localRoot: process.env.JURVIO_ARTIFACT_ROOT ?? ".data/artifacts" }),
+          legalCase.id,
+        );
+      })().catch(() => null);
+      const finished = await Promise.race([
+        pending,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000)),
+      ]);
+      void pending.then(async (done) => {
+        if (!done || done.outcome === "quota") return;
+        const [ready] = await sql<{ ok: boolean }[]>`
+          SELECT to_regclass('public.followed_item_priority') IS NOT NULL AS ok
+        `;
+        if (!ready?.ok) return;
+        await sql`
+          UPDATE followed_item_priority
+          SET last_refresh_at = now(), due_at = now() + interval '15 minutes', last_error = NULL, updated_at = now()
+          WHERE case_id = ${legalCase.id}
+        `;
+      }).catch(() => undefined);
+      refresh = finished ?? { outcome: "queued", courtListenerCalls: 0, freeFilled: false, elapsedMs: Date.now() - started };
+    }
+  }
+  return json({ signedIn: true, ...result.state, refresh });
 }
 
 export async function DELETE(request: NextRequest, context: Context) {
