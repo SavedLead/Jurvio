@@ -145,6 +145,35 @@ services:
       - jurvio_artifacts:/var/lib/jurvio/artifacts
     networks: [private]
 
+  # District and appeals 24-hour RSS feeds. A crash or backlog in worker-core
+  # (quarantine) or the rest of worker-coa cannot stop this process.
+  worker-live:
+    image: ${JURVIO_IMAGE:?JURVIO_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    command: ["node", "jobs/run-production-scheduler.mjs"]
+    env_file: .env.production
+    environment:
+      TZ: America/New_York
+      NODE_ENV: production
+      JURVIO_SCHEDULER_LANE: live
+      JURVIO_DB_WORKER: "1"
+      JURVIO_DB_POOL_MAX: "2"
+      RAW_ARTIFACT_DIR: /var/lib/jurvio/artifacts
+      JURVIO_ARTIFACT_ROOT: /var/lib/jurvio/artifacts
+    healthcheck:
+      test: ["CMD-SHELL", "hb=$$(cat /var/lib/jurvio/artifacts/scheduler/live.alive 2>/dev/null || echo 0); stale=/var/lib/jurvio/artifacts/scheduler/live.stale; [ $$(( $$(date +%s) - hb )) -lt 180 ] && [ ! -f \"$$stale\" ]"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - jurvio_artifacts:/var/lib/jurvio/artifacts
+    networks: [private]
+
   # Citation linking (citation-graph sync, missing-case discovery, cited-opinion
   # publication, daily bulk resolution) in its own scheduler so it never competes
   # with ingestion for scheduler slots or start-up. Its jobs hold one database

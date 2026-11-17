@@ -1,6 +1,6 @@
 // The production scheduler's job table, kept free of side effects so lane
 // assignments can be tested. run-production-scheduler.ts imports it.
-export const SCHEDULER_LANES = ["coa", "core", "citations"] as const;
+export const SCHEDULER_LANES = ["coa", "core", "citations", "live"] as const;
 export type SchedulerLane = (typeof SCHEDULER_LANES)[number];
 
 export type ScheduledJob = {
@@ -246,10 +246,11 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     command: ["jobs/run-loc-us-reports-backfill.mjs"],
   },
   {
-    lane: "coa",
+    lane: "live",
     // Every enabled district RSS court. Registry polling_minutes is 5, and the
     // longest gap is 30 minutes, inside the 24-hour feed window. One run takes
     // every court that is due. Courts whose public feed answered empty stay off.
+    // Own lane so a backlog or quarantine crash cannot stop this sweep.
     name: "direct-court",
     initialDelayMs: 0,
     intervalMs: 10 * minute,
@@ -323,12 +324,22 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     // circuits that publish it (ca2, ca4, ca6, ca10, ca11, cadc, cafc). The
     // other six circuits do not offer this feed. Every 15 minutes, so a missed
     // run still lands inside 30. One request per court.
-    lane: "coa",
+    lane: "live",
     name: "appellate-pacer-rss",
     initialDelayMs: 13 * minute,
     intervalMs: 15 * minute,
     budgetMs: 8 * minute,
     command: ["jobs/run-live-feeds.mjs", "--source=appellate-rss"],
+  },
+  {
+    // During court hours, a quiet district or appeals feed asks Docker to restart
+    // this lane. Backlog jobs do not run here, so the restart cannot stop them.
+    lane: "live",
+    name: "live-feed-watchdog",
+    initialDelayMs: 2 * minute,
+    intervalMs: 10 * minute,
+    budgetMs: 5 * minute,
+    command: ["jobs/live-feed-watchdog.mjs"],
   },
   {
     // District court website opinion lists (ded, nhd, pamd, vid, wied, wvsd).

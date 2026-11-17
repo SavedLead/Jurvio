@@ -31,6 +31,9 @@ describe("scheduler lanes", () => {
   it("keeps every other job where it was and job names unique", () => {
     expect(jobsForLane("core").length).toBeGreaterThan(5);
     expect(jobsForLane("coa").length).toBeGreaterThan(0);
+    expect(jobsForLane("live").map((job) => job.name).sort()).toEqual(["appellate-pacer-rss", "direct-court", "live-feed-watchdog"]);
+    expect(jobsForLane("coa").some((job) => job.name === "direct-court" || job.name === "appellate-pacer-rss")).toBe(false);
+    expect(jobsForLane("core").some((job) => job.name === "federal-publication")).toBe(true);
     expect(new Set(SCHEDULED_JOBS.map(job => job.name)).size).toBe(SCHEDULED_JOBS.length);
   });
 

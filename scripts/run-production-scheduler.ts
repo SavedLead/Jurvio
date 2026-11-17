@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "@/db/client";
 import { recordLaneRun } from "@/modules/ingestion/application/lane-health";
@@ -10,6 +10,11 @@ const artifactRoot = process.env.JURVIO_ARTIFACT_ROOT
   ?? "/var/lib/jurvio/artifacts";
 const logRoot = join(artifactRoot, "scheduler");
 mkdirSync(logRoot, { recursive: true });
+// A restart is requested by leaving live.stale on the artifacts volume. Clear it
+// as this process starts so Docker does not restart the new process immediately.
+if ((process.env.JURVIO_SCHEDULER_LANE ?? "core") === "live") {
+  try { unlinkSync(join(logRoot, "live.stale")); } catch { /* first boot */ }
+}
 
 function currentScotusTerm(): string {
   const now = new Date();
