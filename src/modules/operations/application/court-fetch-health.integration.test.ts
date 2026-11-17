@@ -35,5 +35,5 @@ describe.skipIf(!databaseUrl)("court fetch log and source matrix", () => {
       await sql`DELETE FROM court_fetch_log WHERE url = ${url}`;
       await sql.end();
     }
-  });
+  }, 20_000);
 });
