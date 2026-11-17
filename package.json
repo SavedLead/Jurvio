@@ -55,6 +55,7 @@
     "scotus:import-scdb": "tsx scripts/import-scdb.ts"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.1.1",
     "@opentelemetry/api": "^1.9.0",
     "@paralleldrive/cuid2": "^2.2.2",
     "jose": "^6.2.3",
@@ -63,6 +64,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "sanitize-html": "^2.17.6",
+    "tesseract.js": "5.1.1",
     "unpdf": "^1.9.1",
     "zod": "^4.0.5"
   },

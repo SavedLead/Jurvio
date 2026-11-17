@@ -6,9 +6,11 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
+import { loadEmergencyBrief, loadEmergencyBriefVersions, loadEmergencyTeaser } from "@/modules/scotus/application/load-emergency-brief";
+import { teaserPreview } from "@/modules/scotus/domain/emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
-  APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, officialEmergencyDocketUrl,
+  APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, hasFederalGovernmentParty, officialEmergencyDocketUrl,
   justiceSlugForRef, plainEnglishFor, responseDisplay, type ApplicationEventKind, type NotedVote,
 } from "@/modules/scotus/domain/emergency-application";
 import { loadEmergencyStats } from "@/modules/scotus/application/emergency-stats";
@@ -39,10 +41,11 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
       robots: robotsFor(false),
     };
   }
+  const brief = await loadEmergencyBrief(db(), application.docketNumber);
   const caption = cleanCaseCaption(application.caption);
   return {
     title: `${caption} (No. ${application.docketNumber}): Supreme Court emergency application`,
-    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.`,
+    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.${brief?.aiGenerated ? " Includes an AI-generated description, labeled as such." : ""}`,
     alternates: { canonical: `/supreme-court/emergency/${application.docketNumber}` },
     // Routine extension requests are thin pages: kept out of search.
     robots: robotsFor(application.kind !== "extension"),
@@ -71,8 +74,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const [app, stats, gate] = await Promise.all([
+  const [app, stats, gate, briefs, teaser] = await Promise.all([
     getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
+    loadEmergencyBriefVersions(db(), docket), loadEmergencyTeaser(db(), docket),
   ]);
   if (!app) {
     const officialUrl = officialEmergencyDocketUrl(docket);
@@ -138,6 +142,20 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <p>{plain || "The Court has docketed this application."}</p>
         </section>
 
+        {briefs.map((brief, index) => <section key={brief.model} className={styles.plain} aria-labelledby={index === 0 ? "ai-title" : `ai-title-${index}`} data-ai-generated={brief.aiGenerated ? "true" : "false"} data-model={brief.model}>
+          <h2 id={index === 0 ? "ai-title" : `ai-title-${index}`}>{brief.aiGenerated ? (index === 0 ? "AI-generated description" : `Also written by ${brief.model}`) : "Summary from the docket"}</h2>
+          <p>{brief.body}</p>
+          <p className={styles.note}>{brief.aiGenerated
+            ? `AI-generated from the public filings and docket lines on this page by ${brief.model} (prompt ${brief.promptVersion}). It is not a court opinion and it does not add facts. Written ${easternTime(brief.generatedAt)}.`
+            : `Written from the public docket lines by a fixed template. No model was used. It does not add facts. Written ${easternTime(brief.generatedAt)}.`}</p>
+        </section>)}
+
+        {teaser ? <section className={styles.plain} aria-labelledby="teaser-title" data-email-preview="true">
+          <h2 id="teaser-title">Follower email preview</h2>
+          <p>{teaserPreview(teaser.body).lead}</p>
+          <p className={styles.note}>{teaserPreview(teaser.body).note} Written by {teaser.model} {easternTime(teaser.generatedAt)}.</p>
+        </section> : null}
+
         <dl className={styles.facts}>
           <div><dt>Status</dt><dd>{uncertain ? <>Not clear<small>Some lines are withheld; see the <a href={app.sourceUrl}>Court&apos;s docket ↗</a></small></> : STATUS_LABEL[app.status]}{happened(app.rulingOn) ? <small>{shortDate(happened(app.rulingOn))}{app.ruledBy === "court" ? " · by the full Court" : app.ruledBy === "justice" ? " · by one justice" : ""}{app.writtenReasons ? " · with a written opinion" : ""}</small> : null}</dd></div>
           <div><dt>Response deadline</dt><dd>{app.responseDueOn
@@ -162,7 +180,7 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <div><dt>Lower court</dt><dd>{app.lowerCourt ?? "Not stated"}
             {app.lowerCaseNumbers.length ? <small>No. {app.lowerCaseNumbers.join(", ")}</small> : null}
             {app.linkedLowerCase ? <small><Link href={`/case/${app.linkedLowerCase.publicId}` as Route}>Open the lower-court case on Jurvio →</Link></small> : null}</dd></div>
-          {app.administration && app.applicantKind === "federal" ? <div><dt>Administration</dt><dd>{app.administration}<small>{ADMINISTRATION_FEED_NOTE}</small></dd></div> : null}
+          {app.administration && hasFederalGovernmentParty(app.caption, app.applicant) ? <div><dt>Administration</dt><dd>{app.administration}<small>{ADMINISTRATION_FEED_NOTE}</small></dd></div> : null}
           {app.amicusCount ? <div><dt>Amicus briefs</dt><dd>{app.amicusCount}</dd></div> : null}
         </dl>
 

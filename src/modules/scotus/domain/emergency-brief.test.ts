@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
   acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml, inspectCaseJson,
-  FILING_CHAR_CAP, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
+  FILING_CASE_CHAR_CAP, fitFilingsToCase, isSealedFilingText, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
 } from "./emergency-brief";
 
@@ -137,6 +137,11 @@ describe("emergency brief packets", () => {
     expect(compareSql).toContain("kind <> 'extension'");
     expect(compareSql).not.toContain("scotus_application_brief");
     expect(compareSql).not.toContain("scotus_brief_call");
+    const messy = exportCompareSql(["24A884", "25A326", "not a docket"]);
+    expect(messy).toContain("'24A884'");
+    expect(messy).toContain("'25A326'");
+    expect(messy).not.toContain("not a docket");
+    expect(messy).not.toContain("LIMIT 80");
   });
 
   it("keeps application, response, reply, and a lower-court opinion, and drops service and outside PDFs", () => {
@@ -191,15 +196,29 @@ describe("emergency brief packets", () => {
     if (built.kind !== "prompt") return;
     expect(built.user).toContain("The applicant asks for a stay of execution.");
     expect(built.user).not.toContain("cos.pdf");
+    const privateCase = prepareBrief(source({
+      caption: "Thomas M. Overton v. Florida",
+      applicant: "Thomas M. Overton",
+      applicantKind: "private",
+      administration: "Trump (second term)",
+    }), TOP_MODEL);
+    expect(privateCase.kind).toBe("prompt");
+    if (privateCase.kind === "prompt") expect(privateCase.user).not.toContain("Administration label");
   });
 
   it("withholds a sealed filing extract and keeps the PDF backlog inside both caps", () => {
-    const sealed = acceptFilingExcerpt("This filing is under seal.", "application", "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf");
+    const sealed = acceptFilingExcerpt("This filing is under seal. Do not distribute.", "application", "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf");
     expect(sealed.withheld).toBe(true);
     expect(sealed.text).toBe("");
-    const long = acceptFilingExcerpt("A".repeat(FILING_CHAR_CAP.application + 50), "application", "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf");
-    expect(long.trimmed).toBe(true);
-    expect(long.chars).toBeLessThan(FILING_CHAR_CAP.application + 40);
+    const long = fitFilingsToCase([
+      acceptFilingExcerpt("A".repeat(FILING_CASE_CHAR_CAP + 500), "application", "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf"),
+    ]);
+    expect(long[0]?.trimmed).toBe(true);
+    expect(long[0]?.chars ?? 0).toBeLessThanOrEqual(FILING_CASE_CHAR_CAP + 40);
+    expect(isSealedFilingText("FILED UNDER SEAL. The parties may not disclose this appendix.")).toBe(true);
+    const publicOpinion = `${"The parents challenge a school policy. ".repeat(30)} The opinion mentions minor students and says the record was not sealed.`;
+    expect(isSealedFilingText(publicOpinion)).toBe(false);
+    expect(acceptFilingExcerpt(publicOpinion, "lower_court", "https://www.supremecourt.gov/DocketPDF/26/26A701/1/appendix.pdf").withheld).toBe(false);
     const inputTokens = 9_500;
     const ceiling = filingBacklogCost(inputTokens, 2_000);
     expect(ceiling.astraWithinCap).toBe(true);

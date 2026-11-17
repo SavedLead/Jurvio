@@ -16,6 +16,7 @@
  */
 import { createHash } from "node:crypto";
 import { isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
+import { hasFederalGovernmentParty } from "@/modules/scotus/domain/emergency-application";
 import { casePagePath } from "@/modules/scotus/domain/recent-opinions";
 
 export const BRIEF_PROMPT_VERSION = "emergency-brief-v3";
@@ -39,12 +40,13 @@ export type BriefKind = "full" | "routine" | "teaser";
 
 export type FilingRole = "application" | "response" | "reply" | "lower_court";
 
-/** Per-document cap so a filing PDF cannot blow the token budget. */
-export const FILING_CHAR_CAP: Readonly<Record<FilingRole, number>> = {
-  application: 12_000,
-  response: 8_000,
+/** Per-case character budget, spent in this order. Unused share rolls to the next document. */
+export const FILING_CASE_CHAR_CAP = 40_000;
+export const FILING_ROLE_SHARE: Readonly<Record<FilingRole, number>> = {
+  application: 16_000,
+  response: 12_000,
   reply: 6_000,
-  lower_court: 8_000,
+  lower_court: 6_000,
 };
 
 export const BACKLOG_CASES = 164;
@@ -63,6 +65,7 @@ export interface FilingExcerpt {
   estimatedTokens: number;
   trimmed: boolean;
   withheld: boolean;
+  ocrPages?: number;
 }
 
 export interface BriefEvent {
@@ -418,16 +421,64 @@ export function estimatedTokens(chars: number): number {
   return Math.max(0, Math.ceil(chars / 4));
 }
 
-/** Cap one extracted PDF. A sealed or restricted extract is withheld instead of trimmed. */
+/**
+ * A filing is skipped only when the document itself is sealed or restricted.
+ * A public opinion that merely mentions a minor, a grand jury, or sealing
+ * somewhere in the body is kept. Docket lines still use isRestrictedDocketText.
+ */
+export function isSealedFilingText(text: string): boolean {
+  const head = text.slice(0, 500);
+  return /\b(filed under seal|(?:document|filing|brief|appendix) is under seal|this (?:document|filing|brief|appendix) is sealed|sealed document|sealed material|restricted access|restricted document)\b/i.test(head);
+}
+
+/** Clean one extracted PDF. Length is applied later across the whole case. */
 export function acceptFilingExcerpt(raw: string, role: FilingRole, url: string): FilingExcerpt {
   const clean = raw.replace(/\s+/g, " ").trim();
-  const cap = FILING_CHAR_CAP[role];
-  if (isRestrictedDocketText(clean)) {
+  if (isSealedFilingText(clean)) {
     return { role, url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: true };
   }
-  const trimmed = clean.length > cap;
-  const text = trimmed ? `${clean.slice(0, cap)} [rest of this filing trimmed]` : clean;
-  return { role, url, text, chars: text.length, estimatedTokens: estimatedTokens(text.length), trimmed, withheld: false };
+  return { role, url, text: clean, chars: clean.length, estimatedTokens: estimatedTokens(clean.length), trimmed: false, withheld: false };
+}
+
+/** Keep application, response, reply, then the lower-court opinion, within 40k characters. */
+export function fitFilingsToCase(items: FilingExcerpt[]): FilingExcerpt[] {
+  const byRole = new Map(items.map((item) => [item.role, item]));
+  let remaining = FILING_CASE_CHAR_CAP;
+  let rollover = 0;
+  const fitted: FilingExcerpt[] = [];
+  for (const role of ["application", "response", "reply", "lower_court"] as const) {
+    const allowance = Math.min(FILING_ROLE_SHARE[role] + rollover, remaining);
+    const item = byRole.get(role);
+    if (!item || item.withheld || !item.text) {
+      rollover = allowance;
+      if (item) fitted.push(item);
+      continue;
+    }
+    const take = Math.min(item.text.length, allowance);
+    remaining -= take;
+    rollover = allowance - take;
+    const trimmed = take < item.text.length;
+    const text = trimmed ? `${item.text.slice(0, take)} [rest of this filing trimmed]` : item.text;
+    fitted.push({
+      ...item,
+      text,
+      chars: text.length,
+      estimatedTokens: estimatedTokens(text.length),
+      trimmed: item.trimmed || trimmed,
+    });
+  }
+  return fitted;
+}
+
+/** Worst case for one Astra description of a packet this long, including the output cap. */
+export function worstCaseBriefCost(chars: number) {
+  const inputTokens = estimatedTokens(chars) + 800;
+  const outputTokens = TOP_MODEL.maxOutputTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    usd: costUsd(TOP_MODEL.inputPerMillion, TOP_MODEL.outputPerMillion, inputTokens, outputTokens),
+  };
 }
 
 export function filingBacklogCost(inputTokens: number, outputTokens: number, cases = BACKLOG_CASES) {
@@ -446,6 +497,11 @@ export function filingBacklogCost(inputTokens: number, outputTokens: number, cas
     astraWithinCap: astraTotal <= 110,
     solWithinCap: solTotal <= 8,
   };
+}
+
+function briefAdministration(source: BriefPacketSource): string | null {
+  if (!source.administration || !hasFederalGovernmentParty(source.caption, source.applicant)) return null;
+  return `Administration label: ${source.administration}`;
 }
 
 function keepRank(kind: string): number {
@@ -484,7 +540,7 @@ function recordFor(source: BriefPacketSource): { record: string; pageUrl: string
     `Applicant: ${source.applicant ?? "not stated"}`,
     `Request type: ${source.kind}${source.capital ? " (capital case)" : ""}`,
     `Applicant kind: ${source.applicantKind}`,
-    source.administration ? `Administration label: ${source.administration}` : null,
+    briefAdministration(source),
     `Status on the public docket: ${source.status}`,
     `Lower court: ${source.lowerCourt ?? "not stated"}`,
     source.lowerCaseNumbers?.length ? `Lower-court numbers: ${source.lowerCaseNumbers.join(", ")}` : null,
@@ -511,7 +567,7 @@ function recordFor(source: BriefPacketSource): { record: string; pageUrl: string
     record = fit();
   }
   if (record.length > PACKET_CAP) record = `${record.slice(0, PACKET_CAP)}\n[further docket lines omitted]`;
-  const filings = (source.filings ?? []).filter((filing) => !filing.withheld && filing.text && !isRestrictedDocketText(filing.text));
+  const filings = (source.filings ?? []).filter((filing) => !filing.withheld && filing.text);
   const withheld = (source.filings ?? []).filter((filing) => filing.withheld).map((filing) => filing.role);
   const filingBlock = [
     filings.length ? "Filing PDFs from the public supremecourt.gov case JSON:" : "Filing PDFs: none listed in the public case JSON.",
@@ -652,8 +708,21 @@ export function exportPacketsSql(): string {
 `;
 }
 
+/**
+ * The five long federal emergency applications used when compare or showcase
+ * is dispatched with selection=messy. Each has a federal or administration
+ * party and several filings (application, response, reply, amicus, or a
+ * lower-court opinion).
+ */
+export const MESSY_COMPARE_DOCKETS = ["24A884", "25A326", "26A406", "26A416", "26A274"] as const;
+
 /** Read-only packet export. Uses tables that already exist, so a comparison can run before the brief migration. */
-export function exportCompareSql(): string {
+export function exportCompareSql(dockets: readonly string[] = []): string {
+  const safe = dockets.filter((docket) => /^[0-9]{2}A[0-9]{1,4}$/.test(docket));
+  const where = safe.length > 0
+    ? `a.docket_number IN (${safe.map((docket) => `'${docket}'`).join(", ")})`
+    : "a.kind <> 'extension'";
+  const limit = safe.length > 0 ? "" : "\n  LIMIT 80";
   return `COPY (
   SELECT regexp_replace(json_build_object(
     'docketNumber', a.docket_number,
@@ -687,9 +756,8 @@ export function exportCompareSql(): string {
   )::text, E'[\\n\\r]+', ' ', 'g')
   FROM scotus_application a
   LEFT JOIN legal_case c ON c.id = a.case_id
-  WHERE a.kind <> 'extension'
-  ORDER BY a.last_entry_on DESC NULLS LAST, a.docket_number DESC
-  LIMIT 80
+  WHERE ${where}
+  ORDER BY a.last_entry_on DESC NULLS LAST, a.docket_number DESC${limit}
 ) TO STDOUT;
 `;
 }
@@ -723,7 +791,10 @@ VALUES ('${row.docketNumber}', '${row.sourceHash}', '${row.lane}', '${row.model}
 `;
 }
 
-export function renderBriefUpsert(row: StoredBrief): string {
+export function renderBriefUpsert(
+  row: StoredBrief,
+  table: "scotus_application_brief" | "scotus_application_brief_alt" = "scotus_application_brief",
+): string {
   assertStored(row);
   if (!Number.isInteger(row.entryCount) || row.entryCount < 0 || !Number.isInteger(row.withheldLines) || row.withheldLines < 0) {
     throw new Error("entry counts must be non-negative integers");
@@ -736,7 +807,8 @@ export function renderBriefUpsert(row: StoredBrief): string {
   let marker = `b${row.sourceHash.slice(0, 16)}`;
   while (row.body.includes(`$${marker}$`)) marker += "x";
   const quote = `$${marker}$${row.body}$${marker}$`;
-  return `INSERT INTO scotus_application_brief (
+  const conflict = table === "scotus_application_brief_alt" ? "(docket_number, model)" : "(docket_number)";
+  return `INSERT INTO ${table} (
   docket_number, brief_kind, body, model, prompt_version, source_hash, input_tokens, output_tokens, cost_usd,
   ai_generated, entry_count, last_entry_on, status, withheld_lines, generated_at
 ) VALUES (
@@ -744,7 +816,7 @@ export function renderBriefUpsert(row: StoredBrief): string {
   '${row.sourceHash}', ${row.inputTokens}, ${row.outputTokens}, ${row.costUsd.toFixed(6)}, ${row.aiGenerated ? "true" : "false"},
   ${row.entryCount}, ${row.lastEntryOn ? `'${row.lastEntryOn}'` : "NULL"}, '${row.status}', ${row.withheldLines}, now()
 )
-ON CONFLICT (docket_number) DO UPDATE SET
+ON CONFLICT ${conflict} DO UPDATE SET
   brief_kind = EXCLUDED.brief_kind,
   body = EXCLUDED.body,
   model = EXCLUDED.model,

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseApplicationPage, isWithheldLine } from "@/modules/ingestion/live-feeds/scotus-emergency";
 import { classifyEvent } from "@/modules/ingestion/providers/scotus/official-docket";
 import {
-  EMERGENCY_FEEDS, EMERGENCY_TIMING_NOTE, classifyApplicant, classifyApplicationEvent, classifyApplicationKind, deriveApplicationState,
+  EMERGENCY_FEEDS, EMERGENCY_TIMING_NOTE, administrationForCase, classifyApplicant, classifyApplicationEvent, classifyApplicationKind, deriveApplicationState, hasFederalGovernmentParty,
   emergencyFeedBySlug, emergencyFeedConditionSql, expectedJusticeFor, normalizeApplicationNumber, officialEmergencyDocketUrl, parseResponseDue, parseResponseExtension, pollTier, responseDisplay, responseStatusFrom, submittedJustice,
 } from "./emergency-application";
 
@@ -48,6 +48,11 @@ describe("emergency application docket lines", () => {
     expect(classifyApplicant("United States", true)).toBe("federal");
     expect(classifyApplicant("South Carolina, et al.")).toBe("state");
     expect(classifyApplicant("Jesse Guardado")).toBe("private");
+    expect(hasFederalGovernmentParty("Thomas M. Overton v. Florida", "Thomas M. Overton")).toBe(false);
+    expect(administrationForCase({ caption: "Thomas M. Overton v. Florida", applicant: "Thomas M. Overton", filedOn: "2026-11-14" })).toBeNull();
+    expect(hasFederalGovernmentParty("United States v. Skrmetti", "United States")).toBe(true);
+    expect(administrationForCase({ caption: "Smith v. Secretary of Homeland Security", applicant: "Jane Smith", filedOn: "2026-03-01" })).toBe("Trump (second term)");
+    expect(hasFederalGovernmentParty("Parents v. School Board", "Parents", true)).toBe(true);
   });
 });
 

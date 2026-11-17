@@ -1,10 +1,12 @@
 /**
  * Writes descriptions for Supreme Court emergency applications.
  *
- * Runs on the builder, not on a web host. Serious applications use gpt-6-astra
- * until that cap is reached, then gpt-6.1-sol. Extensions and other routine
- * filings get a template and no model call. Followed cases can get a cheap
- * teaser, stored as a preview. This process does not send email.
+ * Runs on the builder, not on a web host. The final SCOTUS model is not
+ * picked yet. compare writes gpt-6-astra and gpt-6.1-sol and stores nothing.
+ * showcase stores both on the public page. A later backlog still prefers
+ * Astra until David picks. gpt-6-luna is teasers only. Extensions and other
+ * routine filings get a template and no model call. This process does not
+ * send email.
  *
  *   pnpm exec tsx scripts/write-emergency-briefs.ts export-sql
  *   pnpm exec tsx scripts/write-emergency-briefs.ts spent-sql
@@ -16,9 +18,9 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { loadFilingExcerpts } from "../src/modules/scotus/application/load-filing-excerpts";
 import {
-  BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
+  BACKLOG_CASES, BRIEF_PROMPT_VERSION, MESSY_COMPARE_DOCKETS, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall, worstCaseBriefCost,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -35,7 +37,12 @@ if (command === "spent-sql") {
   process.exit(0);
 }
 if (command === "export-compare-sql") {
-  process.stdout.write(exportCompareSql());
+  const fromEnv = (process.env.DOCKETS ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+  process.stdout.write(exportCompareSql(fromEnv));
+  process.exit(0);
+}
+if (command === "messy-dockets") {
+  process.stdout.write(MESSY_COMPARE_DOCKETS.join(","));
   process.exit(0);
 }
 if (command === "compare") {
@@ -345,7 +352,23 @@ async function runCompare(): Promise<void> {
     console.error("compare limit must be 1-5");
     process.exit(1);
   }
-  const chosen = packets.filter(needsModel).slice(0, limitArg);
+  const requested = args.includes("--dockets")
+    ? flag("--dockets").split(",").map((item) => item.trim()).filter(Boolean)
+    : [];
+  const byDocket = new Map(packets.map((packet) => [packet.docketNumber, packet]));
+  const missing = requested.filter((docket) => !byDocket.has(docket));
+  if (missing.length > 0) console.error(`These dockets were not in the packet export: ${missing.join(", ")}`);
+  const chosen = requested.length > 0
+    ? requested.flatMap((docket) => {
+      const packet = byDocket.get(docket);
+      return packet ? [packet] : [];
+    }).slice(0, 5)
+    : packets.filter(needsModel).slice(0, limitArg);
+  if (chosen.length === 0) {
+    console.error("No applications matched this compare.");
+    process.exit(1);
+  }
+  const storePath = args.includes("--out-sql") ? flag("--out-sql") : "";
   const loadedCases = [];
   for (const packet of chosen) {
     const loaded = await loadFilingExcerpts(packet.docketNumber);
@@ -361,8 +384,10 @@ async function runCompare(): Promise<void> {
       pdfs: loaded.pdfs,
       pdfCount: loaded.filings.length,
       extractedChars: loaded.filings.reduce((sum, filing) => sum + filing.chars, 0),
+      ocrPages: loaded.filings.reduce((sum, filing) => sum + (filing.ocrPages ?? 0), 0),
+      worstCaseUsd: worstCaseBriefCost(loaded.filings.reduce((sum, filing) => sum + filing.chars, 0) + 2_000).usd,
       note: loaded.note,
-      stored: false,
+      stored: storePath !== "",
     }));
   }
   const withPdfText = loadedCases.filter(({ loaded }) => loaded.filings.some((filing) => filing.chars > 0)).length;
@@ -377,12 +402,14 @@ async function runCompare(): Promise<void> {
     process.exit(1);
   }
   const cases: Array<Record<string, unknown>> = [];
+  const statements: string[] = [];
   let total = 0;
   for (const { packet, loaded } of loadedCases) {
     const prepared = prepareBrief({ ...packet, filings: loaded.filings }, TOP_MODEL);
     if (prepared.kind !== "prompt") continue;
     const models = [TOP_MODEL, MID_MODEL] as const;
     const results: Array<Record<string, unknown>> = [];
+    let wrotePrimary = false;
     for (const model of models) {
       try {
         const result = await complete(model.id, model.reasoningEffort, prepared.system, prepared.user, model.maxOutputTokens);
@@ -394,7 +421,21 @@ async function runCompare(): Promise<void> {
           model: model.id, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: cost,
           description: description ?? raw, rejected: !description,
         });
-        console.log(JSON.stringify({ docket: packet.docketNumber, model: model.id, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: cost, totalUsd: total, stored: false }));
+        console.log(JSON.stringify({ docket: packet.docketNumber, model: model.id, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: cost, totalUsd: total, stored: storePath !== "" && Boolean(description) }));
+        if (storePath && description) {
+          const forModel = prepareBrief({ ...packet, filings: loaded.filings }, model);
+          if (forModel.kind === "prompt") {
+            const row: StoredBrief = {
+              docketNumber: packet.docketNumber, briefKind: "full", body: description, model: model.id,
+              promptVersion: BRIEF_PROMPT_VERSION, sourceHash: forModel.sourceHash, inputTokens: result.inputTokens,
+              outputTokens: result.outputTokens, costUsd: cost, aiGenerated: true, lane: "description", ...dates(packet),
+            };
+            const table = wrotePrimary ? "scotus_application_brief_alt" : "scotus_application_brief";
+            wrotePrimary = true;
+            statements.push(renderBriefCall(row, true));
+            statements.push(renderBriefUpsert(row, table));
+          }
+        }
       } catch (error) {
         results.push({ model: model.id, error: error instanceof Error ? error.message : "call failed" });
         console.error(`${packet.docketNumber} ${model.id}: ${error instanceof Error ? error.message : "call failed"}`);
@@ -416,13 +457,16 @@ async function runCompare(): Promise<void> {
       skippedFilings: loaded.skipped,
     });
   }
-  const markdown = renderComparison(cases, total);
+  const markdown = renderComparison(cases, total, storePath !== "");
   writeFileSync(outPath, markdown);
-  writeFileSync(outPath.replace(/\.md$/, "") + ".json", JSON.stringify({ totalUsd: total, published: false, cases }, null, 2));
-  console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, withPdfText, totalUsd: total, published: false, out: outPath })}`);
+  if (storePath) {
+    writeFileSync(storePath, statements.length > 0 ? `${statements.join("\n")}\n` : "-- nothing to store\n");
+  }
+  writeFileSync(outPath.replace(/\.md$/, "") + ".json", JSON.stringify({ totalUsd: total, published: storePath !== "", cases }, null, 2));
+  console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, withPdfText, totalUsd: total, published: storePath !== "", out: outPath })}`);
 }
 
-function renderComparison(cases: Array<Record<string, unknown>>, total: number): string {
+function renderComparison(cases: Array<Record<string, unknown>>, total: number, published: boolean): string {
   const observedInputs = cases.flatMap((row) => (row.results as Array<Record<string, unknown>>) ?? [])
     .filter((result) => result.model === "gpt-6-astra" && typeof result.inputTokens === "number")
     .map((result) => result.inputTokens as number);
@@ -435,7 +479,9 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
   const lines = [
     "# Emergency description comparison",
     "",
-    "Not published. These descriptions are not stored on Jurvio pages. David has not picked a model, and the backlog has not been run.",
+    published
+      ? "Published on the public case pages. Astra is stored as the page description. Sol is stored beside it and stays readable. The final model for the backlog is still not picked. No email was sent."
+      : "Not published. These descriptions are not stored on Jurvio pages. The final model is not picked, and the backlog has not been run.",
     "",
     `Comparison spend: $${total.toFixed(4)}. Count this toward the $118 cap before any backlog run.`,
     "",

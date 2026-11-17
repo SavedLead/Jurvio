@@ -223,6 +223,30 @@ export function classifyApplicant(applicant: string | null | undefined, solicito
   return "private";
 }
 
+/**
+ * True when the United States, a federal agency or officer, or the Solicitor
+ * General is a party. A date alone does not make a case an administration case.
+ */
+export function hasFederalGovernmentParty(caption: string | null | undefined, applicant: string | null | undefined, solicitorGeneral = false): boolean {
+  if (solicitorGeneral || /\bSolicitor General\b/i.test(`${caption ?? ""} ${applicant ?? ""}`)) return true;
+  const sides = `${applicant ?? ""}; ${caption ?? ""}`.split(/\s*(?:;|\bv\.?\s+)\s*/i);
+  return sides.some((side) => {
+    const party = side.split(/\s+et\s+al\b/i)[0]?.replace(/\s+/g, " ").replace(/[,.]\s*$/, "").trim() ?? "";
+    return party.length > 0 && classifyApplicant(party, false) === "federal";
+  });
+}
+
+/** Administration label only when a federal government party is actually on the case. */
+export function administrationForCase(input: {
+  caption?: string | null;
+  applicant?: string | null;
+  filedOn?: string | null;
+  solicitorGeneral?: boolean;
+}): string | null {
+  if (!hasFederalGovernmentParty(input.caption, input.applicant, input.solicitorGeneral)) return null;
+  return administrationOn(input.filedOn);
+}
+
 /** The administration a date falls in (applications are filed by date). */
 export function administrationOn(date: string | null | undefined): string | null {
   if (!date) return null;

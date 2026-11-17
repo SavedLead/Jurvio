@@ -13,7 +13,7 @@
 import { ALLOTMENT_EFFECTIVE } from "@/modules/scotus/domain/circuit-justice";
 import { docketPageUrl, parseApplicationPage } from "@/modules/ingestion/live-feeds/scotus-emergency";
 import {
-  administrationOn, classifyApplicant, deriveApplicationState, EMERGENCY_PARSER_VERSION, expectedJusticeFor,
+  administrationForCase, classifyApplicant, deriveApplicationState, EMERGENCY_PARSER_VERSION, expectedJusticeFor,
   justiceSlugForRef, pollTier,
 } from "@/modules/scotus/domain/emergency-application";
 
@@ -82,7 +82,7 @@ export function historyRowsFromPage(html: string, docketNumber: string, today: s
     kind: state.kind,
     capital: parsed.capital,
     applicant_kind: classifyApplicant(parsed.applicant, parsed.solicitorGeneral),
-    administration: administrationOn(submittedOn),
+    administration: administrationForCase({ caption: parsed.caption, applicant: parsed.applicant, filedOn: submittedOn, solicitorGeneral: parsed.solicitorGeneral }),
     lower_court: parsed.lowerCourt,
     lower_case_numbers: JSON.stringify(parsed.lowerCaseNumbers),
     linked_docket: parsed.linkedDocket,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { textFromPdfBytes } from "./filing-pdf-text";
+import { needsOcr, textFromPdfBytes } from "./filing-pdf-text";
 
 const miniPdf = new TextEncoder().encode(`%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
@@ -15,8 +15,12 @@ trailer<</Root 1 0 R>>
 `);
 
 describe("filing PDF text", () => {
-  it("reads text from a PDF and skips bytes that are not a readable PDF", async () => {
-    await expect(textFromPdfBytes(miniPdf)).resolves.toContain("Hello stay 26A100");
+  it("reads a text layer without OCR and skips bytes that are not a readable PDF", async () => {
+    const read = await textFromPdfBytes(miniPdf);
+    expect(read?.text).toContain("Hello stay 26A100");
+    expect(read?.ocrPages).toBe(0);
+    expect(needsOcr("short", 2)).toBe(true);
+    expect(needsOcr("x".repeat(80), 2)).toBe(false);
     await expect(textFromPdfBytes(new Uint8Array())).resolves.toBeNull();
     await expect(textFromPdfBytes(new TextEncoder().encode("not a pdf"))).resolves.toBeNull();
   });

@@ -33,7 +33,7 @@ import { FetchBudget, RateLimitedError } from "./polite-fetcher";
 import { matchOrCreateDraftCase, providerId, resolveCourt, storeFeedArtifact } from "./persist";
 import { scotusDocketYear } from "./scotus-docket-feed";
 import {
-  administrationOn, classifyApplicant, deriveApplicationState, easternDate, expectedJusticeFor, justiceSlugForRef,
+  administrationForCase, classifyApplicant, deriveApplicationState, easternDate, expectedJusticeFor, justiceSlugForRef,
   normalizeApplicationNumber, parseApplicationNumber, pollTier, TIER_INTERVAL_MINUTES, EMERGENCY_PARSER_VERSION,
   type DocketLine, type PollTier,
 } from "@/modules/scotus/domain/emergency-application";
@@ -245,7 +245,7 @@ export async function runScotusEmergency(sql: Sql, store: ArtifactStore, options
           admin_stay_on, admin_stay_justice, status, ruling_on, ruled_by, written_reasons, noted_votes, amicus_count,
           entry_count, withheld_lines, last_entry_on, poll_tier, source_url, parser_version, changed_at, updated_at)
         VALUES (${docketNumber}, ${caseId}, ${parsed.caption}, ${parsed.applicant}, ${state.kind}, ${parsed.capital}, ${applicantKind},
-          ${administrationOn(submittedOn)}, ${parsed.lowerCourt}, ${db.json(parsed.lowerCaseNumbers)}, ${parsed.linkedDocket},
+          ${administrationForCase({ caption: parsed.caption, applicant: parsed.applicant, filedOn: submittedOn, solicitorGeneral: parsed.solicitorGeneral })}, ${parsed.lowerCourt}, ${db.json(parsed.lowerCaseNumbers)}, ${parsed.linkedDocket},
           ${expected?.justiceRef ?? null}, ${state.submittedJustice}, ${justiceSlugForRef(state.submittedJustice)},
           ${submittedOn}, ${parsed.docketedOn}, ${state.referredOn}, ${state.responseDueOn}, ${state.responseDueText},
           ${state.responseRequestedBy}, ${state.adminStayOn}, ${state.adminStayJustice}, ${state.status}, ${state.rulingOn},
