@@ -91,7 +91,9 @@ const PUBLIC_PATH_PREFIXES = [
   "/sitemaps",
   // Topic pages: same HTML for everyone; the Follow button loads its state in the browser.
   "/topics",
-  "/feeds",
+  // Feeds set Cache-Control only on a successful body. Stamping it here would
+  // also mark a thrown 500 as public, and Cloudflare would keep that empty
+  // error for the whole stale-while-revalidate window.
 ] as const;
 
 // /cases filters that carry visitor-typed free text. Kept live (never cached).
@@ -132,6 +134,11 @@ export function isPublicCacheablePath(pathname: string, searchParams: URLSearchP
   }
   if (PUBLIC_EXACT_PATHS.has(pathname)) return true;
   return PUBLIC_PATH_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+/** A finished feed may be stored. A failure must not be. */
+export function feedCacheControl(status: number): string {
+  return status === 200 ? PUBLIC_EDGE_CACHE_CONTROL : "private, no-store";
 }
 
 export function publicEdgeCacheControl(request: EdgeCacheRequest): string | null {

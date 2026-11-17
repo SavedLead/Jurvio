@@ -2,7 +2,7 @@ import { unstable_cache } from "next/cache";
 import { db } from "@/db/client";
 import { siteOrigin } from "@/lib/config/site-url";
 import { listAdministrationFeed } from "@/modules/scotus/application/scotus-activity-feed";
-import { PUBLIC_EDGE_CACHE_CONTROL } from "@/lib/http/edge-cache";
+import { feedCacheControl } from "@/lib/http/edge-cache";
 import { ADMINISTRATION_FEED_NOTE, atomFeed } from "@/modules/scotus/domain/activity-feed";
 
 export const dynamic = "force-dynamic";
@@ -16,11 +16,15 @@ const loadAdministration = unstable_cache(
 export async function GET() {
   const origin = siteOrigin();
   const selfUrl = `${origin}/feeds/scotus/administration`;
-  const items = await loadAdministration();
-  const body = atomFeed({
-    id: selfUrl, title: "Jurvio administration-related emergency applications", selfUrl,
-    subtitle: ADMINISTRATION_FEED_NOTE,
-    updated: items[0]?.updated ?? new Date().toISOString(), items,
-  });
-  return new Response(body, { headers: { "Content-Type": "application/atom+xml; charset=utf-8", "Cache-Control": PUBLIC_EDGE_CACHE_CONTROL } });
+  try {
+    const items = await loadAdministration();
+    const body = atomFeed({
+      id: selfUrl, title: "Jurvio administration-related emergency applications", selfUrl,
+      subtitle: ADMINISTRATION_FEED_NOTE,
+      updated: items[0]?.updated ?? new Date().toISOString(), items,
+    });
+    return new Response(body, { status: 200, headers: { "Content-Type": "application/atom+xml; charset=utf-8", "Cache-Control": feedCacheControl(200) } });
+  } catch {
+    return new Response("This feed is temporarily unavailable.\n", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": feedCacheControl(503) } });
+  }
 }

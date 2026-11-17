@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
 import { middleware } from "../src/middleware";
-import { PUBLIC_EDGE_CACHE_CONTROL, hasAuthCookie } from "../src/lib/http/edge-cache";
+import { PUBLIC_EDGE_CACHE_CONTROL, feedCacheControl, hasAuthCookie } from "../src/lib/http/edge-cache";
 
 function request(path: string, init: { host?: string; method?: string; headers?: Record<string, string> } = {}) {
   const host = init.host ?? "jurvio.com";
@@ -15,6 +15,12 @@ const cacheControl = (path: string, init?: Parameters<typeof request>[1]) =>
   middleware(request(path, init)).headers.get("cache-control");
 
 describe("edge cache policy for anonymous public pages", () => {
+  it("stores a finished feed and refuses to store a failure", () => {
+    expect(feedCacheControl(200)).toBe(PUBLIC_EDGE_CACHE_CONTROL);
+    expect(feedCacheControl(500)).toBe("private, no-store");
+    expect(feedCacheControl(503)).toBe("private, no-store");
+  });
+
   it.each([
     "/",
     "/case/abc123",
@@ -44,8 +50,6 @@ describe("edge cache policy for anonymous public pages", () => {
     "/sitemaps/cases/40",
     "/sitemaps/static.xml",
     "/pricing",
-    "/feeds/scotus",
-    "/feeds/scotus/emergency",
   ])("marks %s as publicly cacheable", (path) => {
     expect(cacheControl(path)).toBe(PUBLIC_EDGE_CACHE_CONTROL);
   });
@@ -70,6 +74,9 @@ describe("edge cache policy for anonymous public pages", () => {
     "/caseload",
     "/judgesx",
     "/cases?_rsc=abc",
+    "/feeds/scotus",
+    "/feeds/scotus/emergency",
+    "/feeds/scotus/administration",
   ])("leaves %s uncached", (path) => {
     expect(cacheControl(path)).not.toBe(PUBLIC_EDGE_CACHE_CONTROL);
   });
