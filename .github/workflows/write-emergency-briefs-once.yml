@@ -1,0 +1,149 @@
+name: Write emergency application briefs (once)
+
+# Writes descriptions for Supreme Court emergency applications, newest first.
+# Serious applications use gpt-6-astra until its cap, then gpt-6.1-sol.
+# Extensions and other routine filings use a template and no model call.
+# mode=apply can also write cheap follower-email previews. It does not send
+# email. Runs on the builder. Dispatch by hand with
+# confirm=WRITE_EMERGENCY_BRIEFS.
+# mode=compare writes the same 5 newest serious applications with gpt-6-astra
+# and gpt-6.1-sol and does not store them. mode=dry and mode=apply store text.
+#
+# Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=110, BRIEF_BUDGET_MID_USD=8,
+# BRIEF_BUDGET_TEASER_USD=2, BRIEF_BUDGET_TOTAL_USD=118. After that date the
+# job spends nothing until BRIEF_BUDGET_AFTER_TOP_USD, BRIEF_BUDGET_AFTER_MID_USD,
+# BRIEF_BUDGET_AFTER_TEASER_USD, and BRIEF_BUDGET_AFTER_TOTAL_USD are all set.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type WRITE_EMERGENCY_BRIEFS to run this workflow against production"
+        required: true
+        type: string
+      mode:
+        description: "compare = 5 cases, both models, nothing stored; dry stores 5; apply runs the backlog"
+        required: true
+        default: "dry"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-emergency-briefs
+  cancel-in-progress: false
+
+jobs:
+  write:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 360
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      MODE: ${{ inputs.mode }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Require confirm=WRITE_EMERGENCY_BRIEFS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "WRITE_EMERGENCY_BRIEFS" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WRITE_EMERGENCY_BRIEFS."
+            exit 1
+          fi
+          if [ "$MODE" != "dry" ] && [ "$MODE" != "apply" ] && [ "$MODE" != "compare" ]; then
+            echo "::error::mode must be compare, dry, or apply"
+            exit 1
+          fi
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY secret is empty. Add it to the repository secrets, then re-run."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Pull packets from production
+        if: inputs.mode != 'compare'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          mkdir -p "$work"
+          pnpm exec tsx scripts/write-emergency-briefs.ts export-sql > "$work/export.sql"
+          pnpm exec tsx scripts/write-emergency-briefs.ts spent-sql > "$work/spent.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/spent.sql" > "$work/spent.txt"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/export.sql" > "$work/packets.jsonl"
+          echo "spent=$(cat "$work/spent.txt") packets=$(wc -l < "$work/packets.jsonl")"
+
+      - name: Pull comparison packets
+        if: inputs.mode == 'compare'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          mkdir -p "$work"
+          pnpm exec tsx scripts/write-emergency-briefs.ts export-compare-sql > "$work/export.sql"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/export.sql" > "$work/packets.jsonl"
+          echo "packets=$(wc -l < "$work/packets.jsonl")"
+
+      - name: Compare both models without storing
+        if: inputs.mode == 'compare'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/emergency-briefs"
+          pnpm exec tsx scripts/write-emergency-briefs.ts compare \
+            --packets "$work/packets.jsonl" \
+            --limit 5 \
+            --out "$work/comparison.md" | tee "$work/run.log"
+          { echo "### Model comparison (not published)"; echo; cat "$work/comparison.md"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'compare'
+        with:
+          name: emergency-brief-comparison
+          path: ${{ runner.temp }}/emergency-briefs/comparison.md
+          retention-days: 14
+
+      - name: Write descriptions
+        if: inputs.mode != 'compare'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/emergency-briefs"
+          limit=0
+          extra=--teasers
+          if [ "$MODE" = "dry" ]; then limit=5; extra=--top-only; fi
+          pnpm exec tsx scripts/write-emergency-briefs.ts write \
+            --packets "$work/packets.jsonl" \
+            --spent "$work/spent.txt" \
+            --limit "$limit" \
+            $extra \
+            --out-sql "$work/upserts.sql" \
+            --log "$work/costs.jsonl" | tee "$work/run.log"
+          # The key is not in the log. Keep the summary, including the five
+          # dry-run descriptions, where a person can read them.
+          { echo "### Emergency brief run ($MODE)"; echo; echo '```json'; grep '^SUMMARY ' "$work/run.log" | sed 's/^SUMMARY //'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Store descriptions
+        if: inputs.mode != 'compare'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q' < "$work/upserts.sql"
+          echo "Stored the descriptions written this run."
