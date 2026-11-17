@@ -15,6 +15,8 @@ import { loadEmergencyStats } from "@/modules/scotus/application/emergency-stats
 import { emergencyProGate } from "@/modules/scotus/http/emergency-pro";
 import { AnalyticsPreviewCompact, previewViewer } from "../analytics/preview";
 import styles from "../emergency.module.css";
+import { casePagePath, opinionPagePath } from "@/modules/scotus/domain/recent-opinions";
+import { ADMINISTRATION_FEED_NOTE } from "@/modules/scotus/domain/activity-feed";
 import { easternTime, justiceLabel, kindLabel, shortDate } from "../format";
 
 export const dynamic = "force-dynamic";
@@ -68,6 +70,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   if (!app) notFound();
   const caption = cleanCaseCaption(app.caption);
   const today = easternDate(new Date());
+  const casePath = casePagePath(app.jurvioCase?.publicId);
+  const opinionPath = opinionPagePath(app.casePublicId, app.documentPublicId);
+  const happened = (value: string | null) => (value && value.slice(0, 10) <= today ? value : null);
   const expected = expectedJusticeFor(app.lowerCourt);
   const submittedSlug = justiceSlugForRef(app.submittedJustice);
   const latest = app.events.at(-1) ?? null;
@@ -96,7 +101,12 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
         <span className={`${styles.chip} ${app.capital ? styles.chipCapital : ""}`}>{kindLabel(app.kind, app.capital)}</span>
         <span className={styles.chip}>{APPLICANT_KIND_LABEL[app.applicantKind]}</span>
       </div>
-      <h1 style={{ fontSize: "clamp(30px,4.6vw,50px)" }}>{caption}</h1>
+      <h1 style={{ fontSize: "clamp(30px,4.6vw,50px)" }}>{casePath ? <Link href={casePath as Route}>{caption}</Link> : caption}</h1>
+      <p className={styles.lede}>
+        <Link href={"/supreme-court/emergency" as Route}>All applications</Link>
+        {opinionPath ? <> · <Link href={opinionPath as Route}>Opinion</Link></> : null}
+        {app.pdfUrl ? <> · <a href={app.pdfUrl}>Official PDF</a></> : null}
+      </p>
       {app.jurvioCase?.followable ? <a className={styles.jump} href="#follow">Follow this application ↓</a> : null}
       {app.applicant ? <p className={styles.lede}>Application by {app.applicant}{app.lowerCourt ? <>, from the {app.lowerCourt}</> : null}.</p> : null}
     </header>
@@ -109,7 +119,7 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
         </section>
 
         <dl className={styles.facts}>
-          <div><dt>Status</dt><dd>{uncertain ? <>Not clear<small>Some lines are withheld; see the <a href={app.sourceUrl}>Court&apos;s docket ↗</a></small></> : STATUS_LABEL[app.status]}{app.rulingOn ? <small>{shortDate(app.rulingOn)}{app.ruledBy === "court" ? " · by the full Court" : app.ruledBy === "justice" ? " · by one justice" : ""}{app.writtenReasons ? " · with a written opinion" : ""}</small> : null}</dd></div>
+          <div><dt>Status</dt><dd>{uncertain ? <>Not clear<small>Some lines are withheld; see the <a href={app.sourceUrl}>Court&apos;s docket ↗</a></small></> : STATUS_LABEL[app.status]}{happened(app.rulingOn) ? <small>{shortDate(happened(app.rulingOn))}{app.ruledBy === "court" ? " · by the full Court" : app.ruledBy === "justice" ? " · by one justice" : ""}{app.writtenReasons ? " · with a written opinion" : ""}</small> : null}</dd></div>
           <div><dt>Response deadline</dt><dd>{app.responseDueOn
             ? <>{shortDate(app.responseDueOn)}{app.responseDueText && /[ap]\.?\s?m/i.test(app.responseDueText) ? <small>{app.responseDueText}</small> : null}
               {response?.state === "due" ? <small className={response.days <= 2 ? styles.due : undefined}>{response.days === 0 ? "Due today" : response.days === 1 ? "Due tomorrow" : `In ${response.days} days`}</small>
@@ -128,11 +138,11 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <div><dt>Administrative stay</dt><dd>{app.adminStayOn
             ? <>Entered {shortDate(app.adminStayOn)}{app.adminStayJustice ? <small>by {justiceLabel(app.adminStayJustice)}</small> : null}<small>A temporary pause while the justices decide; it does not signal the outcome.</small></>
             : "None on the docket"}</dd></div>
-          <div><dt>Filed</dt><dd>{app.submittedOn ? shortDate(app.submittedOn) : "Not stated"}{app.docketedOn && app.docketedOn !== app.submittedOn ? <small>Docketed {shortDate(app.docketedOn)}</small> : null}</dd></div>
+          <div><dt>Filed</dt><dd>{happened(app.submittedOn) ? shortDate(happened(app.submittedOn)) : "Not stated"}{happened(app.docketedOn) && app.docketedOn !== app.submittedOn ? <small>Docketed {shortDate(happened(app.docketedOn))}</small> : null}</dd></div>
           <div><dt>Lower court</dt><dd>{app.lowerCourt ?? "Not stated"}
             {app.lowerCaseNumbers.length ? <small>No. {app.lowerCaseNumbers.join(", ")}</small> : null}
             {app.linkedLowerCase ? <small><Link href={`/case/${app.linkedLowerCase.publicId}` as Route}>Open the lower-court case on Jurvio →</Link></small> : null}</dd></div>
-          {app.administration && app.applicantKind === "federal" ? <div><dt>Administration</dt><dd>{app.administration}</dd></div> : null}
+          {app.administration && app.applicantKind === "federal" ? <div><dt>Administration</dt><dd>{app.administration}<small>{ADMINISTRATION_FEED_NOTE}</small></dd></div> : null}
           {app.amicusCount ? <div><dt>Amicus briefs</dt><dd>{app.amicusCount}</dd></div> : null}
         </dl>
 
@@ -149,7 +159,7 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <h2 id="timeline-title">Docket timeline</h2>
           <ol className={styles.timeline}>
             {app.events.map((event) => <li key={event.sourceRecordId} className={KEY_EVENTS.has(event.kind) ? "key" : undefined}>
-              <time dateTime={event.filedOn ?? undefined}>{event.filedOn ? shortDate(event.filedOn) : "Date not stated"}</time>
+              <time dateTime={happened(event.filedOn) ?? undefined}>{happened(event.filedOn) ? shortDate(happened(event.filedOn)) : "Date not stated"}</time>
               <strong>{EVENT_LABEL[event.kind]}</strong>
               <p>{event.plain}</p>
               <blockquote>{event.description}</blockquote>
@@ -172,6 +182,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <h3>Sources</h3>
           <ul className={styles.sourceLinks}>
             <li><a href={app.sourceUrl}>Official Supreme Court docket ↗</a></li>
+            {casePath ? <li><Link href={casePath as Route}>This case on Jurvio</Link></li> : null}
+            {opinionPath ? <li><Link href={opinionPath as Route}>Opinion on Jurvio</Link></li> : null}
+            {app.pdfUrl ? <li><a href={app.pdfUrl}>Official PDF</a></li> : null}
             {app.linkedMerits ? <li><Link href={`/case/${app.linkedMerits.publicId}` as Route}>Related Supreme Court case No. {app.linkedMerits.docketNumber}</Link></li>
               : app.linkedDocket ? <li>Linked with No. {app.linkedDocket}</li> : null}
             {app.linkedLowerCase ? <li><Link href={`/case/${app.linkedLowerCase.publicId}` as Route}>Lower-court case: {cleanCaseCaption(app.linkedLowerCase.caption)}</Link></li> : null}

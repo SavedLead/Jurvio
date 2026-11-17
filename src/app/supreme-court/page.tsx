@@ -6,7 +6,10 @@ import { siteOrigin } from "@/lib/config/site-url";
 import { listPublicScotusOpinions, type PublicScotusDiscovery } from "@/modules/scotus/application/list-public-scotus-opinions";
 import { isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
 import { fetchOfficialSlipOpinionIndex } from "@/modules/ingestion/providers/scotus/official-opinions";
+import { fetchOfficialOrdersIndex } from "@/modules/ingestion/providers/scotus/official-orders";
 import { currentJustices, officialScotusLinks } from "@/modules/scotus/domain/court-reference";
+import { easternDate } from "@/modules/scotus/domain/emergency-application";
+import { orderListCards, type OrderListCard } from "@/modules/scotus/domain/order-list-cards";
 import { currentOctoberTerm } from "@/modules/scotus/domain/term";
 import styles from "./supreme-court.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
@@ -16,66 +19,114 @@ import { mergeRecentOpinions, type SlipOpinionCard } from "@/modules/scotus/doma
 // Keep database access at runtime; unstable_cache still shares the five-minute result.
 export const dynamic = "force-dynamic";
 
-const getCachedOfficialSlips = unstable_cache(
-  async () => {
-    const term = currentOctoberTerm(new Date()).yy;
-    try {
-      const stored = await db()`
-        SELECT s.source_record_id AS "sourceRecordId", s.filed_on::text AS "filedOn",
-          s.docket_number AS "docketNumber", s.case_name AS "caseName", s.source_url AS "pdfUrl",
-          matched.case_public_id AS "casePublicId", matched.document_public_id AS "documentPublicId"
-        FROM scotus_slip_index s
+async function slipsForTerm(term: string): Promise<SlipOpinionCard[]> {
+  try {
+    const stored = await db()`
+      SELECT s.source_record_id AS "sourceRecordId", s.filed_on::text AS "filedOn",
+        s.docket_number AS "docketNumber", s.case_name AS "caseName", s.source_url AS "pdfUrl",
+        matched.case_public_id AS "casePublicId", matched.document_public_id AS "documentPublicId"
+      FROM scotus_slip_index s
+      LEFT JOIN LATERAL (
+        SELECT lc.public_id AS case_public_id, doc.public_id AS document_public_id
+        FROM legal_case lc
+        JOIN court ON court.id = lc.court_id AND lower(court.provider_court_id) = 'scotus'
         LEFT JOIN LATERAL (
-          SELECT lc.public_id AS case_public_id, doc.public_id AS document_public_id
-          FROM legal_case lc
-          JOIN court ON court.id = lc.court_id AND lower(court.provider_court_id) = 'scotus'
-          LEFT JOIN LATERAL (
-            SELECT d.public_id
-            FROM document d
-            JOIN judicial_opinion j ON j.document_id = d.id
-            WHERE d.case_id = lc.id AND d.publication = 'published'
-              AND split_part(j.source_download_url, '#', 1) = split_part(s.source_url, '#', 1)
-              AND COALESCE((
-                SELECT decision.displayable FROM publication_decision decision
-                WHERE decision.object_type = 'document' AND decision.object_id = d.id
-                ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-              ), false)
-            ORDER BY d.filed_on DESC NULLS LAST
-            LIMIT 1
-          ) doc ON true
-          WHERE lower(lc.docket_number) = lower(s.docket_number)
-            AND lc.publication = 'published'
+          SELECT d.public_id
+          FROM document d
+          JOIN judicial_opinion j ON j.document_id = d.id
+          WHERE d.case_id = lc.id AND d.publication = 'published'
+            AND split_part(j.source_download_url, '#', 1) = split_part(s.source_url, '#', 1)
             AND COALESCE((
               SELECT decision.displayable FROM publication_decision decision
-              WHERE decision.object_type = 'legal_case' AND decision.object_id = lc.id
+              WHERE decision.object_type = 'document' AND decision.object_id = d.id
               ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
             ), false)
-          ORDER BY lc.updated_at DESC
+          ORDER BY d.filed_on DESC NULLS LAST
           LIMIT 1
-        ) matched ON true
-        WHERE s.term_year = ${term}
-        ORDER BY s.filed_on DESC LIMIT 8` as SlipOpinionCard[];
-      const visible = stored.filter((row) => !isRestrictedDocketText(row.caseName));
-      if (visible.length) return visible;
+        ) doc ON true
+        WHERE lower(lc.docket_number) = lower(s.docket_number)
+          AND lc.publication = 'published'
+          AND COALESCE((
+            SELECT decision.displayable FROM publication_decision decision
+            WHERE decision.object_type = 'legal_case' AND decision.object_id = lc.id
+            ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
+          ), false)
+        ORDER BY lc.updated_at DESC
+        LIMIT 1
+      ) matched ON true
+      WHERE s.term_year = ${term}
+      ORDER BY s.filed_on DESC LIMIT 8` as SlipOpinionCard[];
+    const visible = stored.filter((row) => !isRestrictedDocketText(row.caseName));
+    if (visible.length) return visible;
+  } catch {
+    // The slip index is filled by the history job. Until then, read the Court page.
+  }
+  try {
+    const index = await fetchOfficialSlipOpinionIndex(term);
+    return index.records.slice(-8).reverse().filter((row) => !isRestrictedDocketText(row.caseName)).map((row) => ({
+      sourceRecordId: row.sourceRecordId,
+      filedOn: row.filedOn,
+      docketNumber: row.docketNumber,
+      caseName: row.caseName,
+      pdfUrl: row.pdfUrl,
+      casePublicId: null,
+      documentPublicId: null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+const getCachedOfficialSlips = unstable_cache(
+  async () => {
+    const term = currentOctoberTerm(new Date());
+    const current = await slipsForTerm(term.yy);
+    if (current.length >= 8) return current;
+    const previous = String((term.year - 1) % 100).padStart(2, "0");
+    const older = await slipsForTerm(previous);
+    const seen = new Set(current.map((row) => row.sourceRecordId));
+    return [...current, ...older.filter((row) => !seen.has(row.sourceRecordId))]
+      .sort((a, b) => b.filedOn.localeCompare(a.filedOn))
+      .slice(0, 8);
+  },
+  ["official-slip-recent-terms"],
+  { revalidate: 900 },
+);
+
+const getCachedOrderLists = unstable_cache(
+  async (): Promise<OrderListCard[]> => {
+    const term = currentOctoberTerm(new Date()).yy;
+    const today = easternDate(new Date());
+    try {
+      const stored = await db()`
+        SELECT list.list_date::text AS "listDate", list.label, list.source_url AS "pdfUrl", list.amended,
+          EXISTS (
+            SELECT 1 FROM scotus_order_list_item item
+            WHERE item.list_source_record_id = list.source_record_id
+          ) AS "textStored"
+        FROM scotus_order_list list
+        WHERE list.term_year = ${term} AND list.list_kind = 'order_list'
+        ORDER BY list.list_date DESC
+        LIMIT 12` as OrderListCard[];
+      const cards = orderListCards(stored, today);
+      if (cards.length) return cards;
     } catch {
-      // The slip index is filled by the history job. Until then, read the Court page.
+      // Migration 0201 may not be applied yet. The Court's index is the page.
     }
     try {
-      const index = await fetchOfficialSlipOpinionIndex(term);
-      return index.records.slice(-8).reverse().filter((row) => !isRestrictedDocketText(row.caseName)).map((row) => ({
-        sourceRecordId: row.sourceRecordId,
-        filedOn: row.filedOn,
-        docketNumber: row.docketNumber,
-        caseName: row.caseName,
-        pdfUrl: row.pdfUrl,
-        casePublicId: null,
-        documentPublicId: null,
-      }));
+      const index = await fetchOfficialOrdersIndex(term);
+      return orderListCards(index.entries.filter((entry) => entry.kind === "order_list").map((entry) => ({
+        listDate: entry.listDate,
+        label: entry.label,
+        pdfUrl: entry.sourceUrl,
+        amended: entry.amended,
+        textStored: false,
+      })), today).slice(0, 12);
     } catch {
       return [];
     }
   },
-  ["official-slip-current-term"],
+  ["official-order-lists-current-term"],
   { revalidate: 900 },
 );
 
@@ -112,6 +163,7 @@ const emptyDiscovery: PublicScotusDiscovery = {
   courtPublicId: null,
   opinionCount: 0,
   caseCount: 0,
+  caseCountAvailable: false,
   latestFiledOn: null,
   opinions: [],
 };
@@ -119,13 +171,18 @@ const emptyDiscovery: PublicScotusDiscovery = {
 export default async function SupremeCourtPage() {
   let discovery = emptyDiscovery;
   let officialSlips: SlipOpinionCard[] = [];
+  let orderLists: OrderListCard[] = [];
   try {
-    [discovery, officialSlips] = await Promise.all([getCachedScotusDiscovery(), getCachedOfficialSlips()]);
+    [discovery, officialSlips, orderLists] = await Promise.all([
+      getCachedScotusDiscovery(), getCachedOfficialSlips(), getCachedOrderLists(),
+    ]);
   } catch {
     discovery = emptyDiscovery;
     officialSlips = [];
+    orderLists = [];
   }
-  const recentOpinions = mergeRecentOpinions(discovery.opinions, officialSlips);
+  const today = easternDate(new Date());
+  const recentOpinions = mergeRecentOpinions(discovery.opinions, officialSlips, today);
   const term = currentOctoberTerm(new Date());
   const slipOpinionsUrl = `https://www.supremecourt.gov/opinions/slipopinion/${term.yy}`;
   const ordersUrl = `https://www.supremecourt.gov/orders/ordersofthecourt/${term.yy}`;
@@ -158,7 +215,7 @@ export default async function SupremeCourtPage() {
       </div>
       <nav className={styles.sectionNav} aria-label="Supreme Court sections">
         <a href="#court-now">Court now</a><a href="#cases">Cases & process</a><a href="#justices">Justices</a>
-        <a href="#recent-opinions">Opinions</a><Link href="/supreme-court/timeline">Timeline</Link><Link href={"/supreme-court/emergency" as Route}>Emergency docket</Link><a href="#sources">Official sources</a>
+        <a href="#orders">Orders</a><a href="#recent-opinions">Opinions</a><Link href="/supreme-court/timeline">Timeline</Link><Link href={"/supreme-court/emergency" as Route}>Emergency docket</Link><a href="#sources">Official sources</a>
       </nav>
     </header>
 
@@ -168,7 +225,7 @@ export default async function SupremeCourtPage() {
         <article><span>Current membership</span><strong>9</strong><p>One Chief Justice and eight Associate Justices.</p><a href="#justices">Meet the Court ↓</a></article>
         <article><span>Argument season</span><strong>Oct–Apr</strong><p>Arguments are generally held on selected Monday, Tuesday, and Wednesday mornings.</p><a href="https://www.supremecourt.gov/oral_arguments/calendarsandlists.aspx">Current calendar ↗</a></article>
         <article><span>Decisions and orders</span><strong>Term-long</strong><p>Orders appear throughout the term. Opinions often accelerate after arguments end.</p><a href={slipOpinionsUrl}>Latest official opinions ↗</a></article>
-        <article><span>Jurvio corpus</span><strong>{discovery.caseCount.toLocaleString()}</strong><p>Supreme Court cases you can read about on Jurvio.</p><Link href="/cases">Browse records →</Link></article>
+        <article><span>Jurvio corpus</span><strong>{discovery.caseCountAvailable ? discovery.caseCount.toLocaleString() : "—"}</strong><p>{discovery.caseCountAvailable ? "Supreme Court cases you can read about on Jurvio." : "The published-case total is refreshing."}</p><Link href="/cases">Browse records →</Link></article>
       </div>
       <aside className={styles.freshness}><strong>Freshness matters</strong><p>Calendar, docket, order, and opinion status can change. Jurvio links to the controlling official source and does not infer an outcome from silence or an incomplete import.</p></aside>
     </section>
@@ -222,6 +279,21 @@ export default async function SupremeCourtPage() {
       <ol><li><strong>1789</strong><span>Six seats authorized</span></li><li><strong>1837</strong><span>Court expands to nine</span></li><li><strong>1863</strong><span>Ten seats authorized</span></li><li><strong>1869</strong><span>Nine-seat Court established</span></li><li><strong>1935</strong><span>Current building opens</span></li></ol>
     </section>
 
+    <section id="orders" className={styles.opinions}>
+      <div className={styles.sectionHeading}>
+        <div><p className={styles.sectionLabel}>Orders of the Court</p><h2>Order lists for {term.label}</h2></div>
+        <p>Each row is the Court’s PDF. When Jurvio has read the lines, they also appear on the matching case. Until then, the PDF is the record. Nothing here is emailed.</p>
+      </div>
+      {orderLists.length ? <div className={styles.opinionList}>{orderLists.map((order) => <article key={order.pdfUrl}>
+        <div className={styles.opinionMeta}><time dateTime={order.listDate}>{formatDate(order.listDate)}</time>{order.amended ? <span>Amended</span> : null}</div>
+        <div>
+          <p>{order.textStored ? "Lines are on the matching cases" : "Official PDF"} · <a href={order.pdfUrl}>Official PDF</a></p>
+          <h3>{order.label}</h3>
+        </div>
+        <div className={styles.reading} />
+      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Orders</p><h3>The order-list index did not load.</h3><p>The Court’s own page is the list until Jurvio can read it again.</p><a href={ordersUrl}>Orders of the Court ↗</a></div>}
+    </section>
+
     <section id="recent-opinions" className={styles.opinions}>
       <div className={styles.sectionHeading}>
         <div><p className={styles.sectionLabel}>Source-backed public records</p><h2>Recent published opinions</h2></div>
@@ -238,7 +310,7 @@ export default async function SupremeCourtPage() {
           <div className={styles.tags}>{opinion.tags.map((tag, index) => <span key={`${tag}-${index}`}>{tag}</span>)}</div>
         </div>
         <div className={styles.reading}>{opinion.wordCount > 0 ? <><strong>{opinion.wordCount.toLocaleString()}</strong><span>words</span></> : null}</div>
-      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Opinions</p><h3>No published opinion text is on this list.</h3><p>{discovery.caseCount.toLocaleString()} Supreme Court cases are published on Jurvio. The Court’s {term.label} slip index did not load.</p><a href={slipOpinionsUrl}>See {term.label} official opinions ↗</a></div>}
+      </article>)}</div> : <div className={styles.empty}><p className={styles.sectionLabel}>Opinions</p><h3>No published opinion is on this list.</h3><p>{discovery.caseCountAvailable ? `${discovery.caseCount.toLocaleString()} Supreme Court cases are published on Jurvio. ` : ""}The Court’s {term.label} slip index did not load.</p><a href={slipOpinionsUrl}>See {term.label} official opinions ↗</a></div>}
     </section>
 
     <section id="sources" className={styles.sourceDirectory}>

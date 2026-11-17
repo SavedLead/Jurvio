@@ -13,6 +13,8 @@ import { loadEmergencyStats } from "@/modules/scotus/application/emergency-stats
 import { emergencyProGate } from "@/modules/scotus/http/emergency-pro";
 import { AnalyticsPreview, previewViewer } from "./analytics/preview";
 import styles from "./emergency.module.css";
+import { casePagePath, opinionPagePath } from "@/modules/scotus/domain/recent-opinions";
+import { ADMINISTRATION_FEED_NOTE } from "@/modules/scotus/domain/activity-feed";
 import { easternTime, justiceLabel, kindLabel, shortDate } from "./format";
 
 export const dynamic = "force-dynamic";
@@ -59,19 +61,30 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
     const query = next.toString();
     return (query ? `/supreme-court/emergency?${query}` : "/supreme-court/emergency") as Route;
   };
+  const happened = (value: string | null) => (value && value.slice(0, 10) <= today ? value : null);
   const renderRow = (row: NonNullable<typeof data>["rows"][number]) => {
     const response = statusUncertain(row) ? null : responseDisplay(row, today);
+    const casePath = casePagePath(row.casePublicId);
+    const opinionPath = opinionPagePath(row.casePublicId, row.documentPublicId);
+    const caption = cleanCaseCaption(row.caption);
+    const eventOn = happened(row.lastEvent?.filedOn ?? null);
     return <li key={row.docketNumber} className={styles.item}>
       <div><span className={styles.docket}>No. {row.docketNumber}</span></div>
       <div>
-        <h2><Link href={`/supreme-court/emergency/${row.docketNumber}` as Route}>{cleanCaseCaption(row.caption)}</Link></h2>
+        <h2>{casePath ? <Link href={casePath as Route}>{caption}</Link> : caption}</h2>
         <p>
-          {row.lastEvent ? <>{EVENT_LABEL[row.lastEvent.kind]}{row.lastEvent.filedOn ? ` · ${shortDate(row.lastEvent.filedOn)}` : ""}</> : "Filed"}
+          <Link href={`/supreme-court/emergency/${row.docketNumber}` as Route}>Application</Link>
+          {opinionPath ? <> · <Link href={opinionPath as Route}>Opinion</Link></> : null}
+          {row.pdfUrl ? <> · <a href={row.pdfUrl}>Official PDF</a></> : null}
+        </p>
+        <p>
+          {row.lastEvent ? <>{EVENT_LABEL[row.lastEvent.kind]}{eventOn ? ` · ${shortDate(eventOn)}` : ""}</> : "Filed"}
           {row.submittedJustice ? <> · to {justiceLabel(row.submittedJustice)}</> : null}
         </p>
         <div className={styles.meta}>
           <span className={`${styles.chip} ${row.capital ? styles.chipCapital : row.kind === "stay" || row.kind === "injunction" ? styles.chipStay : ""}`}>{kindLabel(row.kind, row.capital)}</span>
           <span className={styles.chip}>{APPLICANT_KIND_LABEL[row.applicantKind]}</span>
+          {row.administration ? <span className={styles.chip}>Automatic label: {row.administration}</span> : null}
           {row.adminStayOn && row.status === "pending" ? <span className={styles.chip}>Administrative stay</span> : null}
           {row.notedVotes ? <span className={styles.chip}>{row.notedVotes} noted {row.notedVotes === 1 ? "vote" : "votes"}</span> : null}
           {row.lowerCourt ? <span className={styles.chip}>{row.lowerCourt}</span> : null}
@@ -84,7 +97,7 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
         {response?.state === "due" ? <span className={response.days <= 2 ? styles.due : undefined}>Response due {response.days === 0 ? "today" : response.days === 1 ? "tomorrow" : `in ${response.days} days`}</span>
           : response?.state === "filed" ? <span>Response filed {shortDate(response.on)}</span>
           : response?.state === "passed" ? <span>Response deadline passed {shortDate(response.on)}</span> : null}
-        {row.rulingOn ? <span>Ruled {shortDate(row.rulingOn)}</span> : null}
+        {happened(row.rulingOn) ? <span>Ruled {shortDate(happened(row.rulingOn))}</span> : null}
       </div>
     </li>;
   };
@@ -124,6 +137,7 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
             {KINDS.map((item) => <Link key={item.id} href={href({ kind: item.id })} aria-current={item.id === kind ? "true" : undefined}>{item.label}</Link>)}
           </div>
         </div>
+        <p className={styles.toggle}>{ADMINISTRATION_FEED_NOTE} <a href="/feeds/scotus/administration">Administration feed</a>.</p>
         <p className={styles.toggle}>
           {extensions
             ? <>Showing routine requests for more time to file. <Link href={href({ extensions: null })}>Hide extensions</Link></>

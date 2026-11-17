@@ -87,12 +87,23 @@ function sameOpinion(left: { docketNumber: string; pdfUrl: string | null }, righ
   return !leftPdf || !rightPdf || leftPdf === rightPdf;
 }
 
+function onOrBefore(filedOn: string | null, today: string): boolean {
+  if (!filedOn) return true;
+  const day = filedOn.slice(0, 10);
+  return !/^\d{4}-\d{2}-\d{2}$/.test(day) || day <= today;
+}
+
 /**
  * Published opinions first. A slip row is kept only when it is a different
  * docket-and-PDF pair, and it links inward only when a published case exists.
+ * A filing date after `today` (the Court's calendar day in New York) is omitted.
  */
-export function mergeRecentOpinions(published: readonly PublishedOpinionCard[], slips: readonly SlipOpinionCard[]): RecentOpinionCard[] {
-  const cards: RecentOpinionCard[] = published.map((opinion) => ({
+export function mergeRecentOpinions(
+  published: readonly PublishedOpinionCard[],
+  slips: readonly SlipOpinionCard[],
+  today: string,
+): RecentOpinionCard[] {
+  const cards: RecentOpinionCard[] = published.filter((opinion) => onOrBefore(opinion.filedOn, today)).map((opinion) => ({
     key: `case:${opinion.documentPublicId}`,
     filedOn: opinion.filedOn,
     docketNumber: opinion.docketNumber,
@@ -105,6 +116,7 @@ export function mergeRecentOpinions(published: readonly PublishedOpinionCard[], 
     tags: [publicOpinionType(opinion.opinionType), opinion.perCuriam ? "Per curiam" : null, opinion.authorName, opinion.precedentialStatus].filter((tag): tag is string => Boolean(tag)),
   }));
   for (const slip of slips) {
+    if (!onOrBefore(slip.filedOn, today)) continue;
     const candidate = { docketNumber: slip.docketNumber, pdfUrl: slip.pdfUrl };
     if (cards.some((card) => sameOpinion(card, candidate))) continue;
     const casePath = casePagePath(slip.casePublicId);
@@ -121,5 +133,5 @@ export function mergeRecentOpinions(published: readonly PublishedOpinionCard[], 
       tags: ["Slip opinion"],
     });
   }
-  return cards;
+  return cards.sort((a, b) => (b.filedOn ?? "").localeCompare(a.filedOn ?? ""));
 }

@@ -9,6 +9,7 @@
 import type postgres from "postgres";
 import { redactPublicText } from "@/modules/privacy/application/active-redactions";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
+import { casePagePath, opinionPagePath } from "@/modules/scotus/domain/recent-opinions";
 import { alertEligibleSql } from "@/modules/accounts/application/follows";
 import { circuitOfCourtName } from "@/modules/scotus/domain/circuit-justice";
 import {
@@ -91,6 +92,14 @@ export interface EmergencyListRow {
   /** Docket lines withheld by the sealed/restricted filter. With any, a "pending" status may be stale. */
   withheldLines: number;
   lastEvent: { kind: ApplicationEventKind; filedOn: string | null } | null;
+  /** Presidential term of the filing date. Set only for a federal-government applicant name. Approximate. */
+  administration: string | null;
+  /** Published, displayable Jurvio case. Absent when linking would 404. */
+  casePublicId: string | null;
+  /** Published opinion page for this docket, when that page can open. */
+  documentPublicId: string | null;
+  /** Official supremecourt.gov PDF, including when Jurvio has not extracted the text. */
+  pdfUrl: string | null;
 }
 
 export type ListStatus = "open" | "decided" | "all";
@@ -111,7 +120,7 @@ export interface EmergencyList {
 
 export async function listEmergencyApplications(sql: Sql, filters: ListFilters): Promise<EmergencyList | null> {
   try {
-    return await sql.begin(async (tx) => {
+    const listed = await sql.begin(async (tx) => {
       await tx`SET LOCAL statement_timeout = '3000ms'`;
       const status = filters.status;
       const raw = await tx<Array<Omit<EmergencyListRow, "responseFiledOn"> & { responseLines: unknown }>>`
@@ -119,12 +128,17 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
           a.submitted_justice AS "submittedJustice", a.expected_justice AS "expectedJustice",
           a.submitted_on::text AS "submittedOn", a.docketed_on::text AS "docketedOn", a.referred_on::text AS "referredOn",
           a.response_due_on::text AS "responseDueOn", a.response_due_text AS "responseDueText", a.admin_stay_on::text AS "adminStayOn",
-          a.ruling_on::text AS "rulingOn", a.last_entry_on::text AS "lastEntryOn", a.lower_court AS "lowerCourt",
+          a.ruling_on::text AS "rulingOn", a.last_entry_on::text AS "lastEntryOn", a.lower_court AS "lowerCourt", a.administration,
           jsonb_array_length(a.noted_votes)::int AS "notedVotes", a.amicus_count AS "amicusCount", a.withheld_lines AS "withheldLines",
+          CASE WHEN linked_vis.displayable THEN linked.public_id ELSE NULL END AS "casePublicId",
+          NULL::text AS "documentPublicId", NULL::text AS "pdfUrl",
           (SELECT jsonb_build_object('kind', e.kind, 'filedOn', e.filed_on::text) FROM scotus_application_event e
             WHERE e.docket_number = a.docket_number ORDER BY e.position DESC LIMIT 1) AS "lastEvent",
           ${tx.unsafe(responseLinesSql("a"))} AS "responseLines"
         FROM scotus_application a
+        LEFT JOIN legal_case linked ON linked.id = a.case_id AND linked.publication = 'published'
+        LEFT JOIN publication_current linked_vis
+          ON linked_vis.object_type = 'legal_case' AND linked_vis.object_id = linked.id AND linked_vis.displayable
         WHERE ${tx.unsafe(visibleSql("a"))}
           AND a.source_lane = 'live'
           AND (${filters.extensions} OR a.kind <> 'extension')
@@ -140,7 +154,11 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
       const rows: EmergencyListRow[] = [];
       for (const row of raw.map((item) => withResponseStatus(item))) {
         const caption = await redactPublicText(tx as never, row.caption);
-        rows.push({ ...row, caption: caption.text ?? row.caption });
+        rows.push({
+          ...row,
+          caption: caption.text ?? row.caption,
+          administration: row.applicantKind === "federal" ? row.administration : null,
+        });
       }
       const [counts] = await tx<EmergencyList["counts"][]>`
         SELECT count(*) FILTER (WHERE kind <> 'extension' AND status = 'pending')::int AS "openSerious",
@@ -154,9 +172,88 @@ export async function listEmergencyApplications(sql: Sql, filters: ListFilters):
       return { rows, counts: counts ?? { openSerious: 0, decided30: 0, extensionsHidden: 0, total: 0 },
         freshness: fresh ?? { lastCheckedAt: null, lastChangeAt: null } };
     });
+    return listed ? await attachPublicRecordLinks(sql, listed) : null;
   } catch (error) {
     if (missingRelation(error) || (error as { code?: string }).code === "57014") return null;
     throw error;
+  }
+}
+
+const CASE_ID = /^jv-[a-z0-9]{8,10}$/;
+const OFFICIAL_PDF = /^https:\/\/www\.supremecourt\.gov\/.+\.pdf(?:[?#].*)?$/i;
+
+/**
+ * Fill case, opinion, and official-PDF links without failing the list.
+ * A case link requires a displayable published case. An opinion link requires
+ * a displayable document. The PDF is the Court's file either way.
+ */
+async function attachPublicRecordLinks(sql: Sql, list: EmergencyList): Promise<EmergencyList> {
+  const dockets = list.rows.map((row) => row.docketNumber.toLowerCase());
+  if (!dockets.length) return list;
+  try {
+    const linked = await sql.begin(async (tx) => {
+      await tx`SET LOCAL statement_timeout = '1500ms'`;
+      const cases = await tx<{ docketNumber: string; casePublicId: string }[]>`
+        SELECT DISTINCT ON (lower(lc.docket_number)) lc.docket_number AS "docketNumber", lc.public_id AS "casePublicId"
+        FROM legal_case lc
+        JOIN court ON court.id = lc.court_id AND lower(court.provider_court_id) = 'scotus'
+        JOIN publication_current vis ON vis.object_type = 'legal_case' AND vis.object_id = lc.id AND vis.displayable
+        WHERE lc.publication = 'published' AND lower(lc.docket_number) IN ${tx(dockets)}
+        ORDER BY lower(lc.docket_number), lc.updated_at DESC`;
+      const opinions = await tx<{ docketNumber: string; pdfUrl: string; casePublicId: string | null; documentPublicId: string | null }[]>`
+        SELECT DISTINCT ON (lower(s.docket_number)) s.docket_number AS "docketNumber", s.source_url AS "pdfUrl",
+          matched.case_public_id AS "casePublicId", matched.document_public_id AS "documentPublicId"
+        FROM scotus_slip_index s
+        LEFT JOIN LATERAL (
+          SELECT lc.public_id AS case_public_id, doc.public_id AS document_public_id
+          FROM legal_case lc
+          JOIN court ON court.id = lc.court_id AND lower(court.provider_court_id) = 'scotus'
+          JOIN publication_current vis ON vis.object_type = 'legal_case' AND vis.object_id = lc.id AND vis.displayable
+          LEFT JOIN LATERAL (
+            SELECT d.public_id
+            FROM document d
+            JOIN judicial_opinion j ON j.document_id = d.id
+            JOIN publication_current dv ON dv.object_type = 'document' AND dv.object_id = d.id AND dv.displayable
+            WHERE d.case_id = lc.id AND d.publication = 'published'
+              AND split_part(j.source_download_url, '#', 1) = split_part(s.source_url, '#', 1)
+            LIMIT 1
+          ) doc ON true
+          WHERE lower(lc.docket_number) = lower(s.docket_number) AND lc.publication = 'published'
+          ORDER BY lc.updated_at DESC
+          LIMIT 1
+        ) matched ON true
+        WHERE lower(s.docket_number) IN ${tx(dockets)}
+        ORDER BY lower(s.docket_number), s.filed_on DESC`;
+      return { cases, opinions };
+    });
+    const caseByDocket = new Map(linked.cases.filter((row) => CASE_ID.test(row.casePublicId)).map((row) => [row.docketNumber.toLowerCase(), row.casePublicId]));
+    const opinionByDocket = new Map(linked.opinions.map((row) => [row.docketNumber.toLowerCase(), row]));
+    return {
+      ...list,
+      rows: list.rows.map((row) => {
+        const key = row.docketNumber.toLowerCase();
+        const opinion = opinionByDocket.get(key);
+        const casePublicId = row.casePublicId && CASE_ID.test(row.casePublicId) ? row.casePublicId : caseByDocket.get(key) ?? opinion?.casePublicId ?? null;
+        const documentPublicId = opinion?.documentPublicId ?? null;
+        const pdfUrl = opinion?.pdfUrl && OFFICIAL_PDF.test(opinion.pdfUrl) ? opinion.pdfUrl : null;
+        return {
+          ...row,
+          casePublicId: casePublicId && casePagePath(casePublicId) ? casePublicId : null,
+          documentPublicId: opinionPagePath(casePublicId, documentPublicId) ? documentPublicId : null,
+          pdfUrl,
+        };
+      }),
+    };
+  } catch {
+    return {
+      ...list,
+      rows: list.rows.map((row) => ({
+        ...row,
+        casePublicId: row.casePublicId && casePagePath(row.casePublicId) ? row.casePublicId : null,
+        documentPublicId: null,
+        pdfUrl: null,
+      })),
+    };
   }
 }
 
@@ -208,6 +305,7 @@ export async function getEmergencyApplication(sql: Sql, docketNumber: string): P
           a.linked_docket AS "linkedDocket", a.withheld_lines AS "withheldLines", a.source_url AS "sourceUrl",
           to_json(a.first_seen_at)#>>'{}' AS "firstSeenAt", to_json(p.checked_at)#>>'{}' AS "checkedAt",
           a.case_id AS "caseId", c.public_id AS "casePublicId",
+          NULL::text AS "documentPublicId", NULL::text AS "pdfUrl",
           CASE WHEN c.id IS NULL THEN false ELSE ${tx.unsafe(alertEligibleSql("c"))} END AS followable
         FROM scotus_application a
         LEFT JOIN legal_case c ON c.id = a.case_id
@@ -242,6 +340,64 @@ export async function getEmergencyApplication(sql: Sql, docketNumber: string): P
         linkedMerits = merits ?? null;
       }
       const { caseId: _caseId, casePublicId, followable, votes, ...stored } = row;
+      let recordCase = casePublicId && casePagePath(casePublicId) ? casePublicId : null;
+      let documentPublicId: string | null = null;
+      let pdfUrl: string | null = null;
+      try {
+        const [found] = await tx<{ casePublicId: string | null; documentPublicId: string | null; pdfUrl: string | null }[]>`
+          SELECT matched.case_public_id AS "casePublicId", matched.document_public_id AS "documentPublicId", s.source_url AS "pdfUrl"
+          FROM scotus_slip_index s
+          LEFT JOIN LATERAL (
+            SELECT lc.public_id AS case_public_id, doc.public_id AS document_public_id
+            FROM legal_case lc
+            JOIN court ON court.id = lc.court_id AND lower(court.provider_court_id) = 'scotus'
+            JOIN publication_current vis ON vis.object_type = 'legal_case' AND vis.object_id = lc.id AND vis.displayable
+            LEFT JOIN LATERAL (
+              SELECT d.public_id
+              FROM document d
+              JOIN judicial_opinion j ON j.document_id = d.id
+              JOIN publication_current dv ON dv.object_type = 'document' AND dv.object_id = d.id AND dv.displayable
+              WHERE d.case_id = lc.id AND d.publication = 'published'
+                AND split_part(j.source_download_url, '#', 1) = split_part(s.source_url, '#', 1)
+              LIMIT 1
+            ) doc ON true
+            WHERE lower(lc.docket_number) = lower(${docketNumber}) AND lc.publication = 'published'
+            ORDER BY lc.updated_at DESC
+            LIMIT 1
+          ) matched ON true
+          WHERE lower(s.docket_number) = lower(${docketNumber})
+          ORDER BY s.filed_on DESC
+          LIMIT 1`;
+        const [caseOnly] = found?.casePublicId ? [] : await tx<{ casePublicId: string }[]>`
+          SELECT lc.public_id AS "casePublicId"
+          FROM legal_case lc
+          JOIN court ON court.id = lc.court_id AND lower(court.provider_court_id) = 'scotus'
+          JOIN publication_current vis ON vis.object_type = 'legal_case' AND vis.object_id = lc.id AND vis.displayable
+          WHERE lc.publication = 'published' AND lower(lc.docket_number) = lower(${docketNumber})
+          ORDER BY lc.updated_at DESC
+          LIMIT 1`;
+        const resolvedCase = found?.casePublicId ?? caseOnly?.casePublicId ?? recordCase;
+        recordCase = resolvedCase && casePagePath(resolvedCase) ? resolvedCase : null;
+        documentPublicId = opinionPagePath(recordCase, found?.documentPublicId) ? found?.documentPublicId ?? null : null;
+        pdfUrl = found?.pdfUrl && OFFICIAL_PDF.test(found.pdfUrl) ? found.pdfUrl : null;
+      } catch {
+        documentPublicId = null;
+        pdfUrl = null;
+        recordCase = null;
+        try {
+          const [caseOnly] = await tx<{ casePublicId: string }[]>`
+            SELECT lc.public_id AS "casePublicId"
+            FROM legal_case lc
+            JOIN court ON court.id = lc.court_id AND lower(court.provider_court_id) = 'scotus'
+            JOIN publication_current vis ON vis.object_type = 'legal_case' AND vis.object_id = lc.id AND vis.displayable
+            WHERE lc.publication = 'published' AND lower(lc.docket_number) = lower(${docketNumber})
+            ORDER BY lc.updated_at DESC
+            LIMIT 1`;
+          recordCase = caseOnly && casePagePath(caseOnly.casePublicId) ? caseOnly.casePublicId : null;
+        } catch {
+          recordCase = null;
+        }
+      }
       // The full timeline is already loaded: derive the deadline from it.
       const rest = withResponseStatus({ ...stored, responseLines: events.map((event) => ({ filedOn: event.filedOn, kind: event.kind, description: event.description })) });
       void _caseId;
@@ -262,7 +418,10 @@ export async function getEmergencyApplication(sql: Sql, docketNumber: string): P
         votes: Array.isArray(votes) ? votes as NotedVote[] : [],
         lastEvent: events.length ? { kind: events.at(-1)!.kind, filedOn: events.at(-1)!.filedOn } : null,
         events: eventsRedacted,
-        jurvioCase: casePublicId ? { publicId: casePublicId, followable: Boolean(followable) } : null,
+        casePublicId: recordCase,
+        documentPublicId,
+        pdfUrl,
+        jurvioCase: recordCase ? { publicId: recordCase, followable: Boolean(followable) && recordCase === casePublicId } : null,
         linkedLowerCase: linkedLowerCase && lowerCaption ? { ...linkedLowerCase, caption: lowerCaption.text ?? linkedLowerCase.caption } : linkedLowerCase,
         linkedMerits,
       };
