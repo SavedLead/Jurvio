@@ -13,6 +13,8 @@ export interface FeedFreshness {
   lastItemAt: string | null;
   ageMinutes: number | null;
   stale: boolean;
+  /** The last poll succeeded and every court it reached parsed zero items. */
+  emptyRun: boolean;
   lastRunAt: string | null;
   lastRunOk: boolean | null;
 }
@@ -50,6 +52,12 @@ export function feedIsStale(age: number | null, limit: number, courtHours: boole
   return age === null || age > limit;
 }
 
+/** A poll that exits cleanly with nothing parsed is a failure during court hours. */
+export function emptyRunIsStale(courtHours: boolean, emptyFetches: number, filledFetches: number): boolean {
+  if (!courtHours) return false;
+  return emptyFetches > 0 && filledFetches === 0;
+}
+
 interface StampRow {
   newest: Date | string | null;
 }
@@ -80,6 +88,18 @@ async function newestAppealsItem(sql: Sql): Promise<Date | string | null> {
   return row?.newest ?? null;
 }
 
+async function recentFetchCounts(sql: Sql, source: string): Promise<{ emptyFetches: number; filledFetches: number }> {
+  const [row] = await sql<{ empty_fetches: number; filled_fetches: number }[]>`
+    SELECT
+      count(*) FILTER (WHERE ok AND items = 0)::int AS empty_fetches,
+      count(*) FILTER (WHERE ok AND items > 0)::int AS filled_fetches
+    FROM court_fetch_log
+    WHERE source = ${source}
+      AND fetched_at > now() - interval '20 minutes'
+  `;
+  return { emptyFetches: row?.empty_fetches ?? 0, filledFetches: row?.filled_fetches ?? 0 };
+}
+
 async function lastRun(sql: Sql, lane: string): Promise<RunRow> {
   const [row] = await sql<RunRow[]>`
     SELECT started_at, ok
@@ -91,12 +111,21 @@ async function lastRun(sql: Sql, lane: string): Promise<RunRow> {
   return row ?? { started_at: null, ok: null };
 }
 
-function freshness(at: Date | string | null, run: RunRow, limit: number, now: Date, courtHours: boolean): FeedFreshness {
+function freshness(
+  at: Date | string | null,
+  run: RunRow,
+  fetches: { emptyFetches: number; filledFetches: number },
+  limit: number,
+  now: Date,
+  courtHours: boolean,
+): FeedFreshness {
   const age = ageMinutes(at, now);
+  const emptyRun = emptyRunIsStale(courtHours, fetches.emptyFetches, fetches.filledFetches);
   return {
     lastItemAt: at instanceof Date ? at.toISOString() : at,
     ageMinutes: age,
-    stale: feedIsStale(age, limit, courtHours),
+    stale: feedIsStale(age, limit, courtHours) || emptyRun,
+    emptyRun,
     lastRunAt: run.started_at instanceof Date ? run.started_at.toISOString() : run.started_at,
     lastRunOk: run.ok,
   };
@@ -105,14 +134,16 @@ function freshness(at: Date | string | null, run: RunRow, limit: number, now: Da
 /** Ages only. No captions, docket numbers, or error text. */
 export async function readLiveFeedHealth(sql: Sql, now = new Date()): Promise<LiveFeedHealth> {
   const courtHours = inFederalCourtHours(now);
-  const [districtAt, appealsAt, districtRun, appealsRun] = await Promise.all([
+  const [districtAt, appealsAt, districtRun, appealsRun, districtFetches, appealsFetches] = await Promise.all([
     newestDistrictItem(sql),
     newestAppealsItem(sql),
     lastRun(sql, "direct-court"),
     lastRun(sql, "appellate-pacer-rss"),
+    recentFetchCounts(sql, "district_rss"),
+    recentFetchCounts(sql, "appellate_pacer_rss"),
   ]);
-  const district = freshness(districtAt, districtRun, DISTRICT_STALE_MINUTES, now, courtHours);
-  const appeals = freshness(appealsAt, appealsRun, APPEALS_STALE_MINUTES, now, courtHours);
+  const district = freshness(districtAt, districtRun, districtFetches, DISTRICT_STALE_MINUTES, now, courtHours);
+  const appeals = freshness(appealsAt, appealsRun, appealsFetches, APPEALS_STALE_MINUTES, now, courtHours);
   return {
     generatedAt: now.toISOString(),
     courtHours,

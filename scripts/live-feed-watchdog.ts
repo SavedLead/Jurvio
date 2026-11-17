@@ -24,7 +24,7 @@ if (health.ok) {
 }
 
 const sinceRestart = ageMinutes(restartPath);
-console.error(`LIVE_FEED_STALE district_age_min=${health.district.ageMinutes ?? "none"} appeals_age_min=${health.appeals.ageMinutes ?? "none"}`);
+console.error(`LIVE_FEED_STALE district_age_min=${health.district.ageMinutes ?? "none"} appeals_age_min=${health.appeals.ageMinutes ?? "none"} district_empty_run=${health.district.emptyRun} appeals_empty_run=${health.appeals.emptyRun}`);
 if (sinceRestart !== null && sinceRestart < 30) {
   console.error("LIVE_FEED_STALE restart suppressed; the lane restarted within 30 minutes");
   process.exit(0);

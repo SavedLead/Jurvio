@@ -7,6 +7,7 @@ import {
 } from "@/modules/ingestion/live-feeds/run-live-feeds";
 import { runGovInfoDaily } from "@/modules/ingestion/live-feeds/govinfo-daily";
 import { runAppellatePacerRss, runCourtListenerFeeds, runCourtSiteOpinions } from "@/modules/ingestion/live-feeds/free-sources";
+import { inFederalCourtHours } from "@/modules/ingestion/application/live-feed-health";
 
 // Live feeds: new SCOTUS dockets (supremecourt.gov) and new court of appeals
 // opinions/orders (each circuit's own feed). New cases are drafts. Each source
@@ -119,6 +120,13 @@ try {
     console.log(JSON.stringify({ liveFeeds: source, elapsedMs: Date.now() - started, totals, freshness, results }));
     // Partial failure is normal (one court down); only a total failure fails the job.
     if (results.length > 0 && totals.failed === results.length) process.exitCode = 1;
+    // A clean appeals poll that parsed nothing is not a success. The courts'
+    // feeds only keep about a day, so an empty parse during court hours has to
+    // fail the lane and let the watchdog restart it.
+    if (source === "appellate-rss" && inFederalCourtHours(new Date()) && totals.itemsFetched === 0 && results.some((row) => row.ok)) {
+      console.error("LIVE_FEED_EMPTY appellate-rss fetched 0 items during court hours");
+      process.exitCode = 1;
+    }
   }
 } finally {
   await sql.end();
