@@ -409,6 +409,52 @@ jobs:
             mv "$tmp" "$env_file"
             rm -f "$updates"
           ' < "$payload"
+      - name: Sync Cloudflare cache purge settings to box env
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          # refreshPublishedPages and redaction-admin read these two names from
+          # the process environment. Both run on this box with env_file
+          # /opt/jurvio/.env.production. Write both or neither. Values go over
+          # stdin and are never printed. Release and verify recreates the
+          # containers, which re-read the file.
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ZONE_ID:-}" ]; then
+            echo "::notice title=Cloudflare cache purge not configured::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ZONE_ID is empty; leaving box env unchanged."
+            exit 0
+          fi
+          payload="$(mktemp)"
+          trap 'rm -f "$payload"' EXIT
+          chmod 600 "$payload"
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ZONE_ID; do
+            value="${!name:-}"
+            case "$value" in *$'\n'*|*$'\r'*) echo "::error::$name contains a newline"; exit 1;; esac
+            printf '%s=%s\n' "$name" "$value" >> "$payload"
+          done
+          SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+          timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" '
+            set -euo pipefail
+            umask 077
+            env_file=/opt/jurvio/.env.production
+            touch "$env_file"
+            updates="$(mktemp)"; tmp="$(mktemp)"
+            cat > "$updates"
+            cp "$env_file" "$tmp"
+            while IFS= read -r line; do
+              key="${line%%=*}"
+              grep -v "^${key}=" "$tmp" > "$tmp.next" || true
+              mv "$tmp.next" "$tmp"
+              printf "%s\n" "$line" >> "$tmp"
+              echo "$key synced into box env (value not printed)."
+            done < "$updates"
+            chmod 600 "$tmp"
+            mv "$tmp" "$env_file"
+            rm -f "$updates"
+          ' < "$payload"
       - name: Release and verify
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         env:
@@ -426,6 +472,41 @@ jobs:
           # that chain; the inner per-step timeouts still bound each phase.
           # Output kept so the next step knows whether migrations were applied.
           timeout --signal=TERM --kill-after=30s 12600s ssh $SSH_OPTS "$DO_USER@$DO_HOST" "chmod 700 /opt/jurvio/scripts/*.sh && JURVIO_IMAGE='$JURVIO_IMAGE' /opt/jurvio/scripts/release-production.sh" 2>&1 | tee "$RUNNER_TEMP/release-production.log"
+      - name: Purge one public URL to prove Cloudflare cache purge
+        if: ${{ steps.guard.outputs.fresh == 'true' }}
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          set -euo pipefail
+          # The recreated app container has the env file. Ask Cloudflare to drop
+          # one URL. Print only the HTTP status and the success flag.
+          SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+          timeout --signal=TERM --kill-after=30s 120s ssh $SSH_OPTS "$DO_USER@$DO_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          # Compose requires JURVIO_IMAGE, which is not stored on the box.
+          # The running app container already has the env file from the release.
+          app="$(docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ]
+          docker exec -i "$app" node --input-type=module <<'NODE'
+          const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
+          const zone = process.env.CLOUDFLARE_ZONE_ID ?? "";
+          if (!token || !zone) {
+            console.log("purge_result missing");
+            process.exit(1);
+          }
+          const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zone)}/purge_cache`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ files: ["https://jurvio.com/feeds/scotus"] }),
+          });
+          const body = await response.json().catch(() => ({}));
+          const codes = Array.isArray(body.errors) ? body.errors.map((error) => error && error.code).filter((code) => code != null) : [];
+          console.log(`purge_http ${response.status} success ${body.success === true} error_codes ${codes.join(",") || "none"}`);
+          if (response.ok && body.success === true) process.exit(0);
+          process.exit(1);
+          NODE
+          REMOTE
       - name: Verify hosted command-center login externally
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
