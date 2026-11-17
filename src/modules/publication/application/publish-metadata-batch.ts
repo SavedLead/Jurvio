@@ -15,7 +15,6 @@ import { FEDERAL_PUBLICATION_RULE_VERSION } from "@/modules/ingestion/domain/fed
 import { metadataHoldReopenSql } from "@/modules/ingestion/domain/federal-publication-hold";
 
 type Sql = ReturnType<typeof postgres>;
-type Queryable = Sql | Awaited<ReturnType<Sql["reserve"]>>;
 
 const RULE = FEDERAL_PUBLICATION_RULE_VERSION;
 const REASON = "metadata_batch_without_opinion_text";
@@ -138,7 +137,7 @@ export async function publishMetadataBatch(sql: Sql, options: { limit: number })
  * One commit of at most `limit` draft rows, and never more than DRAFT_WINDOW_SIZE.
  * The index limit runs before sealed, court, and hold filters.
  */
-export async function publishMetadataSlice(sql: Queryable, limit: number): Promise<MetadataBatchStats> {
+export async function publishMetadataSlice(sql: Sql, limit: number): Promise<MetadataBatchStats> {
   const windowSize = Math.min(DRAFT_WINDOW_SIZE, Math.max(1, Math.floor(limit)));
   const window = await publishDraftWindow(sql, windowSize);
   if (window.timedOut) {
@@ -152,7 +151,7 @@ export async function publishMetadataSlice(sql: Queryable, limit: number): Promi
   };
 }
 
-async function publishDraftWindow(sql: Queryable, windowSize: number): Promise<WindowStats> {
+async function publishDraftWindow(sql: Sql, windowSize: number): Promise<WindowStats> {
   const cursor = await readDraftCursor(sql);
   if (cursor) {
     const newer = await commitDraftWindow(sql, "after", cursor, windowSize);
@@ -162,7 +161,7 @@ async function publishDraftWindow(sql: Queryable, windowSize: number): Promise<W
   return commitDraftWindow(sql, "newest", null, windowSize);
 }
 
-async function readDraftCursor(sql: Queryable): Promise<DraftWindowCursor | null> {
+async function readDraftCursor(sql: Sql): Promise<DraftWindowCursor | null> {
   const [stored] = await sql<{ cursor_value: string }[]>`
     SELECT checkpoint.cursor_value
     FROM ingestion_checkpoint checkpoint
@@ -173,7 +172,7 @@ async function readDraftCursor(sql: Queryable): Promise<DraftWindowCursor | null
 }
 
 async function commitDraftWindow(
-  sql: Queryable,
+  sql: Sql,
   mode: WindowMode,
   cursor: DraftWindowCursor | null,
   windowSize: number,
@@ -420,7 +419,9 @@ export async function runAdaptiveMetadataPublish(
           stats.stopped = "pace";
           break;
         }
-        const slice = await publishMetadataSlice(reserved, batch);
+        // sql.reserve() returns a connection with no begin. The lock stays there;
+        // the window transaction has to start on the root client.
+        const slice = await publishMetadataSlice(sql, batch);
         stats.published += slice.published;
         stats.scanned += slice.scanned;
         stats.held += slice.held;
