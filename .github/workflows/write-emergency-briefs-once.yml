@@ -105,6 +105,7 @@ jobs:
         if: inputs.mode == 'compare'
         run: |
           set -euo pipefail
+          command -v pdftotext >/dev/null || { sudo apt-get update; sudo apt-get install -y poppler-utils; }
           work="$RUNNER_TEMP/emergency-briefs"
           pnpm exec tsx scripts/write-emergency-briefs.ts compare \
             --packets "$work/packets.jsonl" \
