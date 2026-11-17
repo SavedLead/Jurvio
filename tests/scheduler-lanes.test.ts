@@ -36,6 +36,10 @@ describe("scheduler lanes", () => {
 
   it("rejects unknown lanes and keeps SCOTUS jobs in core only", () => {
     expect(SCHEDULED_JOBS.find((job) => job.name === "scotus-orders-index")?.command).toEqual(["jobs/sync-official-scotus-orders.mjs"]);
+    const orderPdfs = SCHEDULED_JOBS.find((job) => job.name === "scotus-orders-pdf");
+    expect(orderPdfs?.command).toEqual(["jobs/load-scotus-order-pdfs.mjs", "--limit=30", "--apply=1"]);
+    expect(orderPdfs?.intervalMs).toBe(60 * 60_000);
+    expect(readFileSync("scripts/load-scotus-order-pdfs.ts", "utf8")).toContain("COURT_GAP_MS = 5_000");
     expect(() => jobsForLane("bogus")).toThrow(/must be one of/);
     for (const lane of SCHEDULER_LANES.filter(lane => lane !== "core")) {
       expect(jobsForLane(lane).some(job => job.name.startsWith("scotus-"))).toBe(false);

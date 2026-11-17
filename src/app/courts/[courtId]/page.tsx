@@ -1,10 +1,10 @@
 import type { Metadata, Route } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import { cache } from "react";
 import { db } from "@/db/client";
 import { isPublicId } from "@/lib/ids/public-id";
-import { canIndexDirectoryProfile, getPublicCourt } from "@/modules/directory/application/public-directory";
+import { canIndexDirectoryProfile, courtRedirectTarget, getPublicCourt } from "@/modules/directory/application/public-directory";
 import styles from "@/modules/directory/ui/directory.module.css";
 import { robotsFor } from "@/lib/seo/indexing";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
@@ -16,7 +16,12 @@ export const dynamic = "force-dynamic";
 interface Props { params: Promise<{ courtId: string }> }
 // generateMetadata and the page share one lookup per request. The count and the
 // newest-cases list come from court_public_stats (see public-directory-stats).
-const loadCourt = cache(async (courtId: string) => isPublicId("court", courtId) ? getPublicCourt(db(), courtId) : null);
+const loadCourt = cache(async (courtId: string) => {
+  if (!isPublicId("court", courtId)) return null;
+  const target = await courtRedirectTarget(db(), courtId);
+  if (target) permanentRedirect(`/courts/${target}` as Route);
+  return getPublicCourt(db(), courtId);
+});
 async function load(params: Props["params"]) {
   const { courtId } = await params;
   return loadCourt(courtId);

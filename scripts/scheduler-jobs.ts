@@ -419,12 +419,13 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
   {
     lane: "core",
     name: "scotus-orders-pdf",
-    initialDelayMs: 25 * minute,
+    initialDelayMs: 5 * minute,
     intervalMs: 60 * minute,
-    budgetMs: 8 * minute,
-    // Two order-list PDFs an hour, newest unstored first, on the core worker.
+    budgetMs: 20 * minute,
+    // Thirty order-list PDFs an hour, newest unstored first, on the core worker.
+    // The script waits at least five seconds between Supreme Court requests.
     // No docket_entry write and no subscriber alert. Not run on the public web.
-    command: ["jobs/load-scotus-order-pdfs.mjs", "--limit=2", "--apply=1"],
+    command: ["jobs/load-scotus-order-pdfs.mjs", "--limit=30", "--apply=1"],
   },
   {
     lane: "core",

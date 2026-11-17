@@ -4,10 +4,11 @@
  * Refuses to invent text when the converter is missing.
  *
  * Picks order lists whose PDF has not been stored, newest first.
- * The scheduler runs `--apply=1 --limit=2` once an hour on the core worker.
+ * The scheduler runs `--apply=1 --limit=30` once an hour on the core worker.
+ * Each request to supremecourt.gov waits at least five seconds after the previous one.
  *
  *   pnpm exec tsx scripts/load-scotus-order-pdfs.ts --limit=1
- *   pnpm exec tsx scripts/load-scotus-order-pdfs.ts --limit=2 --apply=1
+ *   pnpm exec tsx scripts/load-scotus-order-pdfs.ts --limit=30 --apply=1
  */
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -21,9 +22,23 @@ import { parseOrderListText } from "@/modules/ingestion/providers/scotus/order-l
 import { currentOctoberTerm } from "@/modules/scotus/domain/term";
 
 const exec = promisify(execFile);
-const limit = Math.min(2, Math.max(1, Number(process.argv.find((arg) => arg.startsWith("--limit="))?.slice(8) ?? "1")));
+const COURT_GAP_MS = 5_000;
+const limit = Math.min(30, Math.max(1, Number(process.argv.find((arg) => arg.startsWith("--limit="))?.slice(8) ?? "30")));
 const apply = process.argv.includes("--apply=1");
 if (ORDER_INGEST_ALERTS_ENABLED) throw new Error("Order ingestion must not enable alerts");
+
+let lastCourtRequestAt = 0;
+async function waitForCourt() {
+  const wait = lastCourtRequestAt === 0 ? 0 : COURT_GAP_MS - (Date.now() - lastCourtRequestAt);
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+}
+const courtFetch: typeof fetch = async (input, init) => {
+  await waitForCourt();
+  return fetch(input, init);
+};
+function courtRequestFinished() {
+  lastCourtRequestAt = Date.now();
+}
 
 try {
   await exec("pdftotext", ["-v"]);
@@ -40,7 +55,8 @@ function earlierTerm(yy: string): string | null {
   return String(year - 1).padStart(2, "0");
 }
 
-const index = await fetchOfficialOrdersIndex(currentTerm);
+const index = await fetchOfficialOrdersIndex(currentTerm, courtFetch);
+courtRequestFinished();
 if (apply) {
   const synced = await syncOfficialOrderIndex(db(), index.entries, index.retrievedAt);
   if (synced.skipped) {
@@ -61,7 +77,8 @@ if (apply) {
       WHERE term_year >= '17' AND term_year <= ${currentTerm}`) as { term_year: string | null }[];
     const next = earlierTerm(oldest?.term_year ?? currentTerm);
     if (next) {
-      const older = await fetchOfficialOrdersIndex(next);
+      const older = await fetchOfficialOrdersIndex(next, courtFetch);
+      courtRequestFinished();
       await syncOfficialOrderIndex(db(), older.entries, older.retrievedAt);
     }
   }
@@ -97,9 +114,10 @@ const chosen = targets.length ? targets : apply ? [] : fallback;
 const dir = await mkdtemp(join(tmpdir(), "scotus-orders-"));
 const prepared = [];
 for (const entry of chosen) {
-  const response = await fetch(entry.sourceUrl, { headers: { "user-agent": "Jurvio/0.1" }, redirect: "error" });
+  const response = await courtFetch(entry.sourceUrl, { headers: { "user-agent": "Jurvio/0.1" }, redirect: "error" });
   if (!response.ok) throw new Error(`${entry.sourceUrl} returned HTTP ${response.status}`);
   const bytes = new Uint8Array(await response.arrayBuffer());
+  courtRequestFinished();
   if (bytes.byteLength > 15_000_000) throw new Error("Order list PDF exceeds 15MB");
   const path = join(dir, "list.pdf");
   await writeFile(path, bytes);
