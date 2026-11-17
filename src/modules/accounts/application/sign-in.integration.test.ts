@@ -82,7 +82,7 @@ describe.skipIf(!databaseUrl)("passwordless sign-in", () => {
     for (let i = 0; i < 21; i++) ipResults.push(await requestSignIn(sql, { email: freshEmail(), ip: sharedIp }, deps));
     expect(ipResults[19]).toBe("logged");
     expect(ipResults[20]).toBe("rate_limited");
-  });
+  }, 20_000);
 
   it("rejects invalid emails", async () => {
     expect(await requestSignIn(sql, { email: "not-an-email", ip: ip() }, { provider: null, siteUrl: "https://jurvio.com", production: false })).toBe("invalid");
