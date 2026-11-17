@@ -1,11 +1,19 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   decodeDraftCursor,
   encodeDraftCursor,
   isStatementTimeout,
   publishCycleShouldStop,
+  runAdaptiveMetadataPublish,
 } from "./publish-metadata-batch";
+
+vi.mock("./search-pace", () => ({
+  measurePublicSearchMs: vi.fn(async () => 40),
+  medianMs: (samples: Array<number | null>) => samples.find((value) => value !== null) ?? null,
+  slowPublicQueryCount: vi.fn(async () => 0),
+  lockWaitCount: vi.fn(async () => 0),
+}));
 
 describe("metadata batch publish", () => {
   const source = readFileSync("src/modules/publication/application/publish-metadata-batch.ts", "utf8");
@@ -44,6 +52,46 @@ describe("metadata batch publish", () => {
     expect(source).toContain("pg_try_advisory_lock");
     expect(source).toContain('"statement_timeout"');
     expect(source).not.toContain("timeouts += 1");
+  });
+
+  it("begins the draft window on the root client while the lock stays on the reserved connection", async () => {
+    const reservedQueries: string[] = [];
+    let released = false;
+    const reserved = (strings: TemplateStringsArray) => {
+      reservedQueries.push(strings.join(" "));
+      return Promise.resolve([{ locked: true }]);
+    };
+    reserved.release = () => {
+      released = true;
+    };
+    const tx = (strings: TemplateStringsArray) => {
+      const text = strings.join(" ");
+      if (text.includes("FROM provider")) return Promise.resolve([{ id: "provider-1" }]);
+      return Promise.resolve([]);
+    };
+    tx.unsafe = (query: string) => Promise.resolve(query.includes("draft_publish_window")
+      ? [{ published: 0, scanned: 0, sealed: 0, newest_at: null, newest_id: null, oldest_at: null, oldest_id: null }]
+      : []);
+    let began = 0;
+    const root = (strings: TemplateStringsArray) => {
+      void strings;
+      return Promise.resolve([]);
+    };
+    root.reserve = async () => reserved;
+    root.begin = async (fn: (transaction: typeof tx) => Promise<unknown>) => {
+      began += 1;
+      return fn(tx);
+    };
+
+    const stats = await runAdaptiveMetadataPublish(root as never, { budgetMs: 20_000 });
+
+    expect(began).toBe(1);
+    expect(reserved).not.toHaveProperty("begin");
+    expect(reservedQueries.some((query) => query.includes("pg_try_advisory_lock"))).toBe(true);
+    expect(reservedQueries.some((query) => query.includes("pg_advisory_unlock"))).toBe(true);
+    expect(released).toBe(true);
+    expect(stats.stopped).toBe("end_of_drafts");
+    expect(stats.published).toBe(0);
   });
 });
 
