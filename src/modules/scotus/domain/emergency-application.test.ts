@@ -5,7 +5,7 @@ import { parseApplicationPage, isWithheldLine } from "@/modules/ingestion/live-f
 import { classifyEvent } from "@/modules/ingestion/providers/scotus/official-docket";
 import {
   EMERGENCY_FEEDS, EMERGENCY_TIMING_NOTE, classifyApplicant, classifyApplicationEvent, classifyApplicationKind, deriveApplicationState,
-  emergencyFeedBySlug, emergencyFeedConditionSql, expectedJusticeFor, normalizeApplicationNumber, parseResponseDue, parseResponseExtension, pollTier, responseDisplay, responseStatusFrom, submittedJustice,
+  emergencyFeedBySlug, emergencyFeedConditionSql, expectedJusticeFor, normalizeApplicationNumber, officialEmergencyDocketUrl, parseResponseDue, parseResponseExtension, pollTier, responseDisplay, responseStatusFrom, submittedJustice,
 } from "./emergency-application";
 
 // Real supremecourt.gov docket pages (Nov 2026), counsel contact blocks removed.
@@ -38,6 +38,8 @@ describe("emergency application docket lines", () => {
     expect(submittedJustice("Application (26A1) for a stay, submitted to The Chief Justice.")).toBe("The Chief Justice");
     expect(expectedJusticeFor("United States Court of Appeals for the Ninth Circuit")?.justiceRef).toBe("Kagan");
     expect(normalizeApplicationNumber("26a0624")).toBe("26A624");
+    expect(officialEmergencyDocketUrl("26A688")).toBe("https://www.supremecourt.gov/docket/docketfiles/html/public/26a688.html");
+    expect(officialEmergencyDocketUrl("not-a-docket")).toBeNull();
   });
 
   it("classifies the kind of request and who asked", () => {

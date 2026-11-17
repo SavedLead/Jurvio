@@ -8,7 +8,7 @@ import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
-  APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor,
+  APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, officialEmergencyDocketUrl,
   justiceSlugForRef, plainEnglishFor, responseDisplay, type ApplicationEventKind, type NotedVote,
 } from "@/modules/scotus/domain/emergency-application";
 import { loadEmergencyStats } from "@/modules/scotus/application/emergency-stats";
@@ -31,7 +31,14 @@ function normalize(raw: string): string | null {
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
   const docket = normalize((await params).docket);
   const application = docket ? await getEmergencyApplication(db(), docket) : null;
-  if (!application) return { title: "Emergency application not found", robots: robotsFor(false) };
+  if (!application) {
+    const officialUrl = docket ? officialEmergencyDocketUrl(docket) : null;
+    return {
+      title: docket ? `Application No. ${docket}` : "Emergency application not found",
+      description: officialUrl ? `Supreme Court application No. ${docket}. The Court's docket is the record.` : undefined,
+      robots: robotsFor(false),
+    };
+  }
   const caption = cleanCaseCaption(application.caption);
   return {
     title: `${caption} (No. ${application.docketNumber}): Supreme Court emergency application`,
@@ -67,7 +74,20 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const [app, stats, gate] = await Promise.all([
     getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
   ]);
-  if (!app) notFound();
+  if (!app) {
+    const officialUrl = officialEmergencyDocketUrl(docket);
+    return <main className={styles.page}>
+      <header className={`${styles.wrap} ${styles.hero}`}>
+        <nav className={styles.breadcrumb} aria-label="Breadcrumb">
+          <Link href="/">Jurvio</Link><span>/</span><Link href="/supreme-court">Supreme Court</Link><span>/</span>
+          <Link href={"/supreme-court/emergency" as Route}>Emergency docket</Link><span>/</span>No. {docket}
+        </nav>
+        <h1>Application No. {docket}</h1>
+        <p className={styles.lede}>Jurvio does not have this application&apos;s docket lines stored. The Court&apos;s own docket is the record.</p>
+        {officialUrl ? <p><a href={officialUrl}>Official Supreme Court docket ↗</a></p> : null}
+      </header>
+    </main>;
+  }
   const caption = cleanCaseCaption(app.caption);
   const today = easternDate(new Date());
   const casePath = casePagePath(app.jurvioCase?.publicId);
