@@ -71,10 +71,11 @@ async function newestDistrictItem(sql: Sql): Promise<Date | string | null> {
 
 async function newestAppealsItem(sql: Sql): Promise<Date | string | null> {
   const [row] = await sql<StampRow[]>`
-    SELECT max(entry.created_at) AS newest
-    FROM docket_entry entry
-    WHERE entry.created_at > now() - interval '36 hours'
-      AND entry.provider_entry_id LIKE 'appellate-rss:%'
+    SELECT max(item.seen_at) AS newest
+    FROM free_source_item item
+    WHERE item.source = 'appellate_pacer_rss'
+      AND item.outcome IN ('entry', 'new_case')
+      AND item.seen_at > now() - interval '36 hours'
   `;
   return row?.newest ?? null;
 }
@@ -160,14 +161,16 @@ export async function districtFeedXml(sql: Sql): Promise<string> {
 export async function appealsFeedXml(sql: Sql): Promise<string> {
   const origin = siteOrigin();
   const rows = await sql<FeedRow[]>`
-    SELECT entry.provider_entry_id AS id, legal_case.caption, left(entry.description, 240) AS summary,
-      entry.created_at AS filed_at, legal_case.public_id, court.provider_court_id AS court_code
-    FROM docket_entry entry
-    JOIN legal_case ON legal_case.id = entry.case_id AND legal_case.publication = 'published'
-    JOIN court ON court.id = legal_case.court_id
-    WHERE entry.provider_entry_id LIKE 'appellate-rss:%'
-      AND entry.created_at > now() - interval '24 hours'
-    ORDER BY entry.created_at DESC
+    SELECT item.item_key AS id,
+      coalesce(legal_case.caption, item.docket_number, item.court_code) AS caption,
+      coalesce(item.docket_number, 'New filing') AS summary,
+      item.seen_at AS filed_at, legal_case.public_id, item.court_code
+    FROM free_source_item item
+    LEFT JOIN legal_case ON legal_case.id = item.case_id AND legal_case.publication = 'published'
+    WHERE item.source = 'appellate_pacer_rss'
+      AND item.outcome IN ('entry', 'new_case')
+      AND item.seen_at > now() - interval '24 hours'
+    ORDER BY item.seen_at DESC
     LIMIT 40
   `;
   return feedXml(origin, `${origin}/feeds/appeals`, "Jurvio court of appeals filings", "New filings from the courts of appeals that publish a 24-hour RSS feed.", rows);
