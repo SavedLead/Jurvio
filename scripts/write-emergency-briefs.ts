@@ -14,11 +14,11 @@
  * Astra. --teasers writes follower previews. OPENAI_API_KEY is never printed.
  */
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { textFromPdfBytes } from "../src/modules/scotus/domain/filing-pdf-text";
+import { loadFilingExcerpts } from "../src/modules/scotus/application/load-filing-excerpts";
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
-  acceptDescription, acceptFilingExcerpt, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, filingBacklogCost, inspectCaseJson, needsModel, officialCaseJsonUrl, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -485,116 +485,3 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
   return lines.join("\n");
 }
 
-const COMPARE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-const REQUEST_GAP_MS = 1_200;
-const MAX_PDF_BYTES = 6_000_000;
-let lastCourtRequest = 0;
-
-async function courtFetch(url: string, accept: string): Promise<Response> {
-  const wait = REQUEST_GAP_MS - (Date.now() - lastCourtRequest);
-  if (lastCourtRequest && wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-  lastCourtRequest = Date.now();
-  return fetch(url, {
-    headers: {
-      "user-agent": COMPARE_USER_AGENT,
-      accept,
-      "accept-language": "en-US,en;q=0.9",
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(45_000),
-  });
-}
-
-function skipFiling(docketNumber: string, role: string, url: string, reason: string): { role: FilingExcerpt["role"]; url: string; reason: string } {
-  console.log(JSON.stringify({ docket: docketNumber, filing: role, skipped: reason, stored: false }));
-  return { role: role as FilingExcerpt["role"], url, reason };
-}
-
-async function loadFilingExcerpts(docketNumber: string): Promise<{
-  filings: FilingExcerpt[];
-  skipped: Array<{ role: string; url: string; reason: string }>;
-  note: string | null;
-  jsonUrl: string | null;
-  httpStatus: number | null;
-  bytes: number;
-  contentType: string | null;
-  rawLinks: number;
-  keptLinks: number;
-  pdfs: Array<{ role: string; url: string; httpStatus: number | null; bytes: number }>;
-  blocked: boolean;
-}> {
-  const empty = {
-    filings: [] as FilingExcerpt[],
-    skipped: [] as Array<{ role: string; url: string; reason: string }>,
-    note: null as string | null,
-    jsonUrl: officialCaseJsonUrl(docketNumber),
-    httpStatus: null as number | null,
-    bytes: 0,
-    contentType: null as string | null,
-    rawLinks: 0,
-    keptLinks: 0,
-    pdfs: [] as Array<{ role: string; url: string; httpStatus: number | null; bytes: number }>,
-    blocked: false,
-  };
-  if (!empty.jsonUrl) return { ...empty, note: "Docket number has no case JSON URL." };
-  let payload: unknown;
-  try {
-    const response = await courtFetch(empty.jsonUrl, "application/json,text/plain,*/*");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    empty.httpStatus = response.status;
-    empty.bytes = bytes.byteLength;
-    empty.contentType = response.headers.get("content-type");
-    const host = new URL(response.url).hostname;
-    if (!response.ok || host !== "www.supremecourt.gov" || !/json/i.test(empty.contentType ?? "")) {
-      empty.blocked = true;
-      empty.note = `Case JSON HTTP ${response.status} from ${host}, ${bytes.byteLength} bytes, ${empty.contentType ?? "no content type"}.`;
-      return empty;
-    }
-    payload = JSON.parse(new TextDecoder().decode(bytes));
-  } catch (error) {
-    empty.blocked = true;
-    empty.note = error instanceof Error ? error.message : "Case JSON fetch failed.";
-    return empty;
-  }
-  const inspected = inspectCaseJson(payload);
-  empty.rawLinks = inspected.rawLinks;
-  empty.keptLinks = inspected.kept.length;
-  const links = inspected.kept;
-  const filings: FilingExcerpt[] = [];
-  const skipped: Array<{ role: string; url: string; reason: string }> = [];
-  for (const link of links) {
-    try {
-      const response = await courtFetch(link.url, "application/pdf,*/*");
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      empty.pdfs.push({ role: link.role, url: link.url, httpStatus: response.status, bytes: bytes.byteLength });
-      if (!response.ok || new URL(response.url).hostname !== "www.supremecourt.gov") {
-        skipped.push(skipFiling(docketNumber, link.role, link.url, `HTTP ${response.status}`));
-        continue;
-      }
-      if (bytes.byteLength > MAX_PDF_BYTES) {
-        skipped.push(skipFiling(docketNumber, link.role, link.url, "larger than 6 MB"));
-        continue;
-      }
-      const extracted = await textFromPdfBytes(bytes);
-      if (!extracted) {
-        skipped.push(skipFiling(docketNumber, link.role, link.url, "unreadable PDF"));
-        continue;
-      }
-      const excerpt = acceptFilingExcerpt(extracted, link.role, link.url);
-      if (excerpt.withheld || !excerpt.text) {
-        skipped.push(skipFiling(docketNumber, link.role, link.url, excerpt.withheld ? "sealed or restricted text" : "empty extract"));
-        continue;
-      }
-      filings.push(excerpt);
-    } catch (error) {
-      empty.pdfs.push({ role: link.role, url: link.url, httpStatus: null, bytes: 0 });
-      skipped.push(skipFiling(docketNumber, link.role, link.url, error instanceof Error ? error.message : "PDF failed"));
-    }
-  }
-  return {
-    ...empty,
-    filings,
-    skipped,
-    note: links.length ? null : "The case JSON listed no application, response, reply, or lower-court opinion PDF.",
-  };
-}
