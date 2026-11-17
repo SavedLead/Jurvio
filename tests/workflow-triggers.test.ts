@@ -431,7 +431,20 @@ describe("workflow trigger policy", () => {
     ).toBe(true);
   });
 
-  describe("migrations only run behind Deploy production's backup", () => {
+  describe("publication pause resume", () => {
+  const text = readFileSync(join(WORKFLOW_DIR, "set-federal-publication-pause-once.yml"), "utf8");
+
+  it("recreates worker-core from the image that container is already running", () => {
+    expect(text).toContain("docker inspect --format '{{.Config.Image}}'");
+    expect(text).toContain('label=com.docker.compose.service=worker-core');
+    expect(text).toContain('JURVIO_IMAGE="$IMG"');
+    expect(text).toContain("--pull never");
+    expect(text).toContain("--no-deps");
+    expect(text).not.toContain("docker compose -f \"$COMPOSE\" up -d worker-core\n");
+  });
+});
+
+describe("migrations only run behind Deploy production's backup", () => {
     const publicSteps = parsed.get("deploy-public-web-hosted.yml")!.jobs!.deploy!.steps ?? [];
     const prodSteps = parsed.get("deploy-production.yml")!.jobs!.deploy!.steps ?? [];
     const index = (steps: Step[], name: string) => steps.findIndex((step) => step.name === name);
