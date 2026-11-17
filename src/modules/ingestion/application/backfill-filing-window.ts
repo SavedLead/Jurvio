@@ -4,7 +4,8 @@ import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import { isRestrictedDocketText } from "../domain/federal-stream";
 import { getFederalCourtEntry } from "../domain/federal-court-registry";
-import { normalizeDocketKey, checkBulkDiskFloor, isEasternQuietWindow, rowsPerHour, shouldPauseForLoad } from "./bulk-docket-load";
+import { normalizeDocketKey, isEasternQuietWindow, rowsPerHour, shouldPauseForLoad } from "./bulk-docket-load";
+import { checkBulkDiskFloor } from "./bulk-disk-floor";
 import { readBulkDockets, type CourtListenerBulkDocket } from "../providers/courtlistener/bulk-dockets";
 
 type Sql = ReturnType<typeof postgres>;

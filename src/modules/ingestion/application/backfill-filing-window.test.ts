@@ -9,6 +9,11 @@ function docket(overrides: Partial<CourtListenerBulkDocket> = {}): CourtListener
     docket_number: "24-1234",
     case_name: "Alpha v. Beta",
     date_filed: "2026-10-01",
+    cause: "",
+    nature_of_suit: "",
+    jury_demand: "",
+    assigned_to_str: "",
+    referred_to_str: "",
     date_modified: "2026-10-02T00:00:00Z",
     ...overrides,
   };
