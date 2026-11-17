@@ -287,6 +287,58 @@ export interface EmergencyDetail extends EmergencyListRow {
   linkedMerits: { publicId: string; docketNumber: string } | null;
 }
 
+/**
+ * The application row and its docket lines, without the case/opinion lookups.
+ * Those lookups can blow the statement timeout after a court merge and must
+ * not turn a stored application into a 404.
+ */
+async function loadEmergencyApplicationBrief(sql: Sql, docketNumber: string): Promise<EmergencyDetail | null> {
+  try {
+    return await sql.begin(async (tx) => {
+      await tx`SET LOCAL statement_timeout = '1500ms'`;
+      const [row] = await tx<Array<Omit<EmergencyDetail, "events" | "jurvioCase" | "linkedLowerCase" | "linkedMerits" | "lastEvent" | "responseFiledOn" | "casePublicId" | "documentPublicId" | "pdfUrl"> & { votes: unknown; lowerCaseNumbers: unknown }>>`
+        SELECT a.docket_number AS "docketNumber", a.caption, a.applicant, a.kind, a.capital, a.applicant_kind AS "applicantKind",
+          a.administration, a.status, a.submitted_justice AS "submittedJustice", a.expected_justice AS "expectedJustice",
+          a.submitted_on::text AS "submittedOn", a.docketed_on::text AS "docketedOn", a.referred_on::text AS "referredOn",
+          a.response_due_on::text AS "responseDueOn", a.response_due_text AS "responseDueText", a.response_requested_by AS "responseRequestedBy",
+          a.admin_stay_on::text AS "adminStayOn", a.admin_stay_justice AS "adminStayJustice", a.ruling_on::text AS "rulingOn",
+          a.ruled_by AS "ruledBy", a.written_reasons AS "writtenReasons", a.noted_votes AS votes,
+          jsonb_array_length(coalesce(a.noted_votes, '[]'::jsonb))::int AS "notedVotes", a.amicus_count AS "amicusCount",
+          a.last_entry_on::text AS "lastEntryOn", a.lower_court AS "lowerCourt", a.lower_case_numbers AS "lowerCaseNumbers",
+          a.linked_docket AS "linkedDocket", a.withheld_lines AS "withheldLines", a.source_url AS "sourceUrl",
+          to_json(a.first_seen_at)#>>'{}' AS "firstSeenAt", to_json(p.checked_at)#>>'{}' AS "checkedAt"
+        FROM scotus_application a
+        LEFT JOIN scotus_source_poll p ON p.url = a.source_url
+        WHERE a.docket_number = ${docketNumber} AND ${tx.unsafe(visibleSql("a"))}`;
+      if (!row) return null;
+      const events = await tx<EmergencyEventRow[]>`
+        SELECT source_record_id AS "sourceRecordId", filed_on::text AS "filedOn", kind, description, plain_line AS plain, justices,
+          detected_at::text AS "detectedAt", backfilled
+        FROM scotus_application_event WHERE docket_number = ${docketNumber} ORDER BY position, filed_on`;
+      const lowerCaseNumbers = (Array.isArray(row.lowerCaseNumbers) ? row.lowerCaseNumbers : [])
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0).slice(0, 4);
+      const { votes, ...stored } = row;
+      const rest = withResponseStatus({ ...stored, responseLines: events.map((event) => ({ filedOn: event.filedOn, kind: event.kind, description: event.description })) });
+      return {
+        ...rest,
+        lowerCaseNumbers,
+        votes: Array.isArray(votes) ? votes as NotedVote[] : [],
+        lastEvent: events.length ? { kind: events.at(-1)!.kind, filedOn: events.at(-1)!.filedOn } : null,
+        events,
+        casePublicId: null,
+        documentPublicId: null,
+        pdfUrl: null,
+        jurvioCase: null,
+        linkedLowerCase: null,
+        linkedMerits: null,
+      };
+    });
+  } catch (error) {
+    if (missingRelation(error) || (error as { code?: string }).code === "57014") return null;
+    throw error;
+  }
+}
+
 export async function getEmergencyApplication(sql: Sql, docketNumber: string): Promise<EmergencyDetail | null> {
   if (!/^\d{2}A\d{1,4}$/.test(docketNumber)) return null;
   try {
@@ -427,7 +479,8 @@ export async function getEmergencyApplication(sql: Sql, docketNumber: string): P
       };
     });
   } catch (error) {
-    if (missingRelation(error) || (error as { code?: string }).code === "57014") return null;
+    if ((error as { code?: string }).code === "57014") return loadEmergencyApplicationBrief(sql, docketNumber);
+    if (missingRelation(error)) return null;
     throw error;
   }
 }

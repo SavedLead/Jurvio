@@ -133,6 +133,12 @@ export function normalizeApplicationNumber(value: string | null | undefined): st
   return parsed ? `${String(parsed.year).padStart(2, "0")}A${parsed.number}` : null;
 }
 
+/** The Court's public docket page for an application. Null when the number is not an A-docket. */
+export function officialEmergencyDocketUrl(docketNumber: string | null | undefined): string | null {
+  const normalized = normalizeApplicationNumber(docketNumber);
+  return normalized ? `https://www.supremecourt.gov/docket/docketfiles/html/public/${normalized.toLowerCase()}.html` : null;
+}
+
 const JUSTICE_NAME = String.raw`(?:The\s+Chief\s+Justice|Justice\s+[A-Z][A-Za-z'’\-]+)`;
 
 function justiceRef(value: string | undefined): string | null {
