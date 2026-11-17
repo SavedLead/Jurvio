@@ -73,12 +73,20 @@ const loadRecentlyUpdated = unstable_cache(
   { revalidate: 300, tags: ["public-cases"] },
 );
 
+let lastRecentlyUpdated: Awaited<ReturnType<typeof loadRecentlyUpdated>> = [];
+
 function formatActivityDate(value: string) {
   return formatEasternDate(value);
 }
 
 export default async function HomePage() {
-  const recentlyUpdated = await loadRecentlyUpdated();
+  let recentlyUpdated = lastRecentlyUpdated;
+  try {
+    recentlyUpdated = await loadRecentlyUpdated();
+    lastRecentlyUpdated = recentlyUpdated;
+  } catch {
+    recentlyUpdated = lastRecentlyUpdated;
+  }
 
   return (
     <main>
