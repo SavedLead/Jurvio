@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
-  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromDocketHtml,
+  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml,
   FILING_CHAR_CAP, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
 } from "./emergency-brief";
@@ -155,6 +155,25 @@ describe("emergency brief packets", () => {
         <a href="https://www.supremecourt.gov/DocketPDF/26/26A686/3/reply.pdf">Main Document</a>
       </td></tr>`;
     expect(filingLinksFromDocketHtml(html).map((link) => link.role)).toEqual(["application", "response", "reply", "lower_court"]);
+    const fromJson = filingLinksFromCaseJson({
+      ProceedingsandOrder: [
+        { Date: "Nov 14 2026", Text: "Application (26A686) for a stay of execution of sentence of death, submitted to Justice Thomas.", Links: [
+          { Description: "Main Document", File: "USSC Petition for Stay of Execution.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/432770/20261114144926816_USSC%20Petition%20for%20Stay%20of%20Execution.pdf" },
+          { Description: "Proof of Service", File: "USSC Proof of Service.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/1/service.pdf" },
+          { Description: "Appendix", File: "Lower Court Opinion.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/1/Lower%20Court%20Opinion.pdf" },
+        ] },
+        { Date: "Nov 17 2026", Text: "Response to application from respondent Florida, et al. filed.", Links: [
+          { Description: "Main Document", File: "26A686- Overton Resp Stay.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/432951/resp.pdf" },
+          { Description: "Certificate of Service", File: "COS.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/2/cos.pdf" },
+        ] },
+        { Date: "Nov 18 2026", Text: "Reply of applicant submitted.", Links: [
+          { Description: "Main Document", File: "Reply.pdf", DocumentUrl: "https://www.supremecourt.gov/DocketPDF/26/26A686/3/reply.pdf" },
+        ] },
+      ],
+    });
+    expect(fromJson.map((link) => link.role)).toEqual(["application", "response", "reply", "lower_court"]);
+    expect(fromJson.map((link) => link.url).join(" ")).not.toContain("service.pdf");
+    expect(fromJson.map((link) => link.url).join(" ")).not.toContain("cos.pdf");
     const built = prepareBrief(source({
       filings: [{ role: "application", url: "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf", text: "The applicant asks for a stay of execution.", chars: 42, estimatedTokens: 11, trimmed: false, withheld: false }],
     }), TOP_MODEL);
