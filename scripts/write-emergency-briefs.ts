@@ -18,7 +18,7 @@ import { textFromPdfBytes } from "../src/modules/scotus/domain/filing-pdf-text";
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, acceptFilingExcerpt, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, needsModel, officialCaseJsonUrl, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, inspectCaseJson, needsModel, officialCaseJsonUrl, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -346,12 +346,39 @@ async function runCompare(): Promise<void> {
     process.exit(1);
   }
   const chosen = packets.filter(needsModel).slice(0, limitArg);
-  const cases: Array<Record<string, unknown>> = [];
-  let total = 0;
+  const loadedCases = [];
   for (const packet of chosen) {
     const loaded = await loadFilingExcerpts(packet.docketNumber);
-    const extractedChars = loaded.filings.reduce((sum, filing) => sum + filing.chars, 0);
-    console.log(JSON.stringify({ docket: packet.docketNumber, pdfCount: loaded.filings.length, extractedChars, stored: false }));
+    loadedCases.push({ packet, loaded });
+    console.log(JSON.stringify({
+      docket: packet.docketNumber,
+      jsonUrl: loaded.jsonUrl,
+      httpStatus: loaded.httpStatus,
+      bytes: loaded.bytes,
+      contentType: loaded.contentType,
+      rawLinks: loaded.rawLinks,
+      keptLinks: loaded.keptLinks,
+      pdfs: loaded.pdfs,
+      pdfCount: loaded.filings.length,
+      extractedChars: loaded.filings.reduce((sum, filing) => sum + filing.chars, 0),
+      note: loaded.note,
+      stored: false,
+    }));
+  }
+  const withPdfText = loadedCases.filter(({ loaded }) => loaded.filings.some((filing) => filing.chars > 0)).length;
+  if (withPdfText === 0) {
+    const blocked = loadedCases.some(({ loaded }) => loaded.blocked);
+    console.error("No case received filing PDF text. No model was called, so this run spent $0.");
+    if (blocked) {
+      console.error("supremecourt.gov did not return case JSON to this builder. The runner is likely blocked.");
+      console.error("Free alternative: a GitHub-hosted ubuntu-latest step that only downloads these JSON feeds and PDFs and uploads filing-text.json as an artifact. The builder job would read that artifact and would not call supremecourt.gov. Do not run the model on the hosted runner. This repo's workflow policy currently forbids ubuntu-latest except for a few recovery workflows, so that step needs an explicit exception.");
+    }
+    writeFileSync(outPath, "# Emergency description comparison\n\nNo filing PDF text. No model was called. Spend: $0.\n");
+    process.exit(1);
+  }
+  const cases: Array<Record<string, unknown>> = [];
+  let total = 0;
+  for (const { packet, loaded } of loadedCases) {
     const prepared = prepareBrief({ ...packet, filings: loaded.filings }, TOP_MODEL);
     if (prepared.kind !== "prompt") continue;
     const models = [TOP_MODEL, MID_MODEL] as const;
@@ -392,12 +419,7 @@ async function runCompare(): Promise<void> {
   const markdown = renderComparison(cases, total);
   writeFileSync(outPath, markdown);
   writeFileSync(outPath.replace(/\.md$/, "") + ".json", JSON.stringify({ totalUsd: total, published: false, cases }, null, 2));
-  const withPdfText = cases.filter((row) => ((row.filings as FilingExcerpt[] | undefined) ?? []).some((filing) => filing.chars > 0)).length;
   console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, withPdfText, totalUsd: total, published: false, out: outPath })}`);
-  if (withPdfText === 0) {
-    console.error("No case received filing PDF text. Refusing to finish a comparison that only has docket lines.");
-    process.exit(1);
-  }
 }
 
 function renderComparison(cases: Array<Record<string, unknown>>, total: number): string {
@@ -463,18 +485,22 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
   return lines.join("\n");
 }
 
-const COMPARE_USER_AGENT = process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 (+https://jurvio.com; public court records)";
+const COMPARE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const REQUEST_GAP_MS = 1_200;
 const MAX_PDF_BYTES = 6_000_000;
 let lastCourtRequest = 0;
 
-async function courtFetch(url: string): Promise<Response> {
+async function courtFetch(url: string, accept: string): Promise<Response> {
   const wait = REQUEST_GAP_MS - (Date.now() - lastCourtRequest);
   if (lastCourtRequest && wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   lastCourtRequest = Date.now();
   return fetch(url, {
-    headers: { "user-agent": COMPARE_USER_AGENT, accept: "application/json,application/pdf" },
-    redirect: "error",
+    headers: {
+      "user-agent": COMPARE_USER_AGENT,
+      accept,
+      "accept-language": "en-US,en;q=0.9",
+    },
+    redirect: "follow",
     signal: AbortSignal.timeout(45_000),
   });
 }
@@ -484,28 +510,67 @@ function skipFiling(docketNumber: string, role: string, url: string, reason: str
   return { role: role as FilingExcerpt["role"], url, reason };
 }
 
-async function loadFilingExcerpts(docketNumber: string): Promise<{ filings: FilingExcerpt[]; skipped: Array<{ role: string; url: string; reason: string }>; note: string | null }> {
-  const jsonUrl = officialCaseJsonUrl(docketNumber);
-  if (!jsonUrl) return { filings: [], skipped: [], note: "Docket number has no case JSON URL." };
+async function loadFilingExcerpts(docketNumber: string): Promise<{
+  filings: FilingExcerpt[];
+  skipped: Array<{ role: string; url: string; reason: string }>;
+  note: string | null;
+  jsonUrl: string | null;
+  httpStatus: number | null;
+  bytes: number;
+  contentType: string | null;
+  rawLinks: number;
+  keptLinks: number;
+  pdfs: Array<{ role: string; url: string; httpStatus: number | null; bytes: number }>;
+  blocked: boolean;
+}> {
+  const empty = {
+    filings: [] as FilingExcerpt[],
+    skipped: [] as Array<{ role: string; url: string; reason: string }>,
+    note: null as string | null,
+    jsonUrl: officialCaseJsonUrl(docketNumber),
+    httpStatus: null as number | null,
+    bytes: 0,
+    contentType: null as string | null,
+    rawLinks: 0,
+    keptLinks: 0,
+    pdfs: [] as Array<{ role: string; url: string; httpStatus: number | null; bytes: number }>,
+    blocked: false,
+  };
+  if (!empty.jsonUrl) return { ...empty, note: "Docket number has no case JSON URL." };
   let payload: unknown;
   try {
-    const response = await courtFetch(jsonUrl);
-    if (!response.ok) return { filings: [], skipped: [], note: `Case JSON returned HTTP ${response.status}.` };
-    payload = await response.json();
+    const response = await courtFetch(empty.jsonUrl, "application/json,text/plain,*/*");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    empty.httpStatus = response.status;
+    empty.bytes = bytes.byteLength;
+    empty.contentType = response.headers.get("content-type");
+    const host = new URL(response.url).hostname;
+    if (!response.ok || host !== "www.supremecourt.gov" || !/json/i.test(empty.contentType ?? "")) {
+      empty.blocked = true;
+      empty.note = `Case JSON HTTP ${response.status} from ${host}, ${bytes.byteLength} bytes, ${empty.contentType ?? "no content type"}.`;
+      return empty;
+    }
+    payload = JSON.parse(new TextDecoder().decode(bytes));
   } catch (error) {
-    return { filings: [], skipped: [], note: error instanceof Error ? error.message : "Case JSON fetch failed." };
+    empty.blocked = true;
+    empty.note = error instanceof Error ? error.message : "Case JSON fetch failed.";
+    return empty;
   }
-  const links = filingLinksFromCaseJson(payload);
+  const inspected = inspectCaseJson(payload);
+  empty.rawLinks = inspected.rawLinks;
+  empty.keptLinks = inspected.kept.length;
+  const links = inspected.kept;
   const filings: FilingExcerpt[] = [];
   const skipped: Array<{ role: string; url: string; reason: string }> = [];
   for (const link of links) {
     try {
-      const response = await courtFetch(link.url);
-      if (!response.ok) {
+      const response = await courtFetch(link.url, "application/pdf,*/*");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      empty.pdfs.push({ role: link.role, url: link.url, httpStatus: response.status, bytes: bytes.byteLength });
+      if (!response.ok || new URL(response.url).hostname !== "www.supremecourt.gov") {
         skipped.push(skipFiling(docketNumber, link.role, link.url, `HTTP ${response.status}`));
         continue;
       }
-      const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.byteLength > MAX_PDF_BYTES) {
         skipped.push(skipFiling(docketNumber, link.role, link.url, "larger than 6 MB"));
         continue;
@@ -521,10 +586,15 @@ async function loadFilingExcerpts(docketNumber: string): Promise<{ filings: Fili
         continue;
       }
       filings.push(excerpt);
-      console.log(JSON.stringify({ docket: docketNumber, filing: link.role, chars: excerpt.chars, estimatedTokens: excerpt.estimatedTokens, trimmed: excerpt.trimmed, stored: false }));
     } catch (error) {
+      empty.pdfs.push({ role: link.role, url: link.url, httpStatus: null, bytes: 0 });
       skipped.push(skipFiling(docketNumber, link.role, link.url, error instanceof Error ? error.message : "PDF failed"));
     }
   }
-  return { filings, skipped, note: links.length ? null : "The case JSON listed no application, response, reply, or lower-court opinion PDF." };
+  return {
+    ...empty,
+    filings,
+    skipped,
+    note: links.length ? null : "The case JSON listed no application, response, reply, or lower-court opinion PDF.",
+  };
 }
