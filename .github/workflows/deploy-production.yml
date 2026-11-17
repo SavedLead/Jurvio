@@ -511,27 +511,35 @@ jobs:
         if: ${{ steps.guard.outputs.fresh == 'true' }}
         run: |
           set -euo pipefail
-          # 525 is Cloudflare's "SSL handshake failed" while the origin is restarting.
-          # curl does not retry that code unless --retry-all-errors is set, so one
-          # handshake miss failed this step in under a second and skipped the
-          # public-web release. The page text is still required after the body arrives.
-          login_body="$(curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 --max-time 30 https://z.jurvio.com/login)"
-          # Case-insensitive match: the page renders "Private command center" in the
-          # HTML and only APPEARS uppercase via CSS (text-transform). A case-sensitive
-          # grep for the uppercase string never matched the served markup, which
-          # false-failed every deploy at this gate even though the release succeeded.
-          printf '%s' "$login_body" | grep -Fiq "PRIVATE COMMAND CENTER" || {
+          # The public container can return 502/525 for several minutes while a
+          # new process binds the origin. Twelve retries of five seconds marked
+          # release b60daad failed even though the release script had already
+          # reported ready and did not roll back. Keep trying those codes for
+          # about six minutes. The page text is still required once a body arrives.
+          login_ok=0
+          for _ in $(seq 1 36); do
+            login_code="$(curl --silent --show-error --output /tmp/jurvio-login-body --write-out '%{http_code}' --max-time 20 https://z.jurvio.com/login || echo 000)"
+            if [ "$login_code" = "200" ] && grep -Fiq "PRIVATE COMMAND CENTER" /tmp/jurvio-login-body; then
+              login_ok=1
+              break
+            fi
+            case "$login_code" in
+              500|502|503|520|522|525|000) echo "command-center login HTTP ${login_code}; waiting for the origin"; sleep 10 ;;
+              *) echo "command-center login HTTP ${login_code}"; break ;;
+            esac
+          done
+          rm -f /tmp/jurvio-login-body
+          if [ "$login_ok" != "1" ]; then
             rollback="$(grep 'Previous image (rollback target):' "$RUNNER_TEMP/release-production.log" | tail -1 || true)"
             echo "::error::Health check failed. No automatic rollback was performed. ${rollback:-Previous image was not recorded.}"
             exit 1
-          }
-          # The public container can return 500/502/525 for a few seconds while it
-          # restarts. Retry those. A real login page is still a failure.
+          fi
+          # A real login page is still a failure. Restart codes are waited out.
           public_status=""
-          for _ in 1 2 3 4 5 6 7 8; do
-            public_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 30 https://jurvio.com/login)"
+          for _ in $(seq 1 36); do
+            public_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 20 https://jurvio.com/login || echo 000)"
             if [ "$public_status" = "404" ]; then break; fi
-            case "$public_status" in 500|502|503|525) sleep 5 ;; *) break ;; esac
+            case "$public_status" in 500|502|503|520|522|525|000) echo "public login HTTP ${public_status}; waiting"; sleep 10 ;; *) break ;; esac
           done
           test "$public_status" = "404" || {
             echo "::error::jurvio.com/login must remain hidden; received HTTP $public_status"

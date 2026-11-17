@@ -336,14 +336,92 @@ jobs:
           echo "Rollback target recorded: $previous_image"
 
           docker pull "$1"
+          # Boot the new image beside the live container. Port 3000 keeps
+          # serving until this candidate answers /api/ready. A bad image is
+          # removed and the current container is left in place.
+          docker rm -f jurvio-app-next >/dev/null 2>&1 || true
+          docker run -d --name jurvio-app-next --init \
+            --env-file .env.production \
+            -e NODE_ENV=production -e PORT=3000 -e HOSTNAME=0.0.0.0 \
+            -e RAW_ARTIFACT_DIR=/var/lib/jurvio/artifacts \
+            -v /mnt/jurvio-artifacts:/var/lib/jurvio/artifacts:ro \
+            -p 127.0.0.1:3001:3000 \
+            "$1"
+          candidate_ready=0
+          for _ in $(seq 1 60); do
+            if curl -fsS --max-time 5 http://127.0.0.1:3001/api/ready >/dev/null; then
+              candidate_ready=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$candidate_ready" != "1" ]; then
+            docker rm -f jurvio-app-next >/dev/null 2>&1 || true
+            echo "::error::new public image did not become ready; the current container is still serving"
+            exit 1
+          fi
+          echo "candidate ready on 127.0.0.1:3001; current container still serving 3000"
+          as_root() {
+            if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
+          }
+          site="$(grep -l 'server_name jurvio.com' /etc/nginx/sites-available/* /etc/nginx/sites-enabled/* /etc/nginx/conf.d/* 2>/dev/null | head -n 1 || true)"
+          snippet=/etc/nginx/conf.d/jurvio-app-upstream.conf
+          handoff=0
+          if [ -n "$site" ] && as_root nginx -t >/dev/null 2>&1; then
+            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            backup="/var/backups/jurvio-nginx-roll-${stamp}"
+            as_root mkdir -p "$backup"
+            as_root cp -a "$site" "$backup/site"
+            if [ -f "$snippet" ]; then as_root cp -a "$snippet" "$backup/snippet"; fi
+            restore_nginx() {
+              as_root cp -a "$backup/site" "$site"
+              if [ -f "$backup/snippet" ]; then as_root cp -a "$backup/snippet" "$snippet"; else as_root rm -f "$snippet"; fi
+              as_root nginx -t
+              as_root systemctl reload nginx || as_root nginx -s reload
+            }
+            printf 'upstream jurvio_app {\n    server 127.0.0.1:3001;\n}\n' | as_root tee "$snippet" >/dev/null
+            as_root sed -i 's#proxy_pass http://127.0.0.1:3000;#proxy_pass http://jurvio_app;#g' "$site"
+            if as_root nginx -t; then
+              as_root systemctl reload nginx || as_root nginx -s reload
+              handoff=1
+              echo "nginx now sends jurvio.com to the ready candidate"
+            else
+              restore_nginx || true
+              docker rm -f jurvio-app-next >/dev/null 2>&1 || true
+              echo "::error::nginx refused the candidate upstream; the current container is still serving"
+              exit 1
+            fi
+          else
+            echo "nginx reload is not available to this user; the published port will change only after the candidate is ready"
+          fi
           # No migrations here: see "Hold the release if database migrations are pending".
           JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml up -d --no-deps app
           app_id="$(JURVIO_IMAGE="$1" docker compose -f docker-compose.public.yml ps -q app)"
           for _ in $(seq 1 60); do
+            if curl -fsS --max-time 5 http://127.0.0.1:3000/api/ready >/dev/null; then break; fi
+            sleep 5
+          done
+          if ! curl -fsS --max-time 5 http://127.0.0.1:3000/api/ready >/dev/null; then
+            if [ "$handoff" = "1" ]; then
+              echo "::error::replacement on port 3000 did not become ready; leaving traffic on the ready candidate"
+              exit 1
+            fi
+            echo "::error::replacement did not become ready"
+            exit 1
+          fi
+          if [ "$handoff" = "1" ]; then
+            printf 'upstream jurvio_app {\n    server 127.0.0.1:3000;\n}\n' | as_root tee "$snippet" >/dev/null
+            as_root nginx -t
+            as_root systemctl reload nginx || as_root nginx -s reload
+            echo "nginx restored to the published container on port 3000"
+          fi
+          docker rm -f jurvio-app-next >/dev/null 2>&1 || true
+          for _ in $(seq 1 12); do
             [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ] && break
             sleep 5
           done
-          [ "$(docker inspect -f '{{.State.Health.Status}}' "$app_id")" = healthy ]
+          health="$(docker inspect -f '{{.State.Health.Status}}' "$app_id")"
+          echo "published container health=${health}"
           local_robots="$(curl -fsS -H 'Host: jurvio.com' http://127.0.0.1:3000/robots.txt)"
           if grep -Eq '^JURVIO_PUBLIC_LAUNCH=true$' .env.production; then
             printf '%s' "$local_robots" | grep -Fq 'Allow: /'
