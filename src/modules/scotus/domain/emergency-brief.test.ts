@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
-  costUsd, exportCompareSql, exportPacketsSql, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
+  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromDocketHtml,
+  FILING_CHAR_CAP, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
 } from "./emergency-brief";
 
@@ -123,7 +124,7 @@ describe("emergency brief packets", () => {
     const hash = "a".repeat(64);
     const body = "No. 26A100 stays put. '); DELETE FROM scotus_application_brief; -- $baaaaaaaaaaaaaaaa$";
     const sql = renderBriefUpsert({
-      docketNumber: "26A100", briefKind: "routine", body, model: "rule", promptVersion: "emergency-brief-v2",
+      docketNumber: "26A100", briefKind: "routine", body, model: "rule", promptVersion: "emergency-brief-v3",
       sourceHash: hash, inputTokens: 0, outputTokens: 0, costUsd: 0, aiGenerated: false, lane: "description",
       entryCount: 2, lastEntryOn: "2026-11-02", status: "pending", withheldLines: 0,
     });
@@ -131,10 +132,50 @@ describe("emergency brief packets", () => {
     expect(sql).toContain(body);
     expect(sql).toContain("false");
     expect(exportPacketsSql()).toContain("a.last_entry_on DESC");
-    expect(exportPacketsSql()).toContain("emergency-brief-v2");
+    expect(exportPacketsSql()).toContain("emergency-brief-v3");
     const compareSql = exportCompareSql();
     expect(compareSql).toContain("kind <> 'extension'");
     expect(compareSql).not.toContain("scotus_application_brief");
     expect(compareSql).not.toContain("scotus_brief_call");
+  });
+
+  it("keeps application, response, reply, and a lower-court opinion, and drops service and outside PDFs", () => {
+    const html = `
+      <tr><td>Nov 14 2026</td><td>Application (26A686) for a stay of execution, submitted to Justice Thomas.
+        <a href= https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf
+        class="documentanchor">Main Document</a>
+        <a href="https://www.supremecourt.gov/DocketPDF/26/26A686/1/cos.pdf">Proof of Service</a>
+        <a href="https://www.supremecourt.gov/DocketPDF/26/26A686/1/opinion.pdf">Lower Court Opinion</a>
+        <a href="https://evil.example/app.pdf">Main Document</a>
+      </td></tr>
+      <tr><td>Nov 17 2026</td><td>Response to application submitted.
+        <a href="https://www.supremecourt.gov/DocketPDF/26/26A686/2/resp.pdf">Main Document</a>
+      </td></tr>
+      <tr><td>Nov 18 2026</td><td>Reply of applicant submitted.
+        <a href="https://www.supremecourt.gov/DocketPDF/26/26A686/3/reply.pdf">Main Document</a>
+      </td></tr>`;
+    expect(filingLinksFromDocketHtml(html).map((link) => link.role)).toEqual(["application", "response", "reply", "lower_court"]);
+    const built = prepareBrief(source({
+      filings: [{ role: "application", url: "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf", text: "The applicant asks for a stay of execution.", chars: 42, estimatedTokens: 11, trimmed: false, withheld: false }],
+    }), TOP_MODEL);
+    expect(built.kind).toBe("prompt");
+    if (built.kind !== "prompt") return;
+    expect(built.user).toContain("The applicant asks for a stay of execution.");
+    expect(built.user).not.toContain("cos.pdf");
+  });
+
+  it("withholds a sealed filing extract and keeps the PDF backlog inside both caps", () => {
+    const sealed = acceptFilingExcerpt("This filing is under seal.", "application", "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf");
+    expect(sealed.withheld).toBe(true);
+    expect(sealed.text).toBe("");
+    const long = acceptFilingExcerpt("A".repeat(FILING_CHAR_CAP.application + 50), "application", "https://www.supremecourt.gov/DocketPDF/26/26A686/1/app.pdf");
+    expect(long.trimmed).toBe(true);
+    expect(long.chars).toBeLessThan(FILING_CHAR_CAP.application + 40);
+    const inputTokens = 9_500;
+    const ceiling = filingBacklogCost(inputTokens, 2_000);
+    expect(ceiling.astraWithinCap).toBe(true);
+    expect(ceiling.solWithinCap).toBe(true);
+    expect(ceiling.astraTotal).toBeLessThanOrEqual(110);
+    expect(ceiling.solTotal).toBeLessThanOrEqual(8);
   });
 });

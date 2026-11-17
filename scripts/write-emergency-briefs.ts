@@ -13,13 +13,18 @@
  * --limit 0 means no count cap on model descriptions. --top-only stays on
  * Astra. --teasers writes follower previews. OPENAI_API_KEY is never printed.
  */
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { appendFileSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { officialEmergencyDocketUrl } from "../src/modules/scotus/domain/emergency-application";
 import {
-  BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
-  acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
+  acceptDescription, acceptFilingExcerpt, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromDocketHtml, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
-  type BriefPacketSource, type Spend, type StoredBrief,
+  type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
 
 const args = process.argv.slice(2);
@@ -345,10 +350,12 @@ async function runCompare(): Promise<void> {
     process.exit(1);
   }
   const chosen = packets.filter(needsModel).slice(0, limitArg);
+  await assertPdftotext();
   const cases: Array<Record<string, unknown>> = [];
   let total = 0;
   for (const packet of chosen) {
-    const prepared = prepareBrief(packet, TOP_MODEL);
+    const loaded = await loadFilingExcerpts(packet.docketNumber);
+    const prepared = prepareBrief({ ...packet, filings: loaded.filings }, TOP_MODEL);
     if (prepared.kind !== "prompt") continue;
     const models = [TOP_MODEL, MID_MODEL] as const;
     const results: Array<Record<string, unknown>> = [];
@@ -380,6 +387,8 @@ async function runCompare(): Promise<void> {
       url: `https://jurvio.com/supreme-court/emergency/${packet.docketNumber}`,
       record: prepared.user,
       results,
+      filings: loaded.filings,
+      filingNote: loaded.note,
     });
   }
   const markdown = renderComparison(cases, total);
@@ -389,12 +398,25 @@ async function runCompare(): Promise<void> {
 }
 
 function renderComparison(cases: Array<Record<string, unknown>>, total: number): string {
+  const observedInputs = cases.flatMap((row) => (row.results as Array<Record<string, unknown>>) ?? [])
+    .filter((result) => result.model === "gpt-6-astra" && typeof result.inputTokens === "number")
+    .map((result) => result.inputTokens as number);
+  const observedOutputs = cases.flatMap((row) => (row.results as Array<Record<string, unknown>>) ?? [])
+    .filter((result) => result.model === "gpt-6-astra" && typeof result.outputTokens === "number")
+    .map((result) => result.outputTokens as number);
+  const avg = (values: number[]) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+  const likely = filingBacklogCost(avg(observedInputs), Math.max(avg(observedOutputs), 1));
+  const ceiling = filingBacklogCost(9_500, 2_000);
   const lines = [
     "# Emergency description comparison",
     "",
     "Not published. These descriptions are not stored on Jurvio pages. David has not picked a model, and the backlog has not been run.",
     "",
     `Comparison spend: $${total.toFixed(4)}. Count this toward the $118 cap before any backlog run.`,
+    "",
+    `Per case this run, using average Astra tokens (${likely.inputTokens} in, ${likely.outputTokens} out): Astra $${likely.astraPerCase.toFixed(4)}, Sol $${likely.solPerCase.toFixed(4)}.`,
+    `Projected ${BACKLOG_CASES} serious applications at that rate: Astra $${likely.astraTotal.toFixed(2)} of the $110 cap (${likely.astraWithinCap ? "inside" : "over"}), Sol $${likely.solTotal.toFixed(2)} of the $8 cap (${likely.solWithinCap ? "inside" : "over"}).`,
+    `Ceiling if every case hits the PDF cap and 2,000 output tokens: Astra $${ceiling.astraTotal.toFixed(2)} (${ceiling.astraWithinCap ? "inside" : "over"} $110), Sol $${ceiling.solTotal.toFixed(2)} (${ceiling.solWithinCap ? "inside" : "over"} $8).`,
     "",
   ];
   cases.forEach((row, index) => {
@@ -403,6 +425,17 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
     if (row.administration) lines.push(`- Administration: ${row.administration}.`);
     if (row.lowerCourt) lines.push(`- Lower court: ${row.lowerCourt}.`);
     lines.push(`- Page: ${row.url}`, "");
+    if (row.filingNote) lines.push(`- Filing fetch: ${row.filingNote}`);
+    const filings = (row.filings as FilingExcerpt[] | undefined) ?? [];
+    if (filings.length) {
+      lines.push("", "| Filing | Characters | Estimated tokens | Trimmed | Withheld |", "| --- | ---: | ---: | --- | --- |");
+      for (const filing of filings) {
+        lines.push(`| ${filing.role} | ${filing.chars} | ${filing.estimatedTokens} | ${filing.trimmed ? "yes" : "no"} | ${filing.withheld ? "yes" : "no"} |`);
+      }
+    } else {
+      lines.push("- No filing PDF text was added.");
+    }
+    lines.push("");
     lines.push("| Model | Input tokens | Output tokens | Cost |");
     lines.push("| --- | ---: | ---: | ---: |");
     const results = row.results as Array<Record<string, unknown>>;
@@ -423,4 +456,81 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
     lines.push("### Public record sent to both models", "", String(row.record), "");
   });
   return lines.join("\n");
+}
+
+const execFileAsync = promisify(execFile);
+const COMPARE_USER_AGENT = process.env.INGESTION_USER_AGENT ?? "Jurvio/0.1 (+https://jurvio.com; public court records)";
+const REQUEST_GAP_MS = 1_200;
+const MAX_PDF_BYTES = 6_000_000;
+let lastCourtRequest = 0;
+
+async function assertPdftotext(): Promise<void> {
+  try {
+    await execFileAsync("pdftotext", ["-v"]);
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException;
+    if (failure.code === "ENOENT") {
+      console.error("pdftotext is not installed (poppler-utils). Nothing was sent.");
+      process.exit(1);
+    }
+  }
+}
+
+async function courtFetch(url: string): Promise<Response> {
+  const wait = REQUEST_GAP_MS - (Date.now() - lastCourtRequest);
+  if (lastCourtRequest && wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  lastCourtRequest = Date.now();
+  return fetch(url, {
+    headers: { "user-agent": COMPARE_USER_AGENT, accept: "text/html,application/pdf" },
+    redirect: "error",
+    signal: AbortSignal.timeout(45_000),
+  });
+}
+
+async function pdfText(bytes: Uint8Array): Promise<string> {
+  const dir = mkdtempSync(join(tmpdir(), "jurvio-brief-"));
+  const path = join(dir, "filing.pdf");
+  writeFileSync(path, bytes);
+  try {
+    const { stdout } = await execFileAsync("pdftotext", ["-layout", path, "-"], { encoding: "utf8", maxBuffer: 8_000_000, timeout: 60_000 });
+    return stdout;
+  } finally {
+    try { unlinkSync(path); } catch { /* temp file already gone */ }
+  }
+}
+
+async function loadFilingExcerpts(docketNumber: string): Promise<{ filings: FilingExcerpt[]; note: string | null }> {
+  const pageUrl = officialEmergencyDocketUrl(docketNumber);
+  if (!pageUrl) return { filings: [], note: "Docket number has no official page URL." };
+  let html: string;
+  try {
+    const response = await courtFetch(pageUrl);
+    if (!response.ok) return { filings: [], note: `Docket page returned HTTP ${response.status}.` };
+    html = await response.text();
+  } catch (error) {
+    return { filings: [], note: error instanceof Error ? error.message : "Docket page fetch failed." };
+  }
+  const links = filingLinksFromDocketHtml(html);
+  const filings: FilingExcerpt[] = [];
+  for (const link of links) {
+    try {
+      const response = await courtFetch(link.url);
+      if (!response.ok) {
+        filings.push({ role: link.role, url: link.url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: false });
+        continue;
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > MAX_PDF_BYTES || bytes.byteLength < 5 || String.fromCharCode(...bytes.slice(0, 4)) !== "%PDF") {
+        filings.push({ role: link.role, url: link.url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: false });
+        continue;
+      }
+      const excerpt = acceptFilingExcerpt(await pdfText(bytes), link.role, link.url);
+      filings.push(excerpt);
+      console.log(JSON.stringify({ docket: docketNumber, filing: link.role, chars: excerpt.chars, estimatedTokens: excerpt.estimatedTokens, trimmed: excerpt.trimmed, withheld: excerpt.withheld, stored: false }));
+    } catch (error) {
+      console.error(`${docketNumber} ${link.role}: ${error instanceof Error ? error.message : "PDF failed"}`);
+      filings.push({ role: link.role, url: link.url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: false });
+    }
+  }
+  return { filings, note: links.length ? null : "The public docket page linked no application, response, reply, or lower-court opinion PDF." };
 }
