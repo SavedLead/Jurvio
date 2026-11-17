@@ -473,6 +473,22 @@ describe("migrations only run behind Deploy production's backup", () => {
       }
     });
 
+    it("writes the Cloudflare purge settings into the box env without printing them", () => {
+      const step = prodSteps.find((item) => item.name === "Sync Cloudflare cache purge settings to box env");
+      const probe = prodSteps.find((item) => item.name === "Purge one public URL to prove Cloudflare cache purge");
+      expect(step?.env?.CLOUDFLARE_API_TOKEN).toBe("${{ secrets.CLOUDFLARE_API_TOKEN }}");
+      expect(step?.env?.CLOUDFLARE_ZONE_ID).toBe("${{ secrets.CLOUDFLARE_ZONE_ID }}");
+      const run = step?.run ?? "";
+      expect(run).toContain("/opt/jurvio/.env.production");
+      expect(run).toContain("value not printed");
+      expect(run).not.toContain('echo "$CLOUDFLARE_API_TOKEN"');
+      expect(run).not.toContain('printf "%s\\n" "$CLOUDFLARE_API_TOKEN"');
+      const probeRun = probe?.run ?? "";
+      expect(probeRun).toContain("https://jurvio.com/feeds/scotus");
+      expect(probeRun).toContain("purge_http");
+      expect(index(prodSteps, "Sync Cloudflare cache purge settings to box env")).toBeLessThan(index(prodSteps, "Release and verify"));
+    });
+
     it("Deploy production re-dispatches the public deploy only after applying migrations", () => {
       const workflow = parsed.get("deploy-production.yml")! as unknown as { permissions?: Record<string, string> };
       expect(workflow.permissions?.actions).toBe("write");
