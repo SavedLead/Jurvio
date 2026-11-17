@@ -33,9 +33,12 @@ stores at most thirty order-list PDFs that do not yet have a checksum, newest
 term and date first, and parses them with `pdftotext`. Each request to
 supremecourt.gov starts at least five seconds after the previous response.
 When the current term has none left, the same run records the index for one
-older term, stopping at October Term 2017. Miscellaneous orders stay index
-rows. Thirty an hour covers the 284 lists from 2017 through 2026 in about ten
-hours.
+older term. It keeps going through two-digit terms while the orders index
+still lists PDFs, and stops at the first term whose page has no order list.
+October Term 2000 is that page. Miscellaneous orders stay index rows. Thirty
+an hour covers the 284 lists from 2017 through 2026 in about ten hours.
+Earlier terms that still publish lists, including 2007, 2014, and 2016, follow
+the same pace.
 The public Supreme Court page links each list's official PDF whether or not
 the lines are stored. Case pages show parsed lines. Neither path writes
 `docket_entry` or queues an alert.

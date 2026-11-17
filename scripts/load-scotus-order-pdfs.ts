@@ -51,7 +51,8 @@ const currentTerm = currentOctoberTerm(new Date()).yy;
 
 function earlierTerm(yy: string): string | null {
   const year = Number(yy);
-  if (!Number.isInteger(year) || year <= 17) return null;
+  // Two-digit terms walk 26, 25, ... and stop at 00. They do not wrap to 99.
+  if (!Number.isInteger(year) || year <= 0) return null;
   return String(year - 1).padStart(2, "0");
 }
 
@@ -65,21 +66,34 @@ if (apply) {
     process.exit(0);
   }
   // One older term per run, and only after the newer term has no unstored order list.
-  // Stops at October Term 2017, the first term still published as a slip index.
+  // The orders index still publishes lists before the slip-opinion era. A term
+  // whose page has no order-list PDF is the end of that walk.
   const [openTerm] = (await db()`
     SELECT term_year FROM scotus_order_list
-    WHERE list_kind = 'order_list' AND pdf_sha256 IS NULL AND term_year >= '17' AND term_year <= ${currentTerm}
+    WHERE list_kind = 'order_list' AND pdf_sha256 IS NULL AND term_year >= '00' AND term_year <= ${currentTerm}
     ORDER BY term_year DESC
     LIMIT 1`) as { term_year: string }[];
   if (!openTerm) {
     const [oldest] = (await db()`
-      SELECT min(term_year) AS term_year FROM scotus_order_list
-      WHERE term_year >= '17' AND term_year <= ${currentTerm}`) as { term_year: string | null }[];
+      SELECT min(term_year) AS term_year FROM (
+        SELECT term_year FROM scotus_order_list WHERE term_year >= '00' AND term_year <= ${currentTerm}
+        UNION
+        SELECT term_year FROM scotus_orders_index_probe WHERE term_year >= '00' AND term_year <= ${currentTerm}
+      ) seen`) as { term_year: string | null }[];
     const next = earlierTerm(oldest?.term_year ?? currentTerm);
     if (next) {
       const older = await fetchOfficialOrdersIndex(next, courtFetch);
       courtRequestFinished();
-      await syncOfficialOrderIndex(db(), older.entries, older.retrievedAt);
+      const orderLists = older.entries.filter((entry) => entry.kind === "order_list");
+      if (orderLists.length === 0) {
+        await db()`
+          INSERT INTO scotus_orders_index_probe (term_year, order_lists, probed_at)
+          VALUES (${next}, 0, now())
+          ON CONFLICT (term_year) DO UPDATE SET order_lists = 0, probed_at = now()`;
+        console.log(JSON.stringify({ probed: next, orderLists: 0, alertsQueued: 0 }));
+      } else {
+        await syncOfficialOrderIndex(db(), older.entries, older.retrievedAt);
+      }
     }
   }
 }
@@ -92,7 +106,7 @@ const stored = (apply ? await db()`
   SELECT source_record_id, source_url, term_year, list_date::text AS list_date, label, amended, index_entry_hash,
     index_retrieved_at::text AS index_retrieved_at
   FROM scotus_order_list
-  WHERE list_kind = 'order_list' AND pdf_sha256 IS NULL AND term_year >= '17' AND term_year <= ${currentTerm}
+  WHERE list_kind = 'order_list' AND pdf_sha256 IS NULL AND term_year >= '00' AND term_year <= ${currentTerm}
   ORDER BY term_year DESC, list_date DESC
   LIMIT ${limit}` : []) as StoredList[];
 
