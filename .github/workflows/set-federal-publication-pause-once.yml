@@ -86,8 +86,18 @@ jobs:
             printf 'JURVIO_PAUSE_CITATION_PUBLISH=1\nJURVIO_PAUSE_FEDERAL_PUBLICATION=1\n' | sudo -n tee -a "$ENVF" >/dev/null
             echo "paused: both flags set to 1 (effective on next worker recreate / deploy)"
           else
-            echo "resume: both flags removed; recreating worker-core"
-            sudo -n docker compose -f "$COMPOSE" up -d worker-core
+            echo "resume: both flags removed; recreating worker-core on its current image"
+            # Compose requires JURVIO_IMAGE. Read it from the container that is
+            # already running so this recreate does not pull a different tag.
+            cid="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=worker-core --format '{{.ID}}' | head -n1)"
+            [ -n "$cid" ] || { echo "::error::worker-core is not running"; exit 1; }
+            IMG="$(sudo -n docker inspect --format '{{.Config.Image}}' "$cid")"
+            case "$IMG" in *jurvio*) ;; *) echo "::error::refusing image ${IMG}"; exit 1;; esac
+            DB_BIND="$(grep -E '^JURVIO_DATABASE_BIND=' "$ENVF" | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+            [ -n "$DB_BIND" ] || { echo "::error::JURVIO_DATABASE_BIND missing"; exit 1; }
+            echo "recreating worker-core with ${IMG}"
+            sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$DB_BIND" \
+              docker compose -f "$COMPOSE" up -d --no-deps --pull never --force-recreate worker-core
           fi
           echo "--- current pause flags in $ENVF ---"
           grep -E '^JURVIO_PAUSE_(CITATION_PUBLISH|FEDERAL_PUBLICATION)=' "$ENVF" || echo "(none present)"
