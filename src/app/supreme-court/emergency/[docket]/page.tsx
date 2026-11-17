@@ -6,7 +6,8 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
-import { loadEmergencyBrief } from "@/modules/scotus/application/load-emergency-brief";
+import { loadEmergencyBrief, loadEmergencyTeaser } from "@/modules/scotus/application/load-emergency-brief";
+import { teaserPreview } from "@/modules/scotus/domain/emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
   APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, officialEmergencyDocketUrl,
@@ -44,7 +45,7 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   const caption = cleanCaseCaption(application.caption);
   return {
     title: `${caption} (No. ${application.docketNumber}): Supreme Court emergency application`,
-    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.${brief ? " Includes an AI-generated description, labeled as such." : ""}`,
+    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.${brief?.aiGenerated ? " Includes an AI-generated description, labeled as such." : ""}`,
     alternates: { canonical: `/supreme-court/emergency/${application.docketNumber}` },
     // Routine extension requests are thin pages: kept out of search.
     robots: robotsFor(application.kind !== "extension"),
@@ -73,8 +74,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const [app, stats, gate, brief] = await Promise.all([
-    getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(), loadEmergencyBrief(db(), docket),
+  const [app, stats, gate, brief, teaser] = await Promise.all([
+    getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
+    loadEmergencyBrief(db(), docket), loadEmergencyTeaser(db(), docket),
   ]);
   if (!app) {
     const officialUrl = officialEmergencyDocketUrl(docket);
@@ -140,10 +142,18 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <p>{plain || "The Court has docketed this application."}</p>
         </section>
 
-        {brief ? <section className={styles.plain} aria-labelledby="ai-title" data-ai-generated="true">
-          <h2 id="ai-title">AI-generated description</h2>
+        {brief ? <section className={styles.plain} aria-labelledby="ai-title" data-ai-generated={brief.aiGenerated ? "true" : "false"}>
+          <h2 id="ai-title">{brief.aiGenerated ? "AI-generated description" : "Summary from the docket"}</h2>
           <p>{brief.body}</p>
-          <p className={styles.note}>AI-generated from the public docket lines on this page by {brief.model} (prompt {brief.promptVersion}). It is not a court opinion and it does not add facts. Written {easternTime(brief.generatedAt)}.</p>
+          <p className={styles.note}>{brief.aiGenerated
+            ? `AI-generated from the public docket lines on this page by ${brief.model} (prompt ${brief.promptVersion}). It is not a court opinion and it does not add facts. Written ${easternTime(brief.generatedAt)}.`
+            : `Written from the public docket lines by a fixed template. No model was used. It does not add facts. Written ${easternTime(brief.generatedAt)}.`}</p>
+        </section> : null}
+
+        {teaser ? <section className={styles.plain} aria-labelledby="teaser-title" data-email-preview="true">
+          <h2 id="teaser-title">Follower email preview</h2>
+          <p>{teaserPreview(teaser.body).lead}</p>
+          <p className={styles.note}>{teaserPreview(teaser.body).note} Written by {teaser.model} {easternTime(teaser.generatedAt)}.</p>
         </section> : null}
 
         <dl className={styles.facts}>

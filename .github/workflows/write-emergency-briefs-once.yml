@@ -1,11 +1,16 @@
 name: Write emergency application briefs (once)
 
-# Writes AI descriptions for Supreme Court emergency applications, federal
-# ones first, then other serious applications, then one-line extension
-# summaries. Runs on the builder. OpenAI calls happen here, not on a web host.
-# Stops at $100 of stored spend. Dispatch by hand with
-# confirm=WRITE_EMERGENCY_BRIEFS. mode=dry writes 5 and stops so the text can
-# be read before mode=apply.
+# Writes descriptions for Supreme Court emergency applications, newest first.
+# Serious applications use gpt-6-astra until its cap, then gpt-6.1-sol.
+# Extensions and other routine filings use a template and no model call.
+# mode=apply can also write cheap follower-email previews. It does not send
+# email. Runs on the builder. Dispatch by hand with
+# confirm=WRITE_EMERGENCY_BRIEFS. mode=dry writes 5 Astra descriptions.
+#
+# Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=110, BRIEF_BUDGET_MID_USD=8,
+# BRIEF_BUDGET_TEASER_USD=2, BRIEF_BUDGET_TOTAL_USD=118. After that date the
+# job spends nothing until BRIEF_BUDGET_AFTER_TOP_USD, BRIEF_BUDGET_AFTER_MID_USD,
+# BRIEF_BUDGET_AFTER_TEASER_USD, and BRIEF_BUDGET_AFTER_TOTAL_USD are all set.
 
 on:
   workflow_dispatch:
@@ -86,11 +91,13 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/emergency-briefs"
           limit=0
-          if [ "$MODE" = "dry" ]; then limit=5; fi
+          extra=--teasers
+          if [ "$MODE" = "dry" ]; then limit=5; extra=--top-only; fi
           pnpm exec tsx scripts/write-emergency-briefs.ts write \
             --packets "$work/packets.jsonl" \
-            --spent "$(tr -d '[:space:]' < "$work/spent.txt")" \
+            --spent "$work/spent.txt" \
             --limit "$limit" \
+            $extra \
             --out-sql "$work/upserts.sql" \
             --log "$work/costs.jsonl" | tee "$work/run.log"
           # The key is not in the log. Keep the summary, including the five

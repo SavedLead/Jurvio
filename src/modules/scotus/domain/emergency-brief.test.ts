@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  BRIEF_BUDGET_USD, acceptDescription, budgetAllows, buildBriefPacket, compareBriefOrder,
-  costUsd, estimatedCost, exportPacketsSql, parseDescription, renderBriefUpsert, SERIOUS_MODEL,
-  type BriefPacketSource,
+  TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
+  costUsd, exportPacketsSql, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
+  type BriefPacketSource, type Spend,
 } from "./emergency-brief";
 
 function source(overrides: Partial<BriefPacketSource> = {}): BriefPacketSource {
@@ -29,88 +29,108 @@ function source(overrides: Partial<BriefPacketSource> = {}): BriefPacketSource {
   };
 }
 
+const zero: Spend = { top: 0, mid: 0, teaser: 0, total: 0 };
+
 describe("emergency brief packets", () => {
-  it("puts federal applications ahead of other serious ones, pending first, and extensions last", () => {
+  it("orders applications newest first", () => {
     const rows = [
-      { kind: "extension", applicantKind: "private", status: "pending", lastEntryOn: "2026-11-10", docketNumber: "26A9" },
-      { kind: "stay", applicantKind: "private", status: "denied", lastEntryOn: "2026-11-12", docketNumber: "26A3" },
-      { kind: "stay", applicantKind: "federal", status: "denied", lastEntryOn: "2026-11-01", docketNumber: "26A2" },
-      { kind: "stay", applicantKind: "private", status: "pending", lastEntryOn: "2026-11-02", docketNumber: "26A4" },
-      { kind: "injunction", applicantKind: "federal", status: "pending", lastEntryOn: "2026-11-08", docketNumber: "26A1" },
+      { lastEntryOn: "2026-11-01", docketNumber: "26A2" },
+      { lastEntryOn: "2026-11-12", docketNumber: "26A3" },
+      { lastEntryOn: null, docketNumber: "26A9" },
+      { lastEntryOn: "2026-11-08", docketNumber: "26A1" },
     ].sort(compareBriefOrder);
-    expect(rows.map((row) => row.docketNumber)).toEqual(["26A1", "26A2", "26A4", "26A3", "26A9"]);
+    expect(rows.map((row) => row.docketNumber)).toEqual(["26A3", "26A1", "26A2", "26A9"]);
+  });
+
+  it("uses a template for an extension and Astra for a serious application", () => {
+    expect(needsModel(source())).toBe(true);
+    expect(needsModel(source({ kind: "extension", applicantKind: "private", administration: null }))).toBe(false);
+    const extension = prepareBrief(source({ kind: "extension", applicantKind: "private", administration: null, applicant: "Ada Applicant" }), TOP_MODEL);
+    expect(extension.kind).toBe("template");
+    if (extension.kind !== "template") return;
+    expect(extension.body).toContain("more time");
+    expect(extension.body).toContain("26A100");
+    expect(extension.body).toContain("No model was used");
+    const serious = prepareBrief(source(), TOP_MODEL);
+    expect(serious.kind).toBe("prompt");
+    if (serious.kind !== "prompt") return;
+    expect(serious.model.id).toBe("gpt-6-astra");
   });
 
   it("leaves sealed lines out of the prompt and skips a sealed caption", () => {
-    const built = buildBriefPacket(source({
+    const built = prepareBrief(source({
       events: [
         { filedOn: "2026-11-01", kind: "submitted", description: "Application for a stay." },
         { filedOn: "2026-11-02", kind: "letter", description: "Filing is under seal." },
       ],
-    }));
-    expect(built.skipped).toBeNull();
-    if (built.skipped) return;
+    }), TOP_MODEL);
+    expect(built.kind).toBe("prompt");
+    if (built.kind !== "prompt") return;
     expect(built.user).toContain("[line withheld]");
     expect(built.user).not.toContain("under seal");
-    expect(buildBriefPacket(source({ caption: "Sealed matter" })).skipped).toBe("restricted");
+    expect(prepareBrief(source({ caption: "Sealed matter" }), TOP_MODEL).kind).toBe("restricted");
+    expect(routineSummary(source({ caption: "Sealed matter", kind: "extension" }))).toBeNull();
   });
 
   it("trims a long appendix and keeps the application and the response", () => {
-    const built = buildBriefPacket(source({
+    const built = prepareBrief(source({
       events: [
         { filedOn: "2026-11-01", kind: "submitted", description: "The application asks the Court to pause the injunction." },
         { filedOn: "2026-11-02", kind: "amicus_filed", description: `Appendix ${"A".repeat(20_000)}` },
         { filedOn: "2026-11-03", kind: "response_filed", description: "The other side asks the Court to leave the injunction in place." },
       ],
-    }));
-    expect(built.skipped).toBeNull();
-    if (built.skipped) return;
-    expect(built.trimmed).toBe(true);
+    }), TOP_MODEL);
+    expect(built.kind).toBe("prompt");
+    if (built.kind !== "prompt") return;
     expect(built.user).toContain("pause the injunction");
     expect(built.user).toContain("leave the injunction in place");
     expect(built.user.length).toBeLessThan(20_000);
-    expect(built.model.id).toBe(SERIOUS_MODEL.id);
   });
 
-  it("uses the cheap model for a one-line extension request", () => {
-    const built = buildBriefPacket(source({ kind: "extension", applicantKind: "private", administration: null }));
-    expect(built.skipped).toBeNull();
-    if (built.skipped) return;
-    expect(built.briefKind).toBe("extension_line");
-    expect(built.model.id).toBe("gpt-6-luna");
-    expect(built.user).toContain("one sentence");
+  it("prices Astra at $10 / $50 and keeps the teaser reserve", () => {
+    expect(costUsd(10, 50, 1_000_000, 1_000_000)).toBe(60);
+    const caps = budgetCaps("2026-11-17", {});
+    expect(caps).toMatchObject({ topUsd: 110, midUsd: 8, teaserUsd: 2, totalUsd: 118, phase: "credit" });
+    expect(chooseDescriptionLane(zero, 1_000, caps, false)).toBe("top");
+    const atTop = addSpend(zero, "top", 110);
+    expect(chooseDescriptionLane(atTop, 1_000, caps, false)).toBe("mid");
+    expect(chooseDescriptionLane(atTop, 1_000, caps, true)).toBeNull();
+    const descriptionsFull = addSpend(addSpend(zero, "top", 110), "mid", 6);
+    expect(canSpend(descriptionsFull, "mid", 0.01, caps)).toBe(false);
+    expect(canSpend(descriptionsFull, "teaser", 0.01, caps)).toBe(true);
+    expect(canSpend(addSpend(descriptionsFull, "teaser", 2), "teaser", 0.01, caps)).toBe(false);
+    expect(budgetCaps("2026-12-06", {})).toMatchObject({ phase: "after", totalUsd: 0 });
+    expect(budgetCaps("2026-12-06", {
+      BRIEF_BUDGET_AFTER_TOP_USD: "40", BRIEF_BUDGET_AFTER_MID_USD: "10",
+      BRIEF_BUDGET_AFTER_TEASER_USD: "5", BRIEF_BUDGET_AFTER_TOTAL_USD: "50",
+    }).totalUsd).toBe(50);
   });
 
-  it("prices Sol at $2 / $10 per million and stops at $100", () => {
-    expect(costUsd(2, 10, 1_000_000, 1_000_000)).toBe(12);
-    expect(costUsd(0.1, 0.5, 10_000, 100)).toBe(0.00105);
-    expect(budgetAllows(99.99, 0.02)).toBe(false);
-    expect(budgetAllows(40, estimatedCost(SERIOUS_MODEL, 8_000))).toBe(true);
-    expect(budgetAllows(BRIEF_BUDGET_USD, 0.000001)).toBe(false);
-  });
-
-  it("rejects invented-looking output that misses the docket or mentions sealed material", () => {
-    expect(acceptDescription("Too short 26A100", "26A100", "full")).toBeNull();
+  it("rejects a teaser that mentions a price and labels the preview as unsent", () => {
     const ok = "No. 26A100 is an application by the United States to pause a Fifth Circuit order. The public docket does not say how the Court voted. https://jurvio.com/supreme-court/emergency/26A100";
     expect(acceptDescription(ok, "26A100", "full")).toContain("26A100");
     expect(acceptDescription(`${ok} The filing is under seal.`, "26A100", "full")).toBeNull();
-    expect(acceptDescription("A short line about 26A100.", "26A100", "extension_line")).toContain("26A100");
-    expect(parseDescription('{"description":"No. 26A100"}')).toBe("No. 26A100");
-    expect(parseDescription("not json")).toBeNull();
+    expect(acceptDescription("No. 26A100 asks the Court for a stay.", "26A100", "teaser")).toContain("26A100");
+    expect(acceptDescription("Unlock No. 26A100 for a price.", "26A100", "teaser")).toBeNull();
+    const preview = teaserPreview("No. 26A100 asks for a stay.");
+    expect(preview.lead).toContain("Here's what we found in your case");
+    expect(preview.note).toContain("Nothing was sent");
+    expect(preview.note).toContain("Charging is off");
+    expect(preview.note).toContain("$19");
   });
 
-  it("keeps a hostile description inside one SQL statement", () => {
+  it("keeps a hostile description inside one SQL statement and marks a template as not AI-generated", () => {
     const hash = "a".repeat(64);
     const body = "No. 26A100 stays put. '); DELETE FROM scotus_application_brief; -- $baaaaaaaaaaaaaaaa$";
     const sql = renderBriefUpsert({
-      docketNumber: "26A100", briefKind: "full", body, model: "gpt-6.1-sol", promptVersion: "emergency-brief-v1",
-      sourceHash: hash, inputTokens: 10, outputTokens: 20, costUsd: 0.00022,
+      docketNumber: "26A100", briefKind: "routine", body, model: "rule", promptVersion: "emergency-brief-v2",
+      sourceHash: hash, inputTokens: 0, outputTokens: 0, costUsd: 0, aiGenerated: false, lane: "description",
       entryCount: 2, lastEntryOn: "2026-11-02", status: "pending", withheldLines: 0,
     });
     expect(sql.match(/INSERT INTO/g)).toHaveLength(1);
     expect(sql).toContain(body);
-    expect(sql).toContain("ai_generated");
-    expect(exportPacketsSql()).toContain("applicant_kind = 'federal'");
-    expect(exportPacketsSql()).toContain("emergency-brief-v1");
+    expect(sql).toContain("false");
+    expect(exportPacketsSql()).toContain("a.last_entry_on DESC");
+    expect(exportPacketsSql()).toContain("emergency-brief-v2");
   });
 });

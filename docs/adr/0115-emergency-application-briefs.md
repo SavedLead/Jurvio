@@ -1,45 +1,46 @@
-# AI descriptions for emergency applications
+# Descriptions for emergency applications
 
-Status: Proposed. Approved by David Rosenberg on 2026-11-17. Descriptions are
-labeled AI-generated and are not court findings.
+Status: Proposed. Approved by David Rosenberg on 2026-11-17, including the
+model and budget change the same day. Model text is labeled AI-generated.
+Template text is not. Teasers are a preview only.
 
 ## Context
 
 Emergency-application pages already explain each docket line with fixed
-phrasing. David asked for a plain-English description of every emergency
-application, with federal-government applications first, written from the
-application, the response, the lower-court ruling, and the Court's order.
+phrasing. David asked for a plain-English description of serious emergency
+applications and federal-government applications, newest first. Routine
+filings should not spend the credit. A later email to followers may tease a
+description. That email is not approved, and charging stays off.
 
 ## Decision
 
-- `gpt-6.1-sol` ($2 / $10 per million input / output tokens) writes the full
-  description for every application that is not a routine extension.
-- `gpt-6-luna` ($0.10 / $0.50) writes one sentence for extension requests.
-- The model sees public docket lines only. Lines matching the sealed /
-  restricted filter are withheld, and a description that comes back matching
-  that filter is not stored.
-- Each stored description records the model, prompt version `emergency-brief-v1`,
-  a hash of the prompt, token counts, and cost. It is rewritten when the
-  filing count, latest filing date, status, withheld-line count, or prompt
-  version changes.
-- The backfill stops before a call that would take stored spend over $100.
-  Spend is the sum of `scotus_brief_call`, including rejected outputs, so a
-  rejected call is not free and is not retried until the docket changes.
-- The job runs on the builder from `write-emergency-briefs-once.yml`. The
-  public site reads the stored text and does not call OpenAI.
+- `gpt-6-astra` ($10 / $50 per million tokens) writes the full description
+  while its cap remains. `gpt-6.1-sol` ($2 / $10) fills gaps after that.
+- An extension of time, and a thin filing that is not a stay, injunction,
+  vacatur, bail request, capital case, or federal application, gets a fixed
+  template. Those rows record model `rule` and `ai_generated = false`.
+- A followed case can get a one- or two-sentence teaser from `gpt-6-luna`.
+  The page shows it as an email preview. The table cannot mark a teaser as
+  sent. This change does not send mail and does not set `JURVIO_BILLING_LIVE`.
+- Through 2026-12-05 the caps are $110 for Astra, $8 for Sol, $2 for teasers,
+  and $118 in total. Description calls stop $2 short of the total so the
+  teaser reserve remains. After that date the job spends nothing until
+  `BRIEF_BUDGET_AFTER_TOP_USD`, `BRIEF_BUDGET_AFTER_MID_USD`,
+  `BRIEF_BUDGET_AFTER_TEASER_USD`, and `BRIEF_BUDGET_AFTER_TOTAL_USD` are set.
+- Each model call stores tokens and cost, including a rejected description.
+  The prompt sees public docket lines only.
 
 ## Alternatives
 
-- One model for extensions and serious applications. Rejected: 541 extension
-  requests do not need the stronger model, and the cheap model keeps the
-  backfill inside the cap.
-- Regenerate whenever `changed_at` moves. Rejected: the live poll updates
-  `changed_at` even when no filing arrived, which would repeat the spend.
-- Run the model on the web host. Rejected: the web host stays free of this
-  batch, and the key is not required to render a page.
+- Use Astra for extensions too. Rejected: the pattern is fixed, and the
+  credit is for descriptions that need judgment.
+- Hide the full description until a $19 payment. Rejected: charging is not
+  approved, and the description stays on the page.
+- Keep spending after December 5 at the same caps. Rejected: the monthly
+  credit is a new budget David will set, so the job stops until those four
+  values are configured.
 
 ## Reconsideration
 
-Revisit the model ids or the $100 cap when OpenAI prices change, or when the
-stored descriptions are wrong often enough that a prompt change is worth a
-new version and a fresh spend.
+Revisit when David sets the post-December 5 caps, or when he approves the
+follower email and a charge.
