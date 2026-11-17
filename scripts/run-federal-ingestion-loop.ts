@@ -1149,7 +1149,7 @@ async function runPublicationAndQuarantine() {
     if (allowMetadataWithoutOpinionText) {
       const remainingMs = Math.max(20_000, jobDeadlineMs - Date.now());
       const batch = publishCap === 0
-        ? { published: 0, scanned: 0, held: 0, heldByReason: { search_slow: 1 }, batchSize: 0, searchMs, casePageMs: null, slowQueries, lockWaits: 0, elapsedMs: 0 }
+        ? { published: 0, scanned: 0, held: 0, heldByReason: { search_slow: 1 }, batchSize: 0, searchMs, casePageMs: null, slowQueries, lockWaits: 0, elapsedMs: 0, stopped: "pace" }
         : await runAdaptiveMetadataPublish(sql, { budgetMs: remainingMs, startBatch: 500 });
       published += batch.published;
       discovered += batch.scanned;
@@ -1174,6 +1174,7 @@ async function runPublicationAndQuarantine() {
             lockWaits: batch.lockWaits,
             batchSize: batch.batchSize,
             elapsedMs: batch.elapsedMs,
+            stopped: batch.stopped,
             perHour,
             draftEstimate,
             publishCap,
@@ -1193,6 +1194,7 @@ async function runPublicationAndQuarantine() {
         finalConcurrency: controllerState.concurrency,
         costs: 0,
         metadataBatch: true,
+        stopped: batch.stopped,
       };
     }
     // Drain in bounded chunks. Every processed row leaves the draft/not-needs_review
