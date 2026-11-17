@@ -96,6 +96,7 @@ jobs:
             DB_BIND="$(grep -E '^JURVIO_DATABASE_BIND=' "$ENVF" | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
             [ -n "$DB_BIND" ] || { echo "::error::JURVIO_DATABASE_BIND missing"; exit 1; }
             echo "recreating worker-core with ${IMG}"
+            # --pull never keeps the tag already on this host. Do not fetch another image.
             sudo -n env JURVIO_IMAGE="$IMG" JURVIO_DATABASE_BIND="$DB_BIND" \
               docker compose -f "$COMPOSE" up -d --no-deps --pull never --force-recreate worker-core
           fi
