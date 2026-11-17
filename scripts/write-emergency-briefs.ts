@@ -14,12 +14,11 @@
  * Astra. --teasers writes follower previews. OPENAI_API_KEY is never printed.
  */
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { officialEmergencyDocketUrl } from "../src/modules/scotus/domain/emergency-application";
 import { textFromPdfBytes } from "../src/modules/scotus/domain/filing-pdf-text";
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, acceptFilingExcerpt, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromDocketHtml, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, needsModel, officialCaseJsonUrl, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -351,6 +350,8 @@ async function runCompare(): Promise<void> {
   let total = 0;
   for (const packet of chosen) {
     const loaded = await loadFilingExcerpts(packet.docketNumber);
+    const extractedChars = loaded.filings.reduce((sum, filing) => sum + filing.chars, 0);
+    console.log(JSON.stringify({ docket: packet.docketNumber, pdfCount: loaded.filings.length, extractedChars, stored: false }));
     const prepared = prepareBrief({ ...packet, filings: loaded.filings }, TOP_MODEL);
     if (prepared.kind !== "prompt") continue;
     const models = [TOP_MODEL, MID_MODEL] as const;
@@ -391,7 +392,12 @@ async function runCompare(): Promise<void> {
   const markdown = renderComparison(cases, total);
   writeFileSync(outPath, markdown);
   writeFileSync(outPath.replace(/\.md$/, "") + ".json", JSON.stringify({ totalUsd: total, published: false, cases }, null, 2));
-  console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, totalUsd: total, published: false, out: outPath })}`);
+  const withPdfText = cases.filter((row) => ((row.filings as FilingExcerpt[] | undefined) ?? []).some((filing) => filing.chars > 0)).length;
+  console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, withPdfText, totalUsd: total, published: false, out: outPath })}`);
+  if (withPdfText === 0) {
+    console.error("No case received filing PDF text. Refusing to finish a comparison that only has docket lines.");
+    process.exit(1);
+  }
 }
 
 function renderComparison(cases: Array<Record<string, unknown>>, total: number): string {
@@ -467,7 +473,7 @@ async function courtFetch(url: string): Promise<Response> {
   if (lastCourtRequest && wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   lastCourtRequest = Date.now();
   return fetch(url, {
-    headers: { "user-agent": COMPARE_USER_AGENT, accept: "text/html,application/pdf" },
+    headers: { "user-agent": COMPARE_USER_AGENT, accept: "application/json,application/pdf" },
     redirect: "error",
     signal: AbortSignal.timeout(45_000),
   });
@@ -479,17 +485,17 @@ function skipFiling(docketNumber: string, role: string, url: string, reason: str
 }
 
 async function loadFilingExcerpts(docketNumber: string): Promise<{ filings: FilingExcerpt[]; skipped: Array<{ role: string; url: string; reason: string }>; note: string | null }> {
-  const pageUrl = officialEmergencyDocketUrl(docketNumber);
-  if (!pageUrl) return { filings: [], skipped: [], note: "Docket number has no official page URL." };
-  let html: string;
+  const jsonUrl = officialCaseJsonUrl(docketNumber);
+  if (!jsonUrl) return { filings: [], skipped: [], note: "Docket number has no case JSON URL." };
+  let payload: unknown;
   try {
-    const response = await courtFetch(pageUrl);
-    if (!response.ok) return { filings: [], skipped: [], note: `Docket page returned HTTP ${response.status}.` };
-    html = await response.text();
+    const response = await courtFetch(jsonUrl);
+    if (!response.ok) return { filings: [], skipped: [], note: `Case JSON returned HTTP ${response.status}.` };
+    payload = await response.json();
   } catch (error) {
-    return { filings: [], skipped: [], note: error instanceof Error ? error.message : "Docket page fetch failed." };
+    return { filings: [], skipped: [], note: error instanceof Error ? error.message : "Case JSON fetch failed." };
   }
-  const links = filingLinksFromDocketHtml(html);
+  const links = filingLinksFromCaseJson(payload);
   const filings: FilingExcerpt[] = [];
   const skipped: Array<{ role: string; url: string; reason: string }> = [];
   for (const link of links) {
@@ -520,5 +526,5 @@ async function loadFilingExcerpts(docketNumber: string): Promise<{ filings: Fili
       skipped.push(skipFiling(docketNumber, link.role, link.url, error instanceof Error ? error.message : "PDF failed"));
     }
   }
-  return { filings, skipped, note: links.length ? null : "The public docket page linked no application, response, reply, or lower-court opinion PDF." };
+  return { filings, skipped, note: links.length ? null : "The case JSON listed no application, response, reply, or lower-court opinion PDF." };
 }

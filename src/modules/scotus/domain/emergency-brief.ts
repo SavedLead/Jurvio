@@ -334,6 +334,54 @@ function filingRole(proceeding: string, title: string, url: string): FilingRole 
   return null;
 }
 
+function filingRoleFromJson(proceeding: string, description: string, file: string, url: string): FilingRole | null {
+  const label = `${description} ${file}`;
+  if (/proof of service|certificate of service|certificate of compliance|corporate disclosure/i.test(label)) return null;
+  const decoded = `${label} ${decodeURIComponent(url)}`;
+  if (/lower court|opinion below|order below/i.test(decoded) || (/\bopinion\b/i.test(decoded) && !/^main document$/i.test(description))) return "lower_court";
+  if (/^appendix$/i.test(description) && /opinion|lower court|\border\b/i.test(decoded)) return "lower_court";
+  if (!/^main document$/i.test(description)) return null;
+  const line = proceeding.replace(/\s+/g, " ").trim();
+  if (/^reply\b/i.test(line) || /\breply (?:of|in support|to)\b/i.test(line)) return "reply";
+  if (/\b(?:response|opposition)\b/i.test(line) && !/^application\b/i.test(line)) return "response";
+  if (/^application\b/i.test(line)) return "application";
+  return null;
+}
+
+/** Public case JSON, the feed that actually lists DocketPDF links. */
+export function officialCaseJsonUrl(docketNumber: string): string | null {
+  return /^[0-9]{2}A[0-9]{1,4}$/.test(docketNumber) ? `${PDF_ORIGIN}/RSS/Cases/JSON/${docketNumber}.json` : null;
+}
+
+/** One PDF per role from ProceedingsandOrder[].Links[].DocumentUrl. */
+export function filingLinksFromCaseJson(value: unknown): FilingLink[] {
+  if (!value || typeof value !== "object") return [];
+  const proceedings = (value as { ProceedingsandOrder?: unknown }).ProceedingsandOrder;
+  if (!Array.isArray(proceedings)) return [];
+  const found = new Map<FilingRole, FilingLink>();
+  for (const item of proceedings) {
+    if (!item || typeof item !== "object") continue;
+    const proceeding = typeof (item as { Text?: unknown }).Text === "string" ? (item as { Text: string }).Text : "";
+    const links = (item as { Links?: unknown }).Links;
+    if (!Array.isArray(links)) continue;
+    for (const link of links) {
+      if (!link || typeof link !== "object") continue;
+      const description = typeof (link as { Description?: unknown }).Description === "string" ? (link as { Description: string }).Description : "";
+      const file = typeof (link as { File?: unknown }).File === "string" ? (link as { File: string }).File : "";
+      const href = typeof (link as { DocumentUrl?: unknown }).DocumentUrl === "string" ? (link as { DocumentUrl: string }).DocumentUrl : "";
+      const url = officialPdfUrl(href);
+      if (!url) continue;
+      const role = filingRoleFromJson(proceeding, description, file, url);
+      if (!role || found.has(role)) continue;
+      found.set(role, { role, url, title: description || file || "Document" });
+    }
+  }
+  return ["application", "response", "reply", "lower_court"].flatMap((role) => {
+    const link = found.get(role as FilingRole);
+    return link ? [link] : [];
+  });
+}
+
 /** Main-document PDFs linked from a public supremecourt.gov docket page. One per role. */
 export function filingLinksFromDocketHtml(html: string): FilingLink[] {
   const found = new Map<FilingRole, FilingLink>();
@@ -458,7 +506,7 @@ function recordFor(source: BriefPacketSource): { record: string; pageUrl: string
   const filings = (source.filings ?? []).filter((filing) => !filing.withheld && filing.text && !isRestrictedDocketText(filing.text));
   const withheld = (source.filings ?? []).filter((filing) => filing.withheld).map((filing) => filing.role);
   const filingBlock = [
-    filings.length ? "Filing PDFs extracted from the public supremecourt.gov docket page:" : "Filing PDFs: none attached on the public docket page.",
+    filings.length ? "Filing PDFs from the public supremecourt.gov case JSON:" : "Filing PDFs: none listed in the public case JSON.",
     ...filings.map((filing) => `## ${filing.role} (${filing.url || "url not stated"}, ${filing.chars} characters${filing.trimmed ? ", trimmed" : ""})\n${filing.text}`),
     withheld.length ? `Withheld filing text (${withheld.join(", ")}): the extract matched the sealed or restricted filter and was not included.` : null,
   ].filter((line): line is string => line !== null).join("\n");
