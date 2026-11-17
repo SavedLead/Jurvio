@@ -2,6 +2,7 @@ import type postgres from "postgres";
 import { createPublicId } from "@/lib/ids/public-id";
 import { normalizeCourtListenerDocketEntry } from "../normalize/docket-entry";
 import { fetchDocketEntries } from "../providers/courtlistener/client";
+import { isRestrictedDocketText } from "../domain/federal-stream";
 import type { ArtifactStore } from "./artifact-store";
 
 type Sql = ReturnType<typeof postgres>;
@@ -9,13 +10,27 @@ type Sql = ReturnType<typeof postgres>;
 export async function ingestCourtListenerDocketEntries(
   sql: Sql,
   artifactStore: ArtifactStore,
-  input: { providerId: string; caseId: string; docketId: number; maximumPages?: number; newestFirst?: boolean },
+  input: {
+    providerId: string;
+    caseId: string;
+    docketId: number;
+    maximumPages?: number;
+    newestFirst?: boolean;
+    /** When set, only a line newer than this filing date alerts. Older lines are stored in the past. Null means only the newest line on the page alerts. */
+    stampForFollow?: boolean;
+    previousMaxFiledOn?: string | null;
+  },
 ): Promise<{ accepted: number; rejected: number; documents: number }> {
   const retrievedEntries = await fetchDocketEntries(
     input.docketId,
     input.maximumPages ?? 500,
     input.newestFirst ? "-date_filed,-id" : "date_filed,id",
   );
+  const filedDates = retrievedEntries.map((retrieved) => {
+    try { return normalizeCourtListenerDocketEntry(retrieved.record).filedOn ?? null; }
+    catch { return null; }
+  }).filter((day): day is string => Boolean(day));
+  const newestOnPage = filedDates.slice().sort().at(-1) ?? null;
   let accepted = 0;
   let rejected = 0;
   let documents = 0;
@@ -68,14 +83,24 @@ export async function ingestCourtListenerDocketEntries(
         return;
       }
 
+      if (isRestrictedDocketText(normalized.description)) {
+        rejected += 1;
+        return;
+      }
+      const alerts = !input.stampForFollow || (input.previousMaxFiledOn
+        ? (normalized.filedOn ?? "") > input.previousMaxFiledOn
+        : normalized.filedOn != null && normalized.filedOn === newestOnPage);
+      const createdAt = alerts ? null : normalized.filedOn ?? null;
+
       const [entry] = await tx<{ id: string }[]>`
         INSERT INTO docket_entry (
           public_id, case_id, provider_id, provider_entry_id, entry_number,
-          filed_on, description, source_artifact_id
+          filed_on, description, source_artifact_id, created_at, updated_at
         ) VALUES (
           ${createPublicId("docketEntry")}, ${input.caseId}, ${input.providerId},
           ${normalized.sourceEntryId}, ${normalized.entryNumber ?? null},
-          ${normalized.filedOn ?? null}, ${normalized.description}, ${artifact.id}
+          ${normalized.filedOn ?? null}, ${normalized.description}, ${artifact.id},
+          COALESCE(${createdAt}::timestamptz, now()), COALESCE(${createdAt}::timestamptz, now())
         )
         ON CONFLICT (provider_id, provider_entry_id)
         DO UPDATE SET entry_number = EXCLUDED.entry_number,

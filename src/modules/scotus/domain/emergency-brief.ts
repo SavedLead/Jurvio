@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { isRestrictedDocketText } from "@/modules/ingestion/domain/federal-stream";
 import { casePagePath } from "@/modules/scotus/domain/recent-opinions";
 
-export const BRIEF_PROMPT_VERSION = "emergency-brief-v2";
+export const BRIEF_PROMPT_VERSION = "emergency-brief-v3";
 export const TEASER_PROMPT_VERSION = "emergency-teaser-v1";
 export const CREDIT_UNTIL = "2026-12-05";
 export const SITE_ORIGIN = "https://jurvio.com";
@@ -36,6 +36,34 @@ const PACKET_CAP = 12_000;
 const SERIOUS_KINDS = new Set(["stay", "stay_of_execution", "injunction", "vacate_stay", "bail"]);
 
 export type BriefKind = "full" | "routine" | "teaser";
+
+export type FilingRole = "application" | "response" | "reply" | "lower_court";
+
+/** Per-document cap so a filing PDF cannot blow the token budget. */
+export const FILING_CHAR_CAP: Readonly<Record<FilingRole, number>> = {
+  application: 12_000,
+  response: 8_000,
+  reply: 6_000,
+  lower_court: 8_000,
+};
+
+export const BACKLOG_CASES = 164;
+
+export interface FilingLink {
+  role: FilingRole;
+  url: string;
+  title: string;
+}
+
+export interface FilingExcerpt {
+  role: FilingRole;
+  url: string;
+  text: string;
+  chars: number;
+  estimatedTokens: number;
+  trimmed: boolean;
+  withheld: boolean;
+}
 
 export interface BriefEvent {
   filedOn: string | null;
@@ -72,6 +100,7 @@ export interface BriefPacketSource {
   failedHash?: string | null;
   teaserHash?: string | null;
   events: BriefEvent[];
+  filings?: FilingExcerpt[];
 }
 
 export interface PromptBrief {
@@ -268,6 +297,157 @@ export function teaserPreview(body: string): { lead: string; note: string } {
   };
 }
 
+const PDF_ORIGIN = "https://www.supremecourt.gov";
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&quot;", "\"")
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function officialPdfUrl(href: string): string | null {
+  try {
+    const url = new URL(href.replaceAll("&amp;", "&").trim(), PDF_ORIGIN);
+    if (url.origin !== PDF_ORIGIN || !url.pathname.toLowerCase().endsWith(".pdf")) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function filingRole(proceeding: string, title: string, url: string): FilingRole | null {
+  if (/proof of service|certificate of service/i.test(title)) return null;
+  const label = `${title} ${decodeURIComponent(url)}`;
+  if (/\bappendix\b/i.test(title) && !/opinion|lower court/i.test(label)) return null;
+  if (/lower court|opinion below|order below/i.test(label) || (/\bopinion\b/i.test(label) && !/main document/i.test(title))) return "lower_court";
+  if (!/main document/i.test(title)) return null;
+  const line = proceeding.replace(/\s+/g, " ").trim();
+  if (/^reply\b/i.test(line) || /\breply (?:of|in support|to)\b/i.test(line)) return "reply";
+  if (/\b(?:response|opposition)\b/i.test(line) && !/^application\b/i.test(line)) return "response";
+  if (/^application\b/i.test(line)) return "application";
+  return null;
+}
+
+function filingRoleFromJson(proceeding: string, description: string, file: string, url: string): FilingRole | null {
+  const label = `${description} ${file}`;
+  if (/proof of service|certificate of service|certificate of compliance|corporate disclosure/i.test(label)) return null;
+  const decoded = `${label} ${decodeURIComponent(url)}`;
+  if (/lower court|opinion below|order below/i.test(decoded) || (/\bopinion\b/i.test(decoded) && !/^main document$/i.test(description))) return "lower_court";
+  if (/^appendix$/i.test(description) && /opinion|lower court|\border\b/i.test(decoded)) return "lower_court";
+  if (!/^main document$/i.test(description)) return null;
+  const line = proceeding.replace(/\s+/g, " ").trim();
+  if (/^reply\b/i.test(line) || /\breply (?:of|in support|to)\b/i.test(line)) return "reply";
+  if (/\b(?:response|opposition)\b/i.test(line) && !/^application\b/i.test(line)) return "response";
+  if (/^application\b/i.test(line)) return "application";
+  return null;
+}
+
+/** Public case JSON, the feed that actually lists DocketPDF links. */
+export function officialCaseJsonUrl(docketNumber: string): string | null {
+  return /^[0-9]{2}A[0-9]{1,4}$/.test(docketNumber) ? `${PDF_ORIGIN}/RSS/Cases/JSON/${docketNumber}.json` : null;
+}
+
+/** Every Links entry, and the ones kept for the model. rawLinks counts service PDFs too. */
+export function inspectCaseJson(value: unknown): { rawLinks: number; kept: FilingLink[] } {
+  if (!value || typeof value !== "object") return { rawLinks: 0, kept: [] };
+  const proceedings = (value as { ProceedingsandOrder?: unknown }).ProceedingsandOrder;
+  if (!Array.isArray(proceedings)) return { rawLinks: 0, kept: [] };
+  const found = new Map<FilingRole, FilingLink>();
+  let rawLinks = 0;
+  for (const item of proceedings) {
+    if (!item || typeof item !== "object") continue;
+    const proceeding = typeof (item as { Text?: unknown }).Text === "string" ? (item as { Text: string }).Text : "";
+    const links = (item as { Links?: unknown }).Links;
+    if (!Array.isArray(links)) continue;
+    rawLinks += links.length;
+    for (const link of links) {
+      if (!link || typeof link !== "object") continue;
+      const description = typeof (link as { Description?: unknown }).Description === "string" ? (link as { Description: string }).Description : "";
+      const file = typeof (link as { File?: unknown }).File === "string" ? (link as { File: string }).File : "";
+      const href = typeof (link as { DocumentUrl?: unknown }).DocumentUrl === "string" ? (link as { DocumentUrl: string }).DocumentUrl : "";
+      const url = officialPdfUrl(href);
+      if (!url) continue;
+      const role = filingRoleFromJson(proceeding, description, file, url);
+      if (!role || found.has(role)) continue;
+      found.set(role, { role, url, title: description || file || "Document" });
+    }
+  }
+  const kept = ["application", "response", "reply", "lower_court"].flatMap((role) => {
+    const link = found.get(role as FilingRole);
+    return link ? [link] : [];
+  });
+  return { rawLinks, kept };
+}
+
+/** One PDF per role from ProceedingsandOrder[].Links[].DocumentUrl. */
+export function filingLinksFromCaseJson(value: unknown): FilingLink[] {
+  return inspectCaseJson(value).kept;
+}
+
+/** Main-document PDFs linked from a public supremecourt.gov docket page. One per role. */
+export function filingLinksFromDocketHtml(html: string): FilingLink[] {
+  const found = new Map<FilingRole, FilingLink>();
+  for (const row of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...(row[1] ?? "").matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((cell) => cell[1] ?? "");
+    if (cells.length < 2) continue;
+    const detail = cells.slice(1).join(" ");
+    const proceeding = decodeHtml(detail);
+    for (const link of detail.matchAll(/<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|(\S+))[^>]*>([\s\S]*?)<\/a>/gi)) {
+      const href = link[1] ?? link[2] ?? link[3] ?? "";
+      const url = officialPdfUrl(href);
+      if (!url) continue;
+      const title = decodeHtml(link[4] ?? "") || "Document";
+      const role = filingRole(proceeding, title, url);
+      if (!role || found.has(role)) continue;
+      found.set(role, { role, url, title });
+    }
+  }
+  return ["application", "response", "reply", "lower_court"].flatMap((role) => {
+    const link = found.get(role as FilingRole);
+    return link ? [link] : [];
+  });
+}
+
+export function estimatedTokens(chars: number): number {
+  return Math.max(0, Math.ceil(chars / 4));
+}
+
+/** Cap one extracted PDF. A sealed or restricted extract is withheld instead of trimmed. */
+export function acceptFilingExcerpt(raw: string, role: FilingRole, url: string): FilingExcerpt {
+  const clean = raw.replace(/\s+/g, " ").trim();
+  const cap = FILING_CHAR_CAP[role];
+  if (isRestrictedDocketText(clean)) {
+    return { role, url, text: "", chars: 0, estimatedTokens: 0, trimmed: false, withheld: true };
+  }
+  const trimmed = clean.length > cap;
+  const text = trimmed ? `${clean.slice(0, cap)} [rest of this filing trimmed]` : clean;
+  return { role, url, text, chars: text.length, estimatedTokens: estimatedTokens(text.length), trimmed, withheld: false };
+}
+
+export function filingBacklogCost(inputTokens: number, outputTokens: number, cases = BACKLOG_CASES) {
+  const astraPerCase = costUsd(TOP_MODEL.inputPerMillion, TOP_MODEL.outputPerMillion, inputTokens, outputTokens);
+  const solPerCase = costUsd(MID_MODEL.inputPerMillion, MID_MODEL.outputPerMillion, inputTokens, outputTokens);
+  const astraTotal = Math.round(astraPerCase * cases * 1_000_000) / 1_000_000;
+  const solTotal = Math.round(solPerCase * cases * 1_000_000) / 1_000_000;
+  return {
+    cases,
+    inputTokens,
+    outputTokens,
+    astraPerCase,
+    solPerCase,
+    astraTotal,
+    solTotal,
+    astraWithinCap: astraTotal <= 110,
+    solWithinCap: solTotal <= 8,
+  };
+}
+
 function keepRank(kind: string): number {
   if (["granted", "granted_in_part", "denied", "withdrawn", "moot", "converted"].includes(kind)) return 5;
   if (["submitted", "resubmitted", "response_filed", "reply_filed"].includes(kind)) return 4;
@@ -330,8 +510,15 @@ function recordFor(source: BriefPacketSource): { record: string; pageUrl: string
     };
     record = fit();
   }
-  if (record.length > PACKET_CAP) record = `${record.slice(0, PACKET_CAP)}\n[further filings omitted]`;
-  return { record, pageUrl };
+  if (record.length > PACKET_CAP) record = `${record.slice(0, PACKET_CAP)}\n[further docket lines omitted]`;
+  const filings = (source.filings ?? []).filter((filing) => !filing.withheld && filing.text && !isRestrictedDocketText(filing.text));
+  const withheld = (source.filings ?? []).filter((filing) => filing.withheld).map((filing) => filing.role);
+  const filingBlock = [
+    filings.length ? "Filing PDFs from the public supremecourt.gov case JSON:" : "Filing PDFs: none listed in the public case JSON.",
+    ...filings.map((filing) => `## ${filing.role} (${filing.url || "url not stated"}, ${filing.chars} characters${filing.trimmed ? ", trimmed" : ""})\n${filing.text}`),
+    withheld.length ? `Withheld filing text (${withheld.join(", ")}): the extract matched the sealed or restricted filter and was not included.` : null,
+  ].filter((line): line is string => line !== null).join("\n");
+  return { record: `${record}\n\n${filingBlock}`, pageUrl };
 }
 
 export function prepareBrief(source: BriefPacketSource, model: DescriptionModel): PreparedBrief {
@@ -342,7 +529,7 @@ export function prepareBrief(source: BriefPacketSource, model: DescriptionModel)
   }
   const packed = recordFor(source);
   if (!packed) return { kind: "restricted" };
-  const user = `Write four to eight sentences covering who asked, what they want paused or allowed, what the lower court did, the arguments on each side, and the Court's action and votes. Include the docket number and cite the Jurvio page URL. Where the record is silent, say the public docket does not say.\n\n${packed.record}`;
+  const user = `Write four to eight sentences covering who asked, what they want paused or allowed, what the lower court did, the arguments on each side, and the Court's action and votes. Use the filing PDF text when it is included. Include the docket number and cite the Jurvio page URL. Where the record is silent, say the public docket does not say. Do not treat a trimmed filing as if you saw the omitted pages.\n\n${packed.record}`;
   return {
     kind: "prompt",
     briefKind: "full",

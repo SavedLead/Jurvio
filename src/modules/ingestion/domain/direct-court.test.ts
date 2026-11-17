@@ -6,6 +6,7 @@ import {
   directCourtGapMinutes,
   isPublishableFeedDocket,
   shouldCreateCase,
+  eventOpensCase,
   stableDirectEventIdentity,
   visitorFriendlyDescription,
 } from "./direct-court";
@@ -26,6 +27,13 @@ const feed = `<?xml version="1.0"?><rss version="2.0"><channel><item>
 </item></channel></rss>`;
 
 describe("direct federal court ingestion", () => {
+  it("treats a complaint as the case filing and a later motion as not", () => {
+    expect(eventOpensCase("case_filed")).toBe(true);
+    expect(eventOpensCase("complaint_or_petition_filed")).toBe(true);
+    expect(eventOpensCase(classifyDirectEvent("COMPLAINT filed against Acme"))).toBe(true);
+    expect(eventOpensCase("motion_filed")).toBe(false);
+    expect(eventOpensCase("filing")).toBe(false);
+  });
   it("covers the approved first direct-court cohort", () => {
     expect(FEDERAL_COURT_REGISTRY.map((entry) => entry.officialCourtCode))
       .toEqual(["txwd", "nysd", "njd", "cand", "casd", "wawd", "ded", "dcd", "mad", "flsd", "cacd", "txed"]);

@@ -14,12 +14,13 @@
  * Astra. --teasers writes follower previews. OPENAI_API_KEY is never printed.
  */
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { loadFilingExcerpts } from "../src/modules/scotus/application/load-filing-excerpts";
 import {
-  BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
+  BACKLOG_CASES, BRIEF_PROMPT_VERSION, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
-  type BriefPacketSource, type Spend, type StoredBrief,
+  type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
 
 const args = process.argv.slice(2);
@@ -345,10 +346,40 @@ async function runCompare(): Promise<void> {
     process.exit(1);
   }
   const chosen = packets.filter(needsModel).slice(0, limitArg);
+  const loadedCases = [];
+  for (const packet of chosen) {
+    const loaded = await loadFilingExcerpts(packet.docketNumber);
+    loadedCases.push({ packet, loaded });
+    console.log(JSON.stringify({
+      docket: packet.docketNumber,
+      jsonUrl: loaded.jsonUrl,
+      httpStatus: loaded.httpStatus,
+      bytes: loaded.bytes,
+      contentType: loaded.contentType,
+      rawLinks: loaded.rawLinks,
+      keptLinks: loaded.keptLinks,
+      pdfs: loaded.pdfs,
+      pdfCount: loaded.filings.length,
+      extractedChars: loaded.filings.reduce((sum, filing) => sum + filing.chars, 0),
+      note: loaded.note,
+      stored: false,
+    }));
+  }
+  const withPdfText = loadedCases.filter(({ loaded }) => loaded.filings.some((filing) => filing.chars > 0)).length;
+  if (withPdfText === 0) {
+    const blocked = loadedCases.some(({ loaded }) => loaded.blocked);
+    console.error("No case received filing PDF text. No model was called, so this run spent $0.");
+    if (blocked) {
+      console.error("supremecourt.gov did not return case JSON to this builder. The runner is likely blocked.");
+      console.error("Free alternative: a GitHub-hosted ubuntu-latest step that only downloads these JSON feeds and PDFs and uploads filing-text.json as an artifact. The builder job would read that artifact and would not call supremecourt.gov. Do not run the model on the hosted runner. This repo's workflow policy currently forbids ubuntu-latest except for a few recovery workflows, so that step needs an explicit exception.");
+    }
+    writeFileSync(outPath, "# Emergency description comparison\n\nNo filing PDF text. No model was called. Spend: $0.\n");
+    process.exit(1);
+  }
   const cases: Array<Record<string, unknown>> = [];
   let total = 0;
-  for (const packet of chosen) {
-    const prepared = prepareBrief(packet, TOP_MODEL);
+  for (const { packet, loaded } of loadedCases) {
+    const prepared = prepareBrief({ ...packet, filings: loaded.filings }, TOP_MODEL);
     if (prepared.kind !== "prompt") continue;
     const models = [TOP_MODEL, MID_MODEL] as const;
     const results: Array<Record<string, unknown>> = [];
@@ -380,21 +411,37 @@ async function runCompare(): Promise<void> {
       url: `https://jurvio.com/supreme-court/emergency/${packet.docketNumber}`,
       record: prepared.user,
       results,
+      filings: loaded.filings,
+      filingNote: loaded.note,
+      skippedFilings: loaded.skipped,
     });
   }
   const markdown = renderComparison(cases, total);
   writeFileSync(outPath, markdown);
   writeFileSync(outPath.replace(/\.md$/, "") + ".json", JSON.stringify({ totalUsd: total, published: false, cases }, null, 2));
-  console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, totalUsd: total, published: false, out: outPath })}`);
+  console.log(`SUMMARY ${JSON.stringify({ compared: cases.length, withPdfText, totalUsd: total, published: false, out: outPath })}`);
 }
 
 function renderComparison(cases: Array<Record<string, unknown>>, total: number): string {
+  const observedInputs = cases.flatMap((row) => (row.results as Array<Record<string, unknown>>) ?? [])
+    .filter((result) => result.model === "gpt-6-astra" && typeof result.inputTokens === "number")
+    .map((result) => result.inputTokens as number);
+  const observedOutputs = cases.flatMap((row) => (row.results as Array<Record<string, unknown>>) ?? [])
+    .filter((result) => result.model === "gpt-6-astra" && typeof result.outputTokens === "number")
+    .map((result) => result.outputTokens as number);
+  const avg = (values: number[]) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+  const likely = filingBacklogCost(avg(observedInputs), Math.max(avg(observedOutputs), 1));
+  const ceiling = filingBacklogCost(9_500, 2_000);
   const lines = [
     "# Emergency description comparison",
     "",
     "Not published. These descriptions are not stored on Jurvio pages. David has not picked a model, and the backlog has not been run.",
     "",
     `Comparison spend: $${total.toFixed(4)}. Count this toward the $118 cap before any backlog run.`,
+    "",
+    `Per case this run, using average Astra tokens (${likely.inputTokens} in, ${likely.outputTokens} out): Astra $${likely.astraPerCase.toFixed(4)}, Sol $${likely.solPerCase.toFixed(4)}.`,
+    `Projected ${BACKLOG_CASES} serious applications at that rate: Astra $${likely.astraTotal.toFixed(2)} of the $110 cap (${likely.astraWithinCap ? "inside" : "over"}), Sol $${likely.solTotal.toFixed(2)} of the $8 cap (${likely.solWithinCap ? "inside" : "over"}).`,
+    `Ceiling if every case hits the PDF cap and 2,000 output tokens: Astra $${ceiling.astraTotal.toFixed(2)} (${ceiling.astraWithinCap ? "inside" : "over"} $110), Sol $${ceiling.solTotal.toFixed(2)} (${ceiling.solWithinCap ? "inside" : "over"} $8).`,
     "",
   ];
   cases.forEach((row, index) => {
@@ -403,6 +450,19 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
     if (row.administration) lines.push(`- Administration: ${row.administration}.`);
     if (row.lowerCourt) lines.push(`- Lower court: ${row.lowerCourt}.`);
     lines.push(`- Page: ${row.url}`, "");
+    if (row.filingNote) lines.push(`- Filing fetch: ${row.filingNote}`);
+    const filings = (row.filings as FilingExcerpt[] | undefined) ?? [];
+    if (filings.length) {
+      lines.push("", "| Filing | Characters | Estimated tokens | Trimmed | Withheld |", "| --- | ---: | ---: | --- | --- |");
+      for (const filing of filings) {
+        lines.push(`| ${filing.role} | ${filing.chars} | ${filing.estimatedTokens} | ${filing.trimmed ? "yes" : "no"} | ${filing.withheld ? "yes" : "no"} |`);
+      }
+    } else {
+      lines.push("- No filing PDF text was added.");
+    }
+    const skipped = (row.skippedFilings as Array<{ role: string; reason: string }> | undefined) ?? [];
+    for (const skip of skipped) lines.push(`- Skipped ${skip.role}: ${skip.reason}`);
+    lines.push("");
     lines.push("| Model | Input tokens | Output tokens | Cost |");
     lines.push("| --- | ---: | ---: | ---: |");
     const results = row.results as Array<Record<string, unknown>>;
@@ -424,3 +484,4 @@ function renderComparison(cases: Array<Record<string, unknown>>, total: number):
   });
   return lines.join("\n");
 }
+
