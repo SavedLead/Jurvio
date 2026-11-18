@@ -122,6 +122,15 @@ WITH     match_follow AS MATERIALIZED (
       SELECT f.id, f.kind, ev.*
       FROM match_follow f
       JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN scotus_application a ON a.case_id = ev.case_id
+      JOIN scotus_application_detail d ON d.docket_number = a.docket_number
+      WHERE f.kind = 'topic'
+        AND a.kind <> 'extension'
+        AND (f.target_key IN ('elections', 'voting', 'immigration', 'executive-power', 'federal-workforce', 'death-penalty', 'religion', 'speech', 'campaign-finance') AND f.target_key = ANY(d.topics))
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
       JOIN legal_case c ON c.id = ev.case_id
       JOIN court ON court.id = c.court_id AND court.public_id = f.target_key
       WHERE f.kind = 'court'
@@ -310,6 +319,15 @@ WITH     match_follow AS MATERIALIZED (
         OR (f.target_key = 'justice:neil-m-gorsuch' AND a.submitted_justice_slug = 'neil-m-gorsuch')
         OR (f.target_key = 'justice:clarence-thomas' AND a.submitted_justice_slug = 'clarence-thomas')
       ))
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN scotus_application a ON a.case_id = ev.case_id
+      JOIN scotus_application_detail d ON d.docket_number = a.docket_number
+      WHERE f.kind = 'topic'
+        AND a.kind <> 'extension'
+        AND (f.target_key IN ('elections', 'voting', 'immigration', 'executive-power', 'federal-workforce', 'death-penalty', 'religion', 'speech', 'campaign-finance') AND f.target_key = ANY(d.topics))
       UNION ALL
       SELECT f.id, f.kind, ev.*
       FROM match_follow f
