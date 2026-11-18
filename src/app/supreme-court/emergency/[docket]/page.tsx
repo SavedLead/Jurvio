@@ -6,7 +6,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
-import { loadPublicEmergencySummary } from "@/modules/scotus/application/load-emergency-brief";
+import { loadPublicCaseDetail, loadPublicEmergencySummary } from "@/modules/scotus/application/load-emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
   APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, hasFederalGovernmentParty, officialEmergencyDocketUrl,
@@ -72,9 +72,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const [app, stats, gate, summary] = await Promise.all([
+  const [app, stats, gate, summary, detail] = await Promise.all([
     getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
-    loadPublicEmergencySummary(db(), docket),
+    loadPublicEmergencySummary(db(), docket), loadPublicCaseDetail(db(), docket),
   ]);
   if (!app) {
     const officialUrl = officialEmergencyDocketUrl(docket);
@@ -140,9 +140,27 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <p>{plain || "The Court has docketed this application."}</p>
         </section>
 
+        {detail?.topics.length ? <p className={styles.lede}>{detail.topics.map((topic, index) => <span key={topic.slug}>{index ? " · " : ""}<Link href={`/supreme-court/emergency/topic/${topic.slug}` as Route}>{topic.label}</Link></span>)}</p> : null}
+        {detail?.stake ? <section className={styles.plain} aria-labelledby="stake-title">
+          <h2 id="stake-title">What&apos;s at stake</h2>
+          <p>{detail.stake}</p>
+        </section> : null}
         {summary ? <section className={styles.plain} aria-labelledby="summary-title">
           <h2 id="summary-title">Summary</h2>
           <p>{summary.body}</p>
+        </section> : null}
+        {detail?.orderExplainer ? <section className={styles.plain} aria-labelledby="order-title">
+          <h2 id="order-title">The order</h2>
+          <p>{detail.orderExplainer}</p>
+        </section> : null}
+        {detail && (detail.applicantPoints.length || detail.respondentPoints.length) ? <section className={styles.plain} aria-labelledby="arguments-title">
+          <h2 id="arguments-title">The arguments</h2>
+          {detail.applicantPoints.length ? <><h3>Applicant</h3><ul>{detail.applicantPoints.map((point) => <li key={point}>{point}</li>)}</ul></> : null}
+          {detail.respondentPoints.length ? <><h3>Respondent</h3><ul>{detail.respondentPoints.map((point) => <li key={point}>{point}</li>)}</ul></> : null}
+        </section> : null}
+        {detail?.related.length ? <section className={styles.plain} aria-labelledby="related-title">
+          <h2 id="related-title">Related applications</h2>
+          <ul>{detail.related.map((item) => <li key={item.docket}><Link href={`/supreme-court/emergency/${item.docket}` as Route}>No. {item.docket}</Link></li>)}</ul>
         </section> : null}
 
         <dl className={styles.facts}>

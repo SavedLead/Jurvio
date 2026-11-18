@@ -11,8 +11,8 @@ name: Write emergency application briefs (once)
 # five newest serious applications. dockets overrides selection.
 # showcase is refused.
 #
-# Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=0, BRIEF_BUDGET_MID_USD=116,
-# BRIEF_BUDGET_TEASER_USD=2, BRIEF_BUDGET_TOTAL_USD=118. After that date the
+# Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=0, BRIEF_BUDGET_MID_USD=28,
+# BRIEF_BUDGET_TEASER_USD=2, BRIEF_BUDGET_TOTAL_USD=30. After that date the
 # job spends nothing until BRIEF_BUDGET_AFTER_TOP_USD, BRIEF_BUDGET_AFTER_MID_USD,
 # BRIEF_BUDGET_AFTER_TEASER_USD, and BRIEF_BUDGET_AFTER_TOTAL_USD are all set.
 

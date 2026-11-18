@@ -92,10 +92,10 @@ describe("emergency brief packets", () => {
   it("prices Sol as the description model and keeps the teaser reserve", () => {
     expect(costUsd(2, 10, 1_000_000, 1_000_000)).toBe(12);
     const caps = budgetCaps("2026-11-17", {});
-    expect(caps).toMatchObject({ topUsd: 0, midUsd: 116, teaserUsd: 2, totalUsd: 118, phase: "credit" });
+    expect(caps).toMatchObject({ topUsd: 0, midUsd: 28, teaserUsd: 2, totalUsd: 30, phase: "credit" });
     expect(chooseDescriptionLane(zero, 1_000, caps, false)).toBe("mid");
     expect(chooseDescriptionLane(zero, 1_000, caps, true)).toBe("mid");
-    const descriptionsFull = addSpend(zero, "mid", 116);
+    const descriptionsFull = addSpend(zero, "mid", 28);
     expect(canSpend(descriptionsFull, "mid", 0.01, caps)).toBe(false);
     expect(canSpend(descriptionsFull, "teaser", 0.01, caps)).toBe(true);
     expect(canSpend(addSpend(descriptionsFull, "teaser", 2), "teaser", 0.01, caps)).toBe(false);
@@ -123,7 +123,7 @@ describe("emergency brief packets", () => {
     const hash = "a".repeat(64);
     const body = "No. 26A100 stays put. '); DELETE FROM scotus_application_brief; -- $baaaaaaaaaaaaaaaa$";
     const sql = renderBriefUpsert({
-      docketNumber: "26A100", briefKind: "routine", body, model: "rule", promptVersion: "emergency-brief-v3",
+      docketNumber: "26A100", briefKind: "routine", body, model: "rule", promptVersion: "emergency-brief-v4",
       sourceHash: hash, inputTokens: 0, outputTokens: 0, costUsd: 0, aiGenerated: false, lane: "description",
       entryCount: 2, lastEntryOn: "2026-11-02", status: "pending", withheldLines: 0,
     });
@@ -131,7 +131,7 @@ describe("emergency brief packets", () => {
     expect(sql).toContain(body);
     expect(sql).toContain("false");
     expect(exportPacketsSql()).toContain("a.last_entry_on DESC");
-    expect(exportPacketsSql()).toContain("emergency-brief-v3");
+    expect(exportPacketsSql()).toContain("emergency-brief-v4");
     const compareSql = exportCompareSql();
     expect(compareSql).toContain("kind <> 'extension'");
     expect(compareSql).not.toContain("scotus_application_brief");
@@ -223,6 +223,6 @@ describe("emergency brief packets", () => {
     expect(ceiling.astraWithinCap).toBe(true);
     expect(ceiling.solWithinCap).toBe(true);
     expect(ceiling.astraTotal).toBeLessThanOrEqual(110);
-    expect(ceiling.solTotal).toBeLessThanOrEqual(116);
+    expect(ceiling.solTotal).toBeLessThanOrEqual(28);
   });
 });

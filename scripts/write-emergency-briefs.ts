@@ -16,6 +16,7 @@
  */
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { loadFilingExcerpts } from "../src/modules/scotus/application/load-filing-excerpts";
+import { detailFromPacket, parseCaseDetail, renderDetailUpsert } from "../src/modules/scotus/domain/emergency-detail";
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, MESSY_COMPARE_DOCKETS, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
@@ -217,6 +218,7 @@ async function main() {
         costUsd: 0, aiGenerated: false, lane: "description", ...dates(packet),
       };
       statements.push(renderBriefUpsert(row));
+      statements.push(renderDetailUpsert(packet.docketNumber, prepared.sourceHash, detailFromPacket(packet, packets, null)));
       templates += 1;
       continue;
     }
@@ -257,6 +259,7 @@ async function main() {
       continue;
     }
     const cost = costUsd(model.inputPerMillion, model.outputPerMillion, result.inputTokens, result.outputTokens);
+    const parsed = parseCaseDetail(result.content);
     const description = acceptDescription(parseDescription(result.content) ?? "", packet.docketNumber, "full");
     spend = addSpend(spend, lane, cost);
     const entry = { docket: packet.docketNumber, lane, model: model.id, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: cost, totalUsd: spend.total, stored: Boolean(description) };
@@ -277,6 +280,7 @@ async function main() {
     described += 1;
     stored.push({ ...row, body: description });
     statements.push(renderBriefUpsert({ ...row, body: description }));
+    statements.push(renderDetailUpsert(packet.docketNumber, prepared.sourceHash, detailFromPacket(packet, packets, parsed)));
   }
 
   if (writeTeasers) {

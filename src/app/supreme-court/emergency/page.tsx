@@ -15,6 +15,7 @@ import { AnalyticsPreview, previewViewer } from "./analytics/preview";
 import styles from "./emergency.module.css";
 import { casePagePath, opinionPagePath } from "@/modules/scotus/domain/recent-opinions";
 import { ADMINISTRATION_FEED_NOTE } from "@/modules/scotus/domain/activity-feed";
+import { EMERGENCY_TOPICS } from "@/modules/scotus/domain/emergency-topics";
 import { easternTime, justiceLabel, kindLabel, shortDate } from "./format";
 
 export const dynamic = "force-dynamic";
@@ -119,6 +120,7 @@ export default async function EmergencyDocketPage({ searchParams }: { searchPara
         <div><dt>Extensions</dt><dd>{data.counts.extensionsHidden}<small>routine, hidden by default</small></dd></div>
         <div><dt>Tracked</dt><dd>{data.counts.total}<small>applications held</small></dd></div>
       </dl> : null}
+      <p className={styles.lede}>Topics: {EMERGENCY_TOPICS.map((topic, index) => <span key={topic.slug}>{index ? " · " : ""}<Link href={`/supreme-court/emergency/topic/${topic.slug}` as Route}>{topic.label}</Link></span>)}</p>
     </header>
 
     <div className={`${styles.wrap} ${styles.layout}`}>

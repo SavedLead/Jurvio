@@ -8,6 +8,7 @@ import { alertEligibleSql, followEligibleSql } from "./follows";
 import { oneClickUnsubscribeUrl, unsubscribeUrl } from "./alerts";
 import { effectivePlan, planLimits, CADENCE_INTERVAL_MS, type AlertCadence } from "../domain/plans";
 import { EMERGENCY_TIMING_NOTE, EVENT_LABEL as APPLICATION_EVENT_LABEL, easternWeekday, emergencyFeedConditionSql } from "@/modules/scotus/domain/emergency-application";
+import { emergencyTopicMatchSql } from "@/modules/scotus/domain/emergency-topics";
 
 // Judge / topic / party alerts. Two steps, both run by the 10-minute
 // "account-alerts" scheduler job:
@@ -182,6 +183,15 @@ export function entityMatchCtes(options: EntityMatchSqlOptions): string {
       JOIN scotus_application a ON a.case_id = ev.case_id
       WHERE f.kind = 'emergency' AND ev.event_kind IN ('docket_entry', 'new_case')
         AND ${emergencyFeedConditionSql("a")}
+      UNION ALL
+      SELECT f.id, f.kind, ev.*
+      FROM match_follow f
+      JOIN match_event ev ON ev.event_at > f.created_at
+      JOIN scotus_application a ON a.case_id = ev.case_id
+      JOIN scotus_application_detail d ON d.docket_number = a.docket_number
+      WHERE f.kind = 'topic'
+        AND a.kind <> 'extension'
+        AND ${emergencyTopicMatchSql("f.target_key", "d.topics")}
       UNION ALL
       SELECT f.id, f.kind, ev.*
       FROM match_follow f
