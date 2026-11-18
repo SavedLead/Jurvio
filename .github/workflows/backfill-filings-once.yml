@@ -8,8 +8,11 @@ name: Backfill court filings (once)
 #
 # New rows use the court filing date for filed_on, created_at, and updated_at,
 # so follower alerts and the 24-hour feeds do not see them. Sealed captions are
-# skipped. The run stops for the 1-7am ET window, low disk, high load, or the
-# 90-minute budget. It does not publish cases.
+# skipped. A checkpoint resumes the same snapshot. With allow_anytime=true the
+# scan finishes the file instead of stopping when the box is busy. Dates after
+# the snapshot are filled from rows the free court feeds already stored, then
+# from a CourtListener docket list capped at 40 requests that day. It does not
+# publish cases.
 
 on:
   workflow_dispatch:
@@ -50,7 +53,7 @@ jobs:
   backfill:
     runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
     environment: production
-    timeout-minutes: 150
+    timeout-minutes: 360
     env:
       INGESTION_USER: ${{ secrets.DO_USER }}
       DB_HOST: 10.116.0.2
@@ -118,7 +121,20 @@ jobs:
             sudo -n docker exec "$app" curl -fsSL --retry 3 -o "$file.partial" "${bucket}/bulk-data/dockets-${snap}.csv.bz2"
             sudo -n docker exec "$app" mv "$file.partial" "$file"
           fi
-          sudo -n docker exec "$app" node jobs/backfill-court-filings.mjs \
-            --family="$FAMILY" --window-days="$WINDOW_DAYS" --snapshot-date="$snap" \
-            --file="$file" --allow-anytime="$ALLOW_ANYTIME"
+          code=0
+          attempt=1
+          while [ "$attempt" -le 8 ]; do
+            set +e
+            sudo -n docker exec "$app" node jobs/backfill-court-filings.mjs \
+              --family="$FAMILY" --window-days="$WINDOW_DAYS" --snapshot-date="$snap" \
+              --file="$file" --allow-anytime="$ALLOW_ANYTIME"
+            code=$?
+            set -e
+            if [ "$code" -eq 0 ]; then exit 0; fi
+            if [ "$code" -ne 75 ]; then exit "$code"; fi
+            echo "checkpoint saved; resuming from it (try ${attempt})"
+            attempt=$((attempt + 1))
+            sleep 15
+          done
+          exit "$code"
           REMOTE

@@ -84,6 +84,10 @@ export interface FilingBackfillCheckpoint {
   matched: number;
   inserted: number;
   filledDate: number;
+  /** Candidates that were already stored with a filing date. */
+  alreadyPresent: number;
+  /** Candidates whose court row could not be resolved. */
+  noCourt: number;
   skipped: number;
   stopped: string | null;
 }
@@ -91,7 +95,7 @@ export interface FilingBackfillCheckpoint {
 export function emptyFilingCheckpoint(snapshotDate: string, family: FilingFamily, windowDays: number): FilingBackfillCheckpoint {
   return {
     version: 1, snapshotDate, family, windowDays, rowsConsumed: 0,
-    matched: 0, inserted: 0, filledDate: 0, skipped: 0, stopped: null,
+    matched: 0, inserted: 0, filledDate: 0, alreadyPresent: 0, noCourt: 0, skipped: 0, stopped: null,
   };
 }
 
@@ -107,52 +111,108 @@ export function decodeFilingCheckpoint(
   if (parsed.version !== 1 || parsed.snapshotDate !== snapshotDate || parsed.family !== family || parsed.windowDays !== windowDays) {
     return base;
   }
-  return { ...base, ...parsed, stopped: null };
+  return { ...base, ...parsed, stopped: parsed.stopped === "complete" ? "complete" : null };
 }
 
-async function persistBatch(sql: Sql, providerId: string, rows: BackfillRow[]): Promise<{ inserted: number; filledDate: number }> {
-  if (rows.length === 0) return { inserted: 0, filledDate: 0 };
+export function filingWriteCounts(input: { incoming: number; joined: number; inserted: number; filledDate: number }): {
+  inserted: number;
+  filledDate: number;
+  alreadyPresent: number;
+  noCourt: number;
+} {
+  return {
+    inserted: input.inserted,
+    filledDate: input.filledDate,
+    alreadyPresent: Math.max(0, input.joined - input.inserted - input.filledDate),
+    noCourt: Math.max(0, input.incoming - input.joined),
+  };
+}
+
+/**
+ * A high load average is this scan decompressing the snapshot. It is not a
+ * reason to abandon the window. Disk, the quiet window, and the night budget
+ * still stop the run, and the checkpoint is what the next dispatch resumes.
+ */
+export function filingBackfillStop(input: {
+  allowAnytime: boolean;
+  elapsedMs: number;
+  budgetMs: number;
+  outsideQuietWindow: boolean;
+  diskOk: boolean;
+}): "quiet-window" | "disk" | "budget" | null {
+  if (!input.allowAnytime && input.outsideQuietWindow) return "quiet-window";
+  if (!input.diskOk) return "disk";
+  if (!input.allowAnytime && input.elapsedMs >= input.budgetMs) return "budget";
+  return null;
+}
+
+/** 75 asks the workflow to start the same command again from the checkpoint. */
+export function filingBackfillExitCode(stopped: string | null): 0 | 1 | 75 {
+  if (stopped === "budget" || stopped === "pace") return 75;
+  if (!stopped || stopped === "complete" || stopped === "quiet-window" || stopped === "quota") return 0;
+  return 1;
+}
+
+export async function persistFilingRows(sql: Sql, providerId: string, rows: BackfillRow[]): Promise<{
+  inserted: number; filledDate: number; alreadyPresent: number; noCourt: number;
+}> {
+  if (rows.length === 0) return { inserted: 0, filledDate: 0, alreadyPresent: 0, noCourt: 0 };
   return sql.begin(async (tx) => {
     await tx`SELECT set_config('statement_timeout', '30s', true)`;
+    const payload = rows.map((row) => ({
+      public_id: row.publicId,
+      court_code: row.courtCode,
+      docket_number: row.docketNumber,
+      caption: row.caption,
+      filed_on: row.filedOn,
+      family: row.family,
+      court_public_id: createPublicId("court"),
+    }));
     await tx`
       INSERT INTO court (public_id, provider_id, provider_court_id, name, short_name, jurisdiction, verification)
       SELECT DISTINCT ON (row.court_code)
         row.court_public_id, ${providerId}, row.court_code, row.court_code, upper(row.court_code),
         CASE WHEN row.family = 'appeals' THEN 'Federal Appellate' ELSE 'Federal District' END,
         'verified'
-      FROM jsonb_to_recordset(${tx.json(rows.map((row) => ({
-        court_code: row.courtCode,
-        family: row.family,
-        court_public_id: createPublicId("court"),
-      })))}::jsonb) AS row(court_code text, family text, court_public_id text)
+      FROM jsonb_to_recordset(${tx.json(payload)}::jsonb)
+        AS row(court_code text, family text, court_public_id text)
       ORDER BY row.court_code
       ON CONFLICT (provider_id, provider_court_id) DO NOTHING
     `;
-    const inserted = await tx`
-      INSERT INTO legal_case (
-        public_id, court_id, docket_number, caption, filed_on,
-        verification, publication, source_updated_at, created_at, updated_at
+    const [counts] = await tx<{ incoming: number; joined: number; inserted: number; filled: number }[]>`
+      WITH incoming AS (
+        SELECT * FROM jsonb_to_recordset(${tx.json(payload)}::jsonb)
+          AS row(public_id text, court_code text, docket_number text, caption text, filed_on text)
+      ),
+      written AS (
+        INSERT INTO legal_case (
+          public_id, court_id, docket_number, caption, filed_on,
+          verification, publication, source_updated_at, created_at, updated_at
+        )
+        SELECT row.public_id, court.id, row.docket_number, row.caption, row.filed_on::date,
+          'verified', 'draft', row.filed_on::timestamptz, row.filed_on::timestamptz, row.filed_on::timestamptz
+        FROM incoming row
+        JOIN court ON court.provider_id = ${providerId} AND court.provider_court_id = row.court_code
+        ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
+        DO UPDATE SET
+          filed_on = COALESCE(legal_case.filed_on, EXCLUDED.filed_on),
+          updated_at = legal_case.updated_at
+        WHERE legal_case.filed_on IS NULL AND EXCLUDED.filed_on IS NOT NULL
+        RETURNING (xmax = 0) AS inserted
       )
-      SELECT row.public_id, court.id, row.docket_number, row.caption, row.filed_on::date,
-        'verified', 'draft', row.filed_on::timestamptz, row.filed_on::timestamptz, row.filed_on::timestamptz
-      FROM jsonb_to_recordset(${tx.json(rows.map((row) => ({
-        public_id: row.publicId,
-        court_code: row.courtCode,
-        docket_number: row.docketNumber,
-        caption: row.caption,
-        filed_on: row.filedOn,
-      })))}::jsonb)
-        AS row(public_id text, court_code text, docket_number text, caption text, filed_on text)
-      JOIN court ON court.provider_id = ${providerId} AND court.provider_court_id = row.court_code
-      ON CONFLICT (court_id, docket_number) WHERE supreme_court_term IS NULL
-      DO UPDATE SET
-        filed_on = COALESCE(legal_case.filed_on, EXCLUDED.filed_on),
-        updated_at = legal_case.updated_at
-      WHERE legal_case.filed_on IS NULL AND EXCLUDED.filed_on IS NOT NULL
-      RETURNING (xmax = 0) AS inserted
+      SELECT
+        (SELECT count(*)::int FROM incoming) AS incoming,
+        (SELECT count(*)::int FROM incoming row
+          JOIN court ON court.provider_id = ${providerId} AND court.provider_court_id = row.court_code) AS joined,
+        (SELECT count(*) FILTER (WHERE inserted)::int FROM written) AS inserted,
+        (SELECT count(*) FILTER (WHERE NOT inserted)::int FROM written) AS filled
     `;
-    const insertedCount = inserted.filter((row) => (row as { inserted?: boolean }).inserted).length;
-    return { inserted: insertedCount, filledDate: inserted.length - insertedCount };
+    return filingWriteCounts({
+      incoming: counts?.incoming ?? 0,
+      joined: counts?.joined ?? 0,
+      inserted: counts?.inserted ?? 0,
+      filledDate: counts?.filled ?? 0,
+    });
   });
 }
 
@@ -183,12 +243,16 @@ export async function backfillFilingWindow(options: FilingBackfillOptions): Prom
     WHERE provider.code = 'courtlistener' AND checkpoint.stream_name = ${streamName}
   `;
   const checkpoint = decodeFilingCheckpoint(stored?.cursor_value ?? null, options.snapshotDate, options.family, options.windowDays);
+  if (checkpoint.stopped === "complete") return checkpoint;
   let seen = 0;
+  let yieldedForLoad = false;
   let batch: BackfillRow[] = [];
   const flush = async () => {
-    const result = await persistBatch(options.sql, provider.id, batch);
+    const result = await persistFilingRows(options.sql, provider.id, batch);
     checkpoint.inserted += result.inserted;
     checkpoint.filledDate += result.filledDate;
+    checkpoint.alreadyPresent += result.alreadyPresent;
+    checkpoint.noCourt += result.noCourt;
     checkpoint.matched += batch.length;
     batch = [];
   };
@@ -214,27 +278,29 @@ export async function backfillFilingWindow(options: FilingBackfillOptions): Prom
     if (seen % 20_000 === 0) {
       await flush();
       await save(null);
-      log({ rows: seen, inserted: checkpoint.inserted, perHour: rowsPerHour(seen, elapsed) });
-      if (!options.allowAnytime && !isEasternQuietWindow(new Date())) {
-        checkpoint.stopped = "quiet-window";
-        await save(checkpoint.stopped);
-        return checkpoint;
-      }
+      log({
+        rows: seen,
+        inserted: checkpoint.inserted,
+        alreadyPresent: checkpoint.alreadyPresent,
+        perHour: rowsPerHour(seen, elapsed),
+      });
       const floor = await checkBulkDiskFloor(options.diskPath ?? "/");
-      if (!floor.ok) {
-        checkpoint.stopped = "disk";
+      const stop = filingBackfillStop({
+        allowAnytime: options.allowAnytime === true,
+        elapsedMs: elapsed,
+        budgetMs,
+        outsideQuietWindow: !isEasternQuietWindow(new Date()),
+        diskOk: floor.ok,
+      });
+      if (stop) {
+        checkpoint.stopped = stop;
         await save(checkpoint.stopped);
         return checkpoint;
       }
-      if (shouldPauseForLoad({ loadAverage: os.loadavg()[0] ?? 0, cpuCount: os.cpus().length, slowPublicQueries: 0 })) {
-        checkpoint.stopped = "pace";
-        await save(checkpoint.stopped);
-        return checkpoint;
-      }
-      if (elapsed >= budgetMs) {
-        checkpoint.stopped = "budget";
-        await save(checkpoint.stopped);
-        return checkpoint;
+      if (!yieldedForLoad && shouldPauseForLoad({ loadAverage: os.loadavg()[0] ?? 0, cpuCount: os.cpus().length, slowPublicQueries: 0 })) {
+        yieldedForLoad = true;
+        log({ pace: "yielding", load: os.loadavg()[0] ?? 0 });
+        await new Promise((resolve) => setTimeout(resolve, 15_000));
       }
     }
   }
