@@ -6,8 +6,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
-import { loadEmergencyBrief, loadEmergencyBriefVersions, loadEmergencyTeaser } from "@/modules/scotus/application/load-emergency-brief";
-import { teaserPreview } from "@/modules/scotus/domain/emergency-brief";
+import { loadPublicCaseDetail, loadPublicEmergencySummary } from "@/modules/scotus/application/load-emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
   APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, hasFederalGovernmentParty, officialEmergencyDocketUrl,
@@ -41,11 +40,10 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
       robots: robotsFor(false),
     };
   }
-  const brief = await loadEmergencyBrief(db(), application.docketNumber);
   const caption = cleanCaseCaption(application.caption);
   return {
     title: `${caption} (No. ${application.docketNumber}): Supreme Court emergency application`,
-    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.${brief?.aiGenerated ? " Includes an AI-generated description, labeled as such." : ""}`,
+    description: `${kindLabel(application.kind, application.capital)} application No. ${application.docketNumber}, ${STATUS_LABEL[application.status].toLowerCase()}. Timeline, response deadline, circuit justice and plain-English explanation.`,
     alternates: { canonical: `/supreme-court/emergency/${application.docketNumber}` },
     // Routine extension requests are thin pages: kept out of search.
     robots: robotsFor(application.kind !== "extension"),
@@ -74,9 +72,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const [app, stats, gate, briefs, teaser] = await Promise.all([
+  const [app, stats, gate, summary, detail] = await Promise.all([
     getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
-    loadEmergencyBriefVersions(db(), docket), loadEmergencyTeaser(db(), docket),
+    loadPublicEmergencySummary(db(), docket), loadPublicCaseDetail(db(), docket),
   ]);
   if (!app) {
     const officialUrl = officialEmergencyDocketUrl(docket);
@@ -142,18 +140,27 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <p>{plain || "The Court has docketed this application."}</p>
         </section>
 
-        {briefs.map((brief, index) => <section key={brief.model} className={styles.plain} aria-labelledby={index === 0 ? "ai-title" : `ai-title-${index}`} data-ai-generated={brief.aiGenerated ? "true" : "false"} data-model={brief.model}>
-          <h2 id={index === 0 ? "ai-title" : `ai-title-${index}`}>{brief.aiGenerated ? (index === 0 ? "AI-generated description" : `Also written by ${brief.model}`) : "Summary from the docket"}</h2>
-          <p>{brief.body}</p>
-          <p className={styles.note}>{brief.aiGenerated
-            ? `AI-generated from the public filings and docket lines on this page by ${brief.model} (prompt ${brief.promptVersion}). It is not a court opinion and it does not add facts. Written ${easternTime(brief.generatedAt)}.`
-            : `Written from the public docket lines by a fixed template. No model was used. It does not add facts. Written ${easternTime(brief.generatedAt)}.`}</p>
-        </section>)}
-
-        {teaser ? <section className={styles.plain} aria-labelledby="teaser-title" data-email-preview="true">
-          <h2 id="teaser-title">Follower email preview</h2>
-          <p>{teaserPreview(teaser.body).lead}</p>
-          <p className={styles.note}>{teaserPreview(teaser.body).note} Written by {teaser.model} {easternTime(teaser.generatedAt)}.</p>
+        {detail?.topics.length ? <p className={styles.lede}>{detail.topics.map((topic, index) => <span key={topic.slug}>{index ? " · " : ""}<Link href={`/supreme-court/emergency/topic/${topic.slug}` as Route}>{topic.label}</Link></span>)}</p> : null}
+        {detail?.stake ? <section className={styles.plain} aria-labelledby="stake-title">
+          <h2 id="stake-title">What&apos;s at stake</h2>
+          <p>{detail.stake}</p>
+        </section> : null}
+        {summary ? <section className={styles.plain} aria-labelledby="summary-title">
+          <h2 id="summary-title">Summary</h2>
+          <p>{summary.body}</p>
+        </section> : null}
+        {detail?.orderExplainer ? <section className={styles.plain} aria-labelledby="order-title">
+          <h2 id="order-title">The order</h2>
+          <p>{detail.orderExplainer}</p>
+        </section> : null}
+        {detail && (detail.applicantPoints.length || detail.respondentPoints.length) ? <section className={styles.plain} aria-labelledby="arguments-title">
+          <h2 id="arguments-title">The arguments</h2>
+          {detail.applicantPoints.length ? <><h3>Applicant</h3><ul>{detail.applicantPoints.map((point) => <li key={point}>{point}</li>)}</ul></> : null}
+          {detail.respondentPoints.length ? <><h3>Respondent</h3><ul>{detail.respondentPoints.map((point) => <li key={point}>{point}</li>)}</ul></> : null}
+        </section> : null}
+        {detail?.related.length ? <section className={styles.plain} aria-labelledby="related-title">
+          <h2 id="related-title">Related applications</h2>
+          <ul>{detail.related.map((item) => <li key={item.docket}><Link href={`/supreme-court/emergency/${item.docket}` as Route}>No. {item.docket}</Link></li>)}</ul>
         </section> : null}
 
         <dl className={styles.facts}>

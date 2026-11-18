@@ -49,10 +49,6 @@ export function CaseRamificationsSection({ holding, reach, citedByCount }: {
       </p>
     </> : <p style={{ color: "#5f6980" }}>The records we have don’t include the Court’s syllabus or a verified holding for this decision, so we don’t quote one here.</p>}
 
-    {/* AI_IMPACT_SUMMARY_SLOT: a plain-English impact summary (what changed, who it affects) would go here.
-        It needs a paid AI/LLM step and David's OK, so it is intentionally not built. */}
-    <div data-ai-impact-slot="not-built" hidden />
-
     <h3 style={{ marginBottom: 4, marginTop: 18 }}>How later cases use it</h3>
     {total > 0 ? <>
       <p style={{ lineHeight: 1.6, margin: "0 0 6px" }} data-ramifications="reach">

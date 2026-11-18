@@ -2,6 +2,7 @@ import type { Sql } from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { nextPlanUp, planLimits, type PlanId } from "../domain/plans";
 import { topicBySlug } from "../domain/topics";
+import { emergencyTopicBySlug } from "@/modules/scotus/domain/emergency-topics";
 import { cleanPartyName, isFollowablePartyName, partyKey } from "../domain/party-names";
 import { syncFollowedItemPriority } from "@/modules/ingestion/application/followed-item-priority";
 import { alertEligibleSql, followEligibleSql } from "./follows";
@@ -46,7 +47,7 @@ export async function resolveEntityTarget(sql: Sql, kind: EntityKind, raw: unkno
     return court ? { kind, targetKey: court.publicId, label: court.name } : null;
   }
   if (kind === "topic") {
-    const topic = topicBySlug(value);
+    const topic = topicBySlug(value) ?? emergencyTopicBySlug(value);
     return topic ? { kind, targetKey: topic.slug, label: topic.label } : null;
   }
   if (kind === "judge") {

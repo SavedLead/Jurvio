@@ -19,7 +19,7 @@ import { isRestrictedDocketText } from "@/modules/ingestion/domain/federal-strea
 import { hasFederalGovernmentParty } from "@/modules/scotus/domain/emergency-application";
 import { casePagePath } from "@/modules/scotus/domain/recent-opinions";
 
-export const BRIEF_PROMPT_VERSION = "emergency-brief-v3";
+export const BRIEF_PROMPT_VERSION = "emergency-brief-v4";
 export const TEASER_PROMPT_VERSION = "emergency-teaser-v1";
 export const CREDIT_UNTIL = "2026-12-05";
 export const SITE_ORIGIN = "https://jurvio.com";
@@ -167,8 +167,11 @@ const SYSTEM = [
   "Never invent a party, date, lower-court action, argument, vote, or outcome.",
   "If the record does not say something, write \"The public docket does not say.\"",
   "Do not guess what withheld lines say, and do not mention sealed, restricted, juvenile, or grand-jury material.",
-  "The page will label this text AI-generated. It is not a court opinion.",
-  "Return JSON only, with one key: {\"description\":\"...\"}.",
+  "It is not a court opinion. Do not describe how the text was produced.",
+  "Return JSON only, with keys description, stake, order, applicantPoints, and respondentPoints.",
+  "stake is one sentence on what the Court's action would change.",
+  "order says what the Court did, who dissented or would have ruled the other way, and what happens next. If the Court has not ruled, say that.",
+  "applicantPoints and respondentPoints are short lists of arguments that appear in the record. Use an empty list when that side's filing is not in the record.",
 ].join(" ");
 
 const TEASER_SYSTEM = [
@@ -217,10 +220,10 @@ export function budgetCaps(asOf: string, env: Record<string, string | undefined>
     ? {
         until: CREDIT_UNTIL,
         phase: "credit" as const,
-        topUsd: readUsd(env, "BRIEF_BUDGET_TOP_USD", 110) ?? 110,
-        midUsd: readUsd(env, "BRIEF_BUDGET_MID_USD", 8) ?? 8,
+        topUsd: readUsd(env, "BRIEF_BUDGET_TOP_USD", 0) ?? 0,
+        midUsd: readUsd(env, "BRIEF_BUDGET_MID_USD", 28) ?? 28,
         teaserUsd: readUsd(env, "BRIEF_BUDGET_TEASER_USD", 2) ?? 2,
-        totalUsd: readUsd(env, "BRIEF_BUDGET_TOTAL_USD", 118) ?? 118,
+        totalUsd: readUsd(env, "BRIEF_BUDGET_TOTAL_USD", 30) ?? 30,
       }
     : {
         until: CREDIT_UNTIL,
@@ -255,8 +258,7 @@ export function estimatedCost(model: DescriptionModel | typeof TEASER_MODEL, pac
 }
 
 export function chooseDescriptionLane(spend: Spend, packetChars: number, caps: BudgetCaps, topOnly: boolean): "top" | "mid" | null {
-  if (canSpend(spend, "top", estimatedCost(TOP_MODEL, packetChars), caps)) return "top";
-  if (topOnly) return null;
+  void topOnly;
   if (canSpend(spend, "mid", estimatedCost(MID_MODEL, packetChars), caps)) return "mid";
   return null;
 }
@@ -286,8 +288,8 @@ export function routineSummary(source: BriefPacketSource): string | null {
   const court = source.lowerCourt ? ` The lower court named on the docket is the ${source.lowerCourt}.` : "";
   const page = `${SITE_ORIGIN}/supreme-court/emergency/${source.docketNumber}`;
   const text = source.kind === "extension"
-    ? `${party} asked the Supreme Court for more time to file, No. ${source.docketNumber}.${court} ${status} This summary is taken from the public docket. No model was used. ${page}`
-    : `${party} has a filing on the Supreme Court emergency docket, No. ${source.docketNumber}.${court} ${status} The public docket lines do not call for a model summary. No model was used. ${page}`;
+    ? `${party} asked the Supreme Court for more time to file, No. ${source.docketNumber}.${court} ${status} This summary is taken from the public docket. ${page}`
+    : `${party} has a filing on the Supreme Court emergency docket, No. ${source.docketNumber}.${court} ${status} This summary is taken from the public docket. ${page}`;
   if (isRestrictedDocketText(text) || text.length < 20 || text.length > 6000) return null;
   return text;
 }
@@ -495,7 +497,7 @@ export function filingBacklogCost(inputTokens: number, outputTokens: number, cas
     astraTotal,
     solTotal,
     astraWithinCap: astraTotal <= 110,
-    solWithinCap: solTotal <= 8,
+    solWithinCap: solTotal <= 28,
   };
 }
 
@@ -585,7 +587,7 @@ export function prepareBrief(source: BriefPacketSource, model: DescriptionModel)
   }
   const packed = recordFor(source);
   if (!packed) return { kind: "restricted" };
-  const user = `Write four to eight sentences covering who asked, what they want paused or allowed, what the lower court did, the arguments on each side, and the Court's action and votes. Use the filing PDF text when it is included. Include the docket number and cite the Jurvio page URL. Where the record is silent, say the public docket does not say. Do not treat a trimmed filing as if you saw the omitted pages.\n\n${packed.record}`;
+  const user = `Write the description as four to eight sentences covering who asked, what they want paused or allowed, what the lower court did, the arguments on each side, and the Court's action and votes. Also fill stake, order, applicantPoints, and respondentPoints from the same record. Use the filing PDF text when it is included. Include the docket number in the description and cite the Jurvio page URL. Where the record is silent, say the public docket does not say. Do not treat a trimmed filing as if you saw the omitted pages.\n\n${packed.record}`;
   return {
     kind: "prompt",
     briefKind: "full",

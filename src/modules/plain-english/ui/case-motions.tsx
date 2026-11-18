@@ -38,6 +38,6 @@ export function CaseMotionsSection({ motions, caseId, scanned }: { motions: Plai
         </details>
       </li>)}
     </ol>
-    <p style={{ color: "#6a7489", fontSize: ".85rem", marginTop: 12 }}>Read from the {scanned.toLocaleString()} most recent docket entries Jurvio holds, by fixed rules (no AI). A ruling is linked when an order cites the motion’s docket number, or when it is the only order of that type and the motion is the only one of its type. Otherwise “No ruling appears” can also mean an order did not say which motion it decided. Sealed and private entries are never read or shown. This is not legal advice.</p>
+    <p style={{ color: "#6a7489", fontSize: ".85rem", marginTop: 12 }}>Read from the {scanned.toLocaleString()} most recent docket entries Jurvio holds, by fixed rules. A ruling is linked when an order cites the motion’s docket number, or when it is the only order of that type and the motion is the only one of its type. Otherwise “No ruling appears” can also mean an order did not say which motion it decided. Sealed and private entries are never read or shown. This is not legal advice.</p>
   </section>;
 }

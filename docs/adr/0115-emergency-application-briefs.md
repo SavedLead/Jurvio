@@ -1,8 +1,10 @@
 # Descriptions for emergency applications
 
 Status: Proposed. Approved by David Rosenberg on 2026-11-17, including the
-model and budget change the same day. Model text is labeled AI-generated.
-Template text is not. Teasers are a preview only.
+model and budget change the same day. On 2026-11-18 he required one public
+summary per application, with no mention that a model wrote it. A second
+stored version is not shown. gpt-6.1-sol writes the summaries. gpt-6-astra
+is unused.
 
 ## Context
 
