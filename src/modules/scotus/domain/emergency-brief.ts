@@ -221,9 +221,9 @@ export function budgetCaps(asOf: string, env: Record<string, string | undefined>
         until: CREDIT_UNTIL,
         phase: "credit" as const,
         topUsd: readUsd(env, "BRIEF_BUDGET_TOP_USD", 0) ?? 0,
-        midUsd: readUsd(env, "BRIEF_BUDGET_MID_USD", 28) ?? 28,
-        teaserUsd: readUsd(env, "BRIEF_BUDGET_TEASER_USD", 2) ?? 2,
-        totalUsd: readUsd(env, "BRIEF_BUDGET_TOTAL_USD", 30) ?? 30,
+        midUsd: readUsd(env, "BRIEF_BUDGET_MID_USD", 47) ?? 47,
+        teaserUsd: readUsd(env, "BRIEF_BUDGET_TEASER_USD", 3) ?? 3,
+        totalUsd: readUsd(env, "BRIEF_BUDGET_TOTAL_USD", 50) ?? 50,
       }
     : {
         until: CREDIT_UNTIL,
@@ -497,7 +497,7 @@ export function filingBacklogCost(inputTokens: number, outputTokens: number, cas
     astraTotal,
     solTotal,
     astraWithinCap: astraTotal <= 110,
-    solWithinCap: solTotal <= 28,
+    solWithinCap: solTotal <= 47,
   };
 }
 

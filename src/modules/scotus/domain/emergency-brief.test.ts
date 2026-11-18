@@ -92,13 +92,13 @@ describe("emergency brief packets", () => {
   it("prices Sol as the description model and keeps the teaser reserve", () => {
     expect(costUsd(2, 10, 1_000_000, 1_000_000)).toBe(12);
     const caps = budgetCaps("2026-11-17", {});
-    expect(caps).toMatchObject({ topUsd: 0, midUsd: 28, teaserUsd: 2, totalUsd: 30, phase: "credit" });
+    expect(caps).toMatchObject({ topUsd: 0, midUsd: 47, teaserUsd: 3, totalUsd: 50, phase: "credit" });
     expect(chooseDescriptionLane(zero, 1_000, caps, false)).toBe("mid");
     expect(chooseDescriptionLane(zero, 1_000, caps, true)).toBe("mid");
-    const descriptionsFull = addSpend(zero, "mid", 28);
+    const descriptionsFull = addSpend(zero, "mid", 47);
     expect(canSpend(descriptionsFull, "mid", 0.01, caps)).toBe(false);
     expect(canSpend(descriptionsFull, "teaser", 0.01, caps)).toBe(true);
-    expect(canSpend(addSpend(descriptionsFull, "teaser", 2), "teaser", 0.01, caps)).toBe(false);
+    expect(canSpend(addSpend(descriptionsFull, "teaser", 3), "teaser", 0.01, caps)).toBe(false);
     expect(budgetCaps("2026-12-06", {})).toMatchObject({ phase: "after", totalUsd: 0 });
     expect(budgetCaps("2026-12-06", {
       BRIEF_BUDGET_AFTER_TOP_USD: "40", BRIEF_BUDGET_AFTER_MID_USD: "10",
@@ -223,6 +223,6 @@ describe("emergency brief packets", () => {
     expect(ceiling.astraWithinCap).toBe(true);
     expect(ceiling.solWithinCap).toBe(true);
     expect(ceiling.astraTotal).toBeLessThanOrEqual(110);
-    expect(ceiling.solTotal).toBeLessThanOrEqual(28);
+    expect(ceiling.solTotal).toBeLessThanOrEqual(47);
   });
 });

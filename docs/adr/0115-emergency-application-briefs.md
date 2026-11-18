@@ -35,9 +35,10 @@ description. That email is not approved, and charging stays off.
 - A followed case can get a one- or two-sentence teaser from `gpt-6-luna`.
   The page shows it as an email preview. The table cannot mark a teaser as
   sent. This change does not send mail and does not set `JURVIO_BILLING_LIVE`.
-- Through 2026-12-05 the caps are $110 for Astra, $8 for Sol, $2 for teasers,
-  and $118 in total. Description calls stop $2 short of the total so the
-  teaser reserve remains. After that date the job spends nothing until
+- Through 2026-12-05 the caps are $0 for Astra, $47 for Sol summaries, $3
+  for teasers, and $50 in total. Description calls stop $3 short of the total
+  so the teaser reserve remains. A later run skips a case whose stored
+  summary still matches the docket. After that date the job spends nothing until
   `BRIEF_BUDGET_AFTER_TOP_USD`, `BRIEF_BUDGET_AFTER_MID_USD`,
   `BRIEF_BUDGET_AFTER_TEASER_USD`, and `BRIEF_BUDGET_AFTER_TOTAL_USD` are set.
 - Each model call stores tokens and cost, including a rejected description.
