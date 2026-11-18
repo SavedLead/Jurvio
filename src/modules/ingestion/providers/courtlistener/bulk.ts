@@ -55,7 +55,7 @@ export function openBulkCsv(filePath: string): BulkCsvSource {
   let closedByConsumer = false;
   process.stderr.setEncoding("utf8");
   process.stderr.on("data", (chunk: string) => {
-    standardError += chunk;
+    if (standardError.length < 4_096) standardError += chunk.slice(0, 4_096 - standardError.length);
   });
 
   return {
@@ -74,11 +74,19 @@ export function openBulkCsv(filePath: string): BulkCsvSource {
   };
 }
 
+export interface BulkCsvParseOptions {
+  /** Data rows to drop after the header without retaining their text. */
+  skipRecords?: number;
+  /** Stop retaining a field after this many characters. Parsing still advances. */
+  maxFieldChars?: number;
+}
+
 export async function* parseBulkCsv<T>(
   stream: Readable,
   schema: z.ZodType<T>,
+  options?: BulkCsvParseOptions,
 ): AsyncGenerator<T> {
-  for await (const record of parseBulkCsvRecords(stream)) yield schema.parse(record);
+  for await (const record of parseBulkCsvRecords(stream, options)) yield schema.parse(record);
 }
 
 const QUOTED_SPECIAL = /["\\]/g;
@@ -92,17 +100,37 @@ const UNQUOTED_SPECIAL = /[",\n]/g;
  * not bound by per-character string building. Output is identical to the previous
  * per-character parser (see bulk.test.ts equivalence test).
  */
-export async function* parseBulkCsvRecords(stream: Readable): AsyncGenerator<Record<string, string>> {
+export async function* parseBulkCsvRecords(
+  stream: Readable,
+  options?: BulkCsvParseOptions,
+): AsyncGenerator<Record<string, string>> {
   stream.setEncoding("utf8");
   let headers: string[] | undefined;
   let row: string[] = [];
   let field = "";
   let quoted = false;
   let escaped = false;
+  let skipLeft = Math.max(0, options?.skipRecords ?? 0);
+  const maxFieldChars = options?.maxFieldChars;
+  const skipping = () => headers !== undefined && skipLeft > 0;
 
-  const finishRow = () => {
-    row.push(field);
+  const append = (slice: string) => {
+    if (!slice || skipping()) return;
+    if (maxFieldChars === undefined || !headers) {
+      field += slice;
+      return;
+    }
+    const room = maxFieldChars - field.length;
+    if (room <= 0) return;
+    field += slice.length > room ? slice.slice(0, room) : slice;
+  };
+  const takeField = () => {
+    const value = maxFieldChars === undefined ? field : Buffer.from(field, "utf8").toString("utf8");
     field = "";
+    return value;
+  };
+  const finishRow = () => {
+    row.push(takeField());
     const finished = row;
     row = [];
     return finished;
@@ -118,7 +146,7 @@ export async function* parseBulkCsvRecords(stream: Readable): AsyncGenerator<Rec
       if (escaped) {
         // The escaped character is kept; a surrogate pair stays intact because its second
         // half is appended by the next slice.
-        field += text[index];
+        append(text[index] ?? "");
         escaped = false;
         index += 1;
         continue;
@@ -127,11 +155,11 @@ export async function* parseBulkCsvRecords(stream: Readable): AsyncGenerator<Rec
       special.lastIndex = index;
       const found = special.exec(text);
       if (!found) {
-        field += text.slice(index);
+        append(text.slice(index));
         break;
       }
       const at = found.index;
-      if (at > index) field += text.slice(index, at);
+      if (at > index) append(text.slice(index, at));
       index = at + 1;
       const character = text[at];
       if (character === "\\") {
@@ -139,21 +167,23 @@ export async function* parseBulkCsvRecords(stream: Readable): AsyncGenerator<Rec
       } else if (character === '"') {
         quoted = !quoted;
       } else if (character === ",") {
-        row.push(field);
+        if (skipping()) field = "";
+        else row.push(takeField());
+      } else if (!headers) {
+        headers = finishRow().map((value) => value.replace(/\r$/, ""));
+      } else if (skipLeft > 0) {
         field = "";
+        row = [];
+        skipLeft -= 1;
       } else {
         const values = finishRow().map((value) => value.replace(/\r$/, ""));
-        if (!headers) {
-          headers = values;
-        } else if (values.some(Boolean)) {
-          yield record(values);
-        }
+        if (values.some(Boolean)) yield record(values);
       }
     }
   }
 
   if (quoted || escaped) throw new Error("CourtListener bulk CSV ended inside a quoted field");
-  if (field || row.length) {
+  if ((field || row.length) && !(headers && skipLeft > 0)) {
     const values = finishRow();
     if (!headers) headers = values;
     else yield record(values);

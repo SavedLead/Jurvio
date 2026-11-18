@@ -125,7 +125,7 @@ jobs:
           attempt=1
           while [ "$attempt" -le 8 ]; do
             set +e
-            sudo -n docker exec "$app" node jobs/backfill-court-filings.mjs \
+            sudo -n docker exec -e NODE_OPTIONS="--max-old-space-size=512" "$app" node jobs/backfill-court-filings.mjs \
               --family="$FAMILY" --window-days="$WINDOW_DAYS" --snapshot-date="$snap" \
               --file="$file" --allow-anytime="$ALLOW_ANYTIME"
             code=$?
