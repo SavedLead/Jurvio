@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeFilingCheckpoint,
+  dedupeFilingRows,
   filingBackfillExitCode,
   filingBackfillStop,
   filingDateInWindow,
@@ -70,6 +71,36 @@ describe("filing window selection", () => {
     expect(filingBackfillExitCode("memory")).toBe(75);
     expect(filingBackfillExitCode("disk")).toBe(1);
     expect(filingBackfillExitCode(null)).toBe(0);
+  });
+
+  it("collapses duplicate court and docket keys in one insert batch", () => {
+    const today = "2026-11-17";
+    const first = selectBackfillRow(docket({
+      court_id: "nysd", docket_number: "1:26-cv-00001", case_name: "Short", date_filed: "2026-10-02",
+    }), "district", today, 365);
+    const richer = selectBackfillRow(docket({
+      court_id: "nysd", docket_number: "1:26-cv-00001", case_name: "Short v. Longer Name", date_filed: "2026-09-01",
+    }), "district", today, 365);
+    const dated = selectBackfillRow(docket({
+      court_id: "nysd", docket_number: "1:26-cv-00009", case_name: "Dated v. Party", date_filed: "2026-08-01",
+    }), "district", today, 365);
+    const other = selectBackfillRow(docket({
+      court_id: "cacd", docket_number: "1:26-cv-00001", case_name: "Other v. Party", date_filed: "2026-10-03",
+    }), "district", today, 365);
+    expect(first && richer && dated && other).toBeTruthy();
+    const rows = dedupeFilingRows([
+      first!,
+      richer!,
+      { ...dated!, filedOn: "" },
+      dated!,
+      other!,
+    ]);
+    expect(rows.map((row) => [row.courtCode, row.docketNumber, row.caption, row.filedOn])).toEqual([
+      ["nysd", "1:26-cv-00001", "Short v. Longer Name", "2026-09-01"],
+      ["nysd", "1:26-cv-00009", "Dated v. Party", "2026-08-01"],
+      ["cacd", "1:26-cv-00001", "Other v. Party", "2026-10-03"],
+    ]);
+    expect(rows[0]?.publicId).toBe(first!.publicId);
   });
 
   it("resumes a finished snapshot instead of reading the file again", () => {

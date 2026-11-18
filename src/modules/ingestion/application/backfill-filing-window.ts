@@ -56,6 +56,42 @@ interface BackfillRow {
   family: FilingFamily;
 }
 
+/** The partial unique index is (court_id, docket_number). court_code resolves to one court. */
+export interface FilingConflictRow {
+  courtCode: string;
+  docketNumber: string;
+  caption: string;
+  filedOn: string;
+}
+
+/**
+ * One INSERT cannot propose the same conflict key twice. Keep the longer caption
+ * and the earlier filing date when the snapshot lists a case more than once.
+ */
+export function dedupeFilingRows<T extends FilingConflictRow>(rows: readonly T[]): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows) {
+    const key = `${row.courtCode}\0${row.docketNumber}`;
+    const kept = byKey.get(key);
+    byKey.set(key, kept ? mergeFilingRow(kept, row) : row);
+  }
+  return [...byKey.values()];
+}
+
+function filingDay(value: string): string | null {
+  return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : null;
+}
+
+function mergeFilingRow<T extends FilingConflictRow>(kept: T, incoming: T): T {
+  const keptDay = filingDay(kept.filedOn);
+  const incomingDay = filingDay(incoming.filedOn);
+  const filedOn = !keptDay ? (incomingDay ?? kept.filedOn)
+    : !incomingDay ? keptDay
+    : keptDay <= incomingDay ? keptDay : incomingDay;
+  const caption = incoming.caption.trim().length > kept.caption.trim().length ? incoming.caption : kept.caption;
+  return { ...kept, caption, filedOn };
+}
+
 export function selectBackfillRow(
   docket: CourtListenerBulkDocket,
   family: FilingFamily,
@@ -162,10 +198,11 @@ export function filingBackfillExitCode(stopped: string | null): 0 | 1 | 75 {
 export async function persistFilingRows(sql: Sql, providerId: string, rows: BackfillRow[]): Promise<{
   inserted: number; filledDate: number; alreadyPresent: number; noCourt: number;
 }> {
-  if (rows.length === 0) return { inserted: 0, filledDate: 0, alreadyPresent: 0, noCourt: 0 };
+  const unique = dedupeFilingRows(rows);
+  if (unique.length === 0) return { inserted: 0, filledDate: 0, alreadyPresent: 0, noCourt: 0 };
   return sql.begin(async (tx) => {
     await tx`SELECT set_config('statement_timeout', '30s', true)`;
-    const payload = rows.map((row) => ({
+    const payload = unique.map((row) => ({
       public_id: row.publicId,
       court_code: row.courtCode,
       docket_number: row.docketNumber,
@@ -259,7 +296,7 @@ export async function backfillFilingWindow(options: FilingBackfillOptions): Prom
     checkpoint.filledDate += result.filledDate;
     checkpoint.alreadyPresent += result.alreadyPresent;
     checkpoint.noCourt += result.noCourt;
-    checkpoint.matched += batch.length;
+    checkpoint.matched += result.inserted + result.filledDate + result.alreadyPresent + result.noCourt;
     batch = [];
   };
   const save = async (stopped: string | null) => {
