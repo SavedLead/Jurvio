@@ -7,10 +7,8 @@ export function GET() {
   const paths = [
     "/",
     "/cases",
-    "/parties",
     "/judges",
     "/courts",
-    "/law-firms",
     "/supreme-court",
     "/supreme-court/timeline",
     "/explainers",
