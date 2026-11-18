@@ -11,7 +11,6 @@ const nextConfig: NextConfig = {
       // Directory indexes that only render a "coming soon" empty state.
       // Profile URLs under these paths stay in place.
       { source: "/parties", destination: "/cases", permanent: true },
-      { source: "/attorneys", destination: "/cases", permanent: true },
       { source: "/law-firms", destination: "/cases", permanent: true },
     ];
   },

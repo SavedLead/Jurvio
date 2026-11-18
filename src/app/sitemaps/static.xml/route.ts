@@ -9,7 +9,6 @@ export function GET() {
     "/cases",
     "/judges",
     "/courts",
-    "/us-attorneys",
     "/supreme-court",
     "/supreme-court/timeline",
     "/explainers",

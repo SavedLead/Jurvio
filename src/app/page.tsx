@@ -8,11 +8,11 @@ import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 const browseItems = [
   ["Cases", "Search opinions, dockets, filings, and decisions", "/cases", "01"],
-  ["Judges", "Explore judicial records, courts, and written opinions", "/judges", "02"],
-  ["Courts", "Browse jurisdictions and understand how they work", "/courts", "03"],
-  ["Dictionary", "Plain-English meanings of legal terms, procedure, and jurisdiction", "/explainers", "04"],
-  ["Supreme Court", "Follow opinions and the term they belong to", "/supreme-court", "05"],
-  ["Coverage", "See which courts and records Jurvio publishes", "/coverage", "06"],
+  ["Attorneys", "Find counsel, firms, appearances, and case history", "/attorneys", "02"],
+  ["Judges", "Explore judicial records, courts, and written opinions", "/judges", "03"],
+  ["Courts", "Browse jurisdictions and understand how they work", "/courts", "04"],
+  ["Dictionary", "Plain-English meanings of legal terms, procedure, and jurisdiction", "/explainers", "05"],
+  ["Supreme Court", "Follow opinions and the term they belong to", "/supreme-court", "06"],
 ] as const;
 
 const startingPaths = [
