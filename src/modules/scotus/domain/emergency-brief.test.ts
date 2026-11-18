@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
+  MID_MODEL, TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
   acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml, inspectCaseJson,
   FILING_CASE_CHAR_CAP, fitFilingsToCase, isSealedFilingText, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
@@ -43,7 +43,7 @@ describe("emergency brief packets", () => {
     expect(rows.map((row) => row.docketNumber)).toEqual(["26A3", "26A1", "26A2", "26A9"]);
   });
 
-  it("uses a template for an extension and Astra for a serious application", () => {
+  it("uses a template for an extension and Sol for a serious application", () => {
     expect(needsModel(source())).toBe(true);
     expect(needsModel(source({ kind: "extension", applicantKind: "private", administration: null }))).toBe(false);
     const extension = prepareBrief(source({ kind: "extension", applicantKind: "private", administration: null, applicant: "Ada Applicant" }), TOP_MODEL);
@@ -51,11 +51,12 @@ describe("emergency brief packets", () => {
     if (extension.kind !== "template") return;
     expect(extension.body).toContain("more time");
     expect(extension.body).toContain("26A100");
-    expect(extension.body).toContain("No model was used");
-    const serious = prepareBrief(source(), TOP_MODEL);
+    expect(extension.body).toContain("taken from the public docket");
+    expect(extension.body).not.toContain("model");
+    const serious = prepareBrief(source(), MID_MODEL);
     expect(serious.kind).toBe("prompt");
     if (serious.kind !== "prompt") return;
-    expect(serious.model.id).toBe("gpt-6-astra");
+    expect(serious.model.id).toBe("gpt-6.1-sol");
   });
 
   it("leaves sealed lines out of the prompt and skips a sealed caption", () => {
@@ -88,15 +89,13 @@ describe("emergency brief packets", () => {
     expect(built.user.length).toBeLessThan(20_000);
   });
 
-  it("prices Astra at $10 / $50 and keeps the teaser reserve", () => {
-    expect(costUsd(10, 50, 1_000_000, 1_000_000)).toBe(60);
+  it("prices Sol as the description model and keeps the teaser reserve", () => {
+    expect(costUsd(2, 10, 1_000_000, 1_000_000)).toBe(12);
     const caps = budgetCaps("2026-11-17", {});
-    expect(caps).toMatchObject({ topUsd: 110, midUsd: 8, teaserUsd: 2, totalUsd: 118, phase: "credit" });
-    expect(chooseDescriptionLane(zero, 1_000, caps, false)).toBe("top");
-    const atTop = addSpend(zero, "top", 110);
-    expect(chooseDescriptionLane(atTop, 1_000, caps, false)).toBe("mid");
-    expect(chooseDescriptionLane(atTop, 1_000, caps, true)).toBeNull();
-    const descriptionsFull = addSpend(addSpend(zero, "top", 110), "mid", 6);
+    expect(caps).toMatchObject({ topUsd: 0, midUsd: 116, teaserUsd: 2, totalUsd: 118, phase: "credit" });
+    expect(chooseDescriptionLane(zero, 1_000, caps, false)).toBe("mid");
+    expect(chooseDescriptionLane(zero, 1_000, caps, true)).toBe("mid");
+    const descriptionsFull = addSpend(zero, "mid", 116);
     expect(canSpend(descriptionsFull, "mid", 0.01, caps)).toBe(false);
     expect(canSpend(descriptionsFull, "teaser", 0.01, caps)).toBe(true);
     expect(canSpend(addSpend(descriptionsFull, "teaser", 2), "teaser", 0.01, caps)).toBe(false);
@@ -224,6 +223,6 @@ describe("emergency brief packets", () => {
     expect(ceiling.astraWithinCap).toBe(true);
     expect(ceiling.solWithinCap).toBe(true);
     expect(ceiling.astraTotal).toBeLessThanOrEqual(110);
-    expect(ceiling.solTotal).toBeLessThanOrEqual(8);
+    expect(ceiling.solTotal).toBeLessThanOrEqual(116);
   });
 });

@@ -217,8 +217,8 @@ export function budgetCaps(asOf: string, env: Record<string, string | undefined>
     ? {
         until: CREDIT_UNTIL,
         phase: "credit" as const,
-        topUsd: readUsd(env, "BRIEF_BUDGET_TOP_USD", 110) ?? 110,
-        midUsd: readUsd(env, "BRIEF_BUDGET_MID_USD", 8) ?? 8,
+        topUsd: readUsd(env, "BRIEF_BUDGET_TOP_USD", 0) ?? 0,
+        midUsd: readUsd(env, "BRIEF_BUDGET_MID_USD", 116) ?? 116,
         teaserUsd: readUsd(env, "BRIEF_BUDGET_TEASER_USD", 2) ?? 2,
         totalUsd: readUsd(env, "BRIEF_BUDGET_TOTAL_USD", 118) ?? 118,
       }
@@ -255,8 +255,7 @@ export function estimatedCost(model: DescriptionModel | typeof TEASER_MODEL, pac
 }
 
 export function chooseDescriptionLane(spend: Spend, packetChars: number, caps: BudgetCaps, topOnly: boolean): "top" | "mid" | null {
-  if (canSpend(spend, "top", estimatedCost(TOP_MODEL, packetChars), caps)) return "top";
-  if (topOnly) return null;
+  void topOnly;
   if (canSpend(spend, "mid", estimatedCost(MID_MODEL, packetChars), caps)) return "mid";
   return null;
 }
@@ -286,8 +285,8 @@ export function routineSummary(source: BriefPacketSource): string | null {
   const court = source.lowerCourt ? ` The lower court named on the docket is the ${source.lowerCourt}.` : "";
   const page = `${SITE_ORIGIN}/supreme-court/emergency/${source.docketNumber}`;
   const text = source.kind === "extension"
-    ? `${party} asked the Supreme Court for more time to file, No. ${source.docketNumber}.${court} ${status} This summary is taken from the public docket. No model was used. ${page}`
-    : `${party} has a filing on the Supreme Court emergency docket, No. ${source.docketNumber}.${court} ${status} The public docket lines do not call for a model summary. No model was used. ${page}`;
+    ? `${party} asked the Supreme Court for more time to file, No. ${source.docketNumber}.${court} ${status} This summary is taken from the public docket. ${page}`
+    : `${party} has a filing on the Supreme Court emergency docket, No. ${source.docketNumber}.${court} ${status} This summary is taken from the public docket. ${page}`;
   if (isRestrictedDocketText(text) || text.length < 20 || text.length > 6000) return null;
   return text;
 }
@@ -495,7 +494,7 @@ export function filingBacklogCost(inputTokens: number, outputTokens: number, cas
     astraTotal,
     solTotal,
     astraWithinCap: astraTotal <= 110,
-    solWithinCap: solTotal <= 8,
+    solWithinCap: solTotal <= 116,
   };
 }
 

@@ -1,17 +1,17 @@
 name: Write emergency application briefs (once)
 
-# Writes descriptions for Supreme Court emergency applications, newest first.
-# Serious applications use gpt-6-astra until its cap, then gpt-6.1-sol.
+# Writes one summary per Supreme Court emergency application, newest first.
+# Serious applications use gpt-6.1-sol. gpt-6-astra is not used.
 # Extensions and other routine filings use a template and no model call.
-# mode=apply can also write cheap follower-email previews. It does not send
-# email. Runs on the builder. Dispatch by hand with
-# confirm=WRITE_EMERGENCY_BRIEFS.
+# mode=apply stores that one summary. It can also write follower-email
+# previews. It does not send email. Runs on the builder. Dispatch by hand
+# with confirm=WRITE_EMERGENCY_BRIEFS.
 # mode=compare writes gpt-6-astra and gpt-6.1-sol and does not store them.
 # selection=messy uses five long federal cases. selection=newest uses the
 # five newest serious applications. dockets overrides selection.
-# showcase, dry, and apply are refused. This workflow does not publish.
+# showcase is refused.
 #
-# Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=110, BRIEF_BUDGET_MID_USD=8,
+# Caps through 2026-12-05: BRIEF_BUDGET_TOP_USD=0, BRIEF_BUDGET_MID_USD=116,
 # BRIEF_BUDGET_TEASER_USD=2, BRIEF_BUDGET_TOTAL_USD=118. After that date the
 # job spends nothing until BRIEF_BUDGET_AFTER_TOP_USD, BRIEF_BUDGET_AFTER_MID_USD,
 # BRIEF_BUDGET_AFTER_TEASER_USD, and BRIEF_BUDGET_AFTER_TOTAL_USD are all set.
@@ -24,7 +24,7 @@ on:
         required: true
         type: string
       mode:
-        description: "compare = both models, nothing stored. showcase, dry, and apply are refused and do not publish."
+        description: "compare = both models, nothing stored. dry stores 5 summaries. apply stores the backlog, newest first. showcase is refused."
         required: true
         default: "compare"
         type: string
@@ -67,8 +67,12 @@ jobs:
             echo "::error::Refusing to run. Re-run this workflow by hand with confirm=WRITE_EMERGENCY_BRIEFS."
             exit 1
           fi
-          if [ "$MODE" != "compare" ]; then
-            echo "::error::Refusing to publish. showcase, dry, and apply do not write public descriptions."
+          if [ "$MODE" = "showcase" ]; then
+            echo "::error::Refusing showcase. Apply stores one summary per case."
+            exit 1
+          fi
+          if [ "$MODE" != "dry" ] && [ "$MODE" != "apply" ] && [ "$MODE" != "compare" ]; then
+            echo "::error::mode must be compare, dry, or apply"
             exit 1
           fi
           if [ "$SELECTION" != "messy" ] && [ "$SELECTION" != "newest" ]; then
@@ -148,3 +152,31 @@ jobs:
           name: emergency-brief-comparison
           path: ${{ runner.temp }}/emergency-briefs/comparison.md
           retention-days: 14
+
+      - name: Write summaries
+        if: inputs.mode == 'dry' || inputs.mode == 'apply'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/emergency-briefs"
+          limit=0
+          extra=
+          if [ "$MODE" = "dry" ]; then limit=5; fi
+          if [ "$MODE" = "apply" ]; then extra=--teasers; fi
+          pnpm exec tsx scripts/write-emergency-briefs.ts write \
+            --packets "$work/packets.jsonl" \
+            --spent "$work/spent.txt" \
+            --limit "$limit" \
+            $extra \
+            --out-sql "$work/upserts.sql" \
+            --log "$work/costs.jsonl" | tee "$work/run.log"
+          { echo "### Emergency summary run ($MODE)"; echo; echo '```json'; grep '^SUMMARY ' "$work/run.log" | sed 's/^SUMMARY //'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Store summaries
+        if: inputs.mode == 'dry' || inputs.mode == 'apply'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          source "$HOME/vpc-ssh.sh"
+          work="$RUNNER_TEMP/emergency-briefs"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -q' < "$work/upserts.sql"
+          echo "Stored the summaries written this run."

@@ -1,10 +1,9 @@
 /**
  * Writes descriptions for Supreme Court emergency applications.
  *
- * Runs on the builder, not on a web host. The final SCOTUS model is not
- * picked yet. compare writes gpt-6-astra and gpt-6.1-sol and stores nothing.
- * showcase stores both on the public page. A later backlog still prefers
- * Astra until David picks. gpt-6-luna is teasers only. Extensions and other
+ * Runs on the builder, not on a web host. Full summaries use gpt-6.1-sol.
+ * gpt-6-astra is not called for the backlog. gpt-6-luna is teasers only.
+ * compare still writes both models and stores nothing. Extensions and other
  * routine filings get a template and no model call. This process does not
  * send email.
  *
@@ -12,8 +11,8 @@
  *   pnpm exec tsx scripts/write-emergency-briefs.ts spent-sql
  *   pnpm exec tsx scripts/write-emergency-briefs.ts write --packets rows.jsonl --spent spend.json --limit 5 --top-only --out-sql upserts.sql --log costs.jsonl
  *
- * --limit 0 means no count cap on model descriptions. --top-only stays on
- * Astra. --teasers writes follower previews. OPENAI_API_KEY is never printed.
+ * --limit 0 means no count cap on summaries. --teasers writes follower
+ * previews that are not emailed. OPENAI_API_KEY is never printed.
  */
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { loadFilingExcerpts } from "../src/modules/scotus/application/load-filing-excerpts";
@@ -45,8 +44,8 @@ if (command === "messy-dockets") {
   process.stdout.write(MESSY_COMPARE_DOCKETS.join(","));
   process.exit(0);
 }
-if (command === "write" || args.includes("--out-sql")) {
-  console.error("Refusing to publish descriptions. Nothing was stored and no model was called.");
+if (args.includes("--out-sql") && command !== "write") {
+  console.error("Refusing to store a comparison. Nothing was published.");
   process.exit(1);
 }
 if (command === "compare") {

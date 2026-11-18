@@ -6,6 +6,7 @@ import { robotsFor } from "@/lib/seo/indexing";
 import { FollowCaseBox } from "@/modules/accounts/ui/follow-case-box";
 import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { getEmergencyApplication, statusUncertain } from "@/modules/scotus/application/emergency-docket";
+import { loadPublicEmergencySummary } from "@/modules/scotus/application/load-emergency-brief";
 import { ALLOTMENT_SOURCE_URL } from "@/modules/scotus/domain/circuit-justice";
 import {
   APPLICANT_KIND_LABEL, EMERGENCY_TIMING_NOTE, EVENT_LABEL, STATUS_LABEL, easternDate, expectedJusticeFor, hasFederalGovernmentParty, officialEmergencyDocketUrl,
@@ -71,8 +72,9 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
   const raw = (await params).docket;
   const docket = normalize(raw);
   if (!docket) notFound();
-  const [app, stats, gate] = await Promise.all([
+  const [app, stats, gate, summary] = await Promise.all([
     getEmergencyApplication(db(), docket), loadEmergencyStats(db()).catch(() => null), emergencyProGate(),
+    loadPublicEmergencySummary(db(), docket),
   ]);
   if (!app) {
     const officialUrl = officialEmergencyDocketUrl(docket);
@@ -137,6 +139,11 @@ export default async function EmergencyApplicationPage({ params }: { params: Par
           <h2 id="plain-title">In plain English</h2>
           <p>{plain || "The Court has docketed this application."}</p>
         </section>
+
+        {summary ? <section className={styles.plain} aria-labelledby="summary-title">
+          <h2 id="summary-title">Summary</h2>
+          <p>{summary.body}</p>
+        </section> : null}
 
         <dl className={styles.facts}>
           <div><dt>Status</dt><dd>{uncertain ? <>Not clear<small>Some lines are withheld; see the <a href={app.sourceUrl}>Court&apos;s docket ↗</a></small></> : STATUS_LABEL[app.status]}{happened(app.rulingOn) ? <small>{shortDate(happened(app.rulingOn))}{app.ruledBy === "court" ? " · by the full Court" : app.ruledBy === "justice" ? " · by one justice" : ""}{app.writtenReasons ? " · with a written opinion" : ""}</small> : null}</dd></div>

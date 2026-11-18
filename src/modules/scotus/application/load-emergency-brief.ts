@@ -1,5 +1,5 @@
 /**
- * The stored AI description for one emergency application. Missing until the
+ * The stored summary for one emergency application. Missing until the
  * brief job has written it. A missing table (migration not applied yet) returns
  * null so the public page keeps working.
  */
@@ -57,6 +57,16 @@ export async function loadEmergencyBriefVersions(sql: Sql, docketNumber: string)
     if (code === "42P01" || code === "42703") return [];
     throw error;
   }
+}
+
+const PUBLIC_SUMMARY_MODEL = "gpt-6.1-sol";
+
+/** One summary for the public page. Any other stored version stays unread here. */
+export async function loadPublicEmergencySummary(sql: Sql, docketNumber: string): Promise<{ body: string } | null> {
+  const versions = await loadEmergencyBriefVersions(sql, docketNumber);
+  const chosen = versions.find((version) => version.model === PUBLIC_SUMMARY_MODEL) ?? versions[0];
+  if (!chosen?.body) return null;
+  return { body: chosen.body };
 }
 
 /** Stored follower-email preview. preview_only is enforced by the table. */
