@@ -1,0 +1,115 @@
+name: Fill filing draft fields (once)
+
+# Dispatch only. Re-reads the free CourtListener dockets snapshot on the
+# ingestion host and copies nature of suit and cause onto existing draft
+# cases that are missing them. It does not insert rows, delete rows, or
+# change updated_at. Sealed captions are still skipped. A separate checkpoint
+# resumes the read. Runs on the builder, not the public web server.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type FILL_FILING_DRAFTS to fill draft fields"
+        required: true
+        type: string
+      window_days:
+        description: "30, 60, 90, or 365"
+        required: true
+        default: "365"
+        type: string
+      snapshot_date:
+        description: "auto, latest, or YYYY-MM-DD"
+        required: true
+        default: "auto"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-filing-backfill
+  cancel-in-progress: false
+
+jobs:
+  fill:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 360
+    env:
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+      CONFIRM: ${{ inputs.confirm }}
+      WINDOW_DAYS: ${{ inputs.window_days }}
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+    steps:
+      - name: Require confirm=FILL_FILING_DRAFTS
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "FILL_FILING_DRAFTS" ]; then
+            echo "::error::Refusing to fill drafts. Re-run with confirm=FILL_FILING_DRAFTS."
+            exit 1
+          fi
+          case "$WINDOW_DAYS" in 30|60|90|365) ;; *) echo "::error::window_days must be 30, 60, 90, or 365"; exit 1;; esac
+          case "$SNAPSHOT_DATE" in
+            auto|latest|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::snapshot_date must be auto, latest, or YYYY-MM-DD"; exit 1;;
+          esac
+
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/vpc-ssh
+        with:
+          ssh_key_b64: ${{ secrets.DO_SSH_KEY_B64 }}
+
+      - name: Fill empty nature of suit and cause on existing drafts
+        run: |
+          set -euo pipefail
+          source "$HOME/vpc-ssh.sh"
+          vpc_ssh "$INGESTION_USER@$DB_HOST" "SNAPSHOT_DATE='$SNAPSHOT_DATE' WINDOW_DAYS='$WINDOW_DAYS' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/jurvio
+          app="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=app --format '{{.ID}}' | head -n1)"
+          [ -n "$app" ] || { echo "::error::app container missing"; exit 1; }
+          if ! sudo -n docker exec "$app" test -f jobs/backfill-court-filings.mjs; then
+            echo "::error::jobs/backfill-court-filings.mjs is not in the running image. Deploy production first."
+            exit 1
+          fi
+          bucket="https://com-courtlistener-storage.s3-us-west-2.amazonaws.com"
+          latest="$(curl -fsS "${bucket}/?list-type=2&prefix=bulk-data/dockets-" | grep -oE 'dockets-[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv\.bz2' | sort | tail -1 | sed -E 's/dockets-([0-9-]+)\.csv\.bz2/\1/')"
+          snap="$SNAPSHOT_DATE"
+          if [ "$snap" = "auto" ] || [ "$snap" = "latest" ]; then snap="$latest"; fi
+          case "$snap" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::could not resolve snapshot date ($snap)"; exit 1;;
+          esac
+          cache=/var/lib/jurvio/artifacts/bulk
+          sudo -n docker exec "$app" mkdir -p "$cache"
+          file="$cache/dockets-${snap}.csv.bz2"
+          if ! sudo -n docker exec "$app" test -s "$file"; then
+            echo "downloading dockets snapshot"
+            sudo -n docker exec "$app" curl -fsSL --retry 3 -o "$file.partial" "${bucket}/bulk-data/dockets-${snap}.csv.bz2"
+            sudo -n docker exec "$app" mv "$file.partial" "$file"
+          fi
+          run_family() {
+            family="$1"
+            echo "snapshot=${snap} family=${family} window_days=${WINDOW_DAYS} fill_drafts=true"
+            code=0
+            attempt=1
+            while [ "$attempt" -le 8 ]; do
+              set +e
+              sudo -n docker exec -e NODE_OPTIONS="--max-old-space-size=512" "$app" node jobs/backfill-court-filings.mjs \
+                --family="$family" --window-days="$WINDOW_DAYS" --snapshot-date="$snap" \
+                --file="$file" --allow-anytime=true --fill-drafts=true
+              code=$?
+              set -e
+              if [ "$code" -eq 0 ]; then return 0; fi
+              if [ "$code" -ne 75 ]; then return "$code"; fi
+              echo "checkpoint saved; resuming ${family} (try ${attempt})"
+              attempt=$((attempt + 1))
+              sleep 15
+            done
+            return "$code"
+          }
+          run_family appeals
+          run_family district
+          REMOTE

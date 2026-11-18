@@ -16,6 +16,7 @@ if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) throw new Error("--snapshot-date 
 const filePath = args.get("file");
 if (!filePath) throw new Error("--file is required");
 const allowAnytime = args.get("allow-anytime") === "true";
+const fillDrafts = args.get("fill-drafts") === "true";
 const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
 
 const sql = postgres(env().DATABASE_URL, { max: 2, idle_timeout: 20 });
@@ -28,12 +29,13 @@ try {
     windowDays,
     today,
     allowAnytime,
+    fillDrafts,
     log: (event) => console.log(JSON.stringify({ filingBackfill: event })),
   });
   let storedFeeds = null;
   let recent = null;
   const bounds = recentFilingBounds(snapshotDate, today, windowDays);
-  if (checkpoint.stopped === "complete" && bounds) {
+  if (!fillDrafts && checkpoint.stopped === "complete" && bounds) {
     const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'courtlistener'`;
     if (!provider) throw new Error("courtlistener provider is missing");
     const gap = { providerId: provider.id, family: family as FilingFamily, today, windowDays };
