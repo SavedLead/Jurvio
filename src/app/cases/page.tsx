@@ -49,6 +49,19 @@ const listCachedPublicCaseCourts = unstable_cache(
   { revalidate: 300, tags: ["public-cases"] },
 );
 
+/** The bare /cases page. Served from this process for a minute so a Cloudflare miss does not recompute it. */
+const BROWSE_MEMORY_MS = 60_000;
+let browseMemory: {
+  at: number;
+  result: Awaited<ReturnType<typeof listCachedPublicCases>>;
+  courts: Awaited<ReturnType<typeof listCachedPublicCaseCourts>>;
+} | null = null;
+
+function isBareBrowse(filters: CaseListingFilters) {
+  return filters.page === 1 && filters.sort === "recent" && filters.density === "comfortable" && !filters.before
+    && !hasActiveFilters(filters) && !hasUserText(filters);
+}
+
 export async function generateMetadata({ searchParams }: { searchParams: Promise<CaseListingParams> }): Promise<Metadata> {
   const filters = parseCaseListingParams(await searchParams);
   const variant = hasActiveFilters(filters) || filters.density === "compact" || filters.sort !== (filters.query ? "best" : "recent");
@@ -105,16 +118,21 @@ function pageWindow(current: number, last: number) {
 
 export default async function CasesPage({ searchParams }: { searchParams: Promise<CaseListingParams> }) {
   const requested = parseCaseListingParams(await searchParams);
+  const bare = isBareBrowse(requested);
+  const remembered = bare && browseMemory && Date.now() - browseMemory.at < BROWSE_MEMORY_MS ? browseMemory : null;
   // Browsing traffic and crawlers reuse a five-minute snapshot. Searches containing
   // user-entered text stay live so free text never pollutes the shared cache.
-  const [result, courts] = await Promise.all([
-    // Paid subscribers' live text searches also include subscriber-only (sealed-style) records;
-    // the shared snapshot never does.
-    hasUserText(requested)
-      ? listPublicCases(db(), { ...toQueryOptions(requested), includeSubscriberOnly: await viewerHasSubscriberAccess() })
-      : listCachedPublicCases(toQueryOptions(requested)),
-    listCachedPublicCaseCourts(),
-  ]);
+  const [result, courts] = remembered
+    ? [remembered.result, remembered.courts]
+    : await Promise.all([
+      // Paid subscribers' live text searches also include subscriber-only (sealed-style) records;
+      // the shared snapshot never does.
+      hasUserText(requested)
+        ? listPublicCases(db(), { ...toQueryOptions(requested), includeSubscriberOnly: await viewerHasSubscriberAccess() })
+        : listCachedPublicCases(toQueryOptions(requested)),
+      listCachedPublicCaseCourts(),
+    ]);
+  if (bare && !remembered) browseMemory = { at: Date.now(), result, courts };
   const filters: CaseListingFilters = {
     ...requested,
     query: (await redactPublicText(db(), requested.query)).text ?? requested.query,
@@ -198,13 +216,11 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
             <div className={styles.filterGroup}>
               <label htmlFor="party">Party</label>
               <input id="party" name="party" type="search" defaultValue={filters.party ?? ""} placeholder="Find a party" autoComplete="off" />
-              <Link href="/parties">Browse all parties</Link>
             </div>
 
             <div className={styles.filterGroup}>
               <label htmlFor="firm">Law firm</label>
               <input id="firm" name="firm" type="search" defaultValue={filters.firm ?? ""} placeholder="Find a law firm" autoComplete="off" />
-              <p>Firms come from counsel appearances in the published record. <Link href="/law-firms">Browse law firms</Link></p>
             </div>
 
             <fieldset className={styles.filterGroup}>

@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import { env } from "@/lib/config/env";
-import { loadCourtListenerBulkDockets } from "@/modules/ingestion/application/bulk-docket-load";
+import { databaseConnectionDropped, loadCourtListenerBulkDockets } from "@/modules/ingestion/application/bulk-docket-load";
 
 function option(name: string): string | undefined {
   const equals = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -41,6 +41,15 @@ try {
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (result.stopped === "disk") process.exitCode = 2;
+} catch (error) {
+  if (!databaseConnectionDropped(error)) throw error;
+  // The chunk in flight was not checkpointed. The next run reads it again.
+  process.stdout.write(`${JSON.stringify({
+    bulkDockets: "connection_dropped",
+    resume: true,
+    message: error instanceof Error ? error.message : String(error),
+  })}\n`);
+  process.exitCode = 75;
 } finally {
-  await sql.end({ timeout: 5 });
+  await sql.end({ timeout: 5 }).catch(() => undefined);
 }

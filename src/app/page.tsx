@@ -8,11 +8,11 @@ import { BrandedCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 
 const browseItems = [
   ["Cases", "Search opinions, dockets, filings, and decisions", "/cases", "01"],
-  ["Parties", "Research the people and organizations named in litigation", "/parties", "02"],
-  ["Attorneys", "Find counsel, firms, appearances, and case history", "/attorneys", "03"],
-  ["Judges", "Explore judicial records, courts, and written opinions", "/judges", "04"],
-  ["Courts", "Browse jurisdictions and understand how they work", "/courts", "05"],
-  ["Dictionary", "Plain-English meanings of legal terms, procedure, and jurisdiction", "/explainers", "06"],
+  ["Attorneys", "Find counsel, firms, appearances, and case history", "/attorneys", "02"],
+  ["Judges", "Explore judicial records, courts, and written opinions", "/judges", "03"],
+  ["Courts", "Browse jurisdictions and understand how they work", "/courts", "04"],
+  ["Dictionary", "Plain-English meanings of legal terms, procedure, and jurisdiction", "/explainers", "05"],
+  ["Supreme Court", "Follow opinions and the term they belong to", "/supreme-court", "06"],
 ] as const;
 
 const startingPaths = [
@@ -25,8 +25,8 @@ const startingPaths = [
   {
     label: "Research a person or company",
     description: "Follow a name across verified cases, parties, attorneys, and connected records.",
-    href: "/parties",
-    action: "Explore parties",
+    href: "/cases",
+    action: "Search by party",
   },
   {
     label: "Understand a legal issue",
@@ -60,7 +60,7 @@ const activityItems = [
 const audienceItems = [
   ["Legal professionals", "Move from a fact pattern to relevant authority and the underlying record.", "/search"],
   ["Journalists", "Follow cases, parties, courts, and new developments without losing the source.", "/government-litigation"],
-  ["Business researchers", "Investigate companies, people, disputes, and connected litigation.", "/parties"],
+  ["Business researchers", "Investigate companies, people, disputes, and connected litigation.", "/cases"],
   ["The public", "Read court activity in clear language without removing the legal context.", "/explainers"],
 ] as const;
 

@@ -47,6 +47,8 @@ describe("published case totals stay off the full table", () => {
     expect(list).toContain("legal_case_published_recency_idx");
     expect(list).toContain("timezone('America/New_York', now())");
     expect(list).toContain("LIMIT ${pageSize}");
+    expect(list).toContain("WITH candidate AS");
+    expect(list).toContain("LIMIT ${recentPool}");
     expect(list).toContain("recentKeyset ? 0");
     const cursor = { on: "2026-11-09", caption: "Gomez v. Chestnut", id: "11111111-1111-4111-8111-111111111111" };
     expect(decodeCaseCursor(encodeCaseCursor(cursor))).toEqual(cursor);
