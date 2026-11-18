@@ -20,7 +20,7 @@ import { detailFromPacket, parseCaseDetail, renderDetailUpsert } from "../src/mo
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, MESSY_COMPARE_DOCKETS, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall, worstCaseBriefCost,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, parsePacketLine, prepareBrief, prepareTeaser, renderBriefCall, worstCaseBriefCost,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -155,7 +155,7 @@ async function complete(model: string, effort: string, system: string, user: str
 function readPackets(path: string): BriefPacketSource[] {
   const text = readFileSync(path, "utf8").trim();
   if (!text) return [];
-  return text.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line) as BriefPacketSource);
+  return text.split("\n").filter((line) => line.trim()).map((line) => parsePacketLine(line) as BriefPacketSource);
 }
 
 function readSpend(path: string): Spend {

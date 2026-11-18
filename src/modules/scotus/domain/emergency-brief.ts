@@ -645,6 +645,14 @@ export interface BriefOrder {
   docketNumber: string;
 }
 
+/** One exported packet line. Base64 so a quote in a docket line survives COPY text output. */
+export function parsePacketLine(line: string): unknown {
+  const trimmed = line.trim();
+  if (!trimmed) throw new Error("empty packet");
+  const json = trimmed.startsWith("{") ? trimmed : Buffer.from(trimmed, "base64").toString("utf8");
+  return JSON.parse(json);
+}
+
 /** Newest filing first, then backwards. */
 export function compareBriefOrder(a: BriefOrder, b: BriefOrder): number {
   const date = (row: BriefOrder) => (row.lastEntryOn ? Date.parse(row.lastEntryOn) : Number.NEGATIVE_INFINITY);
@@ -655,7 +663,7 @@ export function exportPacketsSql(): string {
   const version = safeToken(BRIEF_PROMPT_VERSION, "prompt version");
   const teaserVersion = safeToken(TEASER_PROMPT_VERSION, "teaser version");
   return `COPY (
-  SELECT regexp_replace(json_build_object(
+  SELECT encode(convert_to(regexp_replace(json_build_object(
     'docketNumber', a.docket_number,
     'caption', a.caption,
     'applicant', a.applicant,
@@ -690,7 +698,7 @@ export function exportPacketsSql(): string {
       FROM scotus_application_event e
       WHERE e.docket_number = a.docket_number
     )
-  )::text, E'[\\n\\r]+', ' ', 'g')
+  )::text, E'[\\n\\r]+', ' ', 'g'), 'UTF8'), 'base64')
   FROM scotus_application a
   LEFT JOIN legal_case c ON c.id = a.case_id
   LEFT JOIN scotus_application_brief b ON b.docket_number = a.docket_number
@@ -726,7 +734,7 @@ export function exportCompareSql(dockets: readonly string[] = []): string {
     : "a.kind <> 'extension'";
   const limit = safe.length > 0 ? "" : "\n  LIMIT 80";
   return `COPY (
-  SELECT regexp_replace(json_build_object(
+  SELECT encode(convert_to(regexp_replace(json_build_object(
     'docketNumber', a.docket_number,
     'caption', a.caption,
     'applicant', a.applicant,
@@ -755,7 +763,7 @@ export function exportCompareSql(dockets: readonly string[] = []): string {
       FROM scotus_application_event e
       WHERE e.docket_number = a.docket_number
     )
-  )::text, E'[\\n\\r]+', ' ', 'g')
+  )::text, E'[\\n\\r]+', ' ', 'g'), 'UTF8'), 'base64')
   FROM scotus_application a
   LEFT JOIN legal_case c ON c.id = a.case_id
   WHERE ${where}

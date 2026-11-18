@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MID_MODEL, TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
-  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml, inspectCaseJson,
+  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml, inspectCaseJson, parsePacketLine,
   FILING_CASE_CHAR_CAP, fitFilingsToCase, isSealedFilingText, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
 } from "./emergency-brief";
@@ -132,6 +132,10 @@ describe("emergency brief packets", () => {
     expect(sql).toContain("false");
     expect(exportPacketsSql()).toContain("a.last_entry_on DESC");
     expect(exportPacketsSql()).toContain("emergency-brief-v4");
+    expect(exportPacketsSql()).toContain("base64");
+    const quoted = { caption: 'Say "hello"', note: "a\\b" };
+    const encoded = Buffer.from(JSON.stringify(quoted), "utf8").toString("base64");
+    expect(parsePacketLine(encoded)).toEqual(quoted);
     const compareSql = exportCompareSql();
     expect(compareSql).toContain("kind <> 'extension'");
     expect(compareSql).not.toContain("scotus_application_brief");
