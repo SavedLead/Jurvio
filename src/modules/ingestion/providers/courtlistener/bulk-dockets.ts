@@ -33,10 +33,16 @@ export function bulkDocketContentHash(docket: CourtListenerBulkDocket): string {
   return createHash("sha256").update(JSON.stringify(docket)).digest("hex");
 }
 
-export async function* readBulkDockets(filePath: string) {
+export async function* readBulkDockets(
+  filePath: string,
+  options?: { skipRows?: number; maxFieldChars?: number },
+) {
   const source = openBulkCsv(filePath);
   try {
-    yield* parseBulkCsv(source.stream, courtListenerBulkDocketSchema);
+    yield* parseBulkCsv(source.stream, courtListenerBulkDocketSchema, {
+      skipRecords: options?.skipRows,
+      maxFieldChars: options?.maxFieldChars,
+    });
     await source.completion;
   } finally {
     source.close();

@@ -76,6 +76,20 @@ describe("CourtListener bulk CSV", () => {
     }
   });
 
+  it("skips a prefix without changing the rows that follow, including a quoted newline", async () => {
+    const csv = 'id,name\n1,"line\nstill one"\n2,two\n3,three\n';
+    const all = await collect(parseBulkCsvRecords(Readable.from(csv)));
+    const skipped = await collect(parseBulkCsvRecords(Readable.from(csv), { skipRecords: 2 }));
+    expect(all.rows.map((row) => row.id)).toEqual(["1", "2", "3"]);
+    expect(skipped.rows).toEqual(all.rows.slice(2));
+  });
+
+  it("stops retaining a field once it reaches the cap", async () => {
+    const csv = 'id,name\n1,"abcdef"\n';
+    const capped = await collect(parseBulkCsvRecords(Readable.from(csv), { maxFieldChars: 3 }));
+    expect(capped.rows[0]).toMatchObject({ id: "1", name: "abc" });
+  });
+
   it("keeps backslash escapes, toggled quotes and CRLF handling of the CourtListener dialect", async () => {
     const text = 'id,cluster_id,plain_text\r\n"1","2","a \\"quoted\\" \\\\ path, and\nnew line"\r\n3,4,"x""y"\n';
     const { rows, error } = await collect(parseBulkCsvRecords(Readable.from([text])));

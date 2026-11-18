@@ -13,6 +13,12 @@ type Sql = ReturnType<typeof postgres>;
 export type FilingFamily = "appeals" | "district";
 
 export const FILING_BACKFILL_BUDGET_MS = 90 * 60_000;
+/** A kill resumes at the last multiple of this many rows, not at the start of the file. */
+export const FILING_CHECKPOINT_ROWS = 500_000;
+/** Leave the host before the kernel OOM killer sends SIGKILL. */
+export const FILING_RSS_LIMIT_BYTES = 768 * 1024 * 1024;
+/** Docket columns this scan keeps. A longer cell is not retained. */
+export const FILING_MAX_FIELD_CHARS = 8_000;
 
 export function filingBackfillStreamName(family: FilingFamily, windowDays: number, snapshotDate: string): string {
   return `courtlistener:filing-backfill:v1:${family}:${windowDays}:${snapshotDate}`;
@@ -148,7 +154,7 @@ export function filingBackfillStop(input: {
 
 /** 75 asks the workflow to start the same command again from the checkpoint. */
 export function filingBackfillExitCode(stopped: string | null): 0 | 1 | 75 {
-  if (stopped === "budget" || stopped === "pace") return 75;
+  if (stopped === "budget" || stopped === "pace" || stopped === "memory") return 75;
   if (!stopped || stopped === "complete" || stopped === "quiet-window" || stopped === "quota") return 0;
   return 1;
 }
@@ -244,7 +250,7 @@ export async function backfillFilingWindow(options: FilingBackfillOptions): Prom
   `;
   const checkpoint = decodeFilingCheckpoint(stored?.cursor_value ?? null, options.snapshotDate, options.family, options.windowDays);
   if (checkpoint.stopped === "complete") return checkpoint;
-  let seen = 0;
+  let seen = checkpoint.rowsConsumed;
   let yieldedForLoad = false;
   let batch: BackfillRow[] = [];
   const flush = async () => {
@@ -266,24 +272,33 @@ export async function backfillFilingWindow(options: FilingBackfillOptions): Prom
       DO UPDATE SET cursor_value = EXCLUDED.cursor_value, updated_at = now()
     `;
   };
-  for await (const docket of readBulkDockets(options.filePath)) {
+  for await (const docket of readBulkDockets(options.filePath, {
+    skipRows: checkpoint.rowsConsumed,
+    maxFieldChars: FILING_MAX_FIELD_CHARS,
+  })) {
     seen += 1;
-    if (seen <= checkpoint.rowsConsumed) continue;
     checkpoint.rowsConsumed = seen;
     const row = selectBackfillRow(docket, options.family, options.today, options.windowDays);
     if (!row) checkpoint.skipped += 1;
     else batch.push(row);
     const elapsed = Date.now() - started;
     if (batch.length >= 200) await flush();
-    if (seen % 20_000 === 0) {
+    if (seen % FILING_CHECKPOINT_ROWS === 0) {
       await flush();
       await save(null);
       log({
         rows: seen,
+        checkpointRows: checkpoint.rowsConsumed,
         inserted: checkpoint.inserted,
         alreadyPresent: checkpoint.alreadyPresent,
         perHour: rowsPerHour(seen, elapsed),
       });
+      if (process.memoryUsage().rss >= FILING_RSS_LIMIT_BYTES) {
+        checkpoint.stopped = "memory";
+        await save(checkpoint.stopped);
+        log({ rows: seen, checkpointRows: checkpoint.rowsConsumed, stopped: "memory" });
+        return checkpoint;
+      }
       const floor = await checkBulkDiskFloor(options.diskPath ?? "/");
       const stop = filingBackfillStop({
         allowAnytime: options.allowAnytime === true,

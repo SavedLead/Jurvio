@@ -67,7 +67,9 @@ describe("filing window selection", () => {
     expect(filingBackfillExitCode("budget")).toBe(75);
     expect(filingBackfillExitCode("complete")).toBe(0);
     expect(filingBackfillExitCode("quota")).toBe(0);
+    expect(filingBackfillExitCode("memory")).toBe(75);
     expect(filingBackfillExitCode("disk")).toBe(1);
+    expect(filingBackfillExitCode(null)).toBe(0);
   });
 
   it("resumes a finished snapshot instead of reading the file again", () => {
