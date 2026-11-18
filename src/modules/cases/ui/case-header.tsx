@@ -1,5 +1,5 @@
 import { CaseNav } from "./case-nav";
-import { BrandedCaseCaption } from "./branded-case-caption";
+import { BrandedCaseCaption, CaseTypeBadges, publicCaseCaption } from "./branded-case-caption";
 import { caseCitationSuffix } from "@/modules/cases/domain/case-title";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 
@@ -32,13 +32,15 @@ export function CaseHeader({
   showNavigation = true,
 }: CaseHeaderProps) {
   const citationSuffix = caseCitationSuffix({ docketNumber, courtName, providerCourtId: courtCode, filedOn, decidedOn: decidedOn ?? null });
+  const visible = publicCaseCaption(caption).text;
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumb">
-        <a href="/cases">Cases</a><span aria-hidden="true">/</span><span aria-current="page">{shortCaption(caption)}</span>
+        <a href="/cases">Cases</a><span aria-hidden="true">/</span><span aria-current="page">{shortCaption(visible)}</span>
       </nav>
       <header className="caseHeader">
         <p className="eyebrow">{courtName}</p>
+        <CaseTypeBadges caption={caption} />
         <h1><BrandedCaseCaption caption={caption} /><span className="caseTitleCitation">{citationSuffix}</span></h1>
         <dl className="caseMeta" aria-label="Case details">
           <div><dt>Docket</dt><dd>{docketNumber}</dd></div>

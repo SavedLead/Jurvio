@@ -6,7 +6,7 @@ import { db } from "@/db/client";
 import { loadCaseForViewer } from "@/app/case/load-public-case";
 import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import { listPublicDocuments } from "@/modules/cases/application/list-public-case-sections";
-import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { publicCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import {
   officialOpinionNotice,
   opinionTextIsPending,
@@ -34,7 +34,7 @@ export async function generateMetadata({ params }: DocumentsPageProps): Promise<
   const loaded = await load(params);
   if (!loaded) return { title: "Documents not found" };
   if (loaded.gated) return subscriberGateMetadata();
-  const caption = cleanCaseCaption(loaded.legalCase.caption);
+  const caption = publicCaseCaption(loaded.legalCase.caption).text;
   return {
     title: [caption, "Documents", loaded.legalCase.docketNumber, loaded.legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified court documents currently available for ${caption}, docket ${loaded.legalCase.docketNumber}.`,

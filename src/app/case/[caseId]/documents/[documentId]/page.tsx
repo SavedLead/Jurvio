@@ -7,7 +7,7 @@ import { db } from "@/db/client";
 import { getPublicOpinion } from "@/modules/cases/application/get-public-opinion";
 import { viewerHasSubscriberAccess } from "@/modules/accounts/http/viewer";
 import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
-import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { BrandedCaseCaption, publicCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { OpinionReaderTools } from "@/modules/cases/ui/opinion-reader-tools";
 import { recordDemandEvent } from "@/modules/demand/application/record-demand-event";
 import { distinguishReportersNote } from "@/modules/legal-context/domain/legal-context";
@@ -48,7 +48,7 @@ export async function generateMetadata({ params }: OpinionPageProps): Promise<Me
   const opinion = await load(params);
   if (!opinion) return { title: "Opinion not found" };
   if (opinion === "gated") return subscriberGateMetadata();
-  const caption = cleanCaseCaption(opinion.caseCaption);
+  const caption = publicCaseCaption(opinion.caseCaption).text;
   const title = [
     caption,
     "Judicial Opinion",
@@ -76,7 +76,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
     return <SubscriberCaseGate path={`/case/${caseId}/documents/${documentId}`} />;
   }
 
-  const caption = cleanCaseCaption(opinion.caseCaption);
+  const caption = publicCaseCaption(opinion.caseCaption).text;
   const canonicalPath = `/case/${opinion.casePublicId}/documents/${opinion.documentPublicId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
   const officialCitation = opinion.officialCitation;
@@ -185,7 +185,7 @@ export default async function OpinionPage({ params }: OpinionPageProps) {
               <section className="citationRail">
                 <h2>Cases cited <span className="citationCount">{citationSummary.cases.toLocaleString("en-US")}</span></h2>
                 <p>{citationCountLine(citationSummary.cases, citationSummary.onJurvio)}</p>
-                {outgoingTargets.length ? <ul>{[...new Map(outgoingTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{cleanCaseCaption(target.caption)}</Link></li>)}</ul> : null}
+                {outgoingTargets.length ? <ul>{[...new Map(outgoingTargets.map(target => [target.casePublicId,target])).values()].map(target => <li key={target.citationKey}><Link href={`/case/${target.casePublicId}`}>{publicCaseCaption(target.caption).text}</Link></li>)}</ul> : null}
                 {citationSummary.notYetOnJurvio.length ? (
                   <details className="citationPendingList">
                     <summary>Not yet on Jurvio ({citationSummary.notYetOnJurvio.length})</summary>

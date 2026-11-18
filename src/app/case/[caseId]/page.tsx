@@ -23,7 +23,7 @@ import {
 } from "@/modules/cases/domain/opinion-availability";
 import { robotsFor } from "@/lib/seo/indexing";
 import { casePageIndexable } from "@/modules/cases/application/get-public-case";
-import { BrandedCaseCaption, cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { BrandedCaseCaption, publicCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseRecordFacts } from "@/modules/cases/ui/case-record-facts";
 import { ALLEGATION_NOTE, DOCKET_FEED_NOTE } from "@/modules/cases/domain/docket-classification";
@@ -98,7 +98,7 @@ export async function generateMetadata({ params }: CasePageProps): Promise<Metad
   if (!loaded) return { title: "Case not found" };
   if (loaded.gated) return subscriberGateMetadata();
   const legalCase = loaded.legalCase;
-  const caption = cleanCaseCaption(legalCase.caption);
+  const caption = publicCaseCaption(legalCase.caption).text;
   // "United States v. Olsen, No. 1:26-cr-00123 (E.D. Cal. 2026)"; judge, type and status go in the description.
   const title = buildCaseTitle({
     caption,
@@ -224,7 +224,7 @@ export default async function CasePage({ params }: CasePageProps) {
     .filter((event, index, events) => events.findIndex((candidate) => candidate.date === event.date && candidate.label === event.label) === index)
     .sort((left, right) => left.date.localeCompare(right.date));
   const availableDocumentTypes = [...new Set(documents.map((document) => publicDocumentType(document.documentType)))];
-  const caption = cleanCaseCaption(legalCase.caption);
+  const caption = publicCaseCaption(legalCase.caption).text;
   const canonicalPath = `/case/${caseId}`;
   const permanentUrl = `https://jurvio.com${canonicalPath}`;
   const latestEvent = timelineEvents.at(-1) ?? null;
@@ -565,7 +565,7 @@ export default async function CasePage({ params }: CasePageProps) {
         <div className="cdHead" id="top" tabIndex={-1}>
           <CaseHeader
             caseId={caseId}
-            caption={caption}
+            caption={legalCase.caption}
             courtName={legalCase.courtName}
             docketNumber={legalCase.docketNumber}
             filedOn={legalCase.filedOn}

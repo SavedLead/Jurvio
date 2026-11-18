@@ -6,7 +6,7 @@ import { db } from "@/db/client";
 import { loadCaseForViewer } from "@/app/case/load-public-case";
 import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import { countPublicDocketEntries, countPublicOrderEntries, docketPageWindow, listPublicDocketEntries, listPublicOrderEntries, listPublicParties } from "@/modules/cases/application/list-public-case-sections";
-import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { publicCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CaseHeader } from "@/modules/cases/ui/case-header";
 import { CaseRecordFacts } from "@/modules/cases/ui/case-record-facts";
 import { DocketEntriesSection } from "@/modules/cases/ui/docket-entries-section";
@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: SectionPageProps): Promise<Me
   if (access.status === "missing") return { title: "Timeline not found" };
   if (access.status === "gated") return subscriberGateMetadata();
   const legalCase = access.legalCase;
-  const caption = cleanCaseCaption(legalCase.caption);
+  const caption = publicCaseCaption(legalCase.caption).text;
   return {
     title: [caption, "Timeline", legalCase.docketNumber, legalCase.courtName].filter(Boolean).join(" | "),
     description: `Verified case timeline events currently available for ${caption}, docket ${legalCase.docketNumber}.`,

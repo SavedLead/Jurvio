@@ -7,7 +7,7 @@ import { db } from "@/db/client";
 import { loadCaseForViewer } from "@/app/case/load-public-case";
 import { SubscriberCaseGate, subscriberGateMetadata } from "@/modules/accounts/ui/subscriber-gate";
 import { listPublicDocketEntries } from "@/modules/cases/application/list-public-case-sections";
-import { cleanCaseCaption } from "@/modules/cases/ui/branded-case-caption";
+import { publicCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 import { PublicCaseTools } from "@/modules/cases/ui/public-case-tools";
 import { readKeyDatesAhead } from "@/modules/case-intelligence/domain/key-dates";
@@ -27,7 +27,7 @@ export async function generateMetadata({ params }: { params: Promise<{ caseId: s
   const access = await loadCaseForViewer(caseId);
   if (access.status === "missing") return { title: "Case not found" };
   if (access.status === "gated") return subscriberGateMetadata();
-  const caption = cleanCaseCaption(access.legalCase.caption);
+  const caption = publicCaseCaption(access.legalCase.caption).text;
   return {
     title: { absolute: `${caption}: one-page summary | Jurvio` },
     description: `A one-page summary of ${caption} (${access.legalCase.courtName}, No. ${access.legalCase.docketNumber}) from the court record, with sources.`,
@@ -59,7 +59,7 @@ export default async function CaseSummaryPage({ params }: { params: Promise<{ ca
   if (access.status === "missing") notFound();
   if (access.status === "gated") return <SubscriberCaseGate path={`/case/${caseId}/summary`} />;
   const legalCase = access.legalCase;
-  const caption = cleanCaseCaption(legalCase.caption);
+  const caption = publicCaseCaption(legalCase.caption).text;
   const entries = await listPublicDocketEntries(db(), caseId, 250).catch(() => []);
   const today = todayInNewYork();
   const keyDates = readKeyDatesAhead(entries.map((entry) => ({ publicId: entry.publicId, entryNumber: entry.entryNumber, filedOn: entry.filedOn, description: entry.description })), today, 4, legalCase.terminatedOn ?? legalCase.decidedOn ?? null);

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { highlightSegments } from "@/modules/cases/domain/case-listing";
+import { splitCaseTypePrefix, type CaseTypePrefix } from "@/modules/cases/domain/case-type-prefix";
 import { cleanCaptionText } from "@/modules/cases/domain/case-title";
 
 interface BrandedCaseCaptionProps {
@@ -16,6 +17,18 @@ export function cleanCaseCaption(caption: string) {
   cleaned = cleaned.replace(malformedGovernmentCaptionPrefix, "");
   while (revisionSuffix.test(cleaned)) cleaned = cleaned.replace(revisionSuffix, "").trim();
   return cleaned;
+}
+
+/** Visible title. The stored caption, including any court prefix, is unchanged. */
+export function publicCaseCaption(caption: string): { text: string; types: CaseTypePrefix[] } {
+  const split = splitCaseTypePrefix(cleanCaseCaption(caption));
+  return { text: split.caption, types: split.types };
+}
+
+export function CaseTypeBadges({ caption, className = "caseTypeBadge" }: { caption: string; className?: string }): ReactNode {
+  const { types } = publicCaseCaption(caption);
+  if (!types.length) return null;
+  return types.map((type) => <span className={className} key={type.code}>{type.label}</span>);
 }
 
 export function splitAdversarialCaseCaption(caption: string): [string, string] | null {
@@ -38,7 +51,7 @@ export function HighlightedText({ text, highlight }: { text: string; highlight?:
 }
 
 export function BrandedCaseCaption({ caption, highlight }: BrandedCaseCaptionProps): ReactNode {
-  const cleaned = cleanCaseCaption(caption);
+  const cleaned = publicCaseCaption(caption).text;
   const parties = splitAdversarialCaseCaption(cleaned);
   if (!parties) return <HighlightedText text={cleaned} highlight={highlight} />;
 
