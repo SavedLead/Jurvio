@@ -8,8 +8,7 @@ import { usePathname } from "next/navigation";
 // section stays marked as current on its detail pages.
 const SECTION_PREFIXES: Readonly<Record<string, readonly string[]>> = {
   "/cases": ["/cases", "/case"],
-  "/attorneys": ["/attorneys", "/us-attorneys", "/law-firms"],
-  "/judges": ["/judges", "/courts"],
+  "/judges": ["/judges", "/courts", "/us-attorneys"],
   "/supreme-court": ["/supreme-court", "/scotus"],
 };
 

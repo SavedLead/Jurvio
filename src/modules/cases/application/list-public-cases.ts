@@ -348,6 +348,23 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
         ? sql`legal_case.caption, legal_case.id`
         : sql`COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST, legal_case.caption, legal_case.id`;
 
+  const listingColumns = sql`
+    legal_case.id::text AS id,
+    legal_case.public_id AS "publicId",
+    legal_case.caption,
+    legal_case.docket_number AS "docketNumber",
+    legal_case.filed_on::text AS "filedOn",
+    legal_case.decided_on::text AS "decidedOn",
+    legal_case.supreme_court_term AS "supremeCourtTerm",
+    legal_case.official_citation AS "officialCitation",
+    court.name AS "courtName",
+    legal_case.verification::text AS verification,
+    ${publicDocumentExists} AS "hasPublicDocument"
+  `;
+  // Newest-first with no other filter: take a short slice of the recency index,
+  // then apply displayable and sealed checks only to that slice. Walking those
+  // checks across every published case is what made a cold /cases take ~10s.
+  const recentPool = pageSize * 8;
   const [totals, rows] = await Promise.all([
     narrowing
       ? sql<Array<{ total: number }>>`
@@ -357,24 +374,47 @@ export async function listPublicCases(sql: Sql, options: ListPublicCasesOptions)
           WHERE ${where}
         `
       : readCachedPublishedTotal(sql).then((total) => [{ total }]),
-    sql<PublicCaseRow[]>`
-      SELECT legal_case.id::text AS id,
-        legal_case.public_id AS "publicId",
-        legal_case.caption,
-        legal_case.docket_number AS "docketNumber",
-        legal_case.filed_on::text AS "filedOn",
-        legal_case.decided_on::text AS "decidedOn",
-        legal_case.supreme_court_term AS "supremeCourtTerm",
-        legal_case.official_citation AS "officialCitation",
-        court.name AS "courtName",
-        legal_case.verification::text AS verification,
-        ${publicDocumentExists} AS "hasPublicDocument"
-      FROM legal_case
-      JOIN court ON court.id = legal_case.court_id
-      WHERE ${where}
-      ORDER BY ${ordering}
-      LIMIT ${pageSize} OFFSET ${offset}
-    `,
+    recentKeyset
+      ? sql<PublicCaseRow[]>`
+          WITH candidate AS (
+            SELECT legal_case.id
+            FROM legal_case
+            WHERE legal_case.publication = 'published'
+              AND (
+                COALESCE(legal_case.decided_on, legal_case.filed_on) IS NULL
+                OR COALESCE(legal_case.decided_on, legal_case.filed_on) <= (timezone('America/New_York', now()))::date
+              )
+              ${before ? sql`AND (
+                (${before.on}::date IS NOT NULL AND COALESCE(legal_case.decided_on, legal_case.filed_on) < ${before.on}::date)
+                OR (
+                  COALESCE(legal_case.decided_on, legal_case.filed_on) IS NOT DISTINCT FROM ${before.on}::date
+                  AND (
+                    legal_case.caption > ${before.caption}
+                    OR (legal_case.caption = ${before.caption} AND legal_case.id > ${before.id}::uuid)
+                  )
+                )
+                OR (${before.on}::date IS NOT NULL AND COALESCE(legal_case.decided_on, legal_case.filed_on) IS NULL)
+              )` : sql``}
+            ORDER BY COALESCE(legal_case.decided_on, legal_case.filed_on) DESC NULLS LAST, legal_case.caption, legal_case.id
+            LIMIT ${recentPool}
+          )
+          SELECT ${listingColumns}
+          FROM candidate
+          JOIN legal_case ON legal_case.id = candidate.id
+          JOIN court ON court.id = legal_case.court_id
+          WHERE ${sql.unsafe(latestPublicationColumnSql("displayable", "legal_case", "legal_case.id"))}
+            AND NOT ${sql.unsafe(searchExcludedCaseSql("legal_case"))}
+          ORDER BY ${ordering}
+          LIMIT ${pageSize}
+        `
+      : sql<PublicCaseRow[]>`
+          SELECT ${listingColumns}
+          FROM legal_case
+          JOIN court ON court.id = legal_case.court_id
+          WHERE ${where}
+          ORDER BY ${ordering}
+          LIMIT ${pageSize} OFFSET ${offset}
+        `,
   ]);
 
   const details = rows.length ? await listPublicCaseDetails(sql, rows.map((row) => row.id)) : new Map<string, PublicCaseDetailRow>();
@@ -443,11 +483,7 @@ async function listPublicCaseDetails(sql: Sql, caseIds: string[]) {
           WHERE assignment.case_id = legal_case.id
             AND assignment.assignment_role = 'opinion_author'
             AND judge.verification = 'verified'
-            AND COALESCE((
-              SELECT decision.displayable FROM publication_decision decision
-              WHERE decision.object_type = 'judge' AND decision.object_id = judge.id
-              ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-            ), false)
+        AND ${sql.unsafe(latestPublicationColumnSql("displayable", "judge", "judge.id"))}
         ) judge
       ) AS "authorJudges"
     FROM legal_case
@@ -458,11 +494,7 @@ async function listPublicCaseDetails(sql: Sql, caseIds: string[]) {
       FROM docket_entry entry
       WHERE entry.case_id = legal_case.id
         AND entry.filed_on IS NOT NULL
-        AND COALESCE((
-          SELECT decision.displayable FROM publication_decision decision
-          WHERE decision.object_type = 'docket_entry' AND decision.object_id = entry.id
-          ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-        ), false)
+        AND ${sql.unsafe(latestPublicationColumnSql("displayable", "docket_entry", "entry.id"))}
       ORDER BY entry.filed_on DESC, entry.entry_number DESC NULLS LAST
       LIMIT 1
     ) latest_entry ON true
@@ -474,11 +506,7 @@ async function listPublicCaseDetails(sql: Sql, caseIds: string[]) {
       WHERE document.case_id = legal_case.id
         AND document.publication = 'published'
         AND (judicial.opinion_type IS NOT NULL OR document.document_type LIKE '%opinion%')
-        AND COALESCE((
-          SELECT decision.displayable FROM publication_decision decision
-          WHERE decision.object_type = 'document' AND decision.object_id = document.id
-          ORDER BY decision.decided_at DESC, decision.id DESC LIMIT 1
-        ), false)
+        AND ${sql.unsafe(latestPublicationColumnSql("displayable", "document", "document.id"))}
       ORDER BY document.filed_on DESC NULLS LAST, document.title
       LIMIT 1
     ) primary_opinion ON true
