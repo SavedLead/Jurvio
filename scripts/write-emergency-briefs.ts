@@ -20,7 +20,7 @@ import { detailFromPacket, parseCaseDetail, renderDetailUpsert } from "../src/mo
 import {
   BACKLOG_CASES, BRIEF_PROMPT_VERSION, MESSY_COMPARE_DOCKETS, TEASER_MODEL, TEASER_PROMPT_VERSION, TOP_MODEL, MID_MODEL, RULE_MODEL_ID,
   acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, costUsd, estimatedCost,
-  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, prepareBrief, prepareTeaser, renderBriefCall, worstCaseBriefCost,
+  exportCompareSql, exportPacketsSql, filingBacklogCost, needsModel, parseDescription, readPacketLines, prepareBrief, prepareTeaser, renderBriefCall, worstCaseBriefCost,
   renderBriefUpsert, renderTeaserUpsert, spentSql,
   type BriefPacketSource, type FilingExcerpt, type Spend, type StoredBrief,
 } from "../src/modules/scotus/domain/emergency-brief";
@@ -153,10 +153,16 @@ async function complete(model: string, effort: string, system: string, user: str
 }
 
 function readPackets(path: string): BriefPacketSource[] {
-  const text = readFileSync(path, "utf8").trim();
-  if (!text) return [];
-  return text.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line) as BriefPacketSource);
+  const text = readFileSync(path, "utf8");
+  const { packets, skippedLines } = readPacketLines(text);
+  skippedPacketLines = skippedLines;
+  if (skippedLines.length && packets.length === 0) {
+    throw new Error(`Every packet line was invalid (${skippedLines.length} skipped).`);
+  }
+  return packets as BriefPacketSource[];
 }
+
+let skippedPacketLines: number[] = [];
 
 function readSpend(path: string): Spend {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Spend>;
@@ -323,6 +329,7 @@ async function main() {
   writeFileSync(outSql, statements.length ? `${statements.join("\n")}\n` : "-- nothing to write\n");
   const summary = {
     candidates: packets.length,
+    skippedPacketLines: skippedPacketLines.length,
     stored: stored.length,
     templates,
     teasers,
