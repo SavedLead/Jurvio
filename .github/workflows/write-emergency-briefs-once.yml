@@ -105,6 +105,7 @@ jobs:
           source "$HOME/vpc-ssh.sh"
           work="$RUNNER_TEMP/emergency-briefs"
           mkdir -p "$work"
+          echo "apply and dry ignore selection=${SELECTION:-unset} and any docket list. Every stored application is exported, newest first."
           pnpm exec tsx scripts/write-emergency-briefs.ts export-sql > "$work/export.sql"
           pnpm exec tsx scripts/write-emergency-briefs.ts spent-sql > "$work/spent.sql"
           vpc_ssh "$INGESTION_USER@$DB_HOST" 'pg="$(sudo -n docker ps --filter label=com.docker.compose.project=jurvio --filter label=com.docker.compose.service=postgres --format "{{.ID}}" | head -n1)"; [ -n "$pg" ] || { echo "::error::postgres missing"; exit 1; }; sudo -n docker exec -i "$pg" psql -U jurvio -d jurvio -v ON_ERROR_STOP=1 -At' < "$work/spent.sql" > "$work/spent.txt"

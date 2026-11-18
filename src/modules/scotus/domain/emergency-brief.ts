@@ -645,12 +645,29 @@ export interface BriefOrder {
   docketNumber: string;
 }
 
-/** One exported packet line. Base64 so a quote in a docket line survives COPY text output. */
+/** One exported packet line, produced by to_jsonb so quotes stay escaped. */
 export function parsePacketLine(line: string): unknown {
   const trimmed = line.trim();
   if (!trimmed) throw new Error("empty packet");
-  const json = trimmed.startsWith("{") ? trimmed : Buffer.from(trimmed, "base64").toString("utf8");
-  return JSON.parse(json);
+  return JSON.parse(trimmed);
+}
+
+/** Valid lines become packets. A bad line is logged and skipped. */
+export function readPacketLines(text: string): { packets: unknown[]; skippedLines: number[] } {
+  const packets: unknown[] = [];
+  const skippedLines: number[] = [];
+  text.split("\n").forEach((line, index) => {
+    if (!line.trim()) return;
+    try {
+      packets.push(parsePacketLine(line));
+    } catch (error) {
+      const lineNumber = index + 1;
+      skippedLines.push(lineNumber);
+      const message = error instanceof Error ? error.message : "invalid JSON";
+      console.error(`Skipping packet line ${lineNumber}: ${message}`);
+    }
+  });
+  return { packets, skippedLines };
 }
 
 /** Newest filing first, then backwards. */
@@ -662,8 +679,7 @@ export function compareBriefOrder(a: BriefOrder, b: BriefOrder): number {
 export function exportPacketsSql(): string {
   const version = safeToken(BRIEF_PROMPT_VERSION, "prompt version");
   const teaserVersion = safeToken(TEASER_PROMPT_VERSION, "teaser version");
-  return `COPY (
-  SELECT encode(convert_to(regexp_replace(json_build_object(
+  return `SELECT regexp_replace((to_jsonb(json_build_object(
     'docketNumber', a.docket_number,
     'caption', a.caption,
     'applicant', a.applicant,
@@ -698,7 +714,7 @@ export function exportPacketsSql(): string {
       FROM scotus_application_event e
       WHERE e.docket_number = a.docket_number
     )
-  )::text, E'[\\n\\r]+', ' ', 'g'), 'UTF8'), 'base64')
+  )))::text, E'[\\n\\r]+', ' ', 'g')
   FROM scotus_application a
   LEFT JOIN legal_case c ON c.id = a.case_id
   LEFT JOIN scotus_application_brief b ON b.docket_number = a.docket_number
@@ -714,7 +730,7 @@ export function exportPacketsSql(): string {
        AND (t.docket_number IS NULL OR t.prompt_version IS DISTINCT FROM '${teaserVersion}')
      )
   ORDER BY a.last_entry_on DESC NULLS LAST, a.docket_number DESC
-) TO STDOUT;
+;
 `;
 }
 
@@ -733,8 +749,7 @@ export function exportCompareSql(dockets: readonly string[] = []): string {
     ? `a.docket_number IN (${safe.map((docket) => `'${docket}'`).join(", ")})`
     : "a.kind <> 'extension'";
   const limit = safe.length > 0 ? "" : "\n  LIMIT 80";
-  return `COPY (
-  SELECT encode(convert_to(regexp_replace(json_build_object(
+  return `SELECT regexp_replace((to_jsonb(json_build_object(
     'docketNumber', a.docket_number,
     'caption', a.caption,
     'applicant', a.applicant,
@@ -763,12 +778,12 @@ export function exportCompareSql(dockets: readonly string[] = []): string {
       FROM scotus_application_event e
       WHERE e.docket_number = a.docket_number
     )
-  )::text, E'[\\n\\r]+', ' ', 'g'), 'UTF8'), 'base64')
+  )))::text, E'[\\n\\r]+', ' ', 'g')
   FROM scotus_application a
   LEFT JOIN legal_case c ON c.id = a.case_id
   WHERE ${where}
   ORDER BY a.last_entry_on DESC NULLS LAST, a.docket_number DESC${limit}
-) TO STDOUT;
+;
 `;
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MID_MODEL, TOP_MODEL, acceptDescription, addSpend, budgetCaps, canSpend, chooseDescriptionLane, compareBriefOrder,
-  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml, inspectCaseJson, parsePacketLine,
+  acceptFilingExcerpt, costUsd, exportCompareSql, exportPacketsSql, filingBacklogCost, filingLinksFromCaseJson, filingLinksFromDocketHtml, inspectCaseJson, parsePacketLine, readPacketLines,
   FILING_CASE_CHAR_CAP, fitFilingsToCase, isSealedFilingText, needsModel, prepareBrief, renderBriefUpsert, routineSummary, teaserPreview,
   type BriefPacketSource, type Spend,
 } from "./emergency-brief";
@@ -132,10 +132,14 @@ describe("emergency brief packets", () => {
     expect(sql).toContain("false");
     expect(exportPacketsSql()).toContain("a.last_entry_on DESC");
     expect(exportPacketsSql()).toContain("emergency-brief-v4");
-    expect(exportPacketsSql()).toContain("base64");
-    const quoted = { caption: 'Say "hello"', note: "a\\b" };
-    const encoded = Buffer.from(JSON.stringify(quoted), "utf8").toString("base64");
-    expect(parsePacketLine(encoded)).toEqual(quoted);
+    expect(exportPacketsSql()).toContain("to_jsonb");
+    expect(exportPacketsSql()).not.toContain("COPY");
+    expect(exportPacketsSql()).not.toContain("24A884");
+    const quoted = '{"caption":"Say \\"hello\\""}';
+    expect(parsePacketLine(quoted)).toEqual({ caption: 'Say "hello"' });
+    const read = readPacketLines(`${quoted}\nnot json\n{"docketNumber":"26A1"}\n`);
+    expect(read.packets).toHaveLength(2);
+    expect(read.skippedLines).toEqual([2]);
     const compareSql = exportCompareSql();
     expect(compareSql).toContain("kind <> 'extension'");
     expect(compareSql).not.toContain("scotus_application_brief");
