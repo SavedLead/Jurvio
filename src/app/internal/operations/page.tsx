@@ -101,9 +101,9 @@ export default async function InternalOperationsPage() {
             <div><dt>PostgreSQL footprint</dt><dd>{formatByteCount(dashboard.storage.databaseBytes)}</dd></div>
             <div><dt>Recorded source payload</dt><dd>{formatByteCount(dashboard.storage.rawArtifactBytesRecorded)}</dd></div>
             <div><dt>Extracted opinion words</dt><dd>{count(dashboard.storage.documentWords)}</dd></div>
-            <div><dt>LLM ingestion spend</dt><dd>$0 by design</dd></div>
+            <div><dt>Ingestion spend outside the database</dt><dd>$0 by design</dd></div>
           </dl>
-          <p className={styles.explanation}>The database footprint is measured directly. Recorded source payload includes only artifacts whose provider metadata contains a content length. Jurvio’s current ingestion path is deterministic and does not call an LLM.</p>
+          <p className={styles.explanation}>The database footprint is measured directly. Recorded source payload includes only artifacts whose provider metadata contains a content length. Jurvio’s current ingestion path is deterministic.</p>
         </section>
       </div>
 

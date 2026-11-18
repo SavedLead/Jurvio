@@ -45,6 +45,10 @@ if (command === "messy-dockets") {
   process.stdout.write(MESSY_COMPARE_DOCKETS.join(","));
   process.exit(0);
 }
+if (command === "write" || args.includes("--out-sql")) {
+  console.error("Refusing to publish descriptions. Nothing was stored and no model was called.");
+  process.exit(1);
+}
 if (command === "compare") {
   try {
     await runCompare();

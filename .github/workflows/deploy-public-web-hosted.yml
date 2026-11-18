@@ -521,6 +521,34 @@ jobs:
           source "$RUNNER_TEMP/gh-api.sh"
           status_note "1.6/2.6 live gate passed. $summary Indexing is $INDEXING_STATUS."
 
+      - name: Purge the five emergency pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ZONE_ID:-}" ]; then
+            echo "::error::Cloudflare purge secrets are empty."
+            exit 1
+          fi
+          payload="$(jq -n '{files: [
+            "https://jurvio.com/supreme-court/emergency/24A884",
+            "https://jurvio.com/supreme-court/emergency/25A326",
+            "https://jurvio.com/supreme-court/emergency/26A406",
+            "https://jurvio.com/supreme-court/emergency/26A416",
+            "https://jurvio.com/supreme-court/emergency/26A274",
+            "https://jurvio.com/llms.txt"
+          ]}')"
+          code="$(curl -sS -o "$RUNNER_TEMP/cf-purge.json" -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/purge_cache" \
+            --data "$payload")"
+          success="$(jq -r '.success' "$RUNNER_TEMP/cf-purge.json")"
+          echo "purge_http ${code} success ${success}"
+          test "$code" = "200"
+          test "$success" = "true"
+
       - name: Remove temporary SSH access
         if: always()
         run: |

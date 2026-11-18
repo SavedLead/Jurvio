@@ -167,7 +167,7 @@ const SYSTEM = [
   "Never invent a party, date, lower-court action, argument, vote, or outcome.",
   "If the record does not say something, write \"The public docket does not say.\"",
   "Do not guess what withheld lines say, and do not mention sealed, restricted, juvenile, or grand-jury material.",
-  "The page will label this text AI-generated. It is not a court opinion.",
+  "It is not a court opinion. Do not describe how the text was produced.",
   "Return JSON only, with one key: {\"description\":\"...\"}.",
 ].join(" ");
 

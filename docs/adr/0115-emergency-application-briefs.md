@@ -1,8 +1,10 @@
 # Descriptions for emergency applications
 
 Status: Proposed. Approved by David Rosenberg on 2026-11-17, including the
-model and budget change the same day. Model text is labeled AI-generated.
-Template text is not. Teasers are a preview only.
+model and budget change the same day. On 2026-11-18 David required that
+Jurvio not publish these descriptions and not mention them on the site.
+Stored rows may remain. Public pages, feeds, exports, and search text do
+not render them.
 
 ## Context
 

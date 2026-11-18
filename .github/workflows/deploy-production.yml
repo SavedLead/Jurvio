@@ -535,6 +535,12 @@ jobs:
             "https://jurvio.com/feeds/scotus",
             "https://jurvio.com/feeds/scotus/emergency",
             "https://jurvio.com/feeds/scotus/administration",
+            "https://jurvio.com/supreme-court/emergency/24A884",
+            "https://jurvio.com/supreme-court/emergency/25A326",
+            "https://jurvio.com/supreme-court/emergency/26A406",
+            "https://jurvio.com/supreme-court/emergency/26A416",
+            "https://jurvio.com/supreme-court/emergency/26A274",
+            "https://jurvio.com/llms.txt",
           ];
           const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zone)}/purge_cache`, {
             method: "POST",
