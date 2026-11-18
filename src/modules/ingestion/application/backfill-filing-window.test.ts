@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   decodeFilingCheckpoint,
   dedupeFilingRows,
+  filingBackfillStreamName,
+  filingFillStreamName,
   filingBackfillExitCode,
   filingBackfillStop,
   filingDateInWindow,
@@ -71,6 +74,41 @@ describe("filing window selection", () => {
     expect(filingBackfillExitCode("memory")).toBe(75);
     expect(filingBackfillExitCode("disk")).toBe(1);
     expect(filingBackfillExitCode(null)).toBe(0);
+  });
+
+  it("keeps nature of suit and cause, and the longer copy when a batch repeats a docket", () => {
+    const today = "2026-11-17";
+    const brief = selectBackfillRow(docket({
+      court_id: "nysd", docket_number: "1:26-cv-00001", case_name: "Short v. Name",
+      date_filed: "2026-10-02", nature_of_suit: "530", cause: "",
+    }), "district", today, 365);
+    const fuller = selectBackfillRow(docket({
+      court_id: "nysd", docket_number: "1:26-cv-00001", case_name: "Short v. Name",
+      date_filed: "2026-10-02", nature_of_suit: "", cause: "28:2254 Petition for Writ of Habeas Corpus",
+    }), "district", today, 365);
+    expect(brief?.natureOfSuit).toBe("530");
+    expect(brief?.causeOfAction).toBeNull();
+    const [row] = dedupeFilingRows([brief!, fuller!]);
+    expect(row).toMatchObject({
+      natureOfSuit: "530",
+      causeOfAction: "28:2254 Petition for Writ of Habeas Corpus",
+    });
+  });
+
+  it("copies nature of suit and cause onto drafts without inserting or touching updated_at", () => {
+    const source = readFileSync(new URL("./backfill-filing-window.ts", import.meta.url), "utf8");
+    expect(source).toContain("nature_of_suit_code = COALESCE(legal_case.nature_of_suit_code, targets.nature_of_suit)");
+    expect(source).toContain("cause_of_action = COALESCE(legal_case.cause_of_action, targets.cause)");
+    expect(source).toContain("updated_at = legal_case.updated_at");
+    expect(source).toContain("${fillDrafts}::boolean = false");
+    expect(source).toContain("legal_case.publication = 'draft'");
+  });
+
+  it("uses a separate checkpoint for the draft-field fill", () => {
+    expect(filingFillStreamName("district", 365, "2026-09-30"))
+      .toBe("courtlistener:filing-draft-fill:v1:district:365:2026-09-30");
+    expect(filingFillStreamName("district", 365, "2026-09-30"))
+      .not.toBe(filingBackfillStreamName("district", 365, "2026-09-30"));
   });
 
   it("collapses duplicate court and docket keys in one insert batch", () => {
