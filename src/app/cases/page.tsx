@@ -28,7 +28,7 @@ import {
 } from "@/modules/cases/domain/case-listing";
 import { easternCalendarToday } from "@/lib/time/calendar-date";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
-import { BrandedCaseCaption, HighlightedText } from "@/modules/cases/ui/branded-case-caption";
+import { BrandedCaseCaption, HighlightedText, publicCaseCaption } from "@/modules/cases/ui/branded-case-caption";
 import { CopyCitationButton } from "@/modules/cases/ui/copy-citation-button";
 import { FilterDisclosure } from "@/modules/cases/ui/filter-disclosure";
 import styles from "./cases.module.css";
@@ -305,6 +305,9 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
               <span className={styles.exactKind}>{exact.kind === "citation" ? "Citation match" : "Docket match"}</span>
               <span className={styles.exactCaption}>
                 <BrandedCaseCaption caption={exact.legalCase.caption} />
+                {publicCaseCaption(exact.legalCase.caption).types.map((type) => (
+                  <span className={`${styles.status} ${styles.statusPending}`} key={type.code}>{type.label}</span>
+                ))}
                 <span> · {exact.legalCase.docketNumber}</span>
               </span>
               <span className={styles.exactGo}>Go to case →</span>
@@ -354,6 +357,9 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
                         ) : null}
                         <div className={styles.facts}>
                           <span className={`${styles.status} ${status.tone}`}><span aria-hidden="true" />{status.label}</span>
+                          {publicCaseCaption(legalCase.caption).types.map((type) => (
+                            <span className={`${styles.status} ${styles.statusPending}`} key={type.code}><span aria-hidden="true" />{type.label}</span>
+                          ))}
                           {latest ? (
                             <span className={styles.latest}>
                               <span>Latest:</span> <strong>{truncateLabel(latest.label)}</strong>{latestDate ? ` · ${latestDate}` : ""}

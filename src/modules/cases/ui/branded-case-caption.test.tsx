@@ -31,5 +31,6 @@ describe("branded case captions", () => {
 
   it("normalizes repeated whitespace and preserves ordinary captions", () => {
     expect(cleanCaseCaption("  In re   Grand Jury  ")).toBe("In re Grand Jury");
+    expect(cleanCaseCaption("(HC) Cabrera Velasquez v. Mullin et al")).toBe("(HC) Cabrera Velasquez v. Mullin et al");
   });
 });

@@ -290,6 +290,7 @@ button:hover { background: var(--brand-dark); }
 /* Public case record layout */
 .caseShell { padding-top: 44px; }
 .breadcrumb { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; color: var(--muted); font-size: 13px; }
+.caseTypeBadge { display: inline-flex; align-items: center; margin: 0 8px 10px 0; padding: 4px 10px; border-radius: 999px; background: #fff0de; color: #7a3f00; font-size: 12.5px; font-weight: 700; }
 .caseHeader h1 { max-width: 980px; font-size: clamp(32px, 5vw, 58px); line-height: 1.08; overflow-wrap: anywhere; }
 .caseHeader h1 .caseTitleCitation { font-size: 0.55em; font-weight: 500; white-space: normal; opacity: 0.8; }
 .caseMeta { display: flex; flex-wrap: wrap; gap: 10px 24px; margin-top: 22px; color: var(--muted); font-size: 14px; }

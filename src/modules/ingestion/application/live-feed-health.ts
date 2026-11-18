@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { siteOrigin } from "@/lib/config/site-url";
+import { splitCaseTypePrefix } from "@/modules/cases/domain/case-type-prefix";
 import { atomFeed, type ActivityFeedItem } from "@/modules/scotus/domain/activity-feed";
 
 type Sql = ReturnType<typeof postgres>;
@@ -207,10 +208,16 @@ export async function appealsFeedXml(sql: Sql): Promise<string> {
   return feedXml(origin, `${origin}/feeds/appeals`, "Jurvio court of appeals filings", "New filings from the courts of appeals that publish a 24-hour RSS feed.", rows);
 }
 
+function feedItemTitle(court: string, caption: string): string {
+  const split = splitCaseTypePrefix(caption.trim());
+  const label = split.types.map((type) => type.label).join(", ");
+  return `${court}: ${label ? `${label} — ` : ""}${split.caption}`;
+}
+
 function feedXml(origin: string, selfUrl: string, title: string, subtitle: string, rows: FeedRow[]): string {
   const items: ActivityFeedItem[] = rows.map((row) => ({
     id: `${selfUrl}#${row.id}`,
-    title: `${row.court_code}: ${row.caption}`,
+    title: feedItemTitle(row.court_code, row.caption),
     url: itemUrl(origin, row.public_id),
     updated: stamp(row.filed_at),
     summary: row.summary || "New court filing.",
