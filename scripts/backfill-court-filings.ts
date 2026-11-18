@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { env } from "@/lib/config/env";
-import { backfillFilingWindow, type FilingFamily } from "@/modules/ingestion/application/backfill-filing-window";
+import { backfillRecentFilings, fillStoredFeedFilings, recentFilingBounds } from "@/modules/ingestion/application/backfill-recent-filings";
+import { backfillFilingWindow, filingBackfillExitCode, type FilingFamily } from "@/modules/ingestion/application/backfill-filing-window";
 
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
@@ -29,8 +30,19 @@ try {
     allowAnytime,
     log: (event) => console.log(JSON.stringify({ filingBackfill: event })),
   });
-  console.log(JSON.stringify({ filingBackfill: "done", ...checkpoint }));
-  if (checkpoint.stopped && checkpoint.stopped !== "complete") process.exitCode = checkpoint.stopped === "quiet-window" ? 0 : 1;
+  let storedFeeds = null;
+  let recent = null;
+  const bounds = recentFilingBounds(snapshotDate, today, windowDays);
+  if (checkpoint.stopped === "complete" && bounds) {
+    const [provider] = await sql<{ id: string }[]>`SELECT id FROM provider WHERE code = 'courtlistener'`;
+    if (!provider) throw new Error("courtlistener provider is missing");
+    const gap = { providerId: provider.id, family: family as FilingFamily, today, windowDays };
+    storedFeeds = await fillStoredFeedFilings(sql, { ...gap, bounds });
+    recent = await backfillRecentFilings(sql, { ...gap, snapshotDate, baseUrl: env().COURTLISTENER_API_BASE_URL });
+  }
+  console.log(JSON.stringify({ filingBackfill: "done", snapshot: checkpoint, storedFeeds, recent }));
+  const stopped = recent?.stopped === "quota" ? "quota" : checkpoint.stopped;
+  process.exitCode = filingBackfillExitCode(stopped);
 } finally {
   await sql.end();
 }

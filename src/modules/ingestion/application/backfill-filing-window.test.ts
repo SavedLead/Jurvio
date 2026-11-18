@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { filingDateInWindow, filingFamilyForCourt, selectBackfillRow } from "./backfill-filing-window";
+import {
+  decodeFilingCheckpoint,
+  filingBackfillExitCode,
+  filingBackfillStop,
+  filingDateInWindow,
+  filingFamilyForCourt,
+  filingWriteCounts,
+  selectBackfillRow,
+} from "./backfill-filing-window";
 import type { CourtListenerBulkDocket } from "../providers/courtlistener/bulk-dockets";
 
 function docket(overrides: Partial<CourtListenerBulkDocket> = {}): CourtListenerBulkDocket {
@@ -37,5 +45,43 @@ describe("filing window selection", () => {
     expect(selectBackfillRow(docket(), "appeals", "2026-11-17", 90)?.courtCode).toBe("ca9");
     expect(selectBackfillRow(docket(), "district", "2026-11-17", 90)).toBeNull();
     expect(selectBackfillRow(docket({ case_name: "Sealed v. Minor" }), "appeals", "2026-11-17", 90)).toBeNull();
+  });
+
+  it("counts a match that already has a filing date as already present", () => {
+    expect(filingWriteCounts({ incoming: 2309, joined: 2309, inserted: 0, filledDate: 0 })).toEqual({
+      inserted: 0, filledDate: 0, alreadyPresent: 2309, noCourt: 0,
+    });
+  });
+
+  it("does not abandon a run because the scan itself is busy", () => {
+    expect(filingBackfillStop({
+      allowAnytime: true, elapsedMs: 90 * 60_000, budgetMs: 90 * 60_000, outsideQuietWindow: true, diskOk: true,
+    })).toBeNull();
+    expect(filingBackfillStop({
+      allowAnytime: false, elapsedMs: 1_000, budgetMs: 90 * 60_000, outsideQuietWindow: true, diskOk: true,
+    })).toBe("quiet-window");
+    expect(filingBackfillStop({
+      allowAnytime: true, elapsedMs: 1_000, budgetMs: 90 * 60_000, outsideQuietWindow: false, diskOk: false,
+    })).toBe("disk");
+    expect(filingBackfillExitCode("pace")).toBe(75);
+    expect(filingBackfillExitCode("budget")).toBe(75);
+    expect(filingBackfillExitCode("complete")).toBe(0);
+    expect(filingBackfillExitCode("quota")).toBe(0);
+    expect(filingBackfillExitCode("disk")).toBe(1);
+  });
+
+  it("resumes a finished snapshot instead of reading the file again", () => {
+    const stored = JSON.stringify({
+      version: 1, snapshotDate: "2026-09-30", family: "appeals", windowDays: 365,
+      rowsConsumed: 5_580_000, stopped: "complete",
+    });
+    expect(decodeFilingCheckpoint(stored, "2026-09-30", "appeals", 365)).toMatchObject({
+      rowsConsumed: 5_580_000, stopped: "complete",
+    });
+    const paused = JSON.stringify({
+      version: 1, snapshotDate: "2026-09-30", family: "appeals", windowDays: 365,
+      rowsConsumed: 5_580_000, stopped: "pace",
+    });
+    expect(decodeFilingCheckpoint(paused, "2026-09-30", "appeals", 365).stopped).toBeNull();
   });
 });
