@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   csvField,
+  databaseConnectionDropped,
   decodeBulkDocketCheckpoint,
   freeDiskRatio,
   isEasternQuietWindow,
@@ -74,6 +75,20 @@ describe("bulk docket load guards", () => {
       merged: 4,
     }), "2026-09-30");
     expect(decoded.rowsConsumed).toBe(0);
+  });
+
+  it("treats a socket that disappeared during COPY as a dropped connection", () => {
+    expect(databaseConnectionDropped(new TypeError("Cannot read properties of null (reading 'write')"))).toBe(true);
+    expect(databaseConnectionDropped(Object.assign(new Error("connection terminated unexpectedly"), { code: "ECONNRESET" }))).toBe(true);
+    expect(databaseConnectionDropped(Object.assign(new Error("admin shutdown"), { code: "57P01" }))).toBe(true);
+    expect(databaseConnectionDropped(new Error("caption failed validation"))).toBe(false);
+  });
+
+  it("exits 75 when the docket loader loses the database, and leaves the last checkpoint", () => {
+    const source = readFileSync("scripts/load-courtlistener-bulk-dockets.ts", "utf8");
+    expect(source).toContain("databaseConnectionDropped");
+    expect(source).toContain("process.exitCode = 75");
+    expect(source).not.toContain("rowsConsumed = 0");
   });
 
   it("does not publish or index the merged rows", () => {

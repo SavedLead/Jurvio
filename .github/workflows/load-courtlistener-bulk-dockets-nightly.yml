@@ -287,7 +287,8 @@ jobs:
           ]))
           PY
           # Budget, window, pause and row-limit stops are normal; the next run resumes.
-          # Exit 2 (disk floor) and crashes fail the run.
+          # Exit 75 is a dropped database connection: the last checkpoint stands.
+          # Exit 2 (disk floor) and other crashes fail the run.
           exit "$code"
           REMOTE
 

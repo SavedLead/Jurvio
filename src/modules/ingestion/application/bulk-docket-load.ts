@@ -446,6 +446,23 @@ async function gateChunk(
   }
 }
 
+/**
+ * Postgres going away mid-COPY. The socket is already null, so `write` throws
+ * a TypeError, and the last committed checkpoint is what the next run resumes.
+ */
+export function databaseConnectionDropped(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const code = typeof error === "object" && error && "code" in error && typeof error.code === "string"
+    ? error.code.toUpperCase()
+    : "";
+  if ([
+    "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT",
+    "CONNECTION_ENDED", "CONNECTION_CLOSED", "CONNECTION_DESTROYED",
+    "57P01", "57P02", "08006", "08003", "08001",
+  ].includes(code)) return true;
+  return /Cannot read properties of null \(reading 'write'\)|connection terminated|server closed the connection|the database system is shutting down|terminating connection due to administrator command/i.test(message);
+}
+
 async function writeCheckpoint(sql: Sql, providerId: string, streamName: string, checkpoint: BulkDocketCheckpoint): Promise<void> {
   await sql`
     INSERT INTO ingestion_checkpoint (provider_id, stream_name, cursor_value)
