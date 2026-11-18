@@ -72,6 +72,8 @@ import { CircuitSplitSection, KeyDatesAheadSection, SimilarCasesSection } from "
 import { loadSimilarCases } from "@/modules/citations/application/similar-cases";
 import { loadCaseCircuitSplit } from "@/modules/scotus/application/circuit-split";
 import { readCircuitSplit } from "@/modules/scotus/domain/circuit-split";
+import { ALLEGATION_NOTE, DOCKET_FEED_NOTE, docketEntryKind, namedParties, statedOutcome } from "@/modules/cases/domain/docket-entry-reading";
+import { docketCaseType, formatCauseOfAction, parseNatureOfSuit } from "@/modules/cases/domain/record-answers";
 import { buildMotionGuide } from "@/modules/plain-english/domain/motion-guide";
 import { CaseMotionsSection } from "@/modules/plain-english/ui/case-motions";
 import { loadCaseJourney, loadJourneyBenchmarks, loadOnwardSupremeCourt } from "@/modules/scotus/application/case-journey";
@@ -212,10 +214,11 @@ export default async function CasePage({ params }: CasePageProps) {
   const opinionType = publicOpinionType(primaryOpinion?.opinionType);
   const timelineEvents = [
     legalCase.filedOn ? { date: legalCase.filedOn, label: "Case filed" } : null,
-    ...docketEntries.filter((entry) => entry.filedOn).map((entry) => ({
-      date: entry.filedOn as string,
-      label: entry.description,
-    })),
+    ...docketEntries.filter((entry) => entry.filedOn).map((entry) => {
+      const kind = docketEntryKind(entry.description);
+      const label = kind === "other" ? entry.description : `${kind[0]?.toUpperCase()}${kind.slice(1)} · ${entry.description}`;
+      return { date: entry.filedOn as string, label };
+    }),
     legalCase.decidedOn ? { date: legalCase.decidedOn, label: "Decision issued" } : null,
     // Dated filings from linked official agency items (e.g. FTC case pages).
     ...agencyTimelineEvents(agencyItems),
@@ -634,6 +637,36 @@ export default async function CasePage({ params }: CasePageProps) {
           <CitationCaseList id="cited-by" title="Cited by" cases={citingCases} total={citationCounts.citedBy}
             summary={citationCounts.citedBy ? `At least ${citationCounts.citedBy.toLocaleString("en-US")} ${citationCounts.citedBy === 1 ? "case" : "cases"} on Jurvio ${citationCounts.citedBy === 1 ? "cites" : "cite"} this case` : undefined} />
           <SimilarCasesSection cases={similarCases} />
+        </CaseSection> : null}
+
+        {legalCase.courtKind === "district" ? <CaseSection id="district-record" title="Case record" open hint="From the court feed and the case record">
+          <dl className="caseMeta">
+            {legalCase.judgeName ? <div><dt>Assigned judge</dt><dd>{legalCase.judgeName}</dd></div> : null}
+            {docketCaseType(legalCase.docketNumber) ? <div><dt>Case type</dt><dd>{docketCaseType(legalCase.docketNumber)}</dd></div> : null}
+            {formatCauseOfAction(legalCase.causeOfAction) ? <div><dt>Cause</dt><dd>{formatCauseOfAction(legalCase.causeOfAction)}</dd></div> : null}
+            {parseNatureOfSuit(legalCase.natureOfSuit) ? <div><dt>Nature of suit</dt><dd>{parseNatureOfSuit(legalCase.natureOfSuit)?.label}</dd></div> : null}
+          </dl>
+          <p>{DOCKET_FEED_NOTE}</p>
+          <p>{ALLEGATION_NOTE}</p>
+          {docketEntries.some((entry) => docketEntryKind(entry.description) === "order") ? (
+            <>
+              <h3>Orders and rulings</h3>
+              <ul>
+                {docketEntries.filter((entry) => docketEntryKind(entry.description) === "order").map((entry) => {
+                  const outcome = statedOutcome(entry.description);
+                  const partiesNamed = namedParties(entry.description, parties.flatMap((party) => [party.displayName, party.nameAsFiled]));
+                  return (
+                    <li key={entry.publicId}>
+                      {entry.filedOn ? <time dateTime={entry.filedOn}>{formatPublicCaseDate(entry.filedOn) ?? entry.filedOn}</time> : null}
+                      {" "}{entry.description}
+                      {outcome ? <span> Outcome stated in the entry: {outcome}</span> : null}
+                      {partiesNamed.length ? <span> Names {partiesNamed.join(", ")}</span> : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          ) : null}
         </CaseSection> : null}
 
         {show.docket ? <CaseSection id="docket" title="Docket & timeline"
