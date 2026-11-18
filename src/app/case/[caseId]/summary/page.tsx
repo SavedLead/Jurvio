@@ -69,6 +69,7 @@ export default async function CaseSummaryPage({ params }: { params: Promise<{ ca
   const closedOn = legalCase.decidedOn ?? legalCase.terminatedOn ?? null;
   return <main className="shell caseShell" style={{ maxWidth: 820 }}>
     <p className="sectionKicker">One-page summary</p>
+    {(legalCase.caseTypes ?? []).map((type) => <span className="caseTypeBadge" key={type.code}>{type.label}</span>)}
     <h1 style={{ margin: "4px 0 12px", lineHeight: 1.2 }}>{caption}</h1>
     <dl style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: "10px 18px", margin: "0 0 12px" }}>
       <Fact label="Court">{legalCase.courtName}</Fact>

@@ -3,6 +3,7 @@ import type postgres from "postgres";
 import { latestPublicationColumnSql } from "@/modules/publication/application/current-visibility";
 import { stripReporterRunningHeads } from "@/modules/cases/domain/reporter-text";
 import { captionTag, cleanCourtName, courtKindFromJurisdiction, type CourtKind } from "@/modules/cases/domain/record-answers";
+import { splitCaseTypePrefix, type CaseTypePrefix } from "@/modules/cases/domain/case-type-prefix";
 import { displayCaption } from "@/modules/cases/domain/case-title";
 import { redactPublicFields } from "@/modules/privacy/application/active-redactions";
 import { searchExcludedCaseSql } from "@/modules/publication/domain/search-exclusion";
@@ -26,6 +27,8 @@ export interface PublicCase {
   judgeName?: string | null;
   /** Category from a PACER caption tag such as "(HC)", read before the tag is stripped from the caption. */
   captionCategory?: string | null;
+  /** Confirmed court case-type prefixes, read from the stored caption before displayCaption removes them. */
+  caseTypes?: readonly CaseTypePrefix[];
   supremeCourtTerm: number | null;
   officialCitation: string | null;
   courtName: string;
@@ -142,6 +145,7 @@ export async function getPublicCase(sql: Sql, publicId: string): Promise<PublicC
     decidedOn: dateOnOrBeforeToday(record.decidedOn),
     courtJurisdiction,
     captionCategory: captionTag(record.caption),
+    caseTypes: splitCaseTypePrefix(record.caption).types,
     caption: displayCaption(record.caption, record.docketNumber, courtKind),
     courtName: cleanCourtName(record.courtName),
     courtKind,
