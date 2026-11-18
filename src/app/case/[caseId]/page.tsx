@@ -573,6 +573,7 @@ export default async function CasePage({ params }: CasePageProps) {
             supremeCourtTerm={legalCase.supremeCourtTerm}
             officialCitation={legalCase.officialCitation}
             courtCode={legalCase.courtCode}
+            caseTypes={legalCase.caseTypes}
             showNavigation={false}
           />
           <CaseRecordFacts caseId={caseId} legalCase={legalCase} parties={parties} />

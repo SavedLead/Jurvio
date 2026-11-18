@@ -1,5 +1,6 @@
 import { CaseNav } from "./case-nav";
-import { BrandedCaseCaption, CaseTypeBadges, publicCaseCaption } from "./branded-case-caption";
+import { BrandedCaseCaption, publicCaseCaption } from "./branded-case-caption";
+import type { CaseTypePrefix } from "@/modules/cases/domain/case-type-prefix";
 import { caseCitationSuffix } from "@/modules/cases/domain/case-title";
 import { formatPublicCaseDate } from "@/modules/cases/domain/scotus-display";
 
@@ -17,6 +18,11 @@ interface CaseHeaderProps {
   officialCitation?: string | null;
   courtCode?: string | null;
   showNavigation?: boolean;
+  /**
+   * Prefixes taken from the stored caption. Case pages pass these because
+   * displayCaption has already removed the code from `caption`.
+   */
+  caseTypes?: readonly CaseTypePrefix[];
 }
 
 export function CaseHeader({
@@ -30,9 +36,11 @@ export function CaseHeader({
   officialCitation,
   courtCode,
   showNavigation = true,
+  caseTypes,
 }: CaseHeaderProps) {
   const citationSuffix = caseCitationSuffix({ docketNumber, courtName, providerCourtId: courtCode, filedOn, decidedOn: decidedOn ?? null });
   const visible = publicCaseCaption(caption).text;
+  const types = caseTypes ?? publicCaseCaption(caption).types;
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumb">
@@ -40,7 +48,7 @@ export function CaseHeader({
       </nav>
       <header className="caseHeader">
         <p className="eyebrow">{courtName}</p>
-        <CaseTypeBadges caption={caption} />
+        {types.map((type) => <span className="caseTypeBadge" key={type.code}>{type.label}</span>)}
         <h1><BrandedCaseCaption caption={caption} /><span className="caseTitleCitation">{citationSuffix}</span></h1>
         <dl className="caseMeta" aria-label="Case details">
           <div><dt>Docket</dt><dd>{docketNumber}</dd></div>

@@ -67,7 +67,8 @@ export default async function DocketPage({ params, searchParams }: {
     <main className="shell caseShell">
       <CaseHeader caseId={caseId} caption={legalCase.caption} courtName={legalCase.courtName}
         docketNumber={legalCase.docketNumber} filedOn={legalCase.filedOn}
-        decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode} />
+        decidedOn={legalCase.decidedOn} courtCode={legalCase.courtCode}
+        caseTypes={legalCase.caseTypes} />
       <CaseRecordFacts caseId={caseId} legalCase={legalCase} />
       <DocketEntriesSection caseId={caseId} path="docket" title="Docket entries" entries={records}
         total={total} orderCount={orderCount} orders={orders}
