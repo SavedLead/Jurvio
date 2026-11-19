@@ -179,6 +179,12 @@ describe.skipIf(!databaseUrl)("Supreme Court emergency docket lane against Postg
     const followed = await followEntity(sql, user!.id, target!, "daily");
     expect(followed.status).toBe("followed");
     await sql`UPDATE entity_follow SET created_at = now() - interval '2 hours' WHERE user_id = ${user!.id}`;
+    // The fixture line is dated Nov 4, 2026. Alerts only keep docket lines filed
+    // within 14 days of the scan, so a run after Nov 18 drops it unless the
+    // stored filing date is brought inside that window.
+    await sql`
+      UPDATE docket_entry SET filed_on = current_date
+      WHERE case_id = (SELECT case_id FROM scotus_application WHERE docket_number = '26A623')`;
     const followIds = (await sql<{ id: string }[]>`SELECT id FROM entity_follow WHERE user_id = ${user!.id}`).map((row) => row.id);
     const run = await matchEntityAlerts(sql, { window: { from: new Date(Date.now() - 60 * 60_000), to: new Date(Date.now() + 60_000) }, followIds });
     expect(run.byKind.emergency).toBeGreaterThan(0);
