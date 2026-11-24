@@ -1,0 +1,152 @@
+name: Clean ingestion disk (once)
+
+# David approved this exact cleanup on Nov 24, 2026. Dispatch-only.
+# Removes the failed restore-rehearsal scratch volume, the decrypted restore
+# directory if it is still there (otherwise the Nov 21 on-box dump), and unused
+# images. Does not prune volumes broadly and does not touch the live database
+# volume, the artifacts volume, or the Nov 22 and Nov 23 dumps.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type CLEAN_INGESTION_DISK to run this cleanup"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jurvio-ingestion-disk-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, Linux, X64, jurvio, builder, trusted]
+    environment: production
+    timeout-minutes: 20
+    env:
+      DO_SSH_KEY_B64: ${{ secrets.DO_SSH_KEY_B64 }}
+      INGESTION_USER: ${{ secrets.DO_USER }}
+      DB_HOST: 10.116.0.2
+    steps:
+      - name: Require confirm=CLEAN_INGESTION_DISK
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CLEAN_INGESTION_DISK" ]; then
+            echo "::error::Refusing to run. Re-run this workflow by hand with confirm=CLEAN_INGESTION_DISK."
+            exit 1
+          fi
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s' "$DO_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_ed25519
+            BatchMode yes
+            ConnectTimeout 15
+            StrictHostKeyChecking accept-new
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Clean approved leftovers on the ingestion host
+        run: |
+          set -euo pipefail
+          ssh "$INGESTION_USER@$DB_HOST" bash -se <<'REMOTE'
+          set -euo pipefail
+          echo "=== clock ==="
+          TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z'
+
+          echo "=== BEFORE: df -h / ==="
+          df -h /
+          echo "=== BEFORE: docker system df ==="
+          sudo -n docker system df
+
+          echo "=== scratch volume ==="
+          mapfile -t vols < <(sudo -n docker volume ls -q | grep '^db441f4a' || true)
+          echo "matches=${#vols[@]}"
+          if [ "${#vols[@]}" -gt 1 ]; then
+            printf '%s\n' "${vols[@]}"
+            echo "::error::more than one volume matches db441f4a; not removing any volume"
+            exit 1
+          fi
+          if [ "${#vols[@]}" -eq 1 ]; then
+            vol="${vols[0]}"
+            case "$vol" in
+              jurvio_jurvio_postgres|jurvio_jurvio_artifacts)
+                echo "::error::refusing to remove protected volume $vol"
+                exit 1
+                ;;
+            esac
+            echo "volume=$vol"
+            sudo -n du -sh "/var/lib/docker/volumes/$vol" || true
+            echo "=== containers using the volume ==="
+            sudo -n docker ps -a --filter "volume=$vol" --format '{{.ID}} {{.Names}} {{.Status}} {{.Image}}'
+            mapfile -t holders < <(sudo -n docker ps -aq --filter "volume=$vol")
+            if [ "${#holders[@]}" -gt 0 ]; then
+              for id in "${holders[@]}"; do
+                name="$(sudo -n docker inspect -f '{{.Name}}' "$id")"
+                name="${name#/}"
+                echo "holder=$name id=$id"
+                if [ "$name" != "jurvio-restore-check" ]; then
+                  echo "::error::volume $vol is used by $name, not the restore rehearsal; stopping"
+                  exit 1
+                fi
+              done
+              echo "removing restore-rehearsal container jurvio-restore-check"
+              sudo -n docker rm -f jurvio-restore-check
+            else
+              echo "no container is using $vol"
+            fi
+            echo "removing volume $vol"
+            sudo -n docker volume rm "$vol"
+          else
+            echo "volume db441f4a is not present"
+          fi
+
+          echo "=== restore-check ==="
+          restore_present=0
+          if sudo -n test -e /opt/jurvio/restore-check; then
+            restore_present=1
+            sudo -n du -sh /opt/jurvio/restore-check || true
+            sudo -n find /opt/jurvio/restore-check -maxdepth 2 -printf '%s %p\n' 2>/dev/null | sort -nr | head -20 || true
+            sudo -n rm -rf /opt/jurvio/restore-check
+            echo "removed /opt/jurvio/restore-check"
+          else
+            echo "/opt/jurvio/restore-check is already gone"
+          fi
+
+          echo "=== Nov 21 dump ==="
+          old=/opt/jurvio/backups/jurvio-20261121T145933Z.sql.gz
+          if [ "$restore_present" -eq 1 ]; then
+            echo "restore-check was present, so the Nov 21 dump is left in place"
+            sudo -n ls -lh "$old" 2>/dev/null || echo "Nov 21 dump not present"
+          elif sudo -n test -f "$old"; then
+            sudo -n ls -lh "$old"
+            sudo -n rm -f -- "$old"
+            echo "removed $old"
+          else
+            echo "Nov 21 dump already absent"
+          fi
+
+          echo "=== protected paths still present ==="
+          sudo -n docker volume ls --format '{{.Name}}' | grep -E '^(jurvio_jurvio_postgres|jurvio_jurvio_artifacts)$' || true
+          sudo -n ls -lh \
+            /opt/jurvio/backups/jurvio-20261122T145808Z.sql.gz \
+            /opt/jurvio/backups/jurvio-20261123T185132Z.sql.gz \
+            2>/dev/null || true
+
+          echo "=== unused images ==="
+          sudo -n docker image prune -af
+
+          echo "=== AFTER: df -h / ==="
+          df -h /
+          echo "=== AFTER: docker system df ==="
+          sudo -n docker system df
+          echo "=== DONE ==="
+          REMOTE
