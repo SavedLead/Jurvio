@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ageMinutes, emptyRunIsStale, feedIsStale, inFederalCourtHours } from "./live-feed-health";
 
@@ -23,6 +24,12 @@ describe("live feed court hours", () => {
     expect(emptyRunIsStale(true, 1, 6)).toBe(false);
     expect(emptyRunIsStale(false, 7, 0)).toBe(false);
     expect(emptyRunIsStale(true, 0, 0)).toBe(false);
+  });
+
+  it("shows a court filing the RSS listed even when another source already stored the line", () => {
+    const source = readFileSync(new URL("./live-feed-health.ts", import.meta.url), "utf8");
+    const filters = source.match(/item\.outcome IN \('entry', 'new_case', 'matched'\)/g) ?? [];
+    expect(filters).toHaveLength(2);
   });
 
   it("rounds an age in minutes", () => {
