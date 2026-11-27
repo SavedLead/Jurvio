@@ -83,7 +83,8 @@ async function newestAppealsItem(sql: Sql): Promise<Date | string | null> {
     SELECT max(item.seen_at) AS newest
     FROM free_source_item item
     WHERE item.source = 'appellate_pacer_rss'
-      AND item.outcome IN ('entry', 'new_case')
+      -- matched: the court listed it today and another source already had the line.
+      AND item.outcome IN ('entry', 'new_case', 'matched')
       AND item.seen_at > now() - interval '36 hours'
   `;
   return row?.newest ?? null;
@@ -200,7 +201,7 @@ export async function appealsFeedXml(sql: Sql): Promise<string> {
     FROM free_source_item item
     LEFT JOIN legal_case ON legal_case.id = item.case_id AND legal_case.publication = 'published'
     WHERE item.source = 'appellate_pacer_rss'
-      AND item.outcome IN ('entry', 'new_case')
+      AND item.outcome IN ('entry', 'new_case', 'matched')
       AND item.seen_at > now() - interval '24 hours'
     ORDER BY item.seen_at DESC
     LIMIT 40
